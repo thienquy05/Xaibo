@@ -1,0 +1,62 @@
+# Privacy gate: treat this repo as PUBLIC. Agent transcripts, prompts, usage data,
+# secrets and anything from the user's machine stay local and are never committed.
+# Test fixtures are synthetic only and live under test/fixtures/synthetic/.
+
+# Secrets and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets/
+credentials*.json
+
+# Agent data and Xaibo data (real sessions must never enter the repo)
+*.jsonl
+*.jsonl.zst
+!test/fixtures/synthetic/**/*.jsonl
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+private/
+exports/
+spool/
+
+# Local tooling state (ruflo, graphify, playwright mcp, temporary agent handoffs)
+.claude-flow/
+.swarm/
+.hive-mind/
+agentdb.rvf*
+ruvector.db
+graphify-out/
+.playwright-mcp/
+.handoff/
+.claude/settings.local.json
+.claude/proven-config.json
+.claude/.proven-config-version
+.claude/.cc-writes/
+.claude/worktrees/
+.codex/
+# harness-os governance files under .claude/ (settings.json, harness.config.json, hooks/) ARE tracked
+
+# Node / Electron build output and project-local download caches (npm, Electron)
+node_modules/
+.cache/
+dist/
+out/
+release/
+build/
+.vite/
+*.tsbuildinfo
+coverage/
+test-results/
+playwright-report/
+blob-report/
+*.log
+
+# OS / editors
+.DS_Store
+.vscode/
+.idea/
