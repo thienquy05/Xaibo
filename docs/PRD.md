@@ -4,7 +4,7 @@
 
 | Field | Value |
 |---|---|
-| Status | **Approved v1.0 — owner, 2026-11-09.** History: v0.6: monthly usage history added (Codex diff review approve-with-fixes, fixes applied; Claude second review); v0.5: usage status, context, estimated cost, model names + effort level, original-design step added (Codex design; Codex diff review approve-with-fixes, fixes applied; Claude second review). **Awaiting owner approval** (HARNESS_PROCESS §3 step 3). Owner decisions of 2026-11-09 supersede the previous estimated-cost restrictions, resolve Q16 and Q21 and require an original Xaibo design (D-23). No new target is verified until its assigned gate passes. |
+| Status | **Approved v1.0 — owner, 2026-11-09.** Errata (owner, 2026-11-09): App. C `electron-builder` moved to Phase 0 (plan decisions D-P0-01, D-P0-05); no other change. History: v0.6: monthly usage history added (Codex diff review approve-with-fixes, fixes applied; Claude second review); v0.5: usage status, context, estimated cost, model names + effort level, original-design step added (Codex design; Codex diff review approve-with-fixes, fixes applied; Claude second review). **Awaiting owner approval** (HARNESS_PROCESS §3 step 3). Owner decisions of 2026-11-09 supersede the previous estimated-cost restrictions, resolve Q16 and Q21 and require an original Xaibo design (D-23). No new target is verified until its assigned gate passes. |
 | Date | 2026-11-09 |
 | Owner (decides, approves every gate) | The user (repo owner) |
 | Lead designer, first reviewer | Codex |
@@ -1002,7 +1002,7 @@ Every gate = Codex review -> Claude second review -> owner stop. Gate D exceptio
 | `better-sqlite3` | runtime | Only if S1 rejects `node:sqlite` | Phase 0 decision |
 | `@playwright/test` | dev | Electron E2E (`_electron`) | Phase 1 |
 | `eslint`, `typescript-eslint` | dev | Linting incl. forbidden-import rule | Phase 1 |
-| `electron-builder` | dev | Packaging (`dist:mac`, later win/linux) | Phase 1 |
+| `electron-builder` | dev | Packaging (`dist:mac`, later win/linux) | Phase 0 (errata 2026-11-09: owner decision D-P0-01; S1, S3 and S10 need a packaged app) |
 | `smol-toml` | runtime | Validate Codex `config.toml` after text edits | v1-B (first `config.toml` edit: notify wrapper, OTel) |
 | `node-pty` | runtime (native) | Embedded terminal | S2 / v1-A |
 | `@xterm/xterm`, `@xterm/addon-fit` | runtime | Terminal rendering (WebGL addon deferred until needed) | S2 / v1-A |
