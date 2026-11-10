@@ -1,0 +1,1755 @@
+{
+ "tag": "spike, not gate evidence",
+ "profile": {
+  "name": "personal (owner decision 2026-11-10; overrides plan scale)",
+  "live": {
+   "sessions": 5,
+   "ratePerS": 20,
+   "burstPerS": 50,
+   "burstSeconds": 5,
+   "burstEverySeconds": 60,
+   "seconds": 600,
+   "meanBytes": 4096,
+   "maxBytes": 262144,
+   "sigma": 1.2,
+   "forceMaxEvery": 5000
+  },
+  "scaleProbe": {
+   "sessions": 15,
+   "ratePerS": 60,
+   "burstPerS": 150,
+   "burstSeconds": 5,
+   "burstEverySeconds": 60,
+   "seconds": 120,
+   "meanBytes": 4096,
+   "maxBytes": 262144,
+   "sigma": 1.2,
+   "forceMaxEvery": 5000
+  },
+  "estimate": "~"
+ },
+ "runtime": "packaged Electron runtime with ELECTRON_RUN_AS_NODE=1 (not the GUI utilityProcess); generator on system Node",
+ "env": {
+  "cpu": "Apple M4",
+  "macos": "27.2",
+  "ramGiB": 16,
+  "electron": "45.2.3",
+  "node": "24.22.2",
+  "sqlite": "3.53.4",
+  "agents": {}
+ },
+ "seeds": {
+  "corpus": 12001,
+  "text": 12002,
+  "live": 12003,
+  "usage": 12004,
+  "build": 12005,
+  "mix": 12008,
+  "backfill": 12009
+ },
+ "corpusDbBytes": 2806976512,
+ "method": {
+  "db": "APFS clone of the T2 corpus per run",
+  "watcher": "per-active-file fs.watch + reconcile every 5 s",
+  "hook": "S3 receiver (private Unix socket, framed, volatile ack, one connection per delivery); when bind() is EPERM (command sandbox) the same frames + token check over an inherited pipe; see runs[].events.hookTransport",
+  "loopDelay": "monitorEventLoopDelay resolution 1 ms",
+  "publish": "MessagePort post before persistence",
+  "backfill": {
+   "fileBytes": 33554432,
+   "chunkBytes": 262144,
+   "everyMs": 100
+  },
+  "readsEveryMs": 1000,
+  "reads": [
+   "list_unfiltered",
+   "fts_common_recent",
+   "fts_cjk_bm25",
+   "content_page1",
+   "quota_45d",
+   "fts_common_bm25"
+  ],
+  "checkpointProbe": "PRAGMA wal_checkpoint(PASSIVE) every 1 s in the writer (autocheckpoint left on)",
+  "thresholds": {
+   "queueAgeP95Ms": 1000,
+   "drainMs": 5000
+  }
+ },
+ "task": "P0-S12-T4",
+ "runs": [
+  {
+   "name": "A-file",
+   "arch": "A",
+   "mix": "file",
+   "profile": "personal",
+   "seconds": 120,
+   "batch": {
+    "rows": 500,
+    "ms": 100,
+    "mib": 4
+   },
+   "events": {
+    "sent": 2700,
+    "file": 2700,
+    "hook": 0,
+    "hookFail": 0,
+    "hookTransport": "none",
+    "pipeRejected": 0,
+    "published": 2700,
+    "persistedLive": 2700
+   },
+   "loopDelayMs": {
+    "p50": 1.154,
+    "p99": 19.972,
+    "max": 440.664
+   },
+   "appendToPublishMs": {
+    "n": 2700,
+    "p50": 0.17,
+    "p95": 95.719,
+    "p99": 340.362,
+    "max": 405.892
+   },
+   "receiveToPublishMs": null,
+   "sendToPublishMs": null,
+   "queueAgeMs": {
+    "n": 2700,
+    "p50": 96.833,
+    "p95": 160.032,
+    "p99": 412.947,
+    "max": 530.453
+   },
+   "queueAgeP95Ms": 160.032,
+   "drainMs": 108.658,
+   "lost": 0,
+   "duplicated": 0,
+   "pass": true,
+   "commits": {
+    "n": 838,
+    "ms": {
+     "n": 838,
+     "p50": 28.795,
+     "p95": 68.801,
+     "p99": 101.62,
+     "max": 171.952
+    }
+   },
+   "backfill": {
+    "bytes": 219682840,
+    "rows": 38093,
+    "passes": 7,
+    "chunkMs": {
+     "n": 844,
+     "p50": 0.542,
+     "p95": 0.911,
+     "p99": 1.709,
+     "max": 2.28
+    },
+    "rowsCommitted": 38093,
+    "writerBacklogMaxRows": 79
+   },
+   "reads": {
+    "list_unfiltered": {
+     "n": 20,
+     "p50": 0.391,
+     "p95": 0.634,
+     "p99": 2.395,
+     "max": 2.395
+    },
+    "fts_common_recent": {
+     "n": 20,
+     "p50": 2.35,
+     "p95": 7.322,
+     "p99": 13.097,
+     "max": 13.097
+    },
+    "fts_cjk_bm25": {
+     "n": 20,
+     "p50": 49.684,
+     "p95": 62.153,
+     "p99": 142.093,
+     "max": 142.093
+    },
+    "content_page1": {
+     "n": 20,
+     "p50": 0.857,
+     "p95": 1.516,
+     "p99": 1.901,
+     "max": 1.901
+    },
+    "quota_45d": {
+     "n": 20,
+     "p50": 49.981,
+     "p95": 63.289,
+     "p99": 97.758,
+     "max": 97.758
+    },
+    "fts_common_bm25": {
+     "n": 19,
+     "p50": 407.999,
+     "p95": 439.289,
+     "p99": 439.289,
+     "max": 439.289
+    }
+   },
+   "wal": {
+    "maxBytes": 37409632,
+    "checkpoints": 119,
+    "maxLogFrames": 9080,
+    "maxUncheckpointedFrames": 0,
+    "busy": 0
+   },
+   "rssMaxMiB": 193,
+   "genRssMiB": 282,
+   "fdMax": 36,
+   "genMaxSlipMs": 0,
+   "dbBytesAfter": 3130781696,
+   "hostLoadAvg1m": null
+  },
+  {
+   "name": "A-hook25",
+   "arch": "A",
+   "mix": "hook25",
+   "profile": "personal",
+   "seconds": 120,
+   "batch": {
+    "rows": 500,
+    "ms": 100,
+    "mib": 4
+   },
+   "events": {
+    "sent": 2700,
+    "file": 2012,
+    "hook": 688,
+    "hookFail": 0,
+    "hookTransport": "pipe",
+    "pipeRejected": 0,
+    "published": 2700,
+    "persistedLive": 2700
+   },
+   "loopDelayMs": {
+    "p50": 1.154,
+    "p99": 21.07,
+    "max": 446.169
+   },
+   "appendToPublishMs": {
+    "n": 2012,
+    "p50": 0.159,
+    "p95": 95.49,
+    "p99": 327.524,
+    "max": 435.316
+   },
+   "receiveToPublishMs": {
+    "n": 688,
+    "p50": 0.035,
+    "p95": 0.077,
+    "p99": 0.133,
+    "max": 0.194
+   },
+   "sendToPublishMs": {
+    "n": 688,
+    "p50": 0.166,
+    "p95": 97.231,
+    "p99": 364.983,
+    "max": 403.933
+   },
+   "queueAgeMs": {
+    "n": 2700,
+    "p50": 97.851,
+    "p95": 158.149,
+    "p99": 418.759,
+    "max": 551.945
+   },
+   "queueAgeP95Ms": 158.149,
+   "drainMs": 124.204,
+   "lost": 0,
+   "duplicated": 0,
+   "pass": true,
+   "commits": {
+    "n": 839,
+    "ms": {
+     "n": 839,
+     "p50": 30.29,
+     "p95": 64.388,
+     "p99": 91.167,
+     "max": 167.431
+    }
+   },
+   "backfill": {
+    "bytes": 219944984,
+    "rows": 38128,
+    "passes": 7,
+    "chunkMs": {
+     "n": 845,
+     "p50": 0.537,
+     "p95": 0.877,
+     "p99": 1.64,
+     "max": 2.562
+    },
+    "rowsCommitted": 38128,
+    "writerBacklogMaxRows": 79
+   },
+   "reads": {
+    "list_unfiltered": {
+     "n": 20,
+     "p50": 0.392,
+     "p95": 0.667,
+     "p99": 2.629,
+     "max": 2.629
+    },
+    "fts_common_recent": {
+     "n": 20,
+     "p50": 1.485,
+     "p95": 6.39,
+     "p99": 7.081,
+     "max": 7.081
+    },
+    "fts_cjk_bm25": {
+     "n": 20,
+     "p50": 48.091,
+     "p95": 57.114,
+     "p99": 142.637,
+     "max": 142.637
+    },
+    "content_page1": {
+     "n": 20,
+     "p50": 0.854,
+     "p95": 2.61,
+     "p99": 2.65,
+     "max": 2.65
+    },
+    "quota_45d": {
+     "n": 20,
+     "p50": 51.056,
+     "p95": 94.771,
+     "p99": 100.181,
+     "max": 100.181
+    },
+    "fts_common_bm25": {
+     "n": 19,
+     "p50": 405.941,
+     "p95": 444.731,
+     "p99": 444.731,
+     "max": 444.731
+    }
+   },
+   "wal": {
+    "maxBytes": 32613952,
+    "checkpoints": 120,
+    "maxLogFrames": 3330,
+    "maxUncheckpointedFrames": 0,
+    "busy": 0
+   },
+   "rssMaxMiB": 195,
+   "genRssMiB": 283,
+   "fdMax": 39,
+   "genMaxSlipMs": 0,
+   "dbBytesAfter": 3130785792,
+   "hostLoadAvg1m": null
+  },
+  {
+   "name": "B-file",
+   "arch": "B",
+   "mix": "file",
+   "profile": "personal",
+   "seconds": 120,
+   "batch": {
+    "rows": 500,
+    "ms": 100,
+    "mib": 4
+   },
+   "events": {
+    "sent": 2700,
+    "file": 2700,
+    "hook": 0,
+    "hookFail": 0,
+    "hookTransport": "none",
+    "pipeRejected": 0,
+    "published": 2700,
+    "persistedLive": 2700
+   },
+   "loopDelayMs": {
+    "p50": 1.15,
+    "p99": 1.831,
+    "max": 719.847
+   },
+   "appendToPublishMs": {
+    "n": 2700,
+    "p50": 0.121,
+    "p95": 110.169,
+    "p99": 376.772,
+    "max": 688.728
+   },
+   "receiveToPublishMs": null,
+   "sendToPublishMs": null,
+   "queueAgeMs": {
+    "n": 2700,
+    "p50": 117.65,
+    "p95": 221.29,
+    "p99": 267.354,
+    "max": 427.431
+   },
+   "queueAgeP95Ms": 221.29,
+   "drainMs": 183.655,
+   "lost": 0,
+   "duplicated": 0,
+   "pass": true,
+   "commits": {
+    "n": 767,
+    "ms": {
+     "n": 767,
+     "p50": 34.103,
+     "p95": 93.446,
+     "p99": 125.603,
+     "max": 211.568
+    }
+   },
+   "backfill": {
+    "bytes": 291250208,
+    "rows": 50519,
+    "passes": 9,
+    "chunkMs": {
+     "n": 1119,
+     "p50": 0.738,
+     "p95": 1.57,
+     "p99": 2.739,
+     "max": 3.583
+    },
+    "rowsCommitted": 50519,
+    "writerBacklogMaxRows": 170
+   },
+   "reads": {
+    "list_unfiltered": {
+     "n": 20,
+     "p50": 0.41,
+     "p95": 1.798,
+     "p99": 2.628,
+     "max": 2.628
+    },
+    "fts_common_recent": {
+     "n": 20,
+     "p50": 2.082,
+     "p95": 8.828,
+     "p99": 13.138,
+     "max": 13.138
+    },
+    "fts_cjk_bm25": {
+     "n": 20,
+     "p50": 56.064,
+     "p95": 81.944,
+     "p99": 142.573,
+     "max": 142.573
+    },
+    "content_page1": {
+     "n": 20,
+     "p50": 0.945,
+     "p95": 2.585,
+     "p99": 2.888,
+     "max": 2.888
+    },
+    "quota_45d": {
+     "n": 20,
+     "p50": 51.538,
+     "p95": 62.892,
+     "p99": 90.47,
+     "max": 90.47
+    },
+    "fts_common_bm25": {
+     "n": 20,
+     "p50": 414.426,
+     "p95": 588.269,
+     "p99": 718.273,
+     "max": 718.273
+    }
+   },
+   "wal": {
+    "maxBytes": 37681552,
+    "checkpoints": 119,
+    "maxLogFrames": 9146,
+    "maxUncheckpointedFrames": 1221,
+    "busy": 0
+   },
+   "rssMaxMiB": 233,
+   "genRssMiB": 284,
+   "fdMax": 38,
+   "genMaxSlipMs": 0,
+   "dbBytesAfter": 3228205056,
+   "hostLoadAvg1m": null
+  },
+  {
+   "name": "B-hook25",
+   "arch": "B",
+   "mix": "hook25",
+   "profile": "personal",
+   "seconds": 120,
+   "batch": {
+    "rows": 500,
+    "ms": 100,
+    "mib": 4
+   },
+   "events": {
+    "sent": 2700,
+    "file": 2012,
+    "hook": 688,
+    "hookFail": 0,
+    "hookTransport": "pipe",
+    "pipeRejected": 0,
+    "published": 2700,
+    "persistedLive": 2700
+   },
+   "loopDelayMs": {
+    "p50": 1.155,
+    "p99": 1.784,
+    "max": 459.801
+   },
+   "appendToPublishMs": {
+    "n": 2012,
+    "p50": 0.08,
+    "p95": 94.638,
+    "p99": 336.09,
+    "max": 420.821
+   },
+   "receiveToPublishMs": {
+    "n": 688,
+    "p50": 0.025,
+    "p95": 0.092,
+    "p99": 0.129,
+    "max": 0.168
+   },
+   "sendToPublishMs": {
+    "n": 688,
+    "p50": 0.113,
+    "p95": 55.438,
+    "p99": 369.649,
+    "max": 424.638
+   },
+   "queueAgeMs": {
+    "n": 2700,
+    "p50": 119.254,
+    "p95": 218.066,
+    "p99": 263.495,
+    "max": 430.168
+   },
+   "queueAgeP95Ms": 218.066,
+   "drainMs": 126.233,
+   "lost": 0,
+   "duplicated": 0,
+   "pass": true,
+   "commits": {
+    "n": 767,
+    "ms": {
+     "n": 767,
+     "p50": 35.395,
+     "p95": 91.633,
+     "p99": 116.603,
+     "max": 193.273
+    }
+   },
+   "backfill": {
+    "bytes": 293347360,
+    "rows": 50833,
+    "passes": 9,
+    "chunkMs": {
+     "n": 1127,
+     "p50": 0.744,
+     "p95": 1.692,
+     "p99": 2.663,
+     "max": 5.11
+    },
+    "rowsCommitted": 50833,
+    "writerBacklogMaxRows": 162
+   },
+   "reads": {
+    "list_unfiltered": {
+     "n": 20,
+     "p50": 0.4,
+     "p95": 1.074,
+     "p99": 2.344,
+     "max": 2.344
+    },
+    "fts_common_recent": {
+     "n": 20,
+     "p50": 3.444,
+     "p95": 5.933,
+     "p99": 6.901,
+     "max": 6.901
+    },
+    "fts_cjk_bm25": {
+     "n": 20,
+     "p50": 55.493,
+     "p95": 78.638,
+     "p99": 137.551,
+     "max": 137.551
+    },
+    "content_page1": {
+     "n": 20,
+     "p50": 0.979,
+     "p95": 2.142,
+     "p99": 3.613,
+     "max": 3.613
+    },
+    "quota_45d": {
+     "n": 20,
+     "p50": 53.278,
+     "p95": 68.295,
+     "p99": 95.169,
+     "max": 95.169
+    },
+    "fts_common_bm25": {
+     "n": 20,
+     "p50": 411.998,
+     "p95": 441.588,
+     "p99": 458.476,
+     "max": 458.476
+    }
+   },
+   "wal": {
+    "maxBytes": 35180712,
+    "checkpoints": 119,
+    "maxLogFrames": 7451,
+    "maxUncheckpointedFrames": 1944,
+    "busy": 0
+   },
+   "rssMaxMiB": 238,
+   "genRssMiB": 281,
+   "fdMax": 38,
+   "genMaxSlipMs": 0,
+   "dbBytesAfter": 3231608832,
+   "hostLoadAvg1m": null
+  },
+  {
+   "name": "C-file",
+   "arch": "C",
+   "mix": "file",
+   "profile": "personal",
+   "seconds": 120,
+   "batch": {
+    "rows": 500,
+    "ms": 100,
+    "mib": 4
+   },
+   "events": {
+    "sent": 2700,
+    "file": 2700,
+    "hook": 0,
+    "hookFail": 0,
+    "hookTransport": "none",
+    "pipeRejected": 0,
+    "published": 2700,
+    "persistedLive": 2700
+   },
+   "loopDelayMs": {
+    "p50": 1.149,
+    "p99": 1.452,
+    "max": 23.511
+   },
+   "appendToPublishMs": {
+    "n": 2700,
+    "p50": 0.108,
+    "p95": 0.251,
+    "p99": 0.479,
+    "max": 5.106
+   },
+   "receiveToPublishMs": null,
+   "sendToPublishMs": null,
+   "queueAgeMs": {
+    "n": 2700,
+    "p50": 112.602,
+    "p95": 217.419,
+    "p99": 264.861,
+    "max": 362.03
+   },
+   "queueAgeP95Ms": 217.419,
+   "drainMs": 77.232,
+   "lost": 0,
+   "duplicated": 0,
+   "pass": true,
+   "commits": {
+    "n": 828,
+    "ms": {
+     "n": 828,
+     "p50": 28.042,
+     "p95": 90.583,
+     "p99": 119.918,
+     "max": 175.357
+    }
+   },
+   "backfill": {
+    "bytes": 310387748,
+    "rows": 53811,
+    "passes": 10,
+    "chunkMs": {
+     "n": 1193,
+     "p50": 0.665,
+     "p95": 1.362,
+     "p99": 2.139,
+     "max": 6.481
+    },
+    "rowsCommitted": 53811,
+    "writerBacklogMaxRows": 158
+   },
+   "reads": {
+    "list_unfiltered": {
+     "n": 20,
+     "p50": 0.379,
+     "p95": 1.16,
+     "p99": 1.903,
+     "max": 1.903
+    },
+    "fts_common_recent": {
+     "n": 20,
+     "p50": 1.694,
+     "p95": 6.188,
+     "p99": 9.65,
+     "max": 9.65
+    },
+    "fts_cjk_bm25": {
+     "n": 20,
+     "p50": 55.791,
+     "p95": 128.131,
+     "p99": 144.814,
+     "max": 144.814
+    },
+    "content_page1": {
+     "n": 20,
+     "p50": 0.938,
+     "p95": 1.693,
+     "p99": 2.597,
+     "max": 2.597
+    },
+    "quota_45d": {
+     "n": 20,
+     "p50": 54.962,
+     "p95": 68.163,
+     "p99": 96.444,
+     "max": 96.444
+    },
+    "fts_common_bm25": {
+     "n": 20,
+     "p50": 447.719,
+     "p95": 499.584,
+     "p99": 536.296,
+     "max": 536.296
+    }
+   },
+   "wal": {
+    "maxBytes": 57074392,
+    "checkpoints": 119,
+    "maxLogFrames": 13853,
+    "maxUncheckpointedFrames": 9387,
+    "busy": 0
+   },
+   "rssMaxMiB": 270,
+   "genRssMiB": 283,
+   "fdMax": 42,
+   "genMaxSlipMs": 0,
+   "dbBytesAfter": 3254693888,
+   "hostLoadAvg1m": null
+  },
+  {
+   "name": "C-hook25",
+   "arch": "C",
+   "mix": "hook25",
+   "profile": "personal",
+   "seconds": 120,
+   "batch": {
+    "rows": 500,
+    "ms": 100,
+    "mib": 4
+   },
+   "events": {
+    "sent": 2700,
+    "file": 2012,
+    "hook": 688,
+    "hookFail": 0,
+    "hookTransport": "pipe",
+    "pipeRejected": 0,
+    "published": 2700,
+    "persistedLive": 2700
+   },
+   "loopDelayMs": {
+    "p50": 1.145,
+    "p99": 1.352,
+    "max": 12.968
+   },
+   "appendToPublishMs": {
+    "n": 2012,
+    "p50": 0.075,
+    "p95": 0.305,
+    "p99": 0.436,
+    "max": 9.168
+   },
+   "receiveToPublishMs": {
+    "n": 688,
+    "p50": 0.025,
+    "p95": 0.086,
+    "p99": 0.134,
+    "max": 0.232
+   },
+   "sendToPublishMs": {
+    "n": 688,
+    "p50": 0.092,
+    "p95": 0.283,
+    "p99": 0.453,
+    "max": 0.633
+   },
+   "queueAgeMs": {
+    "n": 2700,
+    "p50": 108.584,
+    "p95": 205.93,
+    "p99": 254.431,
+    "max": 419.01
+   },
+   "queueAgeP95Ms": 205.93,
+   "drainMs": 11.51,
+   "lost": 0,
+   "duplicated": 0,
+   "pass": true,
+   "commits": {
+    "n": 842,
+    "ms": {
+     "n": 842,
+     "p50": 26.733,
+     "p95": 84.325,
+     "p99": 121.265,
+     "max": 181.628
+    }
+   },
+   "backfill": {
+    "bytes": 310649892,
+    "rows": 53857,
+    "passes": 10,
+    "chunkMs": {
+     "n": 1194,
+     "p50": 0.56,
+     "p95": 2.212,
+     "p99": 2.893,
+     "max": 4.37
+    },
+    "rowsCommitted": 53857,
+    "writerBacklogMaxRows": 162
+   },
+   "reads": {
+    "list_unfiltered": {
+     "n": 20,
+     "p50": 0.291,
+     "p95": 1.453,
+     "p99": 2.594,
+     "max": 2.594
+    },
+    "fts_common_recent": {
+     "n": 20,
+     "p50": 1.352,
+     "p95": 8.945,
+     "p99": 12.591,
+     "max": 12.591
+    },
+    "fts_cjk_bm25": {
+     "n": 20,
+     "p50": 51.636,
+     "p95": 68.767,
+     "p99": 141.46,
+     "max": 141.46
+    },
+    "content_page1": {
+     "n": 20,
+     "p50": 1.279,
+     "p95": 2.929,
+     "p99": 3.147,
+     "max": 3.147
+    },
+    "quota_45d": {
+     "n": 20,
+     "p50": 55.696,
+     "p95": 69.095,
+     "p99": 81.857,
+     "max": 81.857
+    },
+    "fts_common_bm25": {
+     "n": 20,
+     "p50": 437.315,
+     "p95": 466.823,
+     "p99": 469.26,
+     "max": 469.26
+    }
+   },
+   "wal": {
+    "maxBytes": 59113792,
+    "checkpoints": 119,
+    "maxLogFrames": 12666,
+    "maxUncheckpointedFrames": 12666,
+    "busy": 0
+   },
+   "rssMaxMiB": 281,
+   "genRssMiB": 283,
+   "fdMax": 45,
+   "genMaxSlipMs": 0,
+   "dbBytesAfter": 3254960128,
+   "hostLoadAvg1m": {
+    "start": 4.384,
+    "end": 3.072
+   }
+  },
+  {
+   "name": "sweep-C-100-50-1",
+   "arch": "C",
+   "mix": "hook25",
+   "profile": "personal",
+   "seconds": 60,
+   "batch": {
+    "rows": 100,
+    "ms": 50,
+    "mib": 1
+   },
+   "events": {
+    "sent": 1350,
+    "file": 1008,
+    "hook": 342,
+    "hookFail": 0,
+    "hookTransport": "pipe",
+    "pipeRejected": 0,
+    "published": 1350,
+    "persistedLive": 1350
+   },
+   "loopDelayMs": {
+    "p50": 1.144,
+    "p99": 1.386,
+    "max": 12.272
+   },
+   "appendToPublishMs": {
+    "n": 1008,
+    "p50": 0.074,
+    "p95": 0.286,
+    "p99": 0.495,
+    "max": 2.132
+   },
+   "receiveToPublishMs": {
+    "n": 342,
+    "p50": 0.025,
+    "p95": 0.09,
+    "p99": 0.137,
+    "max": 0.19
+   },
+   "sendToPublishMs": {
+    "n": 342,
+    "p50": 0.094,
+    "p95": 0.318,
+    "p99": 0.534,
+    "max": 6.404
+   },
+   "queueAgeMs": {
+    "n": 1350,
+    "p50": 63.984,
+    "p95": 123.864,
+    "p99": 157.966,
+    "max": 245.036
+   },
+   "queueAgeP95Ms": 123.864,
+   "drainMs": 88.067,
+   "lost": 0,
+   "duplicated": 0,
+   "pass": true,
+   "commits": {
+    "n": 683,
+    "ms": {
+     "n": 683,
+     "p50": 23.551,
+     "p95": 57.851,
+     "p99": 84.711,
+     "max": 154.551
+    }
+   },
+   "backfill": {
+    "bytes": 155979792,
+    "rows": 27100,
+    "passes": 5,
+    "chunkMs": {
+     "n": 599,
+     "p50": 0.555,
+     "p95": 2.104,
+     "p99": 3.034,
+     "max": 4.345
+    },
+    "rowsCommitted": 27100,
+    "writerBacklogMaxRows": 110
+   },
+   "reads": {
+    "list_unfiltered": {
+     "n": 10,
+     "p50": 0.285,
+     "p95": 2.024,
+     "p99": 2.024,
+     "max": 2.024
+    },
+    "fts_common_recent": {
+     "n": 10,
+     "p50": 2.055,
+     "p95": 13.432,
+     "p99": 13.432,
+     "max": 13.432
+    },
+    "fts_cjk_bm25": {
+     "n": 10,
+     "p50": 45.881,
+     "p95": 146.756,
+     "p99": 146.756,
+     "max": 146.756
+    },
+    "content_page1": {
+     "n": 10,
+     "p50": 0.74,
+     "p95": 2.444,
+     "p99": 2.444,
+     "max": 2.444
+    },
+    "quota_45d": {
+     "n": 10,
+     "p50": 56.317,
+     "p95": 86.564,
+     "p99": 86.564,
+     "max": 86.564
+    },
+    "fts_common_bm25": {
+     "n": 10,
+     "p50": 421.731,
+     "p95": 477.867,
+     "p99": 477.867,
+     "max": 477.867
+    }
+   },
+   "wal": {
+    "maxBytes": 30475672,
+    "checkpoints": 60,
+    "maxLogFrames": 5134,
+    "maxUncheckpointedFrames": 2562,
+    "busy": 0
+   },
+   "rssMaxMiB": 257,
+   "genRssMiB": 275,
+   "fdMax": 45,
+   "genMaxSlipMs": 0,
+   "dbBytesAfter": 3033755648,
+   "hostLoadAvg1m": {
+    "start": 3.072,
+    "end": 2.736
+   }
+  },
+  {
+   "name": "sweep-C-500-100-4",
+   "arch": "C",
+   "mix": "hook25",
+   "profile": "personal",
+   "seconds": 60,
+   "batch": {
+    "rows": 500,
+    "ms": 100,
+    "mib": 4
+   },
+   "events": {
+    "sent": 1350,
+    "file": 1008,
+    "hook": 342,
+    "hookFail": 0,
+    "hookTransport": "pipe",
+    "pipeRejected": 0,
+    "published": 1350,
+    "persistedLive": 1350
+   },
+   "loopDelayMs": {
+    "p50": 1.144,
+    "p99": 1.321,
+    "max": 16.597
+   },
+   "appendToPublishMs": {
+    "n": 1008,
+    "p50": 0.083,
+    "p95": 0.199,
+    "p99": 0.367,
+    "max": 16.027
+   },
+   "receiveToPublishMs": {
+    "n": 342,
+    "p50": 0.026,
+    "p95": 0.06,
+    "p99": 0.104,
+    "max": 0.133
+   },
+   "sendToPublishMs": {
+    "n": 342,
+    "p50": 0.096,
+    "p95": 0.186,
+    "p99": 0.303,
+    "max": 3.009
+   },
+   "queueAgeMs": {
+    "n": 1350,
+    "p50": 112.824,
+    "p95": 220.632,
+    "p99": 273.131,
+    "max": 370.978
+   },
+   "queueAgeP95Ms": 220.632,
+   "drainMs": 77.517,
+   "lost": 0,
+   "duplicated": 0,
+   "pass": true,
+   "commits": {
+    "n": 414,
+    "ms": {
+     "n": 414,
+     "p50": 27.066,
+     "p95": 94.849,
+     "p99": 130.484,
+     "max": 173.306
+    }
+   },
+   "backfill": {
+    "bytes": 155979792,
+    "rows": 27100,
+    "passes": 5,
+    "chunkMs": {
+     "n": 599,
+     "p50": 0.566,
+     "p95": 1.101,
+     "p99": 1.873,
+     "max": 2.362
+    },
+    "rowsCommitted": 27100,
+    "writerBacklogMaxRows": 178
+   },
+   "reads": {
+    "list_unfiltered": {
+     "n": 10,
+     "p50": 0.252,
+     "p95": 1.986,
+     "p99": 1.986,
+     "max": 1.986
+    },
+    "fts_common_recent": {
+     "n": 10,
+     "p50": 1.95,
+     "p95": 5.777,
+     "p99": 5.777,
+     "max": 5.777
+    },
+    "fts_cjk_bm25": {
+     "n": 10,
+     "p50": 46.211,
+     "p95": 141.715,
+     "p99": 141.715,
+     "max": 141.715
+    },
+    "content_page1": {
+     "n": 10,
+     "p50": 0.67,
+     "p95": 1.925,
+     "p99": 1.925,
+     "max": 1.925
+    },
+    "quota_45d": {
+     "n": 10,
+     "p50": 52.275,
+     "p95": 87.73,
+     "p99": 87.73,
+     "max": 87.73
+    },
+    "fts_common_bm25": {
+     "n": 10,
+     "p50": 427.521,
+     "p95": 464.282,
+     "p99": 464.282,
+     "max": 464.282
+    }
+   },
+   "wal": {
+    "maxBytes": 31880592,
+    "checkpoints": 60,
+    "maxLogFrames": 3779,
+    "maxUncheckpointedFrames": 3779,
+    "busy": 0
+   },
+   "rssMaxMiB": 273,
+   "genRssMiB": 275,
+   "fdMax": 45,
+   "genMaxSlipMs": 0,
+   "dbBytesAfter": 3032563712,
+   "hostLoadAvg1m": {
+    "start": 2.736,
+    "end": 2.706
+   }
+  },
+  {
+   "name": "sweep-C-500-100-16",
+   "arch": "C",
+   "mix": "hook25",
+   "profile": "personal",
+   "seconds": 60,
+   "batch": {
+    "rows": 500,
+    "ms": 100,
+    "mib": 16
+   },
+   "events": {
+    "sent": 1350,
+    "file": 1008,
+    "hook": 342,
+    "hookFail": 0,
+    "hookTransport": "pipe",
+    "pipeRejected": 0,
+    "published": 1350,
+    "persistedLive": 1350
+   },
+   "loopDelayMs": {
+    "p50": 1.144,
+    "p99": 1.359,
+    "max": 5.177
+   },
+   "appendToPublishMs": {
+    "n": 1008,
+    "p50": 0.118,
+    "p95": 0.223,
+    "p99": 0.328,
+    "max": 0.687
+   },
+   "receiveToPublishMs": {
+    "n": 342,
+    "p50": 0.036,
+    "p95": 0.069,
+    "p99": 0.094,
+    "max": 0.183
+   },
+   "sendToPublishMs": {
+    "n": 342,
+    "p50": 0.121,
+    "p95": 0.201,
+    "p99": 0.288,
+    "max": 0.631
+   },
+   "queueAgeMs": {
+    "n": 1350,
+    "p50": 112.465,
+    "p95": 221.879,
+    "p99": 282.141,
+    "max": 408.589
+   },
+   "queueAgeP95Ms": 221.879,
+   "drainMs": 64.817,
+   "lost": 0,
+   "duplicated": 0,
+   "pass": true,
+   "commits": {
+    "n": 410,
+    "ms": {
+     "n": 410,
+     "p50": 30.366,
+     "p95": 92.721,
+     "p99": 140.391,
+     "max": 178.433
+    }
+   },
+   "backfill": {
+    "bytes": 155979792,
+    "rows": 27100,
+    "passes": 5,
+    "chunkMs": {
+     "n": 599,
+     "p50": 0.593,
+     "p95": 1.167,
+     "p99": 1.485,
+     "max": 3.268
+    },
+    "rowsCommitted": 27100,
+    "writerBacklogMaxRows": 147
+   },
+   "reads": {
+    "list_unfiltered": {
+     "n": 10,
+     "p50": 0.296,
+     "p95": 5.206,
+     "p99": 5.206,
+     "max": 5.206
+    },
+    "fts_common_recent": {
+     "n": 10,
+     "p50": 1.276,
+     "p95": 5.901,
+     "p99": 5.901,
+     "max": 5.901
+    },
+    "fts_cjk_bm25": {
+     "n": 10,
+     "p50": 47.267,
+     "p95": 149.312,
+     "p99": 149.312,
+     "max": 149.312
+    },
+    "content_page1": {
+     "n": 10,
+     "p50": 0.763,
+     "p95": 2.546,
+     "p99": 2.546,
+     "max": 2.546
+    },
+    "quota_45d": {
+     "n": 10,
+     "p50": 56.439,
+     "p95": 81.562,
+     "p99": 81.562,
+     "max": 81.562
+    },
+    "fts_common_bm25": {
+     "n": 10,
+     "p50": 435.731,
+     "p95": 475.374,
+     "p99": 475.374,
+     "max": 475.374
+    }
+   },
+   "wal": {
+    "maxBytes": 48063952,
+    "checkpoints": 59,
+    "maxLogFrames": 7829,
+    "maxUncheckpointedFrames": 7829,
+    "busy": 0
+   },
+   "rssMaxMiB": 265,
+   "genRssMiB": 282,
+   "fdMax": 45,
+   "genMaxSlipMs": 0,
+   "dbBytesAfter": 3032637440,
+   "hostLoadAvg1m": {
+    "start": 2.706,
+    "end": 2.509
+   }
+  }
+ ],
+ "smallestPassingVariant": "A",
+ "bestVariantByLoopP99": "C",
+ "scaleProbe": {
+  "runs": [
+   {
+    "name": "scale-A",
+    "arch": "A",
+    "mix": "hook25",
+    "profile": "scale",
+    "seconds": 120,
+    "batch": {
+     "rows": 500,
+     "ms": 100,
+     "mib": 4
+    },
+    "events": {
+     "sent": 8100,
+     "file": 6089,
+     "hook": 2011,
+     "hookFail": 0,
+     "hookTransport": "pipe",
+     "pipeRejected": 0,
+     "published": 8100,
+     "persistedLive": 8100
+    },
+    "loopDelayMs": {
+     "p50": 1.144,
+     "p99": 13.918,
+     "max": 488.112
+    },
+    "appendToPublishMs": {
+     "n": 6089,
+     "p50": 0.104,
+     "p95": 113.603,
+     "p99": 356.568,
+     "max": 483.464
+    },
+    "receiveToPublishMs": {
+     "n": 2011,
+     "p50": 0.022,
+     "p95": 0.058,
+     "p99": 0.089,
+     "max": 0.554
+    },
+    "sendToPublishMs": {
+     "n": 2011,
+     "p50": 0.105,
+     "p95": 83.067,
+     "p99": 347.31,
+     "max": 415.821
+    },
+    "queueAgeMs": {
+     "n": 8100,
+     "p50": 93.135,
+     "p95": 157.681,
+     "p99": 457.629,
+     "max": 636.013
+    },
+    "queueAgeP95Ms": 157.681,
+    "drainMs": 117.952,
+    "lost": 0,
+    "duplicated": 0,
+    "pass": true,
+    "commits": {
+     "n": 852,
+     "ms": {
+      "n": 852,
+      "p50": 26.069,
+      "p95": 67.045,
+      "p99": 88.068,
+      "max": 175.307
+     }
+    },
+    "backfill": {
+     "bytes": 223352856,
+     "rows": 38767,
+     "passes": 7,
+     "chunkMs": {
+      "n": 858,
+      "p50": 0.48,
+      "p95": 0.728,
+      "p99": 1.116,
+      "max": 2.101
+     },
+     "rowsCommitted": 38767,
+     "writerBacklogMaxRows": 79
+    },
+    "reads": {
+     "list_unfiltered": {
+      "n": 20,
+      "p50": 0.288,
+      "p95": 0.927,
+      "p99": 4.27,
+      "max": 4.27
+     },
+     "fts_common_recent": {
+      "n": 20,
+      "p50": 1.144,
+      "p95": 5.501,
+      "p99": 6.943,
+      "max": 6.943
+     },
+     "fts_cjk_bm25": {
+      "n": 20,
+      "p50": 48.485,
+      "p95": 50.823,
+      "p99": 141.231,
+      "max": 141.231
+     },
+     "content_page1": {
+      "n": 20,
+      "p50": 0.708,
+      "p95": 1.777,
+      "p99": 1.876,
+      "max": 1.876
+     },
+     "quota_45d": {
+      "n": 20,
+      "p50": 48.613,
+      "p95": 51.527,
+      "p99": 92.7,
+      "max": 92.7
+     },
+     "fts_common_bm25": {
+      "n": 19,
+      "p50": 416.621,
+      "p95": 486.774,
+      "p99": 486.774,
+      "max": 486.774
+     }
+    },
+    "wal": {
+     "maxBytes": 37368432,
+     "checkpoints": 119,
+     "maxLogFrames": 7688,
+     "maxUncheckpointedFrames": 0,
+     "busy": 0
+    },
+    "rssMaxMiB": 200,
+    "genRssMiB": 283,
+    "fdMax": 59,
+    "genMaxSlipMs": 0,
+    "dbBytesAfter": 3165323264,
+    "hostLoadAvg1m": {
+     "start": 2.509,
+     "end": 2.682
+    }
+   },
+   {
+    "name": "scale-C",
+    "arch": "C",
+    "mix": "hook25",
+    "profile": "scale",
+    "seconds": 120,
+    "batch": {
+     "rows": 500,
+     "ms": 100,
+     "mib": 4
+    },
+    "events": {
+     "sent": 8100,
+     "file": 6089,
+     "hook": 2011,
+     "hookFail": 0,
+     "hookTransport": "pipe",
+     "pipeRejected": 0,
+     "published": 8100,
+     "persistedLive": 8100
+    },
+    "loopDelayMs": {
+     "p50": 1.144,
+     "p99": 1.415,
+     "max": 26.1
+    },
+    "appendToPublishMs": {
+     "n": 6089,
+     "p50": 0.083,
+     "p95": 0.203,
+     "p99": 0.297,
+     "max": 8.028
+    },
+    "receiveToPublishMs": {
+     "n": 2011,
+     "p50": 0.027,
+     "p95": 0.062,
+     "p99": 0.093,
+     "max": 2.41
+    },
+    "sendToPublishMs": {
+     "n": 2011,
+     "p50": 0.089,
+     "p95": 0.189,
+     "p99": 0.286,
+     "max": 3.864
+    },
+    "queueAgeMs": {
+     "n": 8100,
+     "p50": 109.269,
+     "p95": 241.103,
+     "p99": 305.345,
+     "max": 494.218
+    },
+    "queueAgeP95Ms": 241.103,
+    "drainMs": 48.984,
+    "lost": 0,
+    "duplicated": 0,
+    "pass": true,
+    "commits": {
+     "n": 876,
+     "ms": {
+      "n": 876,
+      "p50": 21.167,
+      "p95": 97.992,
+      "p99": 128.712,
+      "max": 225.522
+     }
+    },
+    "backfill": {
+     "bytes": 310912036,
+     "rows": 53910,
+     "passes": 10,
+     "chunkMs": {
+      "n": 1195,
+      "p50": 0.579,
+      "p95": 1.172,
+      "p99": 1.814,
+      "max": 4.515
+     },
+     "rowsCommitted": 53910,
+     "writerBacklogMaxRows": 147
+    },
+    "reads": {
+     "list_unfiltered": {
+      "n": 20,
+      "p50": 0.298,
+      "p95": 0.673,
+      "p99": 5.363,
+      "max": 5.363
+     },
+     "fts_common_recent": {
+      "n": 20,
+      "p50": 1.807,
+      "p95": 6.304,
+      "p99": 8.367,
+      "max": 8.367
+     },
+     "fts_cjk_bm25": {
+      "n": 20,
+      "p50": 53.142,
+      "p95": 63.567,
+      "p99": 150.282,
+      "max": 150.282
+     },
+     "content_page1": {
+      "n": 20,
+      "p50": 0.723,
+      "p95": 1.746,
+      "p99": 1.846,
+      "max": 1.846
+     },
+     "quota_45d": {
+      "n": 20,
+      "p50": 55.389,
+      "p95": 59.766,
+      "p99": 89.026,
+      "max": 89.026
+     },
+     "fts_common_bm25": {
+      "n": 20,
+      "p50": 452.058,
+      "p95": 484.881,
+      "p99": 486.936,
+      "max": 486.936
+     }
+    },
+    "wal": {
+     "maxBytes": 37022352,
+     "checkpoints": 119,
+     "maxLogFrames": 8146,
+     "maxUncheckpointedFrames": 4221,
+     "busy": 0
+    },
+    "rssMaxMiB": 279,
+    "genRssMiB": 275,
+    "fdMax": 62,
+    "genMaxSlipMs": 10,
+    "dbBytesAfter": 3287355392,
+    "hostLoadAvg1m": {
+     "start": 2.682,
+     "end": 2.932
+    }
+   }
+  ],
+  "vsPersonal": [
+   {
+    "arch": "A",
+    "vsRun": "A-hook25",
+    "metrics": [
+     {
+      "metric": "fdMax",
+      "personal": 39,
+      "scale": 59,
+      "ratio": 1.513
+     },
+     {
+      "metric": "appendToPublishP95Ms",
+      "personal": 95.49,
+      "scale": 113.603,
+      "ratio": 1.19
+     },
+     {
+      "metric": "walMaxBytes",
+      "personal": 32613952,
+      "scale": 37368432,
+      "ratio": 1.146
+     },
+     {
+      "metric": "loopDelayMaxMs",
+      "personal": 446.169,
+      "scale": 488.112,
+      "ratio": 1.094
+     },
+     {
+      "metric": "commitP95Ms",
+      "personal": 64.388,
+      "scale": 67.045,
+      "ratio": 1.041
+     },
+     {
+      "metric": "rssMaxMiB",
+      "personal": 195,
+      "scale": 200,
+      "ratio": 1.026
+     },
+     {
+      "metric": "queueAgeP95Ms",
+      "personal": 158.149,
+      "scale": 157.681,
+      "ratio": 0.997
+     },
+     {
+      "metric": "drainMs",
+      "personal": 124.204,
+      "scale": 117.952,
+      "ratio": 0.95
+     },
+     {
+      "metric": "receiveToPublishP95Ms",
+      "personal": 0.077,
+      "scale": 0.058,
+      "ratio": 0.753
+     },
+     {
+      "metric": "loopDelayP99Ms",
+      "personal": 21.07,
+      "scale": 13.918,
+      "ratio": 0.661
+     }
+    ],
+    "pass": true
+   },
+   {
+    "arch": "C",
+    "vsRun": "C-hook25",
+    "metrics": [
+     {
+      "metric": "drainMs",
+      "personal": 11.51,
+      "scale": 48.984,
+      "ratio": 4.256
+     },
+     {
+      "metric": "loopDelayMaxMs",
+      "personal": 12.968,
+      "scale": 26.1,
+      "ratio": 2.013
+     },
+     {
+      "metric": "fdMax",
+      "personal": 45,
+      "scale": 62,
+      "ratio": 1.378
+     },
+     {
+      "metric": "queueAgeP95Ms",
+      "personal": 205.93,
+      "scale": 241.103,
+      "ratio": 1.171
+     },
+     {
+      "metric": "commitP95Ms",
+      "personal": 84.325,
+      "scale": 97.992,
+      "ratio": 1.162
+     },
+     {
+      "metric": "loopDelayP99Ms",
+      "personal": 1.352,
+      "scale": 1.415,
+      "ratio": 1.047
+     },
+     {
+      "metric": "rssMaxMiB",
+      "personal": 281,
+      "scale": 279,
+      "ratio": 0.993
+     },
+     {
+      "metric": "receiveToPublishP95Ms",
+      "personal": 0.086,
+      "scale": 0.062,
+      "ratio": 0.721
+     },
+     {
+      "metric": "appendToPublishP95Ms",
+      "personal": 0.305,
+      "scale": 0.203,
+      "ratio": 0.666
+     },
+     {
+      "metric": "walMaxBytes",
+      "personal": 59113792,
+      "scale": 37022352,
+      "ratio": 0.626
+     }
+    ],
+    "pass": true
+   }
+  ]
+ }
+}

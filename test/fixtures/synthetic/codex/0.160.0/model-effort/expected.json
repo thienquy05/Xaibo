@@ -1,0 +1,14 @@
+{
+  "effort": { "nonNullValuesVerified": false, "evidence": "spikes/s9/evidence/facts.json codex.effortValues is empty on 0.160.0; turn_context collaboration_mode.settings.reasoning_effort was observed only as null" },
+  "files": {
+    "00000000-0000-4000-8000-0000000c000a": {
+      "lines": 5, "malformedLines": [], "partialTrailing": false,
+      "recordTypes": { "session_meta": 1, "event_msg": 2, "turn_context": 1, "response_item": 1 },
+      "unknownRecords": 0, "unknownShareAbove5pct": false,
+      "session": { "id": "00000000-0000-4000-8000-0000000c000a", "filenameIdMatchesMeta": true, "source": "cli", "originator": "codex-tui", "cwd": "/tmp/xaibo-fixture/alpha", "cliVersion": "0.160.0" },
+      "turnIds": ["00000000-0000-4000-8000-0000000c1016"],
+      "models": ["gpt-6.1-sol"], "efforts": [null],
+      "usage": null, "rateLimits": null
+    }
+  }
+}

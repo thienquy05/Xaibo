@@ -1,0 +1,978 @@
+{
+  "SessionStart": {
+    "count": 4,
+    "keys": {
+      "session_id": {
+        "types": [
+          "string"
+        ],
+        "present": 4
+      },
+      "transcript_path": {
+        "types": [
+          "string"
+        ],
+        "present": 4
+      },
+      "cwd": {
+        "types": [
+          "string"
+        ],
+        "present": 4
+      },
+      "hook_event_name": {
+        "types": [
+          "string"
+        ],
+        "present": 4,
+        "values": [
+          "SessionStart"
+        ]
+      },
+      "source": {
+        "types": [
+          "string"
+        ],
+        "present": 4,
+        "values": [
+          "startup"
+        ]
+      }
+    }
+  },
+  "UserPromptSubmit": {
+    "count": 4,
+    "keys": {
+      "session_id": {
+        "types": [
+          "string"
+        ],
+        "present": 4
+      },
+      "transcript_path": {
+        "types": [
+          "string"
+        ],
+        "present": 4
+      },
+      "cwd": {
+        "types": [
+          "string"
+        ],
+        "present": 4
+      },
+      "prompt_id": {
+        "types": [
+          "string"
+        ],
+        "present": 4
+      },
+      "permission_mode": {
+        "types": [
+          "string"
+        ],
+        "present": 4,
+        "values": [
+          "default"
+        ]
+      },
+      "hook_event_name": {
+        "types": [
+          "string"
+        ],
+        "present": 4,
+        "values": [
+          "UserPromptSubmit"
+        ]
+      },
+      "prompt": {
+        "types": [
+          "string"
+        ],
+        "present": 4
+      }
+    }
+  },
+  "SessionEnd": {
+    "count": 4,
+    "keys": {
+      "session_id": {
+        "types": [
+          "string"
+        ],
+        "present": 4
+      },
+      "transcript_path": {
+        "types": [
+          "string"
+        ],
+        "present": 4
+      },
+      "cwd": {
+        "types": [
+          "string"
+        ],
+        "present": 4
+      },
+      "prompt_id": {
+        "types": [
+          "string"
+        ],
+        "present": 4
+      },
+      "hook_event_name": {
+        "types": [
+          "string"
+        ],
+        "present": 4,
+        "values": [
+          "SessionEnd"
+        ]
+      },
+      "reason": {
+        "types": [
+          "string"
+        ],
+        "present": 4
+      }
+    }
+  },
+  "PreToolUse": {
+    "count": 4,
+    "keys": {
+      "session_id": {
+        "types": [
+          "string"
+        ],
+        "present": 4
+      },
+      "transcript_path": {
+        "types": [
+          "string"
+        ],
+        "present": 4
+      },
+      "cwd": {
+        "types": [
+          "string"
+        ],
+        "present": 4
+      },
+      "prompt_id": {
+        "types": [
+          "string"
+        ],
+        "present": 4
+      },
+      "permission_mode": {
+        "types": [
+          "string"
+        ],
+        "present": 4,
+        "values": [
+          "default"
+        ]
+      },
+      "effort": {
+        "types": [
+          "object"
+        ],
+        "present": 4
+      },
+      "effort.level": {
+        "types": [
+          "string"
+        ],
+        "present": 4
+      },
+      "hook_event_name": {
+        "types": [
+          "string"
+        ],
+        "present": 4,
+        "values": [
+          "PreToolUse"
+        ]
+      },
+      "tool_name": {
+        "types": [
+          "string"
+        ],
+        "present": 4,
+        "values": [
+          "Agent",
+          "Bash",
+          "Write"
+        ]
+      },
+      "tool_input": {
+        "types": [
+          "object"
+        ],
+        "present": 4
+      },
+      "tool_input.command": {
+        "types": [
+          "string"
+        ],
+        "present": 2
+      },
+      "tool_input.description": {
+        "types": [
+          "string"
+        ],
+        "present": 3
+      },
+      "tool_use_id": {
+        "types": [
+          "string"
+        ],
+        "present": 4
+      },
+      "tool_input.file_path": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "tool_input.content": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "tool_input.prompt": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "tool_input.subagent_type": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "tool_input.run_in_background": {
+        "types": [
+          "boolean"
+        ],
+        "present": 1
+      },
+      "agent_id": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "agent_type": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      }
+    }
+  },
+  "PostToolUse": {
+    "count": 3,
+    "keys": {
+      "session_id": {
+        "types": [
+          "string"
+        ],
+        "present": 3
+      },
+      "transcript_path": {
+        "types": [
+          "string"
+        ],
+        "present": 3
+      },
+      "cwd": {
+        "types": [
+          "string"
+        ],
+        "present": 3
+      },
+      "prompt_id": {
+        "types": [
+          "string"
+        ],
+        "present": 3
+      },
+      "permission_mode": {
+        "types": [
+          "string"
+        ],
+        "present": 3,
+        "values": [
+          "default"
+        ]
+      },
+      "effort": {
+        "types": [
+          "object"
+        ],
+        "present": 3
+      },
+      "effort.level": {
+        "types": [
+          "string"
+        ],
+        "present": 3
+      },
+      "hook_event_name": {
+        "types": [
+          "string"
+        ],
+        "present": 3,
+        "values": [
+          "PostToolUse"
+        ]
+      },
+      "tool_name": {
+        "types": [
+          "string"
+        ],
+        "present": 3,
+        "values": [
+          "Agent",
+          "Bash"
+        ]
+      },
+      "tool_input": {
+        "types": [
+          "object"
+        ],
+        "present": 3
+      },
+      "tool_input.command": {
+        "types": [
+          "string"
+        ],
+        "present": 2
+      },
+      "tool_input.description": {
+        "types": [
+          "string"
+        ],
+        "present": 3
+      },
+      "tool_response": {
+        "types": [
+          "object"
+        ],
+        "present": 3
+      },
+      "tool_response.stdout": {
+        "types": [
+          "string"
+        ],
+        "present": 2
+      },
+      "tool_response.stderr": {
+        "types": [
+          "string"
+        ],
+        "present": 2
+      },
+      "tool_response.interrupted": {
+        "types": [
+          "boolean"
+        ],
+        "present": 2
+      },
+      "tool_response.isImage": {
+        "types": [
+          "boolean"
+        ],
+        "present": 2
+      },
+      "tool_response.noOutputExpected": {
+        "types": [
+          "boolean"
+        ],
+        "present": 2
+      },
+      "tool_use_id": {
+        "types": [
+          "string"
+        ],
+        "present": 3
+      },
+      "duration_ms": {
+        "types": [
+          "number"
+        ],
+        "present": 3
+      },
+      "agent_id": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "agent_type": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "tool_input.prompt": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "tool_input.subagent_type": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "tool_input.run_in_background": {
+        "types": [
+          "boolean"
+        ],
+        "present": 1
+      },
+      "tool_response.status": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "tool_response.prompt": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "tool_response.agentId": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "tool_response.agentType": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "tool_response.toolsUsed": {
+        "types": [
+          "array"
+        ],
+        "present": 1
+      },
+      "tool_response.toolsUsed[]": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "tool_response.harnessNoteCount": {
+        "types": [
+          "number"
+        ],
+        "present": 1
+      },
+      "tool_response.harnessTailCount": {
+        "types": [
+          "number"
+        ],
+        "present": 1
+      },
+      "tool_response.harnessSectionHash": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "tool_response.content": {
+        "types": [
+          "array"
+        ],
+        "present": 1
+      },
+      "tool_response.content[]": {
+        "types": [
+          "object"
+        ],
+        "present": 1
+      },
+      "tool_response.content[].type": {
+        "types": [
+          "string"
+        ],
+        "present": 1,
+        "values": [
+          "text"
+        ]
+      },
+      "tool_response.content[].text": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "tool_response.resolvedModel": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "tool_response.totalDurationMs": {
+        "types": [
+          "number"
+        ],
+        "present": 1
+      },
+      "tool_response.totalTokens": {
+        "types": [
+          "number"
+        ],
+        "present": 1
+      },
+      "tool_response.totalToolUseCount": {
+        "types": [
+          "number"
+        ],
+        "present": 1
+      },
+      "tool_response.usage": {
+        "types": [
+          "object"
+        ],
+        "present": 1
+      },
+      "tool_response.usage.output_tokens_details": {
+        "types": [
+          "object"
+        ],
+        "present": 1
+      },
+      "tool_response.usage.output_tokens_details.thinking_tokens": {
+        "types": [
+          "number"
+        ],
+        "present": 1
+      },
+      "tool_response.usage.input_tokens": {
+        "types": [
+          "number"
+        ],
+        "present": 1
+      },
+      "tool_response.usage.cache_creation_input_tokens": {
+        "types": [
+          "number"
+        ],
+        "present": 1
+      },
+      "tool_response.usage.cache_read_input_tokens": {
+        "types": [
+          "number"
+        ],
+        "present": 1
+      },
+      "tool_response.usage.output_tokens": {
+        "types": [
+          "number"
+        ],
+        "present": 1
+      },
+      "tool_response.usage.server_tool_use": {
+        "types": [
+          "object"
+        ],
+        "present": 1
+      },
+      "tool_response.usage.server_tool_use.web_search_requests": {
+        "types": [
+          "number"
+        ],
+        "present": 1
+      },
+      "tool_response.usage.server_tool_use.web_fetch_requests": {
+        "types": [
+          "number"
+        ],
+        "present": 1
+      },
+      "tool_response.usage.service_tier": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "tool_response.usage.cache_creation": {
+        "types": [
+          "object"
+        ],
+        "present": 1
+      },
+      "tool_response.usage.cache_creation.ephemeral_1h_input_tokens": {
+        "types": [
+          "number"
+        ],
+        "present": 1
+      },
+      "tool_response.usage.cache_creation.ephemeral_5m_input_tokens": {
+        "types": [
+          "number"
+        ],
+        "present": 1
+      },
+      "tool_response.usage.inference_geo": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "tool_response.usage.iterations": {
+        "types": [
+          "array"
+        ],
+        "present": 1
+      },
+      "tool_response.usage.speed": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "tool_response.usage.fallback_credit": {
+        "types": [
+          "null"
+        ],
+        "present": 1
+      },
+      "tool_response.toolStats": {
+        "types": [
+          "object"
+        ],
+        "present": 1
+      },
+      "tool_response.toolStats.readCount": {
+        "types": [
+          "number"
+        ],
+        "present": 1
+      },
+      "tool_response.toolStats.searchCount": {
+        "types": [
+          "number"
+        ],
+        "present": 1
+      },
+      "tool_response.toolStats.bashCount": {
+        "types": [
+          "number"
+        ],
+        "present": 1
+      },
+      "tool_response.toolStats.editFileCount": {
+        "types": [
+          "number"
+        ],
+        "present": 1
+      },
+      "tool_response.toolStats.linesAdded": {
+        "types": [
+          "number"
+        ],
+        "present": 1
+      },
+      "tool_response.toolStats.linesRemoved": {
+        "types": [
+          "number"
+        ],
+        "present": 1
+      },
+      "tool_response.toolStats.otherToolCount": {
+        "types": [
+          "number"
+        ],
+        "present": 1
+      },
+      "tool_response.canContinueAgent": {
+        "types": [
+          "boolean"
+        ],
+        "present": 1
+      }
+    }
+  },
+  "PermissionRequest": {
+    "count": 1,
+    "keys": {
+      "session_id": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "transcript_path": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "cwd": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "prompt_id": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "permission_mode": {
+        "types": [
+          "string"
+        ],
+        "present": 1,
+        "values": [
+          "default"
+        ]
+      },
+      "effort": {
+        "types": [
+          "object"
+        ],
+        "present": 1
+      },
+      "effort.level": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "hook_event_name": {
+        "types": [
+          "string"
+        ],
+        "present": 1,
+        "values": [
+          "PermissionRequest"
+        ]
+      },
+      "tool_name": {
+        "types": [
+          "string"
+        ],
+        "present": 1,
+        "values": [
+          "Write"
+        ]
+      },
+      "tool_input": {
+        "types": [
+          "object"
+        ],
+        "present": 1
+      },
+      "tool_input.file_path": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "tool_input.content": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "permission_suggestions": {
+        "types": [
+          "array"
+        ],
+        "present": 1
+      },
+      "permission_suggestions[]": {
+        "types": [
+          "object"
+        ],
+        "present": 1
+      },
+      "permission_suggestions[].type": {
+        "types": [
+          "string"
+        ],
+        "present": 1,
+        "values": [
+          "setMode"
+        ]
+      },
+      "permission_suggestions[].mode": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "permission_suggestions[].destination": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      }
+    }
+  },
+  "SubagentStart": {
+    "count": 1,
+    "keys": {
+      "session_id": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "transcript_path": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "cwd": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "prompt_id": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "agent_id": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "agent_type": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "hook_event_name": {
+        "types": [
+          "string"
+        ],
+        "present": 1,
+        "values": [
+          "SubagentStart"
+        ]
+      }
+    }
+  },
+  "SubagentStop": {
+    "count": 1,
+    "keys": {
+      "session_id": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "transcript_path": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "cwd": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "prompt_id": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "permission_mode": {
+        "types": [
+          "string"
+        ],
+        "present": 1,
+        "values": [
+          "default"
+        ]
+      },
+      "agent_id": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "agent_type": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "effort": {
+        "types": [
+          "object"
+        ],
+        "present": 1
+      },
+      "effort.level": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "hook_event_name": {
+        "types": [
+          "string"
+        ],
+        "present": 1,
+        "values": [
+          "SubagentStop"
+        ]
+      },
+      "stop_hook_active": {
+        "types": [
+          "boolean"
+        ],
+        "present": 1
+      },
+      "agent_transcript_path": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "last_assistant_message": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "background_tasks": {
+        "types": [
+          "array"
+        ],
+        "present": 1
+      },
+      "session_crons": {
+        "types": [
+          "array"
+        ],
+        "present": 1
+      }
+    }
+  }
+}

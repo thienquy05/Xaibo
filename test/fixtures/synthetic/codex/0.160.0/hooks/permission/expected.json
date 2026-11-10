@@ -1,0 +1,5 @@
+{
+  "event": "PermissionRequest",
+  "verified": false,
+  "evidence": "docs/plans/phase0_spikes.md S5-C3: PermissionRequest not triggered on 0.160.0 (sandbox off in the temp profile, D-P0-16); no payload shape is fixtured"
+}

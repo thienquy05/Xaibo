@@ -1,0 +1,5 @@
+{"timestamp":"2026-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"00000000-0000-4000-8000-000000000003","cwd":"/tmp/xaibo-fixture/alpha","cli_version":"0.160.0","source":"cli","originator":"codex_cli_rs"}}
+{"timestamp":"2026-01-01T00:00:00.000Z","type":"turn_context","payload":{"model":"synthetic-model"}}
+{"timestamp":"2026-01-01T00:00:00.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"synthetic prompt"}]}}
+{"timestamp":"2026-01-01T00:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":null}}
+{"timestamp":"2026-01-01T00:00:00.000Z","type":"compacted","payload":{"message":"synthetic summary"}}

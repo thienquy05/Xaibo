@@ -1,0 +1,317 @@
+{
+  "task": "P0-S11-T9 JSON Schema validator selection (App. C, Gate 0, S11-C12)",
+  "observed": "2026-11-10",
+  "method": "Registry metadata via `npm view` (registry.npmjs.org only) incl. the registry `readme` field; context7 docs for ajv v8.20.0. Nothing installed. Package source not read: a tarball download for static grep was refused by the command sandbox, so source-level claims stay UNVERIFIED. No trial run (OQ-X6 trial needs owner approval).",
+  "sourceKey": {
+    "npm": "`npm view <pkg>@<version> <field> --json` on 2026-11-10",
+    "npmTime": "`npm view <pkg> time --json` on 2026-11-10",
+    "readme": "`npm view <pkg>@<version> readme` (registry copy of the README)",
+    "ajvDocs": "context7 /ajv-validator/ajv/v8.20.0 and /websites/ajv_js"
+  },
+  "criteria": [
+    "licence",
+    "dependencies",
+    "keywords",
+    "remoteRef",
+    "moduleFormat",
+    "codegen",
+    "errors",
+    "lastRelease",
+    "size",
+    "draftConfig",
+    "risks"
+  ],
+  "candidates": {
+    "ajv": {
+      "version": {
+        "value": "8.20.0 (dist-tag latest)",
+        "source": "npm: version, dist-tags"
+      },
+      "licence": {
+        "value": "MIT; transitive fast-uri is BSD-3-Clause; all others MIT. All permissive.",
+        "source": "npm: license (ajv, fast-deep-equal, fast-uri@^3, json-schema-traverse, require-from-string)"
+      },
+      "dependencies": {
+        "value": "4 direct, 4 transitive total: fast-deep-equal ^3.1.3 (3.1.3, 0 deps), fast-uri ^3.0.1 (resolves 3.1.9 today, 0 deps listed), json-schema-traverse ^1.0.0 (1.0.0, 0 deps), require-from-string ^2.0.2 (2.0.2, 0 deps). 5 packages installed.",
+        "source": "npm: dependencies on each package; `npm view 'fast-uri@^3' version`"
+      },
+      "keywords": {
+        "value": "All required: type, enum, const, pattern, required, additionalProperties, items/prefixItems (2020-12 semantics), oneOf, $ref/$defs, maxLength/maxItems. 2020-12 needs the `ajv/dist/2020` entry (Ajv2020).",
+        "source": "ajvDocs: https://github.com/ajv-validator/ajv/blob/v8.20.0/docs/json-schema.md (prefixItems, items in 2020-12, oneOf; 'Import Ajv2020 for draft-2020-12')"
+      },
+      "remoteRef": {
+        "value": "No network path by default: 'Ajv itself does not do any IO operations'; remote schemas load only through a caller-supplied `loadSchema` used by `compileAsync`. Xaibo: never set loadSchema, never call compileAsync; unknown $ref then fails compile. M6 compatible.",
+        "source": "ajvDocs: https://github.com/ajv-validator/ajv/blob/v8.20.0/docs/guide/managing-schemas.md; docs/options.md#loadSchema"
+      },
+      "moduleFormat": {
+        "value": "CommonJS only (main dist/ajv.js; no `exports`/`type`). Loadable from ESM through Node CJS interop. TypeScript default-import typing under NodeNext UNVERIFIED (check in trial).",
+        "source": "npm: main, exports, type (exports/type absent)"
+      },
+      "codegen": {
+        "value": "Compiles schemas to JS with the Function constructor at runtime. utilityProcess is a Node process (no page CSP), so expected to work; UNVERIFIED until a trial in the packaged app. Option to avoid runtime codegen: standalone validation code generated at build time.",
+        "source": "ajvDocs: https://github.com/ajv-validator/ajv/blob/v8.20.0/docs/standalone.md, docs/security.md#content-security-policy"
+      },
+      "errors": {
+        "value": "Best fit for the import UI: ErrorObject {keyword, instancePath (JSON Pointer), schemaPath, params (e.g. additionalProperty, missingProperty, limit, pattern), message?}; allErrors option; errorsText(). Strict mode (default) also throws on unknown keywords in the schema itself.",
+        "source": "ajvDocs: https://ajv.js.org/api.html#validation-errors; docs/options.md (allErrors, strict, strictSchema)"
+      },
+      "lastRelease": {
+        "value": "8.20.0 on 2026-04-24 (~6.5 months before observation); 6.15.0 legacy line 2026-04-23. Package since 2015.",
+        "source": "npmTime"
+      },
+      "size": {
+        "value": "ajv 1,033,496 B unpacked (466 files) + deps 279,810 B (fast-uri 3.1.9 241,202; json-schema-traverse 22,220; fast-deep-equal 12,966; require-from-string 3,422) = ~1.31 MB",
+        "source": "npm: dist.unpackedSize, dist.fileCount"
+      },
+      "draftConfig": {
+        "value": "new Ajv2020({ strict: true, allErrors: true }); no loadSchema; addSchema only for bundled local schemas. strict: true also turns strictTypes and strictRequired to true (throw): every type-specific keyword needs a type in the same schema object. The draft had displayName {$ref, maxLength} without type, fixed in review by adding type string; compile of the draft under this config is UNVERIFIED until the trial.",
+        "source": "ajvDocs: docs/v6-to-v8-migration.md (strict enables all), docs/strict-mode.md#strict-types, docs/options.md#stricttypes"
+      },
+      "risks": {
+        "value": "Largest footprint; runtime codegen; CJS-only typing quirk to check. Already the App. C install-approval candidate.",
+        "source": "PRD App. C; rows above"
+      }
+    },
+    "@cfworker/json-schema": {
+      "version": {
+        "value": "4.1.6 (dist-tag latest)",
+        "source": "npm: version, dist-tags"
+      },
+      "licence": {
+        "value": "MIT",
+        "source": "npm: license"
+      },
+      "dependencies": {
+        "value": "0 (no dependencies field)",
+        "source": "npm: dependencies"
+      },
+      "keywords": {
+        "value": "Claims drafts 4, 7, 2019-09, 2020-12, validated against the JSON-Schema-Test-Suite with a listed set of unsupported cases. Per-keyword check of the required list UNVERIFIED (README only, no trial).",
+        "source": "readme; npm: description"
+      },
+      "remoteRef": {
+        "value": "README shows only `addSchema` for extra schemas; no loader or fetch documented. Absence of fetch in source UNVERIFIED (source not read).",
+        "source": "readme ('Add schemas')"
+      },
+      "moduleFormat": {
+        "value": "Dual ESM + CJS via `exports` (import/require conditions, with types); type: module.",
+        "source": "npm: type, main, module, exports"
+      },
+      "codegen": {
+        "value": "Interpreter, no code generation: written for runtimes without eval / new Function.",
+        "source": "readme ('Background')"
+      },
+      "errors": {
+        "value": "Not documented in README; validate() result shape UNVERIFIED (believed to be {valid, errors[]} with keyword/keywordLocation/instanceLocation/error, needs a trial or source read). shortCircuit=false returns all errors.",
+        "source": "readme ('Include all errors'); shape not in any read source"
+      },
+      "lastRelease": {
+        "value": "4.1.6 on 2026-11-04 (6 days before observation). 4.1.1 on 2025-01-31, then no release for ~21 months, then 4.1.3, 4.1.4, 4.1.5, 4.1.6 between 2026-10-30 and 2026-11-04 (4.1.2 absent). 1 maintainer.",
+        "source": "npmTime; npm: versions, maintainers (count only)"
+      },
+      "size": {
+        "value": "395,432 B unpacked, 85 files (4.1.1: 173,840 B, 58 files)",
+        "source": "npm: dist.unpackedSize, dist.fileCount"
+      },
+      "draftConfig": {
+        "value": "new Validator(schema, '2020-12', false)",
+        "source": "readme ('Specify meta schema draft', 'Include all errors')"
+      },
+      "risks": {
+        "value": "Fresh release burst after a long gap: 4.1.6 has SLSA provenance (4.1.1 has none), but the 4.1.1 -> 4.1.6 diff is unreviewed. Error shape undocumented. Not in context7.",
+        "source": "npm: dist.attestations.provenance.predicateType; npmTime"
+      }
+    },
+    "jsonschema": {
+      "version": {
+        "value": "1.5.0 (dist-tag latest)",
+        "source": "npm: version, dist-tags"
+      },
+      "licence": {
+        "value": "MIT",
+        "source": "npm: license"
+      },
+      "dependencies": {
+        "value": "0",
+        "source": "npm: dependencies ({})"
+      },
+      "keywords": {
+        "value": "Draft-07 at most ('JSON Schema versions through draft-07 are fully supported'). FAILS prefixItems (2020-12); $defs only as a JSON Pointer target, keyword handling UNVERIFIED.",
+        "source": "readme (intro)"
+      },
+      "remoteRef": {
+        "value": "No fetch: unknown refs are collected in `validator.unresolvedRefs` for the caller to import. M6 compatible as documented.",
+        "source": "readme (remote references section)"
+      },
+      "moduleFormat": {
+        "value": "CommonJS only (main ./lib/index.js)",
+        "source": "npm: main"
+      },
+      "codegen": {
+        "value": "Interpreter; no Function constructor documented. Source not read.",
+        "source": "readme (no compile step documented)"
+      },
+      "errors": {
+        "value": "Good: ValidationError {path[], property, message, schema, instance, name (keyword), argument}; nestedErrors option.",
+        "source": "readme ('Results')"
+      },
+      "lastRelease": {
+        "value": "1.5.0 on 2025-01-07 (~22 months before observation)",
+        "source": "npmTime"
+      },
+      "size": {
+        "value": "83,470 B unpacked, 10 files",
+        "source": "npm: dist.unpackedSize, dist.fileCount"
+      },
+      "draftConfig": {
+        "value": "n/a: schema would have to be written in draft-07 style",
+        "source": "readme"
+      },
+      "risks": {
+        "value": "Drops a required keyword (prefixItems); slow release cadence.",
+        "source": "rows above"
+      }
+    },
+    "@exodus/schemasafe": {
+      "version": {
+        "value": "1.3.0 (dist-tag latest)",
+        "source": "npm: version, dist-tags"
+      },
+      "licence": {
+        "value": "MIT",
+        "source": "npm: license"
+      },
+      "dependencies": {
+        "value": "0",
+        "source": "npm: dependencies ({})"
+      },
+      "keywords": {
+        "value": "Claims draft-04/06/07/2019-09/2020-12; throws at build time on unknown or unprocessed keywords (fails closed). Per-keyword check UNVERIFIED.",
+        "source": "readme (intro, feature list)"
+      },
+      "remoteRef": {
+        "value": "External schemas passed in through the `schemas` option; no fetch documented. Source not read.",
+        "source": "readme ($ref / schemas option)"
+      },
+      "moduleFormat": {
+        "value": "CommonJS (main src/index.js)",
+        "source": "npm: main"
+      },
+      "codegen": {
+        "value": "Code-generating at runtime; can emit self-contained modules at build time (toModule) for CSP.",
+        "source": "readme ('Generate Modules')"
+      },
+      "errors": {
+        "value": "Weak for UI: includeErrors gives only {keywordLocation, instanceLocation}, first error unless allErrors; no message.",
+        "source": "readme ('Enabling errors')"
+      },
+      "lastRelease": {
+        "value": "1.3.0 on 2023-08-29 (~3.2 years before observation)",
+        "source": "npmTime"
+      },
+      "size": {
+        "value": "139,033 B unpacked, 15 files",
+        "source": "npm: dist.unpackedSize, dist.fileCount"
+      },
+      "draftConfig": {
+        "value": "validator(schema, { mode: 'strong', includeErrors: true, allErrors: true })",
+        "source": "readme"
+      },
+      "risks": {
+        "value": "Not recently maintained (fails the recent-release criterion); runtime codegen; poor error messages.",
+        "source": "rows above"
+      }
+    }
+  },
+  "summary": [
+    {
+      "criterion": "permissive licence",
+      "ajv": "pass",
+      "@cfworker/json-schema": "pass",
+      "jsonschema": "pass",
+      "@exodus/schemasafe": "pass"
+    },
+    {
+      "criterion": "transitive deps",
+      "ajv": "4",
+      "@cfworker/json-schema": "0",
+      "jsonschema": "0",
+      "@exodus/schemasafe": "0"
+    },
+    {
+      "criterion": "required keywords incl. prefixItems/$defs",
+      "ajv": "pass (docs)",
+      "@cfworker/json-schema": "claimed, UNVERIFIED",
+      "jsonschema": "fail (draft-07)",
+      "@exodus/schemasafe": "claimed, UNVERIFIED"
+    },
+    {
+      "criterion": "no network path (M6)",
+      "ajv": "pass (docs; loader opt-in only)",
+      "@cfworker/json-schema": "none documented; source UNVERIFIED",
+      "jsonschema": "pass (docs)",
+      "@exodus/schemasafe": "none documented; source UNVERIFIED"
+    },
+    {
+      "criterion": "ESM/CJS",
+      "ajv": "CJS",
+      "@cfworker/json-schema": "ESM+CJS",
+      "jsonschema": "CJS",
+      "@exodus/schemasafe": "CJS"
+    },
+    {
+      "criterion": "runtime new Function",
+      "ajv": "yes (standalone avoids)",
+      "@cfworker/json-schema": "no",
+      "jsonschema": "no (documented)",
+      "@exodus/schemasafe": "yes (toModule avoids)"
+    },
+    {
+      "criterion": "error output for import UI",
+      "ajv": "rich, documented",
+      "@cfworker/json-schema": "undocumented",
+      "jsonschema": "good",
+      "@exodus/schemasafe": "locations only"
+    },
+    {
+      "criterion": "last release",
+      "ajv": "2026-04-24",
+      "@cfworker/json-schema": "2026-11-04 (burst after 21-month gap)",
+      "jsonschema": "2025-01-07",
+      "@exodus/schemasafe": "2023-08-29"
+    },
+    {
+      "criterion": "unpacked size",
+      "ajv": "~1.31 MB with deps",
+      "@cfworker/json-schema": "~0.40 MB",
+      "jsonschema": "~0.08 MB",
+      "@exodus/schemasafe": "~0.14 MB"
+    }
+  ],
+  "recommendation": {
+    "package": "ajv",
+    "version": "8.20.0 (exact pin; fast-uri pinned via lockfile, 3.1.9 today)",
+    "usage": "ajv/dist/2020 with { strict: true, allErrors: true }; no loadSchema, no compileAsync",
+    "installPhase": "Phase 1 start, first user P1-T08 catalog detection subset, then models.json, report v1 and Phase 6 catalog import, per plan OQ-X6 (docs/plans/xaibo_plan.md). The task brief said Phase 6; the plan says Phase 1 start.",
+    "reasons": [
+      "Only candidate whose required-keyword support, no-IO behaviour and error object are all documented (context7, v8.20.0 docs) rather than claimed or UNVERIFIED",
+      "Strict mode rejects unknown schema keywords, matching the fail-closed catalog rule (PRD §7.3, SEC5)",
+      "Richest error output (instancePath, params.additionalProperty/missingProperty, message) for the Add agent import UI",
+      "Already named in App. C; 4 small permissive deps; mature release history"
+    ],
+    "fallback": "@cfworker/json-schema (0 deps, ESM+CJS, no codegen) if the owner prefers zero deps or a runtime codegen block shows up in the packaged utilityProcess; only after reviewing the 4.1.1 -> 4.1.6 diff and confirming the error shape in a trial.",
+    "rejected": {
+      "jsonschema": "draft-07 only, no prefixItems",
+      "@exodus/schemasafe": "last release 2023-08-29, location-only errors"
+    },
+    "openBeforeGate0": [
+      "Optional owner-approved trial (OQ-X6): `npm install --prefix .cache/validator-trial --cache .cache/npm ajv@8.20.0` to run T8 positive/negative entries, confirm Function-constructor compile inside the packaged utilityProcess, and check the NodeNext default-import typing",
+      "Until then S11-C12 is 'selected from registry metadata and docs; validation not run'"
+    ]
+  },
+  "reviewNotes": [
+    "Draft keywords actually used: type, enum, const, pattern (incl. a negative lookahead), required, additionalProperties, items, $ref with sibling keywords, $defs, minLength/maxLength, minItems/maxItems. prefixItems and oneOf are plan criteria, not used by the draft.",
+    "jsonschema rejection holds on the draft as written: $ref with sibling keywords is 2019-09+ semantics, ignored in draft-07 (from the JSON Schema drafts, not from the jsonschema README; UNVERIFIED for that package).",
+    "Registry facts re-checked 2026-11-10 with npm view: ajv 8.20.0 MIT, 4 deps, 1,033,496 B, published 2026-04-24; fast-uri 3.1.9 BSD-3-Clause; @cfworker/json-schema 4.1.1 2025-01-31 then 4.1.3-4.1.6 2026-10-30..2026-11-04, no 4.1.2; jsonschema 1.5.0 2025-01-07; @exodus/schemasafe 1.3.0 2023-08-29."
+  ]
+}

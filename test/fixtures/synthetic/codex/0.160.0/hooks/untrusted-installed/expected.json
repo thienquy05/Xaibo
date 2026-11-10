@@ -1,0 +1,16 @@
+{
+  "evidence": "docs/plans/phase0_spikes.md S5-C2: untrusted hooks recorded 0 lines and the rollout was still written",
+  "rolloutsStillWritten": true,
+  "hooks": { "lines": 0, "malformedLines": [], "events": {}, "sessionIds": [], "turns": {}, "interrupted": false },
+  "files": {
+    "00000000-0000-4000-8000-0000000c0022": {
+      "lines": 5, "malformedLines": [], "partialTrailing": false,
+      "recordTypes": { "session_meta": 1, "turn_context": 1, "response_item": 2, "event_msg": 1 },
+      "unknownRecords": 0, "unknownShareAbove5pct": false,
+      "session": { "id": "00000000-0000-4000-8000-0000000c0022", "filenameIdMatchesMeta": true, "source": "exec", "originator": "codex_exec", "cwd": "/tmp/xaibo-fixture/alpha", "cliVersion": "0.160.0" },
+      "turnIds": ["00000000-0000-4000-8000-0000000c1022"],
+      "models": ["gpt-6.1-sol"], "efforts": [null],
+      "usage": null, "rateLimits": null
+    }
+  }
+}

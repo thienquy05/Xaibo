@@ -1,0 +1,12 @@
+{
+  "case": "unknown-records",
+  "verifiedBy": "known types = S9 facts.json claude.recordTypes; one session above and one below a 5% unknown share",
+  "facts": {
+    "files": {
+      "00000000-0000-4000-8000-000000003000.jsonl": { "records": 4, "malformed": [], "partialTrailing": null, "types": {"user": 1, "assistant": 1, "mode": 1, "fixture-unknown-type": 1}, "unknown": 1, "unknownAbove5pct": true, "sessionIds": ["00000000-0000-4000-8000-000000003000"], "entrypoints": ["sdk-cli"], "models": ["claude-opus-5-5"], "effort": "unavailable", "uuids": 2, "roots": 1, "danglingParents": 0, "sidechainRecords": 0, "compactions": [] },
+      "00000000-0000-4000-8000-000000003100.jsonl": { "records": 21, "malformed": [], "partialTrailing": null, "types": {"user": 10, "assistant": 10, "fixture-unknown-type": 1}, "unknown": 1, "unknownAbove5pct": false, "sessionIds": ["00000000-0000-4000-8000-000000003100"], "entrypoints": ["sdk-cli"], "models": ["claude-opus-5-5"], "effort": "unavailable", "uuids": 20, "roots": 1, "danglingParents": 0, "sidechainRecords": 0, "compactions": [] }
+    },
+    "subagents": [],
+    "usage": {"messages": 11, "lines": 11, "input_tokens": 11, "output_tokens": 11, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0, "ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 0}
+  }
+}

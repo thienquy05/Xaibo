@@ -1,0 +1,12 @@
+{
+  "case": "compaction",
+  "verifiedBy": "S9 facts.json claude.compaction: system subtype compact_boundary with compactMetadata keys",
+  "notVerified": ["compactMetadata.trigger and preserved* values are synthetic; only the key set and preTokens/postTokens are asserted", "parentUuid null on the compact_boundary record (so roots = 2) and logicalParentUuid pointing at the pre-compaction leaf are fixture choices: the S9 system schema allows null parentUuid and has logicalParentUuid, but S9 did not tie either to the compact_boundary subtype"],
+  "facts": {
+    "files": {
+      "00000000-0000-4000-8000-000000005000.jsonl": { "records": 5, "malformed": [], "partialTrailing": null, "types": {"user": 2, "assistant": 2, "system": 1}, "unknown": 0, "unknownAbove5pct": false, "sessionIds": ["00000000-0000-4000-8000-000000005000"], "entrypoints": ["sdk-cli"], "models": ["claude-opus-5-5"], "effort": "unavailable", "uuids": 5, "roots": 2, "danglingParents": 0, "sidechainRecords": 0, "compactions": [{"metadataKeys": ["cumulativeDroppedTokens", "durationMs", "postTokens", "preTokens", "preservedMessages", "preservedSegment", "trigger"], "preTokens": 1200, "postTokens": 300}] }
+    },
+    "subagents": [],
+    "usage": {"messages": 2, "lines": 2, "input_tokens": 9, "output_tokens": 13, "cache_read_input_tokens": 30, "cache_creation_input_tokens": 40, "ephemeral_5m_input_tokens": 40, "ephemeral_1h_input_tokens": 0}
+  }
+}

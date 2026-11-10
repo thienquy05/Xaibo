@@ -1,0 +1,271 @@
+{
+  "claude": {
+    "version": "2.1.319",
+    "transcriptPathPatterns": [
+      "projects/<encoded-cwd>/<uuid>.jsonl",
+      "projects/<encoded-cwd>/<uuid>/subagents/agent-<id>.jsonl"
+    ],
+    "identifiers": {
+      "sessionId": true,
+      "uuid": true,
+      "parentUuid": true
+    },
+    "recordTypes": [
+      "api-request",
+      "api-request-blob",
+      "api-request-shape",
+      "assistant",
+      "atis-latch",
+      "attachment",
+      "cost-state",
+      "last-prompt",
+      "mode",
+      "queue-operation",
+      "session-owner",
+      "system",
+      "tools-used",
+      "user"
+    ],
+    "systemSubtypes": [
+      "compact_boundary",
+      "stop_hook_summary"
+    ],
+    "entrypoints": [
+      "sdk-cli"
+    ],
+    "userTypes": [
+      "external"
+    ],
+    "contentBlockTypes": [
+      "text",
+      "thinking",
+      "tool_addition",
+      "tool_result",
+      "tool_use"
+    ],
+    "models": [
+      "claude-opus-5-5"
+    ],
+    "usageKeys": [
+      "cache_creation",
+      "cache_creation_input_tokens",
+      "cache_read_input_tokens",
+      "fallback_credit",
+      "inference_geo",
+      "input_tokens",
+      "iterations",
+      "output_tokens",
+      "output_tokens_details",
+      "server_tool_use",
+      "service_tier",
+      "speed"
+    ],
+    "cacheCreationKeys": [
+      "ephemeral_1h_input_tokens",
+      "ephemeral_5m_input_tokens"
+    ],
+    "partialUpdates": {
+      "messageIdsWithSeveralLines": true,
+      "usageIdenticalAcrossLines": true,
+      "outputTokensNonDecreasing": true
+    },
+    "subagent": {
+      "sidechainRecords": true,
+      "subagentFilePatterns": [
+        "projects/<encoded-cwd>/<uuid>/subagents/agent-<id>.jsonl"
+      ]
+    },
+    "compaction": {
+      "recorded": true,
+      "subtypes": [
+        "compact_boundary"
+      ],
+      "metadataKeys": [
+        "cumulativeDroppedTokens",
+        "durationMs",
+        "postTokens",
+        "preTokens",
+        "preservedMessages",
+        "preservedSegment",
+        "trigger"
+      ]
+    },
+    "injectedPrefixes": [
+      "<command-name>",
+      "<local-command-caveat>",
+      "<local-command-stdout>"
+    ],
+    "largePayloadFields": [
+      "attachment.content",
+      "message.content[].text",
+      "rendered[].content",
+      "shape.system[].text"
+    ],
+    "sessionsJson": {
+      "present": false,
+      "keys": []
+    },
+    "zstFiles": false
+  },
+  "codex": {
+    "version": "0.160.0",
+    "rolloutPathPatterns": [
+      "sessions/<yyyy>/<mm>/<dd>/rollout-<ts>-<uuid>.jsonl"
+    ],
+    "sessionIdInFilenameMatchesMeta": true,
+    "recordTypes": [
+      "event_msg",
+      "response_item",
+      "session_meta",
+      "token_usage_record",
+      "turn_context",
+      "world_state"
+    ],
+    "payloadTypes": [
+      "custom_tool_call",
+      "custom_tool_call_output",
+      "item_completed",
+      "message",
+      "task_complete",
+      "task_started",
+      "thread_settings_applied",
+      "token_count",
+      "turn_aborted"
+    ],
+    "sources": [
+      "cli",
+      "exec"
+    ],
+    "originators": [
+      "codex-tui",
+      "codex_exec"
+    ],
+    "sessionMetaKeys": [
+      "base_instructions",
+      "cli_version",
+      "context_window",
+      "creator_account_id",
+      "creator_user_id",
+      "cwd",
+      "git",
+      "history_mode",
+      "id",
+      "model_provider",
+      "originator",
+      "runtime_workspace_roots",
+      "session_id",
+      "source",
+      "thread_source",
+      "timestamp"
+    ],
+    "tokenCount": {
+      "present": true,
+      "infoKeys": [
+        "last_token_usage",
+        "model_context_window",
+        "total_token_usage"
+      ],
+      "totalKeys": [
+        "cache_write_input_tokens",
+        "cached_input_tokens",
+        "input_tokens",
+        "output_tokens",
+        "reasoning_output_tokens",
+        "total_tokens"
+      ],
+      "lastKeys": [
+        "cache_write_input_tokens",
+        "cached_input_tokens",
+        "input_tokens",
+        "output_tokens",
+        "reasoning_output_tokens",
+        "total_tokens"
+      ],
+      "modelContextWindow": true,
+      "cachedSubsetOfInput": true,
+      "reasoningSubsetOfOutput": true,
+      "cumulativeNonDecreasingPerSession": true,
+      "rateLimitKeys": [
+        "credits",
+        "individual_limit",
+        "limit_id",
+        "limit_name",
+        "plan_type",
+        "primary",
+        "rate_limit_reached_type",
+        "secondary",
+        "spend_control_reached"
+      ],
+      "primaryKeys": [
+        "resets_at",
+        "used_percent",
+        "window_minutes"
+      ],
+      "secondaryKeys": [
+        "resets_at",
+        "used_percent",
+        "window_minutes"
+      ],
+      "resetsAtUnit": "epoch-seconds"
+    },
+    "tokenUsageRecord": true,
+    "turnContextKeys": [
+      "approval_policy",
+      "approvals_reviewer",
+      "collaboration_mode",
+      "comp_hash",
+      "current_date",
+      "cwd",
+      "disabled_plugin_ids",
+      "model",
+      "multi_agent_version",
+      "permission_profile",
+      "realtime_active",
+      "root_turn_id",
+      "sandbox_policy",
+      "summary",
+      "timezone",
+      "turn_id",
+      "workspace_roots"
+    ],
+    "turnContextModels": [
+      "gpt-6.1-sol"
+    ],
+    "effortValues": [],
+    "mirroredUserMessages": false,
+    "compaction": {
+      "recorded": false,
+      "keys": []
+    },
+    "sessionIndex": {
+      "present": true,
+      "keys": [
+        "id",
+        "thread_name",
+        "updated_at"
+      ]
+    },
+    "stateDbNames": [
+      "goals_<n>.sqlite",
+      "goals_<n>.sqlite-shm",
+      "goals_<n>.sqlite-wal",
+      "logs_<n>.sqlite",
+      "memories_<n>.sqlite",
+      "queue_<n>.sqlite",
+      "queue_<n>.sqlite-shm",
+      "queue_<n>.sqlite-wal",
+      "state_<n>.sqlite",
+      "state_<n>.sqlite-shm",
+      "state_<n>.sqlite-wal",
+      "thread_history_<n>.sqlite",
+      "thread_history_<n>.sqlite-shm",
+      "thread_history_<n>.sqlite-wal"
+    ],
+    "zstFiles": false,
+    "largePayloadFields": [
+      "payload.base_instructions.text",
+      "payload.content[].text",
+      "payload.state.host_skills.body"
+    ]
+  }
+}

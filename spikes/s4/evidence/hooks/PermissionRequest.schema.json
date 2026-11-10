@@ -1,0 +1,53 @@
+{
+  "session_id": [
+    "string"
+  ],
+  "transcript_path": [
+    "string"
+  ],
+  "cwd": [
+    "string"
+  ],
+  "prompt_id": [
+    "string"
+  ],
+  "permission_mode": [
+    "string"
+  ],
+  "effort": [
+    "object"
+  ],
+  "effort.level": [
+    "string"
+  ],
+  "hook_event_name": [
+    "string"
+  ],
+  "tool_name": [
+    "string"
+  ],
+  "tool_input": [
+    "object"
+  ],
+  "tool_input.file_path": [
+    "string"
+  ],
+  "tool_input.content": [
+    "string"
+  ],
+  "permission_suggestions": [
+    "array"
+  ],
+  "permission_suggestions[]": [
+    "object"
+  ],
+  "permission_suggestions[].type": [
+    "string"
+  ],
+  "permission_suggestions[].mode": [
+    "string"
+  ],
+  "permission_suggestions[].destination": [
+    "string"
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "id": "synthneg",
+  "displayName": "Synthetic Negative",
+  "entryVersion": "0.1.0",
+  "lifecycle": "experimental",
+  "testedVersions": [
+    {
+      "version": "1.0.0",
+      "status": "unverified"
+    }
+  ],
+  "detection": {
+    "binaries": [
+      {
+        "id": "main",
+        "names": [
+          "synthneg"
+        ],
+        "versionArgs": [
+          "--version"
+        ]
+      }
+    ]
+  },
+  "profileRoots": [
+    {
+      "id": "user",
+      "base": "home",
+      "relative": ".synthneg"
+    }
+  ],
+  "adapters": {
+    "channels": [
+      {
+        "kind": "hook",
+        "version": 1
+      }
+    ]
+  },
+  "capabilities": [
+    "lifecycle"
+  ],
+  "launchTemplates": [
+    {
+      "purpose": "new",
+      "binary": "main",
+      "args": []
+    }
+  ],
+  "hookMappings": [
+    {
+      "event": "Stop",
+      "normalized": "turn.end",
+      "transform": "(payload) => payload.done ? \"turn.end\" : null"
+    }
+  ]
+}

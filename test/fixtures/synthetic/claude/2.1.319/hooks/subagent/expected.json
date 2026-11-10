@@ -1,0 +1,1 @@
+{"events": ["SessionStart", "UserPromptSubmit", "PreToolUse", "SubagentStart", "PreToolUse", "PostToolUse", "SubagentStop", "PostToolUse", "SessionEnd"], "notObserved": ["exact event order: S4 recorded per-event counts and shapes, not a timeline"]}

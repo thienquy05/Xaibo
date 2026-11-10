@@ -1,0 +1,11 @@
+{
+  "case": "usage-basic",
+  "verifiedBy": "S9 facts.json claude.partialUpdates: one message.id spans several assistant lines with identical usage, so latest-wins and first-seen dedupe give the same totals",
+  "facts": {
+    "files": {
+      "00000000-0000-4000-8000-000000001000.jsonl": { "records": 9, "malformed": [], "partialTrailing": null, "types": {"queue-operation": 1, "user": 2, "assistant": 5, "last-prompt": 1}, "unknown": 0, "unknownAbove5pct": false, "sessionIds": ["00000000-0000-4000-8000-000000001000"], "entrypoints": ["sdk-cli"], "models": ["claude-opus-5-5"], "effort": "unavailable", "uuids": 7, "roots": 1, "danglingParents": 0, "sidechainRecords": 0, "compactions": [] }
+    },
+    "subagents": [],
+    "usage": {"messages": 2, "lines": 5, "input_tokens": 15, "output_tokens": 60, "cache_read_input_tokens": 240, "cache_creation_input_tokens": 45, "ephemeral_5m_input_tokens": 30, "ephemeral_1h_input_tokens": 15}
+  }
+}

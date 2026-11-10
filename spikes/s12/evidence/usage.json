@@ -1,0 +1,340 @@
+{
+ "tag": "spike, not gate evidence",
+ "profile": {
+  "name": "personal (owner decision 2026-11-10; overrides plan scale)",
+  "live": {
+   "sessions": 5,
+   "ratePerS": 20,
+   "burstPerS": 50,
+   "burstSeconds": 5,
+   "burstEverySeconds": 60,
+   "seconds": 600,
+   "meanBytes": 4096,
+   "maxBytes": 262144,
+   "sigma": 1.2,
+   "forceMaxEvery": 5000
+  },
+  "scaleProbe": {
+   "sessions": 15,
+   "ratePerS": 60,
+   "burstPerS": 150,
+   "burstSeconds": 5,
+   "burstEverySeconds": 60,
+   "seconds": 120,
+   "meanBytes": 4096,
+   "maxBytes": 262144,
+   "sigma": 1.2,
+   "forceMaxEvery": 5000
+  },
+  "estimate": "~"
+ },
+ "runtime": "packaged Electron runtime with ELECTRON_RUN_AS_NODE=1 (not the GUI utilityProcess); generator on system Node",
+ "env": {
+  "cpu": "Apple M4",
+  "macos": "27.2",
+  "ramGiB": 16,
+  "electron": "45.2.3",
+  "node": "24.22.2",
+  "sqlite": "3.53.4",
+  "agents": {}
+ },
+ "seeds": {
+  "corpus": 12001,
+  "text": 12002,
+  "live": 12003,
+  "usage": 12004,
+  "build": 12005,
+  "mix": 12008,
+  "backfill": 12009
+ },
+ "corpusDbBytes": 2806976512,
+ "method": {
+  "db": "APFS clone of the T2 corpus per run",
+  "watcher": "per-active-file fs.watch + reconcile every 5 s",
+  "hook": "S3 receiver (private Unix socket, framed, volatile ack, one connection per delivery); when bind() is EPERM (command sandbox) the same frames + token check over an inherited pipe; see runs[].events.hookTransport",
+  "loopDelay": "monitorEventLoopDelay resolution 1 ms",
+  "publish": "MessagePort post before persistence",
+  "backfill": {
+   "fileBytes": 33554432,
+   "chunkBytes": 262144,
+   "everyMs": 100
+  },
+  "readsEveryMs": 1000,
+  "reads": [
+   "list_unfiltered",
+   "fts_common_recent",
+   "fts_cjk_bm25",
+   "content_page1",
+   "quota_45d",
+   "fts_common_bm25"
+  ],
+  "checkpointProbe": "PRAGMA wal_checkpoint(PASSIVE) every 1 s in the writer (autocheckpoint left on)",
+  "thresholds": {
+   "queueAgeP95Ms": 1000,
+   "drainMs": 5000
+  }
+ },
+ "task": "P0-S12-T5",
+ "sizes": {
+  "streams": [
+   {
+    "scope": 0,
+    "lim": "5h",
+    "rows": 65448,
+    "transitions": 648
+   },
+   {
+    "scope": 0,
+    "lim": "7d",
+    "rows": 65448,
+    "transitions": 648
+   }
+  ],
+  "rows": {
+   "context_snapshots": 2982,
+   "price_provenance": 192,
+   "monthly_usage_totals": 0,
+   "monthly_quota_peaks": 0
+  },
+  "bytes": {
+   "usage_snapshots": 6463488,
+   "usage_scope_limit_asof": 2469888,
+   "context_snapshots": 131072,
+   "context_session_generation": 40960,
+   "price_provenance": 16384,
+   "monthly_usage_totals": 4096,
+   "sqlite_autoindex_monthly_usage_totals_1": 4096,
+   "monthly_quota_peaks": 4096,
+   "sqlite_autoindex_monthly_quota_peaks_1": 4096
+  }
+ },
+ "sizesAfterExpiry": {
+  "streams": [
+   {
+    "scope": 0,
+    "lim": "5h",
+    "rows": 63994,
+    "transitions": 634
+   },
+   {
+    "scope": 0,
+    "lim": "7d",
+    "rows": 63994,
+    "transitions": 634
+   }
+  ],
+  "rows": {
+   "context_snapshots": 2954,
+   "price_provenance": 192,
+   "monthly_usage_totals": 2,
+   "monthly_quota_peaks": 2
+  },
+  "bytes": {
+   "usage_snapshots": 6328320,
+   "usage_scope_limit_asof": 2420736,
+   "context_snapshots": 131072,
+   "context_session_generation": 40960,
+   "price_provenance": 16384,
+   "monthly_usage_totals": 4096,
+   "sqlite_autoindex_monthly_usage_totals_1": 4096,
+   "monthly_quota_peaks": 4096,
+   "sqlite_autoindex_monthly_quota_peaks_1": 4096
+  }
+ },
+ "perStream": {
+  "rows": 65448,
+  "tableAndIndexBytes": 4466688,
+  "bytesPerRow": 68.248,
+  "scaling": "linear in streams x minutes (one row per minute sample + transitions, same index); N streams ~= N x tableAndIndexBytes"
+ },
+ "expiry": {
+  "atS": 15,
+  "t": "expiry",
+  "totalMs": 549.482541,
+  "quotaMs": 68.543083,
+  "deleteMs": 434.403542,
+  "quotaRows": 2908,
+  "sessions": 15,
+  "sessionBytes": 10146037,
+  "eventsDeleted": 1879,
+  "batches": 35,
+  "batchMs": {
+   "n": 35,
+   "p50": 0.507,
+   "p95": 50.988,
+   "p99": 102.415,
+   "max": 102.415
+  },
+  "walStart": 27439232,
+  "walMax": 27439232,
+  "walEnd": 27439232,
+  "vacuum": {
+   "freelistPagesBefore": 2484,
+   "ms": 46.650792,
+   "chunks": 2,
+   "chunkMs": {
+    "n": 2,
+    "p50": 2.713,
+    "p95": 41.311,
+    "p99": 41.311,
+    "max": 41.311
+   },
+   "freelistPagesAfter": 0
+  },
+  "loopDelayDuringMs": {
+   "p99": 1.352,
+   "max": 1.89
+  },
+  "queueAgeDuringMs": {
+   "n": 11,
+   "p50": 166.203,
+   "p95": 266.361,
+   "p99": 266.361,
+   "max": 266.361
+  }
+ },
+ "concurrentLoad": {
+  "name": "usage-C",
+  "arch": "C",
+  "mix": "hook25",
+  "profile": "personal",
+  "seconds": 60,
+  "batch": {
+   "rows": 500,
+   "ms": 100,
+   "mib": 4
+  },
+  "events": {
+   "sent": 1350,
+   "file": 1008,
+   "hook": 342,
+   "hookFail": 0,
+   "hookTransport": "pipe",
+   "pipeRejected": 0,
+   "published": 1350,
+   "persistedLive": 1350
+  },
+  "loopDelayMs": {
+   "p50": 1.144,
+   "p99": 1.354,
+   "max": 12.173
+  },
+  "appendToPublishMs": {
+   "n": 1008,
+   "p50": 0.112,
+   "p95": 0.218,
+   "p99": 0.325,
+   "max": 1.322
+  },
+  "receiveToPublishMs": {
+   "n": 342,
+   "p50": 0.035,
+   "p95": 0.068,
+   "p99": 0.11,
+   "max": 0.192
+  },
+  "sendToPublishMs": {
+   "n": 342,
+   "p50": 0.12,
+   "p95": 0.211,
+   "p99": 0.307,
+   "max": 0.546
+  },
+  "queueAgeMs": {
+   "n": 1350,
+   "p50": 113.763,
+   "p95": 220.893,
+   "p99": 277.089,
+   "max": 356.681
+  },
+  "queueAgeP95Ms": 220.893,
+  "drainMs": 142.891,
+  "lost": 0,
+  "duplicated": 0,
+  "pass": true,
+  "commits": {
+   "n": 411,
+   "ms": {
+    "n": 411,
+    "p50": 30.103,
+    "p95": 96.411,
+    "p99": 139.569,
+    "max": 167.951
+   }
+  },
+  "backfill": {
+   "bytes": 156241936,
+   "rows": 27143,
+   "passes": 5,
+   "chunkMs": {
+    "n": 600,
+    "p50": 0.588,
+    "p95": 1.169,
+    "p99": 1.492,
+    "max": 2.345
+   },
+   "rowsCommitted": 27143,
+   "writerBacklogMaxRows": 147
+  },
+  "reads": {
+   "list_unfiltered": {
+    "n": 10,
+    "p50": 0.293,
+    "p95": 1.742,
+    "p99": 1.742,
+    "max": 1.742
+   },
+   "fts_common_recent": {
+    "n": 10,
+    "p50": 1.561,
+    "p95": 5.883,
+    "p99": 5.883,
+    "max": 5.883
+   },
+   "fts_cjk_bm25": {
+    "n": 10,
+    "p50": 46.945,
+    "p95": 142.079,
+    "p99": 142.079,
+    "max": 142.079
+   },
+   "content_page1": {
+    "n": 10,
+    "p50": 0.734,
+    "p95": 2.696,
+    "p99": 2.696,
+    "max": 2.696
+   },
+   "quota_45d": {
+    "n": 10,
+    "p50": 53.812,
+    "p95": 58.125,
+    "p99": 58.125,
+    "max": 58.125
+   },
+   "fts_common_bm25": {
+    "n": 10,
+    "p50": 429.524,
+    "p95": 542.85,
+    "p99": 542.85,
+    "max": 542.85
+   }
+  },
+  "wal": {
+   "maxBytes": 31699312,
+   "checkpoints": 60,
+   "maxLogFrames": 4310,
+   "maxUncheckpointedFrames": 2273,
+   "busy": 0
+  },
+  "rssMaxMiB": 272,
+  "genRssMiB": 275,
+  "fdMax": 45,
+  "genMaxSlipMs": 0,
+  "dbBytesAfter": 3024277504,
+  "hostLoadAvg1m": {
+   "start": 3.178,
+   "end": 2.957
+  }
+ }
+}

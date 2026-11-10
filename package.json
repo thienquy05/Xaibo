@@ -1,0 +1,25 @@
+{
+  "name": "xaibo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p spikes && tsc --noEmit -p tsconfig.scripts.json",
+    "spike:build": "tsc -p spikes",
+    "spike:test": "node --test \"spikes/**/*.test.ts\"",
+    "dist:mac": "npm run spike:build && sh spikes/s3/build-sea.sh && electron_config_cache=\"${electron_config_cache:-$INIT_CWD/.cache/electron}\" ELECTRON_CACHE=\"${ELECTRON_CACHE:-$INIT_CWD/.cache/electron}\" ELECTRON_BUILDER_CACHE=\"${ELECTRON_BUILDER_CACHE:-$INIT_CWD/.cache/electron-builder}\" electron-builder --mac dir --config spikes/app/electron-builder.json && codesign --force --deep --sign - dist/spike/mac-arm64/XaiboSpike.app",
+    "spike:test:unsandboxed": "node --test --test-concurrency=1 spikes/shared/runner.unsandboxed-test.ts spikes/s3/receiver.unsandboxed-test.ts spikes/s13/tee.unsandboxed-test.ts",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "privacy:scan": "node scripts/privacy-scan.ts",
+    "spike:s1": "node spikes/s1/check.ts",
+    "spike:s3": "node spikes/s3/dispatch-bench.ts",
+    "spike:s12": "node spikes/s12/run.ts",
+    "spike:s10": "node spikes/s10/run.ts",
+    "spike:s13": "sh spikes/s13/build-sea.sh && node spikes/s13/overhead.ts --runtime sea"
+  },
+  "devDependencies": {
+    "electron": "45.2.3",
+    "electron-builder": "26.18.0",
+    "typescript": "7.0.2"
+  }
+}

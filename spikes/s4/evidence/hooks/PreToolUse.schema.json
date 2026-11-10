@@ -1,0 +1,62 @@
+{
+  "session_id": [
+    "string"
+  ],
+  "transcript_path": [
+    "string"
+  ],
+  "cwd": [
+    "string"
+  ],
+  "prompt_id": [
+    "string"
+  ],
+  "permission_mode": [
+    "string"
+  ],
+  "effort": [
+    "object"
+  ],
+  "effort.level": [
+    "string"
+  ],
+  "hook_event_name": [
+    "string"
+  ],
+  "tool_name": [
+    "string"
+  ],
+  "tool_input": [
+    "object"
+  ],
+  "tool_input.command": [
+    "string"
+  ],
+  "tool_input.description": [
+    "string"
+  ],
+  "tool_use_id": [
+    "string"
+  ],
+  "tool_input.file_path": [
+    "string"
+  ],
+  "tool_input.content": [
+    "string"
+  ],
+  "tool_input.prompt": [
+    "string"
+  ],
+  "tool_input.subagent_type": [
+    "string"
+  ],
+  "tool_input.run_in_background": [
+    "boolean"
+  ],
+  "agent_id": [
+    "string"
+  ],
+  "agent_type": [
+    "string"
+  ]
+}

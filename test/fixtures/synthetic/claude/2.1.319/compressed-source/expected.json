@@ -1,0 +1,12 @@
+{
+  "case": "compressed-source",
+  "verifiedBy": "plain .jsonl is zstd-compressed at test time; decompressed lines must equal the plain lines and give the same facts",
+  "notVerified": ["Claude 2.1.319 did not write .jsonl.zst in S9 (facts.json claude.zstFiles false); this case exercises the reader only"],
+  "facts": {
+    "files": {
+      "00000000-0000-4000-8000-000000008000.jsonl": { "records": 3, "malformed": [], "partialTrailing": null, "types": {"user": 1, "assistant": 1, "last-prompt": 1}, "unknown": 0, "unknownAbove5pct": false, "sessionIds": ["00000000-0000-4000-8000-000000008000"], "entrypoints": ["sdk-cli"], "models": ["claude-opus-5-5"], "effort": "unavailable", "uuids": 2, "roots": 1, "danglingParents": 0, "sidechainRecords": 0, "compactions": [] }
+    },
+    "subagents": [],
+    "usage": {"messages": 1, "lines": 1, "input_tokens": 4, "output_tokens": 5, "cache_read_input_tokens": 6, "cache_creation_input_tokens": 0, "ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 0}
+  }
+}

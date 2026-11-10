@@ -1,0 +1,1 @@
+{"events": ["SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "SessionEnd"], "notObserved": ["manual denial event shape: PermissionDenied was not triggered in S4 (headless auto-denial only); interactive denial is left for S7"]}

@@ -1,0 +1,5 @@
+{
+  "name": "xaibo-spike",
+  "owner": { "name": "Xaibo spike" },
+  "plugins": [{ "name": "xaibo-hooks-spike", "source": "./xaibo-hooks-spike", "description": "Hooks-only spike plugin (Phase 0 S4)" }]
+}

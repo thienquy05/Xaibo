@@ -1,0 +1,47 @@
+{
+  "session_id": [
+    "string"
+  ],
+  "transcript_path": [
+    "string"
+  ],
+  "cwd": [
+    "string"
+  ],
+  "prompt_id": [
+    "string"
+  ],
+  "permission_mode": [
+    "string"
+  ],
+  "agent_id": [
+    "string"
+  ],
+  "agent_type": [
+    "string"
+  ],
+  "effort": [
+    "object"
+  ],
+  "effort.level": [
+    "string"
+  ],
+  "hook_event_name": [
+    "string"
+  ],
+  "stop_hook_active": [
+    "boolean"
+  ],
+  "agent_transcript_path": [
+    "string"
+  ],
+  "last_assistant_message": [
+    "string"
+  ],
+  "background_tasks": [
+    "array"
+  ],
+  "session_crons": [
+    "array"
+  ]
+}

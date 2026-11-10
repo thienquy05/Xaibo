@@ -1,0 +1,227 @@
+{
+  "task": "P0-S11-T8",
+  "criterion": "S11-C11 (unsupported facts explicit); inputs to S11-C9, S11-C10",
+  "schema": "spikes/s11/catalog/agents.catalog.schema.draft.json",
+  "legend": {
+    "data": "expressed as catalog data in the draft schema",
+    "unsupported": "unsupported, needs a tested adapter (code adapter or tested writer); never catalog data",
+    "core": "not a per-agent fact: handled by Xaibo core/forwarder/runtime rules, not the catalog",
+    "excluded": "out of catalog v1 scope by PRD decision"
+  },
+  "liveStatus": "Every Gemini 0.46.0 fact below is UNVERIFIED live: personal sign-in was rejected by Google and the owner skipped live parts (D-P0-19). Sources are the PRD and the installed package's bundled docs only.",
+  "facts": [
+    {
+      "fact": "Agent identity, entry version, lifecycle",
+      "catalog": "data",
+      "field": "id, displayName, entryVersion, lifecycle",
+      "source": "PRD §7.3"
+    },
+    {
+      "fact": "Tested agent versions and their verification state",
+      "catalog": "data",
+      "field": "testedVersions[].status",
+      "verified": false,
+      "source": "PRD §7.3; D-P0-19"
+    },
+    {
+      "fact": "Binary name and version argument",
+      "catalog": "data",
+      "field": "detection.binaries[].names, versionArgs",
+      "verified": false,
+      "source": "package docs cli/cli-reference.md"
+    },
+    {
+      "fact": "Known install locations",
+      "catalog": "data",
+      "field": "detection.locations (schema only; omitted from gemini.entry.json)",
+      "verified": false,
+      "source": "review: not in PRD or package docs",
+      "note": "no install directory is stated in the PRD or the installed package text; PATH and manual paths cover detection"
+    },
+    {
+      "fact": "Version string parsing from --version output",
+      "catalog": "unsupported",
+      "note": "no regex/expression field by design; core parses the first semver token (proposal)"
+    },
+    {
+      "fact": "Profile root ${GEMINI_CLI_HOME:-~}/.gemini",
+      "catalog": "data",
+      "field": "profileRoots[] base=home, relative=.gemini, envOverride GEMINI_CLI_HOME mode=replaces-base",
+      "verified": false,
+      "source": "package docs reference/configuration.md, cli/enterprise.md; S11-C6 UNVERIFIED"
+    },
+    {
+      "fact": "Config existence evidence (user settings.json)",
+      "catalog": "data",
+      "field": "existenceEvidence[]",
+      "note": "evidence only, never installation/auth proof (FR-01)"
+    },
+    {
+      "fact": "Authentication state (credential store, auth file names)",
+      "catalog": "unsupported",
+      "note": "installation/auth/connection are separate facts (EC-79); auth state needs a tested adapter probe; not observed (sign-in blocked)"
+    },
+    {
+      "fact": "Native parser selection",
+      "catalog": "data",
+      "field": "adapters.native=gemini",
+      "note": "reference only; the parser itself is code"
+    },
+    {
+      "fact": "Hook config shape in settings.json (hooks.<Event>[].hooks[] type=command)",
+      "catalog": "data",
+      "field": "configEdits[] writer=gemini-settings-json, operations=[hooks]",
+      "verified": false,
+      "note": "the writer is tested code; the catalog only selects it and carries no command text",
+      "source": "package docs hooks/reference.md"
+    },
+    {
+      "fact": "Lifecycle hook event names SessionStart, BeforeAgent, AfterAgent, BeforeTool, AfterTool, SessionEnd",
+      "catalog": "data",
+      "field": "hookMappings[].event -> normalized",
+      "verified": false,
+      "source": "PRD §6.8; package docs hooks/reference.md; S11-C1 UNVERIFIED",
+      "note": "SessionEnd is best effort: the CLI does not wait for it (package docs hooks/reference.md). All UNVERIFIED live."
+    },
+    {
+      "fact": "Notification with notification_type=ToolPermission -> permission request",
+      "catalog": "data",
+      "field": "hookMappings[] when[{field, equals}]",
+      "verified": false,
+      "source": "PRD §6.8; package docs hooks/reference.md"
+    },
+    {
+      "fact": "Other notifications imply no input wait",
+      "catalog": "data",
+      "note": "expressed by omission: unmapped events yield nothing (§6.8)"
+    },
+    {
+      "fact": "AfterModel not subscribed for lifecycle",
+      "catalog": "data",
+      "note": "expressed by omission from hookMappings"
+    },
+    {
+      "fact": "Permission resolution (approve/deny/cancel) and its correlation key to BeforeTool/AfterTool",
+      "catalog": "unsupported",
+      "note": "no correlation key known; predicates select events but do not correlate them; stays unresolved/unknown (§6.8, EC-83); S11-C5 UNVERIFIED"
+    },
+    {
+      "fact": "Session identity field in hook payloads (session_id)",
+      "catalog": "core",
+      "note": "hook wire v1 carries session_id; an agent naming it differently is unsupported until a tested adapter exists"
+    },
+    {
+      "fact": "Empty hook output: agent proceeds, nothing injected",
+      "catalog": "core",
+      "note": "forwarder prints nothing and exits 0; S11-C1 UNVERIFIED"
+    },
+    {
+      "fact": "Hook blocking and added wait (M16)",
+      "catalog": "core",
+      "note": "S11-T2 variant (ii); UNVERIFIED"
+    },
+    {
+      "fact": "Whether hooks run in an untrusted folder",
+      "catalog": "core",
+      "note": "package docs cli/trusted-folders.md: safe mode ignores workspace .gemini/settings.json; user-level hooks are not listed as disabled. Native folder trust is never bypassed (§7.6); setup text states only that. UNVERIFIED (S11-T2 variant iv)"
+    },
+    {
+      "fact": "Transcript path pattern tmp/<project-key>/chats/<file>, project-key derivation",
+      "catalog": "unsupported",
+      "note": "native Gemini adapter; S11-C2 UNVERIFIED"
+    },
+    {
+      "fact": "Chat record format, content, thoughts, tool args/results, subagent chats, tool-output files",
+      "catalog": "unsupported",
+      "note": "native Gemini adapter; S11-C3 UNVERIFIED"
+    },
+    {
+      "fact": "Repeated message IDs, $set patches, rewind, legacy JSON conversion",
+      "catalog": "unsupported",
+      "note": "native Gemini adapter folding; S11-C4 UNVERIFIED"
+    },
+    {
+      "fact": "Token field semantics (cached/thoughts/tool/total relations)",
+      "catalog": "unsupported",
+      "note": "native Gemini adapter; S11-T5 UNVERIFIED -> Unavailable"
+    },
+    {
+      "fact": "Per-message model and effort/thinking level (FR-51)",
+      "catalog": "unsupported",
+      "note": "native Gemini adapter; omitted unless shown"
+    },
+    {
+      "fact": "Native retention keys general.sessionRetention.{enabled,maxAge,maxCount,minRetention}, format, precedence, execution",
+      "catalog": "unsupported",
+      "note": "D-19 maxAge offer needs a tested Gemini writer operation; draft writer operations are hooks only; S11-C7 UNVERIFIED",
+      "source": "package docs reference/configuration.md (keys only)"
+    },
+    {
+      "fact": "Interactive launch argv (new session)",
+      "catalog": "data",
+      "field": "launchTemplates[] purpose=new",
+      "verified": false,
+      "source": "S11-C8 UNVERIFIED"
+    },
+    {
+      "fact": "Resume by session UUID: --resume <uuid>",
+      "catalog": "data",
+      "field": "launchTemplates[] purpose=resume, args [--resume, {sessionId}]",
+      "verified": false,
+      "source": "package docs cli/session-management.md; S11-C8 UNVERIFIED"
+    },
+    {
+      "fact": "Resume by index/latest, --list-sessions",
+      "catalog": "unsupported",
+      "note": "not UUID-addressable (FR-21 needs UUID); not modeled"
+    },
+    {
+      "fact": "Session ID pre-allocation at launch",
+      "catalog": "unsupported",
+      "note": "unknown; binding comes from SessionStart payload or chat metadata (FR-20 provisional); S11-T7 UNVERIFIED"
+    },
+    {
+      "fact": "Resume when the native chat is deleted or from another cwd",
+      "catalog": "unsupported",
+      "note": "error shape needs a tested adapter; UNVERIFIED"
+    },
+    {
+      "fact": "Environment keys Xaibo may set (GEMINI_CLI_HOME)",
+      "catalog": "data",
+      "field": "envKeyGrants[]"
+    },
+    {
+      "fact": "Display-only setup steps and copy-only install hints",
+      "catalog": "data",
+      "field": "setupSteps[], installHints[]"
+    },
+    {
+      "fact": "Detection/launch authorization of imported entries",
+      "catalog": "core",
+      "note": "explicit grant held in app data, never in the entry (FR-01, SEC5)"
+    },
+    {
+      "fact": "Imported entry shadowing a bundled ID",
+      "catalog": "core",
+      "note": "loader rule: origin comes from the read location, not a field; implemented in check.ts loaderErrors"
+    },
+    {
+      "fact": "Profile root escape via symlink",
+      "catalog": "core",
+      "note": "loader realpath rule; lexical escapes (absolute, ~, ..) are rejected by the schema"
+    },
+    {
+      "fact": "ACP declaration",
+      "catalog": "excluded",
+      "note": "v1-only (§7.3, D-14); rejected as an unknown field"
+    },
+    {
+      "fact": "Synthetic fourth agent, report v1 only, no native adapter (M15)",
+      "catalog": "data",
+      "field": "synthetic-agent.entry.json: adapters.channels=[report v1], no native, no configEdits, no hookMappings",
+      "note": "schema feasibility only; M15 detection/setup/storage/status tests are Gate 6"
+    }
+  ],
+  "validation": "Validated by the spike subset checker spikes/s11/catalog/check.ts only (not a product validator). Validation with S11-T9 candidates: not run; schema review only (never counts as pass).",
+  "entryMarking": "Entries carry no free-text description (not a §7.3 field); verification state is testedVersions[].status=unverified, and per-fact UNVERIFIED notes live in this file."
+}

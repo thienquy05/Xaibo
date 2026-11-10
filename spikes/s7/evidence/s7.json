@@ -1,0 +1,304 @@
+{
+  "claude": "2.1.322 (installed version auto-updated from the 2.1.319 pin during Phase 0)",
+  "profile": "temp (claude-a), runner, --permission-mode default; /model sonnet in the s13 step persisted to the temp settings, so later steps ran on Sonnet 5.5",
+  "t1": {
+    "prompts": 5,
+    "launch": {
+      "syntax": "claude --session-id <uuid> \"<prompt>\"",
+      "turnCompleted": true,
+      "transcriptAtProjectsEncIdJsonl": true,
+      "entrypoint": [
+        "cli"
+      ]
+    },
+    "resume": {
+      "syntax": "claude --resume <id> [\"<prompt>\"]",
+      "turnCompleted": true,
+      "sameIdAndFile": true
+    },
+    "fork": {
+      "syntax": "claude --resume <id> --fork-session",
+      "turnCompleted": true,
+      "newId": true
+    },
+    "print": {
+      "syntax": "claude -p \"<prompt>\"",
+      "exit": 0,
+      "entrypoint": [
+        "sdk-cli"
+      ],
+      "resumeByIdSyntax": "claude -p --resume <id> \"<prompt>\"",
+      "resumeByIdExit": 0,
+      "pickerShowsPrintSession": false,
+      "pickerSaysNone": true
+    },
+    "helpLists": [
+      "--bg / --background",
+      "attach",
+      "--desktop",
+      "--fork-session",
+      "--session-id"
+    ]
+  },
+  "t2": {
+    "prompts": 1,
+    "deniedWith": "Esc at the permission dialog",
+    "orderedEvents": [
+      "SessionStart",
+      "UserPromptSubmit",
+      "PreToolUse",
+      "PermissionRequest",
+      "SessionEnd"
+    ],
+    "permissionRequestFired": true,
+    "notificationPermissionPrompt": false,
+    "permissionDeniedFired": false,
+    "postToolUseFired": false,
+    "postToolUseFailureFired": false,
+    "stopFired": false,
+    "permissionRequestKeys": [
+      "cwd",
+      "effort",
+      "hook_event_name",
+      "permission_mode",
+      "permission_suggestions",
+      "prompt_id",
+      "session_id",
+      "tool_input",
+      "tool_name",
+      "transcript_path"
+    ],
+    "preToolUseHasToolUseId": true,
+    "permissionRequestHasToolUseId": false,
+    "transcript": {
+      "isError": true,
+      "rejected": true,
+      "interrupted": false
+    },
+    "fileCreated": null,
+    "fileCreatedNote": "not measurable: spike.txt was left by the invalid auto-mode attempt in the same directory"
+  },
+  "t3": {
+    "cancel": {
+      "prompts": 1,
+      "elicitationHookFired": true,
+      "askedSignal": "Elicitation",
+      "orderedEvents": [
+        "SessionStart",
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+        "PreToolUse",
+        "Elicitation",
+        "ElicitationResult",
+        "Notification:elicitation_response",
+        "PostToolUse",
+        "Stop",
+        "Notification:idle_prompt",
+        "SessionEnd"
+      ],
+      "elicitationKeys": [
+        "cwd",
+        "hook_event_name",
+        "mcp_server_name",
+        "message",
+        "mode",
+        "prompt_id",
+        "requested_schema",
+        "session_id",
+        "transcript_path"
+      ],
+      "elicitationResultFired": true,
+      "elicitationResultKeys": [
+        "action",
+        "cwd",
+        "hook_event_name",
+        "mcp_server_name",
+        "mode",
+        "prompt_id",
+        "session_id",
+        "transcript_path"
+      ],
+      "elicitationResultAction": "cancel",
+      "serverSawAction": "cancel",
+      "stopFired": true,
+      "idlePromptAfterIdle": true
+    },
+    "accept": {
+      "prompts": 1,
+      "elicitationHookFired": true,
+      "askedSignal": "Elicitation",
+      "orderedEvents": [
+        "SessionStart",
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+        "Elicitation",
+        "PreToolUse",
+        "Notification:elicitation_response",
+        "ElicitationResult",
+        "PostToolUse",
+        "Stop",
+        "SessionEnd"
+      ],
+      "elicitationKeys": [
+        "cwd",
+        "hook_event_name",
+        "mcp_server_name",
+        "message",
+        "mode",
+        "prompt_id",
+        "requested_schema",
+        "session_id",
+        "transcript_path"
+      ],
+      "elicitationResultFired": true,
+      "elicitationResultKeys": [
+        "action",
+        "content",
+        "cwd",
+        "hook_event_name",
+        "mcp_server_name",
+        "mode",
+        "prompt_id",
+        "session_id",
+        "transcript_path"
+      ],
+      "elicitationResultAction": "accept",
+      "serverSawAction": "accept",
+      "stopFired": true
+    },
+    "decline": {
+      "prompts": 1,
+      "elicitationHookFired": true,
+      "askedSignal": "Elicitation",
+      "orderedEvents": [
+        "SessionStart",
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+        "PreToolUse",
+        "Elicitation",
+        "Notification:elicitation_dialog",
+        "Notification:elicitation_response",
+        "ElicitationResult",
+        "PostToolUse",
+        "Stop",
+        "SessionEnd"
+      ],
+      "elicitationKeys": [
+        "cwd",
+        "hook_event_name",
+        "mcp_server_name",
+        "message",
+        "mode",
+        "prompt_id",
+        "requested_schema",
+        "session_id",
+        "transcript_path"
+      ],
+      "elicitationResultFired": true,
+      "elicitationResultKeys": [
+        "action",
+        "cwd",
+        "hook_event_name",
+        "mcp_server_name",
+        "mode",
+        "prompt_id",
+        "session_id",
+        "transcript_path"
+      ],
+      "elicitationResultAction": "decline",
+      "serverSawAction": "decline",
+      "stopFired": true
+    }
+  },
+  "t4": {
+    "prompts": 3,
+    "background": {
+      "stopFiredWhileSleepRuns": true,
+      "hookEventsAfterStop": [
+        "UserPromptSubmit",
+        "Stop"
+      ],
+      "secondsFromStopToLastSignal": 29.7,
+      "transcriptRecordsAfterStop": [
+        "api-request",
+        "api-request-blob",
+        "assistant",
+        "queue-operation",
+        "system:stop_hook_summary",
+        "system:turn_duration",
+        "user"
+      ]
+    },
+    "subagent": {
+      "orderedEvents": [
+        "SubagentStart",
+        "Stop",
+        "SubagentStop"
+      ],
+      "stopFired": true,
+      "backgroundedAgentShown": true
+    },
+    "interrupt": {
+      "toolStarted": true,
+      "eventsAfterInterruptedPreToolUse": [],
+      "stopFired": false,
+      "stopFailureFired": false,
+      "postToolUseFired": false,
+      "postToolUseFailureFired": false,
+      "toolResult": {
+        "isError": true,
+        "rejected": true,
+        "interrupted": false
+      },
+      "note": "events after the interrupted call until the session ended, any source (the backgrounded subagent may add its own)"
+    },
+    "exitDialogWithBackgroundWork": false
+  },
+  "s13": {
+    "prompts": 3,
+    "compact": {
+      "preCompactFired": true,
+      "postCompactFired": true,
+      "postCompactKeys": [
+        "compact_summary",
+        "cwd",
+        "hook_event_name",
+        "prompt_id",
+        "session_id",
+        "transcript_path",
+        "trigger"
+      ],
+      "boundaryRecord": true,
+      "boundaryMetadataKeys": [
+        "cumulativeDroppedTokens",
+        "durationMs",
+        "postTokens",
+        "preTokens",
+        "trigger"
+      ],
+      "captureSequence": [
+        "null",
+        "usage",
+        "null",
+        "new-model:null",
+        "usage"
+      ],
+      "captureSequenceNote": "statusLine captures of the session in order, runs collapsed: null = current_usage null; a null run between usage runs of the same model follows /compact"
+    },
+    "effort": {
+      "command": "/effort low",
+      "levelBefore": "medium",
+      "levelAfter": "low"
+    },
+    "model": {
+      "command": "/model sonnet",
+      "idChanged": true,
+      "windowSizeChanged": false,
+      "currentUsageAfterSwitchVsAfterCompact": "number (was null)"
+    }
+  },
+  "note": "t2/t3 earlier attempts (auto mode; prompt swallowed by list-taking flags) were overwritten by the reruns; 20 prompts attempted in total"
+}

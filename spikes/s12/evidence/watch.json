@@ -1,0 +1,310 @@
+{
+ "tag": "spike, not gate evidence",
+ "task": "P0-S12-T6",
+ "profile": {
+  "name": "personal (owner decision 2026-11-10; overrides plan scale 50 appenders / 200 events/s)",
+  "estimate": "~",
+  "run": {
+   "appenders": 5,
+   "ratePerS": 20,
+   "burstPerS": 50,
+   "seconds": 15,
+   "burstEverySeconds": 15,
+   "burstSeconds": 5,
+   "meanBytes": 4096,
+   "maxBytes": 262144
+  },
+  "scaleProbe": {
+   "appenders": 15,
+   "ratePerS": 60,
+   "burstPerS": 150,
+   "seconds": 15,
+   "burstEverySeconds": 15,
+   "burstSeconds": 5
+  }
+ },
+ "runtime": "watchers and scans: packaged Electron runtime (ELECTRON_RUN_AS_NODE=1); appenders: system Node child processes",
+ "env": {
+  "cpu": "Apple M4",
+  "macos": "27.2",
+  "ramGiB": 16,
+  "electron": "45.2.3",
+  "node": "24.22.2",
+  "sqlite": "3.53.4",
+  "agents": {}
+ },
+ "appenderNode": "v26.10.0",
+ "seeds": {
+  "tree": 12006,
+  "appendSchedule": 12007
+ },
+ "tree": {
+  "files1k": 1000,
+  "files10k": 10000,
+  "layout": "60% claude/projects/<dir>/<uuid>.jsonl over ~30 dirs, 40% codex/sessions/YYYY/MM/DD/rollout-*.jsonl over 180 days"
+ },
+ "method": {
+  "pollIntervalMs": 1000,
+  "idleSeconds": 10,
+  "settleMs": 2000,
+  "missed": "lines not delivered by any watch event within 2000 ms after the last append (recovered by a final read)",
+  "latency": "append (hrtime stamp before write) -> watch callback reads the line; coalesced events count from each line's own stamp",
+  "fds": "/dev/fd entries after watcher setup minus before",
+  "idleCpu": "process.cpuUsage over the idle window, % of one core",
+  "scan": "readdir + stat of every *.jsonl vs (size, mtime, ino) checkpoint map; first scan primes the map, then timed scans"
+ },
+ "launchctlMaxfiles": {
+  "soft": "256",
+  "hard": "unlimited"
+ },
+ "baselineIdleCpuPct": 0.02,
+ "watchers": [
+  {
+   "strategy": "recursive",
+   "scale": false,
+   "appenders": 5,
+   "written": 450,
+   "seenViaEvents": 450,
+   "missed": 0,
+   "lost": 0,
+   "events": 5,
+   "eventsOnActive": 5,
+   "latencyMs": {
+    "p50": 10514.26,
+    "p95": 14575.49,
+    "p99": 14935.01,
+    "max": 15016.03
+   },
+   "watchedFiles": 1000,
+   "extraFds": 0,
+   "idleCpuPct": 0,
+   "loadCpuPct": 0.18,
+   "appenderMaxSlipMs": 0
+  },
+  {
+   "strategy": "perFile",
+   "scale": false,
+   "appenders": 5,
+   "written": 450,
+   "seenViaEvents": 450,
+   "missed": 0,
+   "lost": 0,
+   "events": 450,
+   "eventsOnActive": 450,
+   "latencyMs": {
+    "p50": 0.39,
+    "p95": 0.73,
+    "p99": 0.95,
+    "max": 2.97
+   },
+   "watchedFiles": 5,
+   "extraFds": 5,
+   "idleCpuPct": 0,
+   "loadCpuPct": 0.98,
+   "appenderMaxSlipMs": 0
+  },
+  {
+   "strategy": "poll",
+   "scale": false,
+   "appenders": 5,
+   "written": 450,
+   "seenViaEvents": 450,
+   "missed": 0,
+   "lost": 0,
+   "events": 75,
+   "eventsOnActive": 75,
+   "latencyMs": {
+    "p50": 486.62,
+    "p95": 944.84,
+    "p99": 983.02,
+    "max": 987.29
+   },
+   "watchedFiles": 1000,
+   "extraFds": 0,
+   "idleCpuPct": 1.2,
+   "loadCpuPct": 1.28,
+   "appenderMaxSlipMs": 0
+  },
+  {
+   "strategy": "recursive",
+   "scale": true,
+   "appenders": 15,
+   "written": 1350,
+   "seenViaEvents": 1350,
+   "missed": 0,
+   "lost": 0,
+   "events": 15,
+   "eventsOnActive": 15,
+   "latencyMs": {
+    "p50": 10547.88,
+    "p95": 14603.82,
+    "p99": 14962.57,
+    "max": 15049.81
+   },
+   "watchedFiles": 1000,
+   "extraFds": 0,
+   "idleCpuPct": null,
+   "loadCpuPct": 0.04,
+   "appenderMaxSlipMs": 0
+  },
+  {
+   "strategy": "perFile",
+   "scale": true,
+   "appenders": 15,
+   "written": 1350,
+   "seenViaEvents": 1350,
+   "missed": 0,
+   "lost": 0,
+   "events": 1350,
+   "eventsOnActive": 1350,
+   "latencyMs": {
+    "p50": 0.35,
+    "p95": 0.62,
+    "p99": 0.82,
+    "max": 3.98
+   },
+   "watchedFiles": 15,
+   "extraFds": 15,
+   "idleCpuPct": null,
+   "loadCpuPct": 2.37,
+   "appenderMaxSlipMs": 0
+  }
+ ],
+ "scans": [
+  {
+   "files": 1000,
+   "mode": "sync",
+   "scans": 20,
+   "changedOnIdle": 0,
+   "wallMs": {
+    "mean": 5.95,
+    "p95": 6.41,
+    "max": 6.65
+   },
+   "cpuMs": {
+    "mean": 6.26,
+    "p95": 7.44,
+    "max": 8.09
+   },
+   "cpuPctOfCoreAt": {
+    "2s": 0.31,
+    "5s": 0.13,
+    "10s": 0.06,
+    "15s": 0.04,
+    "30s": 0.02,
+    "60s": 0.01
+   },
+   "rule": {
+    "intervalS": 5,
+    "recoveryS": 6
+   }
+  },
+  {
+   "files": 1000,
+   "mode": "async",
+   "scans": 20,
+   "changedOnIdle": 0,
+   "wallMs": {
+    "mean": 15.8,
+    "p95": 16.99,
+    "max": 18.83
+   },
+   "cpuMs": {
+    "mean": 16.74,
+    "p95": 17.84,
+    "max": 19.73
+   },
+   "cpuPctOfCoreAt": {
+    "2s": 0.84,
+    "5s": 0.33,
+    "10s": 0.17,
+    "15s": 0.11,
+    "30s": 0.06,
+    "60s": 0.03
+   },
+   "rule": {
+    "intervalS": 10,
+    "recoveryS": 11
+   }
+  },
+  {
+   "files": 10000,
+   "mode": "sync",
+   "scans": 20,
+   "changedOnIdle": 0,
+   "wallMs": {
+    "mean": 36.65,
+    "p95": 37.43,
+    "max": 37.45
+   },
+   "cpuMs": {
+    "mean": 36.59,
+    "p95": 37.36,
+    "max": 38.73
+   },
+   "cpuPctOfCoreAt": {
+    "2s": 1.83,
+    "5s": 0.73,
+    "10s": 0.37,
+    "15s": 0.24,
+    "30s": 0.12,
+    "60s": 0.06
+   },
+   "rule": {
+    "intervalS": 15,
+    "recoveryS": 16
+   }
+  },
+  {
+   "files": 10000,
+   "mode": "async",
+   "scans": 20,
+   "changedOnIdle": 0,
+   "wallMs": {
+    "mean": 112.64,
+    "p95": 116.68,
+    "max": 131.21
+   },
+   "cpuMs": {
+    "mean": 114.53,
+    "p95": 121.46,
+    "max": 122.07
+   },
+   "cpuPctOfCoreAt": {
+    "2s": 5.73,
+    "5s": 2.29,
+    "10s": 1.15,
+    "15s": 0.76,
+    "30s": 0.38,
+    "60s": 0.19
+   },
+   "rule": {
+    "intervalS": 60,
+    "recoveryS": 61
+   }
+  }
+ ],
+ "intervalRule": {
+  "rule": "smallest of {2,5,10,15,30,60} s with mean scan CPU <= 0.25% of one core and max scan wall <= 10% of the interval (OQ-A10); recovery = interval + 1 s",
+  "personal1k": {
+   "sync": {
+    "intervalS": 5,
+    "recoveryS": 6
+   },
+   "async": {
+    "intervalS": 10,
+    "recoveryS": 11
+   }
+  },
+  "scaleUp10k": {
+   "sync": {
+    "intervalS": 15,
+    "recoveryS": 16
+   },
+   "async": {
+    "intervalS": 60,
+    "recoveryS": 61
+   }
+  }
+ }
+}

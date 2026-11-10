@@ -1,0 +1,129 @@
+{
+  "recorderBeforeInstall": 0,
+  "install": {
+    "marketplaceAddExit": 0,
+    "installExit": 0,
+    "retriedWithYes": false,
+    "retryExit": null,
+    "delta": {
+      "added": [
+        "plugins/cache/xaibo-spike/xaibo-hooks-spike/0.0.1/.claude-plugin/plugin.json",
+        "plugins/cache/xaibo-spike/xaibo-hooks-spike/0.0.1/hooks/hooks.json",
+        "plugins/cache/xaibo-spike/xaibo-hooks-spike/0.0.1/hooks/record-hook.mjs",
+        "plugins/installed_plugins.json",
+        "plugins/known_marketplaces.json"
+      ],
+      "removed": [],
+      "modified": [
+        "settings.json"
+      ]
+    }
+  },
+  "receipt": {
+    "replies": {
+      "ok": {
+        "exit": 0,
+        "stderrBytes": 0
+      },
+      "tool": {
+        "exit": 0,
+        "stderrBytes": 0
+      },
+      "write": {
+        "exit": 0,
+        "stderrBytes": 0
+      },
+      "sub": {
+        "exit": 0,
+        "stderrBytes": 0
+      }
+    },
+    "events": [
+      "PermissionRequest",
+      "PostToolUse",
+      "PreToolUse",
+      "SessionEnd",
+      "SessionStart",
+      "SubagentStart",
+      "SubagentStop",
+      "UserPromptSubmit"
+    ],
+    "perEvent": {
+      "SessionStart": 4,
+      "UserPromptSubmit": 4,
+      "SessionEnd": 4,
+      "PreToolUse": 4,
+      "PostToolUse": 3,
+      "PermissionRequest": 1,
+      "SubagentStart": 1,
+      "SubagentStop": 1
+    }
+  },
+  "m7": {
+    "usageDisabled": 18458,
+    "usageEnabled": 18458,
+    "tokenDelta": 0,
+    "markerVariant": {
+      "reachedTranscript": true,
+      "tokenDeltaVsEnabled": 34,
+      "replyClean": true
+    }
+  },
+  "doubleInstall": {
+    "exit": 0,
+    "mentions": 1
+  },
+  "pluginPlusFallback": {
+    "plugin": {
+      "SessionStart": 1,
+      "UserPromptSubmit": 1,
+      "SessionEnd": 1
+    },
+    "fallback": {
+      "UserPromptSubmit": 1,
+      "SessionEnd": 1
+    }
+  },
+  "disableAllHooks": {
+    "pluginLines": 0,
+    "detectableInSettings": true
+  },
+  "pluginHttpHookType": {
+    "validateExit": 0
+  },
+  "restore": {
+    "uninstallExit": 0,
+    "marketplaceRemoveExit": 0,
+    "vsBeforeInstall": {
+      "added": [
+        ".last-cleanup",
+        "plugins/cache/xaibo-spike/xaibo-hooks-spike/0.0.1/.claude-plugin/plugin.json",
+        "plugins/cache/xaibo-spike/xaibo-hooks-spike/0.0.1/.orphaned_at",
+        "plugins/cache/xaibo-spike/xaibo-hooks-spike/0.0.1/hooks/hooks.json",
+        "plugins/cache/xaibo-spike/xaibo-hooks-spike/0.0.1/hooks/record-hook.mjs",
+        "plugins/installed_plugins.json",
+        "plugins/known_marketplaces.json"
+      ],
+      "removed": [],
+      "modified": [
+        ".claude.json",
+        "plugins/store/cc-plugin-agents-md_builtin-b049b47b3618.json",
+        "settings.json"
+      ]
+    },
+    "foreignEnabledPluginSurvives": true,
+    "xaiboEnabledPluginLeft": [],
+    "seedsUnchanged": true,
+    "listedAfter": false,
+    "recorderAfterUninstall": 0
+  },
+  "fallback": {
+    "events": [
+      "PreToolUse",
+      "SessionEnd",
+      "SessionStart",
+      "UserPromptSubmit"
+    ],
+    "byteIdenticalAfterRemoval": true
+  }
+}

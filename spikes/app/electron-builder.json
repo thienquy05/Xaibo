@@ -1,0 +1,36 @@
+{
+  "appId": "local.xaibo.spike",
+  "productName": "XaiboSpike",
+  "electronVersion": "45.2.3",
+  "electronDist": "node_modules/electron/dist",
+  "directories": {
+    "app": "spikes/app",
+    "output": "dist/spike"
+  },
+  "files": [
+    "package.json",
+    "index.html",
+    "renderer.js",
+    "build/**",
+    "!build/**/*.test.js",
+    "!build/app/smoke.js"
+  ],
+  "asarUnpack": [
+    "build/s3/forwarder.cjs"
+  ],
+  "npmRebuild": false,
+  "mac": {
+    "target": "dir",
+    "identity": null
+  },
+  "extraResources": [
+    {
+      "from": ".cache/sea/xaibo-forwarder-sea",
+      "to": "bin/xaibo-forwarder-sea"
+    },
+    {
+      "from": ".cache/sea/xaibo-forwarder-sea-nocache",
+      "to": "bin/xaibo-forwarder-sea-nocache"
+    }
+  ]
+}

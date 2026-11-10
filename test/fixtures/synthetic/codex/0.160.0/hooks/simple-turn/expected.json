@@ -1,0 +1,10 @@
+{
+  "notVerified": ["event order within a turn: S5 recorded per-event counts and payload schemas, not a timeline"],
+  "hooks": {
+    "lines": 6, "malformedLines": [],
+    "events": { "SessionStart": 1, "UserPromptSubmit": 1, "PreToolUse": 1, "PostToolUse": 1, "Stop": 1, "SessionEnd": 1 },
+    "sessionIds": ["00000000-0000-4000-8000-0000000c0020"],
+    "turns": { "00000000-0000-4000-8000-0000000c1020": ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"] },
+    "interrupted": false
+  }
+}

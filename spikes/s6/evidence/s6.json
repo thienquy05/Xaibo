@@ -1,0 +1,128 @@
+{
+  "codex": "0.160.0",
+  "profile": "temp (codex-a), runner, --no-daemon for every TUI",
+  "exec": {
+    "exit": 0,
+    "rolloutWritten": true,
+    "source": "exec",
+    "originator": "codex_exec",
+    "resumeSyntax": "codex exec resume <id> \"<prompt>\"",
+    "resumeExit": 0,
+    "resumeAppendsSameRollout": true
+  },
+  "tui": {
+    "hooksReviewShownFirst": true,
+    "rolloutWritten": true,
+    "turnCompleted": true,
+    "source": "cli",
+    "originator": "codex-tui",
+    "resumeSyntax": "codex resume <id> [\"<prompt>\"]",
+    "resumeContinuesSameRollout": true,
+    "forkSyntax": "codex fork <id> [\"<prompt>\"]",
+    "forkCreatesNewId": true,
+    "forkMetaKeysNotInOriginal": [
+      "forked_from_id",
+      "forked_from_ordinal_exclusive",
+      "history_base",
+      "multi_agent_version"
+    ],
+    "forkSource": "cli"
+  },
+  "appServer": {
+    "invocation": "codex app-server (stdio, one JSON object per line)",
+    "exit": 0,
+    "mode": "basic",
+    "proxy": false,
+    "initializeOk": true,
+    "wrongMethodIsError": true,
+    "threadStarted": true,
+    "source": "vscode",
+    "turnStarted": true,
+    "turnCompleted": true,
+    "listedByDefault": true,
+    "listedBySourceKind": {
+      "cli": false,
+      "exec": false,
+      "appServer": false
+    },
+    "loadedListed": true,
+    "readOk": true,
+    "readTurns": 1,
+    "notifications": [
+      "account/rateLimits/updated",
+      "account/updated",
+      "deprecationNotice",
+      "item/agentMessage/delta",
+      "item/completed",
+      "item/started",
+      "mcpServer/startupStatus/updated",
+      "remoteControl/status/changed",
+      "thread/started",
+      "thread/status/changed",
+      "thread/tokenUsage/updated",
+      "turn/completed",
+      "turn/started"
+    ],
+    "serverRequests": [],
+    "serverExitedEarly": false,
+    "rolloutWritten": true,
+    "rolloutSource": "vscode",
+    "rolloutOriginator": "xaibo-spike"
+  },
+  "picker": {
+    "tuiSessionListed": true,
+    "execSessionListed": false,
+    "execSessionListedWithIncludeNonInteractive": true,
+    "appServerThreadListed": true,
+    "appServerThreadListedWithIncludeNonInteractive": true
+  },
+  "attach": {
+    "approvalSetup": "-s read-only -a on-request with PR-WRITE",
+    "tuiApprovalPromptSeen": true,
+    "tuiMode": "--no-daemon (own in-process app-server)",
+    "probe": "separate `codex app-server` on the same CODEX_HOME",
+    "mode": "attach",
+    "proxy": false,
+    "initializeOk": true,
+    "loadedBefore": false,
+    "listed": true,
+    "readOk": true,
+    "statusType": "notLoaded",
+    "resumeOk": false,
+    "notificationsWhileListening": [
+      "account/updated"
+    ],
+    "loadedAfter": false,
+    "notifications": [
+      "account/updated",
+      "deprecationNotice",
+      "remoteControl/status/changed"
+    ],
+    "serverRequests": [],
+    "serverExitedEarly": false,
+    "tuiStillPendingAfterProbe": true,
+    "tuiTurnCompletesAfterTuiApproval": true
+  },
+  "daemon": {
+    "startExit": 1,
+    "versionExit": 1,
+    "note": "each runner command is one supervised process group, so a daemon cannot outlive the command that starts it"
+  },
+  "promptsAttempted": 13,
+  "compact": {
+    "command": "/compact",
+    "newRecordTypes": [
+      "compacted"
+    ],
+    "newPayloadTypes": []
+  },
+  "resumeControl": {
+    "target": "finished TUI thread, no client holding it",
+    "resumeOk": true,
+    "resumeErrorCode": null,
+    "loadedAfter": true,
+    "statusTypeBefore": "notLoaded"
+  },
+  "promptsReachedModel": 8,
+  "promptsNote": "13 launches with a prompt across four runs; 5 never reached the model (hooks review dialog, keys not delivered, invalid -a value, a transient TUI bootstrap error); counted by hand because the first runs wrote an older key"
+}

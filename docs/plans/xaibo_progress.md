@@ -6,11 +6,11 @@ Live status file for `docs/plans/xaibo_plan.md` (HARNESS_PROCESS §2, PRD §1.6 
 
 | Item | Value |
 |---|---|
-| Current phase | **Phase 0: plan approved (D-P0-09); spikes not started** |
+| Current phase | **Phase 0: spikes complete; Gate 0 pre-freeze** |
 | Branch | `feat/phase0-spikes` |
 | Plan version | Approved v1.0 (2026-11-09) |
 | Gate state | Gate 0 not started. Phase 0 runs only on the reference Mac (D-P0-03). |
-| Next step | Owner merges the approved plan docs; then on the Mac: P0-T10, then P0-T01 |
+| Next step | Gate 0: pre-freeze review fixes, then owner OK for the gate commit, Codex review, Claude review, owner stop |
 | Blockers | None |
 | Baseline for Gate 0 review | `master` at `e6b39ab` |
 
@@ -18,7 +18,7 @@ Live status file for `docs/plans/xaibo_plan.md` (HARNESS_PROCESS §2, PRD §1.6 
 
 | Phase | Branch | Status | Gate | Gate date | PR |
 |---|---|---|---|---|---|
-| 0 Spikes | `feat/phase0-spikes` | plan approved, spikes not started | Gate 0 | — | — |
+| 0 Spikes | `feat/phase0-spikes` | spikes complete (S1–S13; S2/S8 pre-v1); Gate 0 pre-freeze | Gate 0 | — | — |
 | 1 Skeleton + Claude ingest | `feat/phase1-claude-ingest` | not started | Gate 1 | — | — |
 | 2 Codex + normalization + Gemini ingest | `feat/phase2-codex-gemini-normalization` | not started | Gate 2 | — | — |
 | 3 Live status | `feat/phase3-live-status` | not started | Gate 3 | — | — |
@@ -41,6 +41,35 @@ Status values: todo / doing / done / blocked / waived. "done" requires the task'
 |---|---|---|---|
 | P0-T11 (progress file) | done | this file | 2026-11-09 |
 | Plan challenge (HARNESS_PROCESS §3.5) | done | §9a | 2026-11-09 |
+| P0-T10 (report skeleton) | done | `phase0_spikes.md` (all criteria UNVERIFIED; 2-lens check: 1 minor finding, applied) | 2026-11-10 |
+| P0-T01 (pinned installs, local caches) | done | `phase0_spikes.md` § Environment | 2026-11-10 |
+| P0-T02 (spike layout, TS config, bench helpers, scripts) | done | `spikes/shared/bench.test.ts` RED (module missing) → GREEN 5/5; `npm run typecheck` green. Root `package.json` gets `"type": "module"`; `tsconfig.scripts.json` and the `test`/`privacy:scan` scripts land with their first files in P0-T08 (an empty `include` fails tsc); `spike:sN` scripts land with each spike | 2026-11-10 |
+| P0-T03 (packaged spike app, minimal `dist:mac`) | done | smoke RED (binary missing) → pass; `phase0_spikes.md` § Environment (incl. the `~/Library/Preferences` finding) | 2026-11-10 |
+| P0-T04 (real-profile guard) | done | `spikes/shared/guard.test.ts` RED (module missing) → GREEN 14 tests (all plan cases incl. expect-new precedence and no-names output); real `baseline` snapshot + compare = MATCH. Owner adjudication of `unmatched-change` is `guard.ts accept-unmatched <label>` (marks those hashed services non-agent) | 2026-11-10 |
+| P0-T05 (isolated temp-profile runner) | done (agent `--version` runs wait for P0-T06 step 1) | RED (modules missing) → GREEN: `spike:test` 20, `spike:test:unsandboxed` 7 (deny profile, supervisor races/escalation/cleanup, escape cases, end-to-end env). Nesting probe: neither nested `sandbox-exec` nor Electron helpers nest (OQ-X16 applies). Files: `spikes/shared/{in-profile.sh,in-profile.ts,supervise.pl}` | 2026-11-10 |
+| P0-T07 (fixed synthetic prompt set) | done | defined in plan P0-T07; used verbatim by later blocks | 2026-11-10 |
+| P0-T08 (recorder, reducer, privacy scanner) | done | RED (modules missing) → GREEN: `npm test` 19 (all canary classes flagged with masked output; identifiers, synthetic UUIDs, example emails, git SHAs, lockfile integrity plain/diff pass; secret on an integrity line flagged); `spike:test` 23 incl. reducer (no free strings, masked non-identifier keys) and recorder `--self-test`; `privacy:scan` clean over `spikes docs/plans scripts test`. home-path rules match absolute paths only (false positive on a relative path fixed) | 2026-11-10 |
+| Review of P0-T04/T05 (Claude, 3 lenses + skeptic) | done | 10 findings: 5 confirmed and fixed (major: Node-spawned descendants never inherit the marker fd → process-tree tracking added; minor: on-disk letter case in deny rules via native realpath; `ps`/`lsof` failures now fail closed; `block-end` excluded itself; guard child stderr discarded), 5 refuted (HOME-override scenario, pids-file open failure, marker left on exit 124, unsupervised `--version` probe, baseline overwrite). Suites after fixes: `spike:test` 24, `spike:test:unsandboxed` 8, `npm test` 19; baseline retaken = MATCH | 2026-11-10 |
+| P0-T06 step 1 (credential backends, docs only) | done | `phase0_spikes.md` § Guard: Claude per-config-dir keychain name (isolated), Codex file store (isolated), Gemini isolated only with `GEMINI_FORCE_FILE_STORAGE=true` (now set by the runner for every profile; guard stats `gemini-credentials.json`). Installed versions match the pins by install path | 2026-11-10 |
+| P0-S1-T1..T5 (SQLite engine) | done | `spike:s1` RED ("mode not implemented") → probe pass (main + worker); crash: stub writer fails (c) on every restart (detection), real writer 200/200 + 20/20 (re-run on the final build: same result); decision recorded (id 16). The app's restart backoff resets after 250 ms healthy uptime (spike-only, `ponytail:` note) | 2026-11-10 |
+| P0-T06 steps 2–6 (keychain check, owner sign-in, PR-OK) | done for Claude and Codex; Gemini skipped (owner) | `phase0_spikes.md` § Guard: both isolated (Claude temp file store, Codex temp `auth.json`), guard MATCH around each sign-in, PR-OK answered with transcripts under the temp roots; one-command owner script `spikes/shared/signin.sh` | 2026-11-10 |
+| P0-S3-T1..T9 (forwarder) | done | benches n = 1,000 × 9 modes × candidates, e2e hops to paint, live temp Claude runs (guard MATCH, backstop 0 ours); decision with owner (record_decision 23). Bench bugs found and fixed on the way (idle-run counting, cross-candidate ids, occluded window) | 2026-11-10 |
+| P0-S4-T1..T7 (Claude plugin) | done | `spikes/s4/run.ts`; evidence `spikes/s4/evidence/`; guard MATCH; backstop 0; hook fixtures deferred to the S9 fixture set | 2026-11-10 |
+| P0-S5-T1..T5 (Codex hooks/trust) | done; T6 plugin route not-run (optional) | two owner TUI sessions; guard MATCH; backstop 0 ours | 2026-11-10 |
+| P0-S9-T1, T2, T3, T4, T5, T6 (format survey) | done (T6 not-triggered, optional); T7 fixtures done (53/53 tests) | `scripts/audit-sources.ts` (TDD + adversarial review, 5 defects fixed); facts/schemas `spikes/s9/`; zstd probe; owner audit answered | 2026-11-10 |
+| P0-S12-T1..T7 (capacity, personal profile) | done | workflow (corpus 2.61 GiB synthetic, queries, watchers, load A/B/C + sweep + ~3× probe, usage/retention, synthesis); FSEvents measured afterwards unsandboxed; record_decision 28 | 2026-11-10 |
+| P0-S13-T1..T9 (passive usage/context/cost) | done; T6 done in S6/S7 except a window-size change and Codex `/model` (not observed) | `overhead.ts` RED (200 ms delay → exit 1) → SEA pass, system Node fail; `spike:test` 48/48, unsandboxed 12/12; `spikes/s13/evidence/`; record_decision 32 | 2026-11-10 |
+| P0-S10-T1..T4 (network) | done | controls first (6 kill controls + NetLog detected, baseline quiet), then 10 scenarios: 0 unexpected deaths, lsof 0/2,410, NetLog 0 non-local; re-run after the review with stricter checks: 8 kill controls + NetLog, 0 deaths, lsof 0/2,240, NetLog 0; `spikes/s10/evidence/s10.json`; guard: 0 agent keychain, 0 credential; owner-session config and non-agent keychain changes adjudicated (D-P0-32); record_decision 34 | 2026-11-10 |
+| P0-S6-T1..T3, T6 (Codex interop); T4/T5 untested with reason | done | `spikes/s6/run.ts`, `spikes/s6/evidence/s6.json`; 13 launches with a prompt, 8 reached the model; resume positive control (no prompt); guard MATCH or owner-session config change, 0 credential, 0 agent keychain; one non-agent keychain change open for the owner; record_decision 35 | 2026-11-10 |
+| P0-S7-T1..T4, T7 (Claude interop); T5/T6 untested with reason | done on Claude Code 2.1.322 | `spikes/s7/run.ts`, `spikes/s7/elicit-mcp.test.ts` RED → GREEN 2/2, `spikes/s7/evidence/s7.json`; 20 prompts attempted; record_decision 36 | 2026-11-10 |
+| S13-T6 leftovers (statusLine after `/compact`, model and effort switch; Codex `/compact`) | done; window-size change and Codex `/model` not observed | `spikes/s7/evidence/s7.json` `s13`, `spikes/s6/evidence/s6.json` `compact` | 2026-11-10 |
+| P0-G-T2 (PRD delta v1.1) | done, pending owner approval | workflow: 8 region drafters + 8 adversarial checkers → 75 patches kept, 11 follow-on edits from the checkers, 3 App. D rows, history line; `privacy:scan docs/PRD.md` clean | 2026-11-10 |
+| Gate 0 suite, pre-freeze (working tree) | typecheck, `npm test` 53/53, `dist:mac`, smoke, privacy scan green; `spike:test` 49/50 and unsandboxed 11/12 under heavy load (two timing tests), both green on rerun on a quiet machine (G7 3/3, KILL escalation 2/2) | this run; final run on the gate SHA from a clean checkout follows | 2026-11-10 |
+| P0-S11-T1..T10 (Gemini and catalog) | done for static and catalog work; live parts UNVERIFIED (owner skip, D-P0-19) | `phase0_spikes.md` § S11; `spikes/s11/`; record_decision 27 | 2026-11-10 |
+| Pre-freeze Claude review (6 lenses, 2 skeptics per finding) | done | 58 findings: 36 upheld by both, 11 split, 11 refuted; fixes applied to the report, PRD delta, progress file and spike code; S6/S7 evidence recomputed from raw local data (no prompts); S10 re-run with stricter checks | 2026-11-10 |
+| P0-G-T1 (report complete), P0-G-T3 (decision records) | done; owner items open (§8) | decisions 16, 23–28, 32–37; `phase0_spikes.md` §5 | 2026-11-10 |
+| P0-T09 (cleanup), final `baseline` compare | P0-T09 after approval (P0-G-T5); `baseline` compare not possible (snapshot lost with the emptied `.cache/`) | report § Guard | 2026-11-10 |
+| Gate 0 suite after the review fixes (working tree, quiet machine) | typecheck green; `npm test` 53/53; `spike:test` 50/50; `spike:test:unsandboxed` 12/12; `dist:mac` and S10 green; `privacy:scan` clean over `docs/plans`, `docs/PRD.md`, `spikes`, `scripts`, `test` | this run; the clean-checkout run on the gate SHA follows the gate commit | 2026-11-10 |
 
 ## 4. Design-decision log
 
@@ -60,13 +89,43 @@ Entry format:
 | D-P0-08 | 2026-11-09 | Claude second review of plan v0.2 (4 lens reviewers, each finding adversarially verified): 48 findings, 43 confirmed (about 30 unique after merging duplicates), 5 refuted; all confirmed ones applied in v0.3 per §9b. New OQ-X16 default (commands that cannot run nested in the runner's Seatbelt wrapper) needs owner approval with the plan | Gate review step (HARNESS_PROCESS §3) | plan §2.4, P0-T02–T09, P0-G-T4, P1-T01–T06, OQ-X3/X16, AGENTS.md | — | Claude (fixes); owner approved (D-P0-09) |
 | D-P0-09 | 2026-11-09 | Owner approves plan v0.3 as v1.0, including the OQ-X16 default (non-nestable commands never run unwrapped), the OQ-X15 WCAG 2.2 AA default, the Gate 0 PRD delta items (incl. FR-45 `session_id`) and the §3.6 TSX RED rule (to be proven on the first `.tsx` unit) | PRD §10 owner approval of the challenged plan | plan header, progress §1–2 | — | owner |
 | D-P0-06 | 2026-11-09 | Codex challenge of plan v0.1 (four parallel read-only runs, one per lens) found 19 unique findings: 3 blockers, 13 major, 3 minor (one blocker raised by two runs); all applied in v0.2 per §9a | HARNESS_PROCESS §3 step 5 | plan §2.4, §3.2, §3.6, P0-T03–T10, P0-S3-T5, PD-T01/T03, P1-T14, P3 §3.5, P4-T03, P4-T08, OQ-X7/X8/X15 | — | Claude (fixes); owner approved (D-P0-09) |
-
+| D-P0-10 | 2026-11-10 | P0-T01 adds one step: Electron 45 no longer downloads its binary on postinstall, so the binary is fetched explicitly with `install-electron` using the same `electron_config_cache` (plus `NODE_USE_ENV_PROXY=1` inside the Claude sandbox). Every Electron launch unsets the inherited `ELECTRON_RUN_AS_NODE` | Observed at install (`phase0_spikes.md` § Environment); same cache location and pins as planned | plan P0-T01, §3.3 | — | Claude |
+| D-P0-11 | 2026-11-10 | P0-T03 builder config: `electronDist` = installed `node_modules/electron/dist` (no Electron download at package time; electron-builder 26's downloader ignores `ELECTRON_CACHE`); `dist:mac` also defaults `electron_config_cache`; ad-hoc `codesign --force --deep --sign -` post-step is part of `dist:mac` (the plan's conditional fallback, triggered); `renderer.js` added to builder `files` (omitted in the plan's list); the app takes its mode from `XAIBO_SPIKE_MODE` | Observed during P0-T03 (`phase0_spikes.md` § Environment) | plan P0-T03, §2.4 step 1 | — | Claude |
+| D-P0-12 | 2026-11-10 | P0-T05 escape detection: process-tree tracking at each 50 ms poll (pid + start time) plus an inherited marker fd + `lsof`, instead of the `XAIBO_RUN_TOKEN` environment scan (token kept as a label); marker in the system temp dir because the harness-os VM holds handles on new repo files. Stated limit: a double fork that detaches within one poll gap and holds no marker fd; block backstop as plan Z1 | macOS 27.2 exposes no process environments to a normal user (`ps -E`), verified; Gate 0 reviewers to check | plan P0-T05 (Y1/Z1) | — | Claude (owner/Codex review at Gate 0) |
+| D-P0-13 | 2026-11-10 | P0-T05 runner details the plan left open: cwd stays if allowed, else the profile `home`; the supervisor makes the command's group the terminal foreground group (`tcsetpgrp`) so interactive agents (owner `/login`) work; the version-freeze check runs only when the command is the agent itself (so no agent binary runs before P0-T06 step 1); `supervise.pl` has test-only fault-injection hooks (`XAIBO_SUPERVISE_TEST`), which never pass through `env -i` | Needed for interactive sign-in and the P0-T06 ordering rule | plan P0-T05, P0-T06 | — | Claude |
+| D-P0-14 | 2026-11-10 | Runner sets `GEMINI_FORCE_FILE_STORAGE=true` in every profile (like the other isolation variables) | Gemini 0.46.0 otherwise stores OAuth tokens in one fixed-name keychain item shared by all profiles; a temp sign-in could overwrite the real one (P0-T06 step 1 evidence) | plan P0-T05, P0-T06, OQ-X4 | — | Claude |
+| D-P0-15 | 2026-11-10 | OQ-X1: temp profiles live outside the repo at `~/.xaibo-spike-profiles/<agent>-<slot>/` (0700), not `.cache/profiles/`; kept until Gate 6 as planned | Owner answer. Evidence: the harness-os VM mounts the repo and holds handles on new files in it | plan §3.2, P0-T05, OQ-X1 | — | owner |
+| D-P0-16 | 2026-11-10 | OQ-X16 Codex: the temp `config.toml` sets `sandbox_mode = "danger-full-access"` (plus `check_for_update_on_startup = false`, `cli_auth_credentials_store = "file"`), so Codex tool commands run inside the runner's deny wrapper; recorded as a behaviour change under test for the affected S5/S6/S13 criteria | Owner answer; nesting probe (1) failed | plan OQ-X16, P0-T05 | — | owner |
+| D-P0-17 | 2026-11-10 | OQ-X16 VS Code (conditional S6-T4/S7-T5): may run inside the wrapper with `--no-sandbox`, with care: trusted installed app only, isolated `--user-data-dir`/`--extensions-dir`, only the agent's own extension, only the throwaway project; Claude confirms the exact launch with the owner first | Owner answer ("if trusted sources with no harm to the device, be careful"); nesting probe (2) failed | plan OQ-X16, S6-T4, S7-T5 | — | owner |
+| D-P0-18 | 2026-11-10 | Guard refinement: `~/.claude/plugins` tree and `known_marketplaces.json` fingerprinted by names only (marketplaces/plugins present), not contents; all other files unchanged; new `baseline` taken (old kept locally) | Owner's running Claude Code refreshes plugin marketplaces/caches continuously, which paused every live block; temp runs cannot write there (sandbox-denied) and a new/removed plugin or marketplace is still a DIFF. Gate 0 reviewers to check | plan P0-T04 | — | owner |
+| D-P0-19 | 2026-11-10 | Gemini live parts skipped: S11 live criteria (incl. core-required C1–C5) and Gemini parts of S9/S13 stay UNVERIFIED and go to report §4 as a required-scope miss; static/package-based S11 work (catalog, validator, settings schema, retention keys from the installed package) still runs | Google rejected personal "Sign in with Google" for Gemini CLI 0.46.0 ("no longer supported for Gemini Code Assist for individuals"); owner declined API key/Vertex | PRD §10 (S11 required scope), plan S11, OQ-C14 | — | owner |
+| D-P0-20 | 2026-11-10 | Adjudicated guard results: config DIFFs on `~/.claude/plugins`, `known_marketplaces.json` and `~/.codex/config.toml` are the owner's own sessions (Claude Code restart, Codex app closed); the non-agent keychain services marked non-agent (`accept-unmatched`) | Owner answers; temp runs are sandbox-denied from those paths; 0 agent keychain changes | plan P0-T04, §3.2 | — | owner |
+| D-P0-21 | 2026-11-10 | The SEA is built with the official Node 26.10.0 macOS arm64 tarball (checksum-verified against nodejs.org SHASUMS) kept in git-ignored `.cache/node-official/`, dev-time only | Homebrew Node is a shared-library build with SEA disabled; owner approved the download | plan P0-S3-T5, OQ-A4 | — | owner |
+| D-P0-22 | 2026-11-10 | S3: SEA forwarder, private socket, commit ack, Stop synchronous, others async, own deadline = 100 ms − startup p95; M16 50-way burst miss accepted | Owner choice among the §4 options; evidence in § S3 | PRD Q7, Q17, M16; plan OQ-A1, OQ-A2 | 23 | owner |
+| D-P0-23 | 2026-11-10 | S9-T3 owner audit: the owner ran `scripts/audit-sources.ts` and shared its aggregate output in chat instead of numberless answers; Claude derived the numberless answers and only those are recorded; the audit's pinned known types were aligned to the S9-T4 observations before the run | Owner choice; plan intended Claude never sees raw output; output contains counts and type names only (no paths, IDs, content) | plan P0-S9-T3, D-P0-04 | — | owner |
+| D-P0-24 | 2026-11-10 | S12 runs at a personal-usage profile (~1,500 sessions, ~1–2 GiB DB, 5 live sessions at ~20 events/s with bursts to 50, 1,000 watched files, 2 quota streams × 45 days) plus one ~3× scale-up probe naming the first degrading metric, instead of the plan's ≥10 GiB / 50 sessions / 200 events/s. S12-C1–C3 become narrowed. Whether M14 and EC-87 keep plan scale at Gates 4/5 is a Gate 0 PRD-delta question | Owner: "we don't have to test that big, just be ready for scale up, assume only me" | PRD §10 S12 row, M14, EC-87; plan P0-S12 | — | owner |
+| D-P0-25 | 2026-11-10 | Third agent: propose replacing Gemini CLI with the Antigravity CLI (`agy`) in the Gate 0 PRD delta; evaluate `agy` (temp-profile isolation incl. its login, hooks, JSONL transcripts, resume, retention) in Phase 2 where the third-agent adapter is built; the Antigravity IDE is not the observation target | Gemini CLI personal sign-in rejected by Google, which points users to Antigravity; public (unverified) sources describe `agy` hooks and JSONL transcripts under `~/.gemini/antigravity-cli/`; owner installed the IDE; owner chose decide-at-Gate-0 | PRD §10 S11 row, Q18; plan S11 | — | owner |
+| D-P0-26 | 2026-11-10 | Larger-scale targets (M13 on ≥10,000 sessions / ≥10 GiB with a 200 MB transcript; M14/EC-57 50 sessions at 200 events/s for 10 min; EC-87) are kept but measured at the end, after the personal-profile path; the Gate 0 PRD delta words this as a deferred scale-up stage, not a relaxation | Owner: "the larger scale up keep in the end" | PRD M13, M14, EC-57, EC-87, Q19; D-P0-24 | — | owner |
+| D-P0-27 | 2026-11-10 | S13: statusLine tee ships as a SEA binary; Claude readings carry "Account scope unverified"; Codex uses a local salted hash of `creator_account_id` as an epoch marker only, never the raw value (PRD §5.11 clarification goes into the Gate 0 delta) | § S13 evidence: added wait p95 33–78 ms on the SEA, 124–168 ms on plain Node; no account identifier in the Claude statusLine | PRD §5.11, §5.12, FR-45, FR-51; plan P0-S13 | 32, 33 | owner (2026-11-10: "let's do the hash") |
+| D-P0-28 | 2026-11-10 | S13 evidence is one file (`spikes/s13/evidence/s13.json`) plus the two overhead files, not one file per task; the Codex subset check reuses the S9 aggregate booleans instead of a new `subset-check.ts`; the official Node tarball was fetched again (same checksum check) after the local cache was emptied | Same facts, fewer files; the raw probe output is no longer on disk | plan P0-S13-T1..T9; D-P0-21 | — | Claude |
+| D-P0-29 | 2026-11-10 | S10 audit method: a Seatbelt profile that kills a process on its first non-loopback or DNS attempt, around the packaged app run with `--no-sandbox`; counting kernel log lines is dropped as proof | The kernel log dropped 4 of 12 identical denials; Chromium's sandbox cannot start inside another Seatbelt profile; owner allowed runs outside the Claude sandbox in the project folder ("as long as it's good and trust sources, you verify") | PRD §10 S10 row, M6, EC-60; plan P0-S10 | 34 | Claude (method), owner (unsandboxed runs) |
+| D-P0-30 | 2026-11-10 | Interactive agent TUIs are driven through the system `screen` tool (`spikes/shared/tui.ts`) instead of owner-typed sessions | `expect` could not drive the TUIs; `screen` is a full terminal emulator already on macOS (no install) | plan S6, S7, OQ-B5 | — | Claude |
+| D-P0-31 | 2026-11-10 | Claude prompt budget raised: up to 20 more tiny synthetic prompts in the temp Claude profile for S7 and the S13 leftovers (the earlier cap was 40 per agent, D-P0-02; about 31 sessions were already used). Codex stays inside its cap | Owner answer | plan OQ-X10 | — | owner |
+| D-P0-32 | 2026-11-10 | S10 guard result adjudicated: the real-config and non-agent keychain changes are the owner's own sessions; those services are marked non-agent (`accept-unmatched`) | Owner answer; 0 agent keychain and 0 credential changes; the spike app has no code path to them | plan P0-T04, §3.2 | — | owner |
+| D-P0-33 | 2026-11-10 | The Claude Code install auto-updated from the pinned 2.1.319 to 2.1.322 during Phase 0; S7 and the S13-T6 leftovers are recorded as 2.1.322 evidence, earlier Claude evidence stays 2.1.319; Gate 1 re-runs the S9 fact extractor on the installed version | Observed (`claude --version`, install date); the runner's freeze check only detects a change during one run | plan §3.2 version freeze, P0-T06; PRD App. E #14 | 37 (proposal), 38 (marked pending) | Claude; owner decision at Gate 0 (report §4) |
+| D-P0-34 | 2026-11-10 | Gate 0 owner answers: Claude 2.1.322 accepted for the compatibility matrix (Gate 1 re-checks the S9 facts on the installed version); dependency list approved as listed (PRD v1.1 App. C; `ajv` 8.20.0 at Phase 1 start) | Owner answers | G0-5, G0-10; D-P0-33 | 39 | owner |
+| D-P0-35 | 2026-11-10 | Guard (owner delegated: "you decide"): the three non-agent keychain changes (`s6b-pre`, `s7d-pre`, `s10b-pre`) are treated as owner activity and left unmarked, so the guard keeps reporting those services; the lost Phase 0 `baseline` is replaced by the per-block snapshots from S10 on | Same pattern as D-P0-20/32: 0 agent items, 0 credential files; the spike code has no keychain path; leaving them unmarked keeps detection | G0-13; plan P0-T04 | 39 | Claude (owner-delegated) |
+| D-P0-36 | 2026-11-10 | The deferred scale-up stage (plan-scale M13, M14, EC-57, EC-87) runs only when the owner starts it, likely after the first version is finished; it is not part of the MVP Gate. The third agent is the Antigravity CLI (`agy`) instead of Gemini CLI, evaluated in Phase 2 | Owner answers: "the large-scale will implement when i told you to do. Possibly after finish the first version"; "Yes, replace Gemini CLI with Antigravity CLI" | PRD §10, Q19, Q23; D-P0-25, D-P0-26 | 40 | owner |
 ## 5. Deviations from plan or PRD
 
 | Date | Deviation | Owner approval reference |
 |---|---|---|
 
-(none)
+| 2026-11-10 | S12 run at a personal profile instead of plan scale; plan-scale targets kept and measured in a deferred scale-up stage | D-P0-24, D-P0-26 |
+| 2026-11-10 | Gemini live parts of S9/S11/S13 skipped (Google rejected personal sign-in) | D-P0-19 |
+| 2026-11-10 | S3 M16 miss under a 50-way simultaneous burst accepted | D-P0-22 |
+| 2026-11-10 | Claude evidence split across 2.1.319 and 2.1.322 after an auto-update | D-P0-33, D-P0-34 (owner accepted 2.1.322) |
+| 2026-11-10 | `redactPaths` (P0-T02) deleted as unused; evidence stays path-free through the reducers and `privacy:scan` | pre-freeze review, Claude |
 
 ## 6. Spike results
 
@@ -74,17 +133,17 @@ All spike findings live only in `docs/plans/phase0_spikes.md` (created by P0-T10
 
 | Spike | Status | Decision (one line) | Report anchor |
 |---|---|---|---|
-| S1 SQLite | not run | — | — |
-| S3 Forwarder | not run | — | — |
-| S4 Claude plugin | not run | — | — |
-| S5 Codex hooks | not run | — | — |
-| S6 Codex interoperability | not run | — | — |
-| S7 Claude interoperability | not run | — | — |
-| S9 Format survey | not run | — | — |
-| S10 Network | not run | — | — |
-| S11 Gemini/catalog | not run | — | — |
-| S12 Capacity/latency | not run | — | — |
-| S13 Passive usage/context/cost | not run | — | — |
+| S1 SQLite | pass | `node:sqlite` from Electron's bundled Node; no `better-sqlite3` (record_decision 16) | `phase0_spikes.md` § S1 |
+| S3 Forwarder | pass-narrowed | SEA forwarder over a private socket, commit ack, Stop synchronous; owner accepted the M16 burst miss (record_decision 23) | `phase0_spikes.md` § S3 |
+| S4 Claude plugin | pass | hooks-only plugin route adopted (record_decision 24) | `phase0_spikes.md` § S4 |
+| S5 Codex hooks | pass | `hooks.json` + Codex trust review; append after foreign entries (record_decision 25) | `phase0_spikes.md` § S5 |
+| S6 Codex interoperability | pass-narrowed | external Codex sessions observe-only; resume/fork syntax verified; daemon mode, VS Code, Desktop untested (record_decision 35) | `phase0_spikes.md` § S6 |
+| S7 Claude interoperability | pass on 2.1.322 | manual denial from the transcript; elicitation hooks validated; background completion arrives after Stop (record_decision 36) | `phase0_spikes.md` § S7 |
+| S9 Format survey | pass | fact set, schemas, fixtures; streaming zstd (record_decision 26) | `phase0_spikes.md` § S9 |
+| S10 Network | pass | kill-on-attempt audit profile, 0 attempts in 10 scenarios, 7 controls detected (record_decision 34) | `phase0_spikes.md` § S10 |
+| S11 Gemini/catalog | Gemini live UNVERIFIED (owner skip); catalog + validator pass | catalog draft; `ajv` 8.20.0 proposal (record_decision 27) | `phase0_spikes.md` § S11 |
+| S12 Capacity/latency | pass-narrowed (personal profile) | layout C, batch 100/50 ms/1 MiB, per-file watch + 5 s scan (record_decision 28) | `phase0_spikes.md` § S12 |
+| S13 Passive usage/context/cost | pass-narrowed (C8 partial) | SEA statusLine tee feasible (added wait p95 33–78 ms); Claude account scope unverified; Codex salted-hash marker (record_decision 33, owner approved) | `phase0_spikes.md` § S13 |
 | S2 PTY (pre-v1-A) | not run | — | — |
 | S8 OTLP (pre-v1-B) | not run | — | — |
 
@@ -115,12 +174,18 @@ Every result records hardware class, macOS version, app/agent versions, corpus s
 
 | Item | Status |
 |---|---|
-| Approve the challenged plan | pending |
+| Approve the challenged plan | done (D-P0-09) |
 | Choose unsandboxed-run mode (OQ-X2) | done (D-P0-02); per-command approvals still asked at run time |
+| Profile location, Codex sandbox, VS Code launches (OQ-X1, OQ-X16) | done (D-P0-15, D-P0-16, D-P0-17) |
 | Plan-revision decisions (machine, real stores, App. C errata, gate commit) | done (D-P0-03, D-P0-04, D-P0-05, D-P0-07) |
-| Confirm Phase 0 installs (P0-T01) | pending |
-| Sign in to temp profiles (P0-T06) | pending |
+| Confirm Phase 0 installs (P0-T01) | done (2026-11-10): electron 45.2.3, typescript 7.0.2, electron-builder 26.18.0 |
+| Sign in to temp profiles (P0-T06) | done for Claude and Codex; Gemini blocked by Google, skipped (D-P0-19) |
 | Answer or accept defaults for open questions (plan §6) | pending |
+| Gate 0: approve the dependency list (G0-10, report §3) | done (D-P0-34) |
+| Gate 0: Claude version drift (report §4, D-P0-33) | done: accept 2.1.322 (D-P0-34) |
+| Gate 0: placement of the deferred scale-up stage and the Antigravity CLI proposal | done (D-P0-36) |
+| Gate 0: three non-agent keychain changes and the lost `baseline` snapshot | done (D-P0-35) |
+| Gate 0: OK for the gate commit (D-P0-07), then Codex review | done: owner OK 2026-11-10; Codex review next |
 
 ## 9. Gate records
 

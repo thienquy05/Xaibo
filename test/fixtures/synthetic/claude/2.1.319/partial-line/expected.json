@@ -1,0 +1,11 @@
+{
+  "case": "partial-line",
+  "verifiedBy": "tolerant reader: line 3 is a malformed complete line, line 5 a trailing partial line without newline; both skipped and counted",
+  "facts": {
+    "files": {
+      "00000000-0000-4000-8000-000000004000.jsonl": { "records": 3, "malformed": [3], "partialTrailing": 5, "types": {"user": 2, "assistant": 1}, "unknown": 0, "unknownAbove5pct": false, "sessionIds": ["00000000-0000-4000-8000-000000004000"], "entrypoints": ["sdk-cli"], "models": ["claude-opus-5-5"], "effort": "unavailable", "uuids": 3, "roots": 1, "danglingParents": 0, "sidechainRecords": 0, "compactions": [] }
+    },
+    "subagents": [],
+    "usage": {"messages": 1, "lines": 1, "input_tokens": 2, "output_tokens": 3, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0, "ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 0}
+  }
+}

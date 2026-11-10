@@ -1,0 +1,457 @@
+{
+  "SessionStart": {
+    "count": 1,
+    "keys": {
+      "session_id": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "transcript_path": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "cwd": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "hook_event_name": {
+        "types": [
+          "string"
+        ],
+        "present": 1,
+        "values": [
+          "SessionStart"
+        ]
+      },
+      "model": {
+        "types": [
+          "string"
+        ],
+        "present": 1,
+        "values": [
+          "gpt-6.1-sol"
+        ]
+      },
+      "permission_mode": {
+        "types": [
+          "string"
+        ],
+        "present": 1,
+        "values": [
+          "default"
+        ]
+      },
+      "source": {
+        "types": [
+          "string"
+        ],
+        "present": 1,
+        "values": [
+          "startup"
+        ]
+      }
+    }
+  },
+  "UserPromptSubmit": {
+    "count": 5,
+    "keys": {
+      "session_id": {
+        "types": [
+          "string"
+        ],
+        "present": 5
+      },
+      "turn_id": {
+        "types": [
+          "string"
+        ],
+        "present": 5
+      },
+      "transcript_path": {
+        "types": [
+          "string"
+        ],
+        "present": 5
+      },
+      "cwd": {
+        "types": [
+          "string"
+        ],
+        "present": 5
+      },
+      "hook_event_name": {
+        "types": [
+          "string"
+        ],
+        "present": 5,
+        "values": [
+          "UserPromptSubmit"
+        ]
+      },
+      "model": {
+        "types": [
+          "string"
+        ],
+        "present": 5,
+        "values": [
+          "gpt-6.1-sol"
+        ]
+      },
+      "permission_mode": {
+        "types": [
+          "string"
+        ],
+        "present": 5,
+        "values": [
+          "default"
+        ]
+      },
+      "prompt": {
+        "types": [
+          "string"
+        ],
+        "present": 5
+      }
+    }
+  },
+  "Stop": {
+    "count": 4,
+    "keys": {
+      "session_id": {
+        "types": [
+          "string"
+        ],
+        "present": 4
+      },
+      "turn_id": {
+        "types": [
+          "string"
+        ],
+        "present": 4
+      },
+      "transcript_path": {
+        "types": [
+          "string"
+        ],
+        "present": 4
+      },
+      "cwd": {
+        "types": [
+          "string"
+        ],
+        "present": 4
+      },
+      "hook_event_name": {
+        "types": [
+          "string"
+        ],
+        "present": 4,
+        "values": [
+          "Stop"
+        ]
+      },
+      "model": {
+        "types": [
+          "string"
+        ],
+        "present": 4,
+        "values": [
+          "gpt-6.1-sol"
+        ]
+      },
+      "permission_mode": {
+        "types": [
+          "string"
+        ],
+        "present": 4,
+        "values": [
+          "default"
+        ]
+      },
+      "stop_hook_active": {
+        "types": [
+          "boolean"
+        ],
+        "present": 4
+      },
+      "last_assistant_message": {
+        "types": [
+          "string"
+        ],
+        "present": 4
+      }
+    }
+  },
+  "PreToolUse": {
+    "count": 3,
+    "keys": {
+      "session_id": {
+        "types": [
+          "string"
+        ],
+        "present": 3
+      },
+      "turn_id": {
+        "types": [
+          "string"
+        ],
+        "present": 3
+      },
+      "transcript_path": {
+        "types": [
+          "string"
+        ],
+        "present": 3
+      },
+      "cwd": {
+        "types": [
+          "string"
+        ],
+        "present": 3
+      },
+      "hook_event_name": {
+        "types": [
+          "string"
+        ],
+        "present": 3,
+        "values": [
+          "PreToolUse"
+        ]
+      },
+      "model": {
+        "types": [
+          "string"
+        ],
+        "present": 3,
+        "values": [
+          "gpt-6.1-sol"
+        ]
+      },
+      "permission_mode": {
+        "types": [
+          "string"
+        ],
+        "present": 3,
+        "values": [
+          "default"
+        ]
+      },
+      "tool_name": {
+        "types": [
+          "string"
+        ],
+        "present": 3,
+        "values": [
+          "Bash"
+        ]
+      },
+      "tool_input": {
+        "types": [
+          "object"
+        ],
+        "present": 3
+      },
+      "tool_input.command": {
+        "types": [
+          "string"
+        ],
+        "present": 3
+      },
+      "tool_use_id": {
+        "types": [
+          "string"
+        ],
+        "present": 3
+      }
+    }
+  },
+  "PostToolUse": {
+    "count": 2,
+    "keys": {
+      "session_id": {
+        "types": [
+          "string"
+        ],
+        "present": 2
+      },
+      "turn_id": {
+        "types": [
+          "string"
+        ],
+        "present": 2
+      },
+      "transcript_path": {
+        "types": [
+          "string"
+        ],
+        "present": 2
+      },
+      "cwd": {
+        "types": [
+          "string"
+        ],
+        "present": 2
+      },
+      "hook_event_name": {
+        "types": [
+          "string"
+        ],
+        "present": 2,
+        "values": [
+          "PostToolUse"
+        ]
+      },
+      "model": {
+        "types": [
+          "string"
+        ],
+        "present": 2,
+        "values": [
+          "gpt-6.1-sol"
+        ]
+      },
+      "permission_mode": {
+        "types": [
+          "string"
+        ],
+        "present": 2,
+        "values": [
+          "default"
+        ]
+      },
+      "tool_name": {
+        "types": [
+          "string"
+        ],
+        "present": 2,
+        "values": [
+          "Bash"
+        ]
+      },
+      "tool_input": {
+        "types": [
+          "object"
+        ],
+        "present": 2
+      },
+      "tool_input.command": {
+        "types": [
+          "string"
+        ],
+        "present": 2
+      },
+      "tool_response": {
+        "types": [
+          "string"
+        ],
+        "present": 2
+      },
+      "tool_use_id": {
+        "types": [
+          "string"
+        ],
+        "present": 2
+      }
+    }
+  },
+  "Interrupt": {
+    "count": 1,
+    "keys": {
+      "session_id": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "turn_id": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "transcript_path": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "cwd": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "hook_event_name": {
+        "types": [
+          "string"
+        ],
+        "present": 1,
+        "values": [
+          "Interrupt"
+        ]
+      },
+      "model": {
+        "types": [
+          "string"
+        ],
+        "present": 1,
+        "values": [
+          "gpt-6.1-sol"
+        ]
+      },
+      "permission_mode": {
+        "types": [
+          "string"
+        ],
+        "present": 1,
+        "values": [
+          "default"
+        ]
+      }
+    }
+  },
+  "SessionEnd": {
+    "count": 1,
+    "keys": {
+      "session_id": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "transcript_path": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "cwd": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      },
+      "hook_event_name": {
+        "types": [
+          "string"
+        ],
+        "present": 1,
+        "values": [
+          "SessionEnd"
+        ]
+      },
+      "reason": {
+        "types": [
+          "string"
+        ],
+        "present": 1
+      }
+    }
+  }
+}

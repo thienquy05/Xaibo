@@ -1,0 +1,20 @@
+{
+  "notVerified": ["whether cache_write_input_tokens is inside input_tokens (like cached_input_tokens) or additional to it is not verified by S9; cacheWrite is reported as recorded, uncachedInput is input minus cached only, and the components are not summed"],
+  "files": {
+    "00000000-0000-4000-8000-0000000c0001": {
+      "lines": 13, "malformedLines": [], "partialTrailing": false,
+      "recordTypes": { "session_meta": 1, "turn_context": 2, "response_item": 4, "event_msg": 5, "token_usage_record": 1 },
+      "unknownRecords": 0, "unknownShareAbove5pct": false,
+      "session": { "id": "00000000-0000-4000-8000-0000000c0001", "filenameIdMatchesMeta": true, "source": "cli", "originator": "codex-tui", "cwd": "/tmp/xaibo-fixture/alpha", "cliVersion": "0.160.0" },
+      "turnIds": ["00000000-0000-4000-8000-0000000c1001", "00000000-0000-4000-8000-0000000c1002"],
+      "models": ["gpt-6.1-sol"], "efforts": [null],
+      "usage": {
+        "tokenCountEvents": 3, "modelContextWindow": 200000,
+        "total": { "uncachedInput": 700, "cacheRead": 1800, "cacheWrite": 100, "output": 500, "reasoningOutput": 170, "total": 3000 },
+        "last": { "uncachedInput": 300, "cacheRead": 1200, "cacheWrite": 0, "output": 300, "reasoningOutput": 120, "total": 1800 },
+        "cumulativeNonDecreasing": true, "cachedSubsetOfInput": true, "reasoningSubsetOfOutput": true
+      },
+      "rateLimits": null
+    }
+  }
+}

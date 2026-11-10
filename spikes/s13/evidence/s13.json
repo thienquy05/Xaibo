@@ -1,0 +1,125 @@
+{
+  "note": "P0-S13 evidence, one file (as spikes/s4/evidence/s4.json). Key names, booleans and timing aggregates only; no values from a session, no paths, no identifiers. Claude 2.1.319, Codex 0.160.0, temp profiles. Gemini: not observed (D-P0-19).",
+  "invocation": {
+    "task": "T1",
+    "command": "shell command string (argv count 0)",
+    "stdin": "JSON on a pipe, not a TTY",
+    "cwd": "project",
+    "trigger": "event-driven",
+    "gapSeconds": { "min": 1.1, "median": 9.1, "max": 16.6 },
+    "slowCommand": "cancelled with SIGTERM (5 of 13 calls with a 3 s probe)",
+    "envNames": ["CLAUDE_CODE_SESSION_ID", "CLAUDE_EFFORT", "CLAUDE_PROJECT_DIR", "COLUMNS", "LINES"],
+    "parentCommandName": "unavailable (ps blocked inside the runner wrapper)"
+  },
+  "statuslineKeys": {
+    "task": "T2",
+    "context_window": ["context_window_size", "current_usage", "used_percentage", "remaining_percentage", "total_input_tokens", "total_output_tokens"],
+    "context_window.current_usage": ["input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"],
+    "currentUsageBeforeFirstResponse": "null",
+    "cost": ["total_cost_usd", "total_duration_ms", "total_api_duration_ms", "total_lines_added", "total_lines_removed"],
+    "effort": ["level"],
+    "model": ["id", "display_name"],
+    "rate_limits": ["five_hour", "seven_day"],
+    "rate_limits.window": ["used_percentage", "resets_at"],
+    "other": ["prompt_cache", "thinking.enabled", "exceeds_200k_tokens", "fast_mode", "output_style.name", "version", "session_id", "transcript_path", "cwd", "prompt_id", "workspace.current_dir", "workspace.project_dir", "workspace.added_dirs", "workspace.repo.host", "workspace.repo.owner", "workspace.repo.name"],
+    "spendLimitSeen": false,
+    "measurementTimeField": false,
+    "modelSwitchSeen": true,
+    "notObserved": ["rate_limits re-emission per redraw", "cost.total_cost_usd change with a subagent"]
+  },
+  "teeLive": {
+    "task": "T4",
+    "captures": 5,
+    "capturedKeys": ["session_id", "model", "effort", "cost", "context_window", "rate_limits", "received_ts"],
+    "neverCaptured": ["transcript_path", "cwd", "workspace", "repo", "prompt_id"],
+    "markersInTranscripts": false,
+    "firstTurnTokenDeltaBetweenSessions": -118,
+    "firstTurnTokenDeltaNote": "ambient context differed between the two sessions; not attributable to the statusLine, whose output never enters a transcript"
+  },
+  "contextChanges": {
+    "task": "T6 (partial)",
+    "claude": {
+      "compactBoundaryRecord": true,
+      "compactMetadataKeys": ["cumulativeDroppedTokens", "durationMs", "postTokens", "preTokens", "preservedMessages", "preservedSegment", "trigger"],
+      "statuslineCurrentUsageAfterCompact": "not readable (the probe kept types only)",
+      "modelSwitchChangesModelId": true,
+      "windowSizeChangeOnModelSwitch": "not observed",
+      "effortSwitch": "effort.level present; a switch was not driven"
+    },
+    "codex": {
+      "tokenCountInfoKeys": ["last_token_usage", "model_context_window", "total_token_usage"],
+      "cumulativeNonDecreasingPerSession": true,
+      "compactionRecord": "not observed (no /compact run; needs an owner TUI session, with S6)",
+      "modelSwitch": "not observed"
+    },
+    "assertions": {
+      "oldReadingInvalidatedOnCompaction": "untestable here (Claude boundary record with postTokens exists; next statusLine value not read)",
+      "newGenerationOnModelOrWindowChange": "partly confirmed (model.id changes; window change not observed)",
+      "cumulativeCountersNotSummed": "confirmed (Codex total_token_usage is cumulative and non-decreasing; Claude usage repeats identically across the lines of one message id)"
+    }
+  },
+  "priceComponents": {
+    "task": "T7",
+    "formula": "USD = (uncached_input*input_rate + output*output_rate + cache_read*cache_read_rate + cache_write*cache_write_rate) / 1e6 (PRD 5.12)",
+    "claude": {
+      "source": "transcript message.usage, deduplicated by message id (usage is identical across the lines of one id)",
+      "uncached_input": "input_tokens",
+      "output": "output_tokens",
+      "cache_read": "cache_read_input_tokens",
+      "cache_write": "cache_creation_input_tokens, split by cache_creation.ephemeral_5m_input_tokens / ephemeral_1h_input_tokens",
+      "qualifiers": {
+        "cache_creation 5m vs 1h": "component unavailable unless the price table carries both classes",
+        "service_tier": "component unavailable unless the table supports the tier",
+        "speed": "component unavailable unless the table supports it",
+        "server_tool_use": "not a token component; unpriced",
+        "fallback_credit, inference_geo, iterations, output_tokens_details": "semantics not established; never priced"
+      },
+      "reported": "statusLine cost.total_cost_usd is the preferred per-session estimate (5.12 Selection); parent-includes-children stays uncertain"
+    },
+    "codex": {
+      "source": "rollout event_msg token_count: last_token_usage per turn, total_token_usage cumulative (never summed)",
+      "uncached_input": "input_tokens - cached_input_tokens",
+      "output": "output_tokens (reasoning_output_tokens is inside it; not added again)",
+      "cache_read": "cached_input_tokens",
+      "cache_write": "cache_write_input_tokens (key present; relation to input_tokens not established: unavailable until tested)",
+      "cachedSubsetOfInput": true,
+      "reasoningSubsetOfOutput": true,
+      "subsetEvidence": "aggregate booleans in spikes/s9/evidence/facts.json (spikes/s9/facts.ts); no separate subset-check.ts"
+    },
+    "gemini": "pending S11 live evidence (UNVERIFIED, D-P0-19)"
+  },
+  "scope": {
+    "task": "T8",
+    "hypothesis": "no passive account identifier exists",
+    "claudeStatusline": { "accountIdentifier": false, "couldBindToEpoch": ["rate_limits.*.resets_at (weak: a reset time, not an identity)"] },
+    "codexRollout": {
+      "accountIdentifier": true,
+      "fields": ["session_meta.creator_account_id", "session_meta.creator_user_id"],
+      "weakFields": ["token_count.rate_limits.limit_id", "limit_name", "plan_type"]
+    },
+    "credentialFilesRead": false,
+    "secondSlotSameAccountRun": "not run (optional, OQ-B11)",
+    "conclusion": "Claude: a silent account change is undetectable from the statusLine. Codex: session_meta carries a passive account identifier, so the hypothesis is contradicted for Codex."
+  },
+  "categories": {
+    "task": "T9 (record only, v1-B)",
+    "claude": {
+      "systemInstructionText": "partial (api-request-shape: shape.system[].text)",
+      "toolDefinitions": "partial (api-request-shape; tool_addition content blocks; tools-used records)",
+      "memoryAndInstructionFiles": "partial (attachment records: attachment.content)",
+      "skillOrAgentListings": "partial (attachment records; type coverage not established)",
+      "deferredDefinitionDeltas": "partial (tool_addition)",
+      "compactionBufferInputs": "absent"
+    },
+    "codex": {
+      "systemInstructionText": "present (session_meta.base_instructions.text)",
+      "toolDefinitions": "absent in the observed rollouts",
+      "memoryAndInstructionFiles": "partial (world_state)",
+      "skillOrAgentListings": "partial (world_state: state.host_skills.body)",
+      "deferredDefinitionDeltas": "absent",
+      "compactionBufferInputs": "absent"
+    },
+    "gemini": "deferred to S11",
+    "notUsed": ["/context", "tokenizer"]
+  }
+}
