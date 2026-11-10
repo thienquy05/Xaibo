@@ -21,7 +21,7 @@
   "ftsPage": 20,
   "contentPage": {
    "rows": 50,
-   "itemCapBytes": 65536
+   "itemCapCharacters": 65536
   },
   "terms": {
    "common": "kape",

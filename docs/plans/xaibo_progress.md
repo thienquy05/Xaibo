@@ -142,7 +142,7 @@ All spike findings live only in `docs/plans/phase0_spikes.md` (created by P0-T10
 | S7 Claude interoperability | pass on 2.1.322 | manual denial from the transcript; elicitation hooks validated; background completion arrives after Stop (record_decision 36) | `phase0_spikes.md` § S7 |
 | S9 Format survey | pass | fact set, schemas, fixtures; streaming zstd (record_decision 26) | `phase0_spikes.md` § S9 |
 | S10 Network | pass | kill-on-attempt audit profile; final run: 8 kill controls, the NetLog control and the shutdown-attempt control detected, quiet baseline, 0 attempts in 10 scenarios (record_decision 34) | `phase0_spikes.md` § S10 |
-| S11 Gemini/catalog | Gemini live UNVERIFIED (owner skip); catalog + validator pass | catalog draft; `ajv` 8.20.0 proposal (record_decision 27) | `phase0_spikes.md` § S11 |
+| S11 Gemini/catalog | Gemini live UNVERIFIED (owner skip); catalog + validator pass | catalog draft; `ajv` 8.20.0 owner approved (D-P0-34), installation pending Phase 1, optional runtime trial not run (record_decision 27) | `phase0_spikes.md` § S11 |
 | S12 Capacity/latency | pass-narrowed (personal profile) | layout C, batch 100/50 ms/1 MiB, per-file watch + 5 s scan (record_decision 28) | `phase0_spikes.md` § S12 |
 | S13 Passive usage/context/cost | pass-narrowed (C8 partial) | SEA statusLine tee feasible (added wait p95 33–78 ms); Claude account scope unverified; Codex salted-hash marker (record_decision 33, owner approved) | `phase0_spikes.md` § S13 |
 | S2 PTY (pre-v1-A) | not run | — | — |

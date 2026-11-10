@@ -63,7 +63,13 @@ function toolResult(sid: string, toolUseId: unknown) {
     if (r.type !== 'user') continue;
     const content = (r.message as { content?: unknown } | undefined)?.content;
     const hit = Array.isArray(content) ? content.find((c) => (c as { type?: string; tool_use_id?: string }).type === 'tool_result' && (c as { tool_use_id?: string }).tool_use_id === toolUseId) as { is_error?: boolean; content?: unknown } | undefined : undefined;
-    if (hit) { const text = JSON.stringify(hit.content ?? ''); return { isError: hit.is_error === true, rejected: /doesn't want to proceed|rejected/i.test(text), interrupted: /interrupted by user/i.test(text), action: /\baction=(accept|decline|cancel|unsupported|error)\b/.exec(text)?.[1] ?? null }; }
+    if (hit) {
+      const text = JSON.stringify(hit.content ?? '');
+      // The server's own response is the whole text of one block: match it exactly, never a substring of other text.
+      const blocks = typeof hit.content === 'string' ? [hit.content] : Array.isArray(hit.content) ? hit.content.map((b) => (b as { text?: unknown }).text).filter((t): t is string => typeof t === 'string') : [];
+      const action = blocks.map((t) => /^action=(accept|decline|cancel|unsupported|error)$/.exec(t.trim())?.[1]).find(Boolean) ?? null;
+      return { isError: hit.is_error === true, rejected: /doesn't want to proceed|rejected/i.test(text), interrupted: /interrupted by user/i.test(text), action };
+    }
   }
   return null;
 }

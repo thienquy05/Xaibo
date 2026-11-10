@@ -15,7 +15,7 @@ const REPO = join(import.meta.dirname, '..', '..', '..', '..'); // compiled to s
 const DB = join(REPO, '.cache', 'spike-data', 's12', 'corpus.db');
 const RAW = join(REPO, '.cache', 'spike-results', 's12', 'queries.json');
 const EVIDENCE = join(REPO, 'spikes', 's12', 'evidence', 'queries.json');
-const LIST_PAGE = 50, FTS_PAGE = 20, CONTENT_ROWS = 50, CONTENT_ITEM_CAP = 64 * 1024; // bounded page: <= 50 rows x 64 KiB
+const LIST_PAGE = 50, FTS_PAGE = 20, CONTENT_ROWS = 50, CONTENT_ITEM_CAP = 64 * 1024; // bounded page: <= 50 rows x 64 Ki characters (substr counts characters)
 const DAY = 86_400_000;
 // DB-portion budgets: the M12/M13 totals include IPC and paint, so the DB share must leave room (judged at Gates 1-5).
 const BUDGET = { list: 1500, content: 300, search: 500 };
@@ -109,7 +109,7 @@ const out = {
   env: envRecord(),
   dbBytes: statSync(DB).size,
   method: { n: N, warm: 'one connection, prepared once, 5 warm-up runs', cold: 'new process + connection per run, prepare included, OS page cache warm (OQ-A11); true cold not run',
-    listPage: LIST_PAGE, ftsPage: FTS_PAGE, contentPage: { rows: CONTENT_ROWS, itemCapBytes: CONTENT_ITEM_CAP }, terms: { common: TERMS.common, cjk: TERMS.cjk, rare: TERMS.rare } },
+    listPage: LIST_PAGE, ftsPage: FTS_PAGE, contentPage: { rows: CONTENT_ROWS, itemCapCharacters: CONTENT_ITEM_CAP }, terms: { common: TERMS.common, cjk: TERMS.cjk, rare: TERMS.rare } },
   budgetsMs: { ...BUDGET, note: 'M12 list <= 1.5 s and M13 content <= 300 ms / search <= 500 ms are end-to-end incl. paint; these are DB-portion times' },
   coldProcessMs: { open: brief(coldOpen), spawnTotal: brief(coldSpawn) },
   queries: table,
