@@ -129,6 +129,12 @@ test('setup races and failures leave nothing behind', async () => {
   s = sup(['/bin/sh', '-c', 'echo $$ > "$0"; sleep 30', F], { XAIBO_SUPERVISE_TEST: 'group-check-fail' });
   assert.equal(await s.done, 126);
   assert.ok(await until(() => !existsSync(F) || !alive(readPid(F)), 2000));
+  // pids registration fails after the command started: the group is stopped, exit 126, nothing left running
+  rmSync(F, { force: true });
+  s = sup(['/bin/sh', '-c', 'echo $$ > "$0"; sleep 30 & wait', F], { XAIBO_SUPERVISE_TEST: 'register-fail' });
+  assert.equal(await s.done, 126);
+  assert.match(s.err(), /pids registration/);
+  assert.ok(!existsSync(F) || !alive(readPid(F)), 'command left running after a registration failure');
 });
 
 test('escaped descendants: marker fd, Node-spawned (tree), double-fork limit (block backstop)', async () => {

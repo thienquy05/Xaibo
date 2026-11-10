@@ -63,7 +63,7 @@ function toolResult(sid: string, toolUseId: unknown) {
     if (r.type !== 'user') continue;
     const content = (r.message as { content?: unknown } | undefined)?.content;
     const hit = Array.isArray(content) ? content.find((c) => (c as { type?: string; tool_use_id?: string }).type === 'tool_result' && (c as { tool_use_id?: string }).tool_use_id === toolUseId) as { is_error?: boolean; content?: unknown } | undefined : undefined;
-    if (hit) { const text = JSON.stringify(hit.content ?? ''); return { isError: hit.is_error === true, rejected: /doesn't want to proceed|rejected/i.test(text), interrupted: /interrupted by user/i.test(text) }; }
+    if (hit) { const text = JSON.stringify(hit.content ?? ''); return { isError: hit.is_error === true, rejected: /doesn't want to proceed|rejected/i.test(text), interrupted: /interrupted by user/i.test(text), action: /\baction=(accept|decline|cancel|unsupported|error)\b/.exec(text)?.[1] ?? null }; }
   }
   return null;
 }
@@ -160,7 +160,8 @@ try {
     const lines = hookLines().slice(from);
     const result = lines.find((h) => h.event === 'ElicitationResult');
     const sid = String(lines.find((h) => h.event === 'SessionStart')?.payload.session_id ?? '');
-    const relayed = /action=(accept|decline|cancel|unsupported|error)/.exec(JSON.stringify(transcript(sid) ?? []))?.[1] ?? null;
+    const askPre = lines.find((h) => h.event === 'PreToolUse' && /ask_name/.test(String(h.payload.tool_name ?? '')));
+    const relayed = askPre ? toolResult(sid, askPre.payload.tool_use_id)?.action ?? null : null; // the ask_name call's own result
     await close(t);
     console.log(`dialog (local only): ${dialog.replaceAll(homedir(), '~')}`);
     const all = existsSync(EVIDENCE) ? (JSON.parse(readFileSync(EVIDENCE, 'utf8')) as Record<string, Record<string, unknown>>).t3 ?? {} : {};
@@ -259,6 +260,15 @@ try {
     ev.t4 = { ...ev.t4, interrupt: { toolStarted: i >= 0, eventsAfterInterruptedPreToolUse: afterTool, stopFired: afterTool.includes('Stop'), stopFailureFired: afterTool.includes('StopFailure'),
       postToolUseFired: afterTool.includes('PostToolUse'), postToolUseFailureFired: afterTool.includes('PostToolUseFailure'), toolResult: i >= 0 ? toolResult(bg, all[i]!.payload.tool_use_id) : null,
       note: 'events after the interrupted call until the session ended, any source (the backgrounded subagent may add its own)' } };
+    const elicit = all.filter((h) => h.event === 'SessionStart' && String(h.payload.cwd ?? '').endsWith('/s7/elicit')).map((h) => String(h.payload.session_id));
+    const t3 = { ...(ev.t3 ?? {}) } as Record<string, Record<string, unknown>>;
+    for (const sid of elicit) {
+      const result = all.find((h) => h.event === 'ElicitationResult' && h.payload.session_id === sid);
+      const pre = all.find((h) => h.event === 'PreToolUse' && h.payload.session_id === sid && /ask_name/.test(String(h.payload.tool_name ?? '')));
+      const action = typeof result?.payload.action === 'string' ? result.payload.action : null;
+      if (action && t3[action]) t3[action] = { ...t3[action], serverSawAction: pre ? toolResult(sid, pre.payload.tool_use_id)?.action ?? null : null, serverSawActionAnchored: true };
+    }
+    ev.t3 = t3;
     const ctx = lastSid('/s7/ctx');
     const caps = (existsSync(CAPTURE) ? readFileSync(CAPTURE, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as { session_id?: string; model?: { id?: string }; context_window?: { current_usage?: unknown } }) : []).filter((c) => c.session_id === ctx);
     const seq: string[] = [];

@@ -59,6 +59,10 @@ export async function startReceiver(o: ReceiverOpts) {
       unlinkSync(path.join(spool, f));
     }
   }
+  // The forwarders' spool byte counter only ever grows; after a replay it is reset to what is actually left, or the
+  // 50 MB cap would refuse new spooling after enough cumulative outages.
+  const left = existsSync(spool) ? readdirSync(spool).filter((n) => n.endsWith('.jsonl')).reduce((a, n) => a + statSync(path.join(spool, n)).size, 0) : 0;
+  try { mkdirSync(path.join(o.dataDir, 'run'), { recursive: true, mode: 0o700 }); writeFileSync(path.join(o.dataDir, 'run', 'spool-bytes'), String(left), { mode: 0o600 }); } catch { /* counter best effort */ }
 
   const onConn = (c: Socket) => {
     let buf = Buffer.alloc(0);

@@ -173,6 +173,14 @@ test('G10 capture record keeps only the allowed fields (unit; end-to-end in tee.
   assert.deepEqual(rec, EXPECTED_RECORD);
   assert.equal(captureRecord('not an object', 1), undefined);
   assert.deepEqual(captureRecord({}, 7), { received_ts: 7 });
+  // Field allowlist, not value shape: number- or date-shaped content under unknown keys never passes.
+  const sneaky = captureRecord({
+    cost: { total_cost_usd: 1, pin: 12345 },
+    context_window: { context_window_size: 1, prompt_text: '12345', note: '2026-01-01', current_usage: { input_tokens: 1, secret: 7 } },
+    rate_limits: { five_hour: { used_percentage: 1, resets_at: 2, extra: 5 }, weekly_note: { used_percentage: 9 } },
+    private_payload: { secret: 123 },
+  }, 1);
+  assert.deepEqual(sneaky, { received_ts: 1, cost: { total_cost_usd: 1 }, context_window: { context_window_size: 1, current_usage: { input_tokens: 1 } }, rate_limits: { five_hour: { used_percentage: 1, resets_at: 2 } } });
 });
 
 test('G11 the tee itself contributes no bytes', () => {

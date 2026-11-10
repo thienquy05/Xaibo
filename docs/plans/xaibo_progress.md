@@ -70,6 +70,7 @@ Status values: todo / doing / done / blocked / waived. "done" requires the task'
 | P0-G-T1 (report complete), P0-G-T3 (decision records) | done; owner items open (§8) | decisions 16, 23–28, 32–37; `phase0_spikes.md` §5 | 2026-11-10 |
 | P0-T09 (cleanup), final `baseline` compare | P0-T09 after approval (P0-G-T5); `baseline` compare not possible (snapshot lost with the emptied `.cache/`) | report § Guard | 2026-11-10 |
 | Gate 0 suite after the review fixes (working tree, quiet machine) | typecheck green; `npm test` 53/53; `spike:test` 50/50; `spike:test:unsandboxed` 12/12; `dist:mac` and S10 green; `privacy:scan` clean over `docs/plans`, `docs/PRD.md`, `spikes`, `scripts`, `test` | this run; the clean-checkout run on the gate SHA follows the gate commit | 2026-11-10 |
+| Gate 0 review fixes (round 1) | done | 20 findings fixed: runner (supervised version probe, registration failure stops the group), S1 orphan check by pid + start time, S3 never-closed stdin and paint ack (re-measured), spool counter reset, scanner (JSON-escaped Windows paths, fixture diff headers), S10 (clean service exit, shutdown-attempt control, drained output; re-run), S7 anchored elicitation check (recomputed), tee field allowlist (overhead re-run), S12 fresh-result and null checks, PRD/report consistency; owner OK for the fix commit | 2026-11-10 |
 
 ## 4. Design-decision log
 
@@ -136,11 +137,11 @@ All spike findings live only in `docs/plans/phase0_spikes.md` (created by P0-T10
 | S1 SQLite | pass | `node:sqlite` from Electron's bundled Node; no `better-sqlite3` (record_decision 16) | `phase0_spikes.md` § S1 |
 | S3 Forwarder | pass-narrowed | SEA forwarder over a private socket, commit ack, Stop synchronous; owner accepted the M16 burst miss (record_decision 23) | `phase0_spikes.md` § S3 |
 | S4 Claude plugin | pass | hooks-only plugin route adopted (record_decision 24) | `phase0_spikes.md` § S4 |
-| S5 Codex hooks | pass | `hooks.json` + Codex trust review; append after foreign entries (record_decision 25) | `phase0_spikes.md` § S5 |
+| S5 Codex hooks | pass-narrowed | `hooks.json` + Codex trust review; append after foreign entries, untested; foreign hooks added later shown as a Disconnect conflict (report §4; record_decision 25) | `phase0_spikes.md` § S5 |
 | S6 Codex interoperability | pass-narrowed | external Codex sessions observe-only; resume/fork syntax verified; daemon mode, VS Code, Desktop untested (record_decision 35) | `phase0_spikes.md` § S6 |
 | S7 Claude interoperability | pass on 2.1.322 | manual denial from the transcript; elicitation hooks validated; background completion arrives after Stop (record_decision 36) | `phase0_spikes.md` § S7 |
 | S9 Format survey | pass | fact set, schemas, fixtures; streaming zstd (record_decision 26) | `phase0_spikes.md` § S9 |
-| S10 Network | pass | kill-on-attempt audit profile, 0 attempts in 10 scenarios, 7 controls detected (record_decision 34) | `phase0_spikes.md` § S10 |
+| S10 Network | pass | kill-on-attempt audit profile; final run: 8 kill controls, the NetLog control and the shutdown-attempt control detected, quiet baseline, 0 attempts in 10 scenarios (record_decision 34) | `phase0_spikes.md` § S10 |
 | S11 Gemini/catalog | Gemini live UNVERIFIED (owner skip); catalog + validator pass | catalog draft; `ajv` 8.20.0 proposal (record_decision 27) | `phase0_spikes.md` § S11 |
 | S12 Capacity/latency | pass-narrowed (personal profile) | layout C, batch 100/50 ms/1 MiB, per-file watch + 5 s scan (record_decision 28) | `phase0_spikes.md` § S12 |
 | S13 Passive usage/context/cost | pass-narrowed (C8 partial) | SEA statusLine tee feasible (added wait p95 33–78 ms); Claude account scope unverified; Codex salted-hash marker (record_decision 33, owner approved) | `phase0_spikes.md` § S13 |

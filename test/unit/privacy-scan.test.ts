@@ -83,3 +83,8 @@ test('diff headers naming synthetic fixture files pass; other headers and fixtur
   const content = scanStdin(`+++ b/${f}\n+{"token":"${mixed(40)}"}\n`);
   assert.equal(content.status, 1);
 });
+
+test('Windows home paths are flagged plain and JSON-escaped', () => {
+  assert.equal(scanStdin('path C:\\Users\\someone\\x\n').status, 1); // privacy-scan:allow synthetic test input
+  assert.equal(scanStdin(JSON.stringify({ p: 'C:\\Users\\someone\\x' }) + '\n').status, 1); // privacy-scan:allow synthetic test input
+});

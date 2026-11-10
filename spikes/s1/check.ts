@@ -47,7 +47,16 @@ class App {
   }
 }
 
-const orphans = () => { try { return execFileSync('/usr/bin/pgrep', ['-f', 'XaiboSpike'], { encoding: 'utf8' }).trim(); } catch { return ''; } };
+// This run's app tree, recorded as pid + start time before a kill; orphans are only those exact processes still alive
+// afterwards (never a name match, which could hit another run or an unrelated process).
+const procs = () => execFileSync('/bin/ps', ['-axo', 'pid=,ppid=,lstart='], { encoding: 'utf8' }).split('\n').filter(Boolean)
+  .map((l) => { const [pid, ppid, ...st] = l.trim().split(/\s+/); return { pid: Number(pid), ppid: Number(ppid), start: st.join(' ') }; });
+function treeOf(root: number) {
+  const all = procs(); const out = all.filter((p) => p.pid === root);
+  for (let i = 0; i < out.length; i++) for (const p of all) if (p.ppid === out[i]!.pid && !out.includes(p)) out.push(p);
+  return out.map((p) => `${p.pid} ${p.start}`);
+}
+const orphans = (tree: string[]) => { const now = new Set(procs().map((p) => `${p.pid} ${p.start}`)); return tree.filter((k) => now.has(k)).map((k) => Number(k.split(' ')[0])); };
 const fail = (msg: string) => { console.log(`FAIL ${msg}`); process.exitCode = 1; };
 
 async function probe() {
@@ -127,11 +136,13 @@ async function crash() {
     for (let k = 1; k <= MAIN_KILLS; k++) {
       await sleep(KILL_MIN_MS + Math.floor(rand() * KILL_SPAN_MS));
       for (const m of app.msgs) if ('ack' in m) acked.add(m.ack);
+      const tree = treeOf(app.child.pid!);
       app.child.kill('SIGKILL');
       await app.exited;
       await sleep(2_000);
-      const left = orphans();
-      if (left) { fail(`main kill ${k}: orphan processes remain`); for (const p of left.split('\n')) process.kill(Number(p), 'SIGKILL'); }
+      const leftPids = orphans(tree);
+      const left = leftPids.length > 0;
+      if (left) { fail(`main kill ${k}: orphan processes remain`); for (const p of leftPids) { try { process.kill(p, 'SIGKILL'); } catch { /* gone */ } } }
       app = new App(dir, 's1-crash', extra);
       const [check] = await app.next((m) => 'check' in m);
       if (invariantsOk(check.check, acked, `main restart ${k}`) && !left) okMain++;

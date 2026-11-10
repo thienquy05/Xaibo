@@ -73,9 +73,12 @@ async function runMode(mode: Mode, baseline: Summary) {
   }
   if (['up', 'malformed', 'big300k', 'big10m', 'stdinopen', 'concurrent'].includes(mode)) rx = await startReceiver({ dataDir: dir, ackPoint: 'volatile' });
   if (mode === 'noack') rx = await startReceiver({ dataDir: dir, ackPoint: 'volatile', noAck: true });
-  const stdinFor = (): string | Buffer | null => ({
+  // `in`, not `??`: stdinopen's null (stdin never closed) must survive.
+  const special: Record<string, string | Buffer | null> = {
     malformed: 'this is { not json', big300k: payload(300 * 1024), big10m: Buffer.alloc(10 * 1024 * 1024, 0x61), stdinopen: null, fulldisk: payload(8 * 1024),
-  } as Record<string, string | Buffer | null>)[mode] ?? payload();
+  };
+  const stdinFor = (): string | Buffer | null => (mode in special ? special[mode]! : payload());
+  if (mode === 'stdinopen' && stdinFor() !== null) throw new Error('stdinopen must leave stdin open');
   const runs: Run[] = [];
   try {
     if (mode === 'concurrent') {

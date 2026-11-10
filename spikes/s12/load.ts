@@ -57,6 +57,7 @@ const READS: [string, string, (string | number)[]][] = [
   ['list_unfiltered', 'SELECT id, agent, project_id, last_activity, bytes, items FROM sessions WHERE trashed_at IS NULL ORDER BY last_activity DESC, id DESC LIMIT 50', []],
   ['fts_common_recent', FTS('f.rowid DESC'), ['kape']],
   ['fts_cjk_bm25', FTS('rank'), ['"嘶泷"']],
+  // substr: 64 Ki characters (up to ~192 KiB UTF-8 for CJK), not 64 KiB
   ['content_page1', 'SELECT id, source_seq, ts, kind, length(body) AS len, substr(body, 1, 65536) AS body FROM events WHERE session_id = ? AND source_seq > ? ORDER BY source_seq LIMIT 50', [1, 0]],
   ['quota_45d', `SELECT limit_id, as_of, used_percent, resets_at, kind FROM usage_snapshots WHERE usage_scope_id = 0 AND limit_id IN ('5h', '7d') AND as_of BETWEEN ? AND ? ORDER BY limit_id, as_of`, [TS_BASE, TS_BASE + 45 * DAY]],
   ['fts_common_bm25', FTS('rank'), ['kape']],
@@ -447,11 +448,14 @@ function makeBackfill() {
 }
 const only = v.runs ? new Set(v.runs.split(',')) : undefined;
 function runOne(name: string, args: string[]): any {
-  if (!v.reduce && (!only || only.has(name))) {
-    const res = spawnSync(process.execPath, [import.meta.filename, '--run', '--name', name, ...args], { stdio: 'inherit', env: process.env });
-    if (res.status !== 0) log(`${name}: exit ${res.status}`);
-  }
   const f = join(RAW, `load-${name}.json`);
+  if (!v.reduce && (!only || only.has(name))) {
+    // A run that was attempted must leave a fresh result: never fall back to an older file from a previous run.
+    rmSync(f, { force: true });
+    const res = spawnSync(process.execPath, [import.meta.filename, '--run', '--name', name, ...args], { stdio: 'inherit', env: process.env });
+    if (res.error || res.signal || res.status !== 0 || !existsSync(f)) throw new Error(`${name}: run failed (exit ${res.status}, signal ${res.signal ?? 'none'})`);
+  }
+  // Reusing an existing result is explicit: --reduce, or a run left out by --runs.
   return existsSync(f) ? JSON.parse(readFileSync(f, 'utf8')) : null;
 }
 const reduceRun = (r: any) => r && ({

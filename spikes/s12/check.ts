@@ -27,7 +27,9 @@ else {
 const l = read('load.json');
 if (!l?.runs?.length) say(false, 'load.json missing or empty (run --load, T4)');
 else for (const r of l.runs) {
-  say(r.queueAgeP95Ms <= T4.queueAgeP95Ms && r.drainMs <= T4.drainMs && r.lost === 0 && r.duplicated === 0,
+  // A missing measurement fails (null <= 1000 is true in JavaScript, so check the type first).
+  const ok = (x: unknown, max: number) => typeof x === 'number' && Number.isFinite(x) && x >= 0 && x <= max;
+  say(ok(r.queueAgeP95Ms, T4.queueAgeP95Ms) && ok(r.drainMs, T4.drainMs) && r.lost === 0 && r.duplicated === 0,
     `load ${r.arch}/${r.mix}: queue age p95 ${r.queueAgeP95Ms} ms, drain ${r.drainMs} ms, lost ${r.lost}, dup ${r.duplicated}`);
 }
 process.exitCode = failed ? 1 : 0;

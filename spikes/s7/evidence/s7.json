@@ -73,7 +73,8 @@
     "transcript": {
       "isError": true,
       "rejected": true,
-      "interrupted": false
+      "interrupted": false,
+      "action": null
     },
     "fileCreated": null,
     "fileCreatedNote": "not measurable: spike.txt was left by the invalid auto-mode attempt in the same directory"
@@ -122,7 +123,8 @@
       "elicitationResultAction": "cancel",
       "serverSawAction": "cancel",
       "stopFired": true,
-      "idlePromptAfterIdle": true
+      "idlePromptAfterIdle": true,
+      "serverSawActionAnchored": true
     },
     "accept": {
       "prompts": 1,
@@ -166,7 +168,8 @@
       ],
       "elicitationResultAction": "accept",
       "serverSawAction": "accept",
-      "stopFired": true
+      "stopFired": true,
+      "serverSawActionAnchored": true
     },
     "decline": {
       "prompts": 1,
@@ -210,7 +213,8 @@
       ],
       "elicitationResultAction": "decline",
       "serverSawAction": "decline",
-      "stopFired": true
+      "stopFired": true,
+      "serverSawActionAnchored": true
     }
   },
   "t4": {
@@ -251,7 +255,8 @@
       "toolResult": {
         "isError": true,
         "rejected": true,
-        "interrupted": false
+        "interrupted": false,
+        "action": null
       },
       "note": "events after the interrupted call until the session ended, any source (the backgrounded subagent may add its own)"
     },

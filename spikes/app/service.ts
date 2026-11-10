@@ -59,6 +59,11 @@ else if (mode !== 'idle') {
 }
 
 parent.on('message', (e) => {
+  if (e.data?.type === 'quit') {
+    // S10 positive control for an attempt during shutdown (spike env only); otherwise exit cleanly.
+    if (process.env.XAIBO_S10_CONTROL === 'service-quit-tcp') { attempt('tcp'); setTimeout(() => process.exit(0), 1000); return; }
+    process.exit(0);
+  }
   const port = e.ports[0];
   if (e.data?.type !== 'port' || !port) return;
   rendererPort = port;

@@ -69,6 +69,7 @@ Procedure: P0-T04 (`guard.ts snapshot|compare`), P0-T05 (runner, deny wrapper, n
 | New `baseline` after the guard refinement (old kept locally as `baseline-v1`) | MATCH |
 | S10 run (`s10-pre`; snapshots retaken because the local cache had been emptied) | credential 0, agent keychain 0; real-config and non-agent keychain changes from the owner's own sessions (D-P0-32) |
 | S10 re-run (`s10b-pre`) | credential 0, agent keychain 0; a non-agent keychain change, treated as owner activity, left unmarked (D-P0-35) |
+| S10 final run (`s10c-pre`) | credential 0, agent keychain 0; a non-agent keychain change, treated as owner activity, left unmarked (D-P0-35) |
 | S6 blocks (`s6-pre`, `s6b-pre`, `s6c-pre`, `s6d-pre`) | `s6-pre`, `s6c-pre`, `s6e-pre` MATCH; `s6d-pre` credential 0, keychain 0, a real-config change (owner sessions running); `s6b-pre` a non-agent keychain change, treated as owner activity, left unmarked (D-P0-35) |
 | S7 blocks (`s7-pre`, `s7b-pre`, `s7c-pre`, `s7d-pre`) | `s7-pre`, `s7c-pre` MATCH; `s7b-pre` credential 0, keychain 0, a real-config change (owner sessions running); `s7d-pre` a non-agent keychain change, treated as owner activity, left unmarked (D-P0-35) |
 
@@ -126,11 +127,11 @@ Each section uses the same template: 2.1 question and PRD refs; 2.2 criteria (PR
 | S3-C1 | Compares packaged Electron-run-as-Node, a minimal standalone packaged forwarder, and native Claude HTTP on supported events | pass | A = Electron 45.2.3 binary with `ELECTRON_RUN_AS_NODE` (forwarder unpacked from asar; reading it from inside asar costs nothing measurable); B = Node SEA (`--build-sea`, code cache on/off, ad-hoc signed); C = Claude `type: "http"` hooks to a SEC2 loopback receiver |
 | S3-C2 | Dispatch/spawn, forwarder, transport, service, renderer and paint measured separately | pass | hop table below; clock sanity (1,000 cross-process pings, send < receive) pass |
 | S3-C3 | Synchronous agent wait measured against a no-Xaibo baseline | pass | `/bin/sh -c true` baseline, n = 1,000 per candidate and mode |
-| S3-C4 | M1 | pass (spike, not gate evidence) | end-to-end dispatch→paint ack p95: A 57 ms, B 49 ms, C 15 ms (≤ 250 ms) |
+| S3-C4 | M1 | pass (spike, not gate evidence) | end-to-end dispatch→paint ack p95 after the review fix (ack one frame after paint, an upper bound): A 84 ms, B 68 ms, C 32 ms (≤ 250 ms). The first run acked before paint (A 57, B 49, C 15 ms), which understated the paint hop |
 | S3-C5 | M16 | fail for A and B under a 50-way burst; pass otherwise | single dispatch added wait p95 A ≈ 58 ms, B ≈ 33 ms in every mode; own deadline met; burst of 50 simultaneous dispatches: added wait p95 A ≈ 453 ms, B ≈ 276 ms, own max A 155 ms, B 177 ms (CPU contention of 50 process starts). Returned to owner (§4) |
 | S3-C6 | Silent failure | pass A, B; partial C | A/B: 0 stdout/stderr bytes and exit 0 in all 9 modes × 1,000; C: one live service-down run printed agent-visible stderr (83 B across several http events; 0 B for a Stop-only hook) |
 | S3-C7 | Authentication | pass | socket: per-install token (0600) in every frame, constant-time compare; HTTP: token header (docs: header values can come from env via `allowedEnvVars`, so no plaintext token is required in settings) |
-| S3-C8 | Bounded input | pass | forwarder keeps ≤ 256 KB with a 40 ms stdin deadline (300 KB, 10 MB and never-closed stdin all exit 0 in time, flagged truncated); receiver rejects frames > 1 MB, bad version, bad token, bad JSON and truncated frames without a crash; HTTP receiver caps bodies at 1 MB |
+| S3-C8 | Bounded input | pass for B; never-closed stdin fails the own deadline for A | forwarder keeps ≤ 256 KB with a 40 ms stdin deadline (300 KB and 10 MB exit 0 in time, flagged truncated). Never-closed stdin was not actually exercised in the first run (a bench bug turned it into a closed stdin); re-run n = 1,000: B added wait p95 81 ms, own max 52 ms (pass); A own max 108 ms > 100 ms (fail; A is not the chosen runtime); receiver rejects frames > 1 MB, bad version, bad token, bad JSON and truncated frames without a crash; HTTP receiver caps bodies at 1 MB |
 | S3-C9 | Native trust | pass (shim) | one stable shim path (`shim.sh` model of `xaibo-hook`) is the only command in agent config for A and B; Codex trust behaviour itself is S5 |
 | S3-C10 | Service-down recovery | pass A, B; fail C | A/B: no socket or no ack → spool within the deadline; live service-down run: reply clean, 0 stderr bytes, 3 spooled, 3 replayed on the next start; C: nothing spooled (hook-only evidence lost) |
 | S3-C11 | Spool replay | pass | 1,000 spooled deliveries with 10 % duplicates replay to exactly 900; at-least-once duplicates (delivered and spooled under load) removed by `delivery_id` |
@@ -145,9 +146,11 @@ Rule: no qualifying option means an owner-reviewed target/implementation decisio
 
 | Candidate | dispatch/spawn | forwarder | transport | service | renderer+paint (upper bound) | end-to-end |
 |---|---|---|---|---|---|---|
-| A Electron-as-Node | 54.4 | 2.7 | 0.15 | 0.02 | 0.3 | 57.3 |
-| B SEA | 30.8 | 4.9 | 0.15 | 0.02 | 15.2 | 49.0 |
-| C HTTP | — | — | — | 0.01 | 15.2 | 15.2 |
+| A Electron-as-Node | 50.8 | 2.5 | 0.14 | 0.02 | 31.9 | 83.7 |
+| B SEA | 33.7 | 5.6 | 0.17 | 0.02 | 31.3 | 67.6 |
+| C HTTP | — | — | — | 0.01 | 32.2 | 32.2 |
+
+Re-run after the pre-gate Codex review: the renderer now acks from the frame after the element's frame, so renderer+paint is an upper bound including up to one extra frame (~32 ms at 60 Hz). The first run acked from the same frame's callback, before paint (renderer+paint 0.3–15 ms, end-to-end A 57, B 49, C 15 ms); the true paint time lies between the two runs. The raw files of the first run are no longer on disk.
 
 Other facts: ack point (i) after validation + publish p95 0.06 ms; (ii) after an immediate small SQLite commit p95 0.14 ms (both far inside the deadline). First runs after 60 s idle: A p95 101 ms, B 67 ms. SEA code cache on vs off: no measurable difference. Own deadline must be 100 ms minus runtime startup p95 (else a hung service costs 125–150 ms in total); with 40 ms (A) / 60 ms (B) a hung service costs 82 / 77 ms on warm runs; after 60 s idle (B startup p95 67 ms) it can exceed 100 ms, so the Phase 3 derivation uses the idle-start p95. Live (temp Claude 2.1.319, `claude -p`): A and B async command hooks delivered SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, SessionEnd; an async Stop hook runs but is lost (not delivered, not spooled) because the headless process exits; a synchronous Stop is delivered. Transcripts: Claude adds a `system` record (`subtype` `stop_hook_summary`) with hook count; added context empty and hook errors 0 in every run except the HTTP service-down run (1). Turn time with async hooks equals the no-hook baseline (coarse).
 
@@ -328,8 +331,8 @@ Owner audit entry points (T3): Claude `entrypoint` values in real use `cli`, `cl
 | S10-C3 | Service covered | pass | utility process under the same profile; controls `service-tcp`, `service-dns` killed |
 | S10-C4 | Forwarder candidates covered | pass | SEA and Electron-as-Node forwarders under the profile: exit 0 and their own stats line proves they ran (acked with the service up, spooled with it down); kill controls on both forwarder runtimes |
 | S10-C5 | Startup, idle, errors, shutdown and dependencies exercised | pass | 10 scenarios, each reached its marker (2.4) |
-| S10-C6 | Positive control detected | pass | 8 of 8 kill controls (TCP and DNS from main, service, the official Node runtime and the Electron-as-Node runtime), the NetLog control, and a quiet no-control baseline |
-| S10-C7 | Zero attempted (not merely zero successful) non-loopback connections | pass | two full runs: 0 unexpected process deaths (service deaths counted); lsof 0 non-loopback lines in 2,410 and 2,240 samples; NetLog 0 non-local events (part of pass/fail in the second run); main exit 0 |
+| S10-C6 | Positive control detected | pass | final run: 8 of 8 kill controls (TCP and DNS from main, service, the official Node runtime and the Electron-as-Node runtime), the NetLog control, an attempt by the service during shutdown, and a quiet no-control baseline |
+| S10-C7 | Zero attempted (not merely zero successful) non-loopback connections | pass | three full runs: 0 unexpected process deaths; lsof 0 non-loopback lines in 2,410, 2,240 and 2,416 samples; NetLog 0 non-local events (part of pass/fail from the second run); main exit 0. Final run after the Codex review: the service exits cleanly at quit, so any service killed by the audit counts; results read only after the app's output is drained |
 
 **2.3 Method.** Command: `npm run spike:s10` (controls first, then the scenarios; `-- --only control` runs the controls alone; the plan's `--control` flag was not implemented). `spikes/s10/audit.sb` allows everything except non-loopback IP and the `mDNSResponder` socket, and **kills** (SIGKILL) a process on its first such attempt. `spikes/s10/run.ts` runs the packaged app (`--no-sandbox`, mode `s3`, NetLog on) and the forwarder candidates under that profile, drives the scenarios through stdin commands (`XAIBO_S10=1`, spike env only), and treats any process death other than the two it causes itself as an attempt. Supplementary recorders: `lsof -i` over the process tree every 250 ms, Chromium NetLog, the kernel denial log. Positive controls (`spikes/s10/control.ts`): one TCP attempt to a reserved test address and one DNS lookup of a reserved name from main, from the service and from the forwarder's Node runtime; one Chromium-stack request under a non-killing copy of the profile for NetLog. Controls ran first (the detector's RED proof), then the scenarios. Run outside the Claude sandbox (Seatbelt does not nest; owner approval 2026-11-10). Guard `s10-pre` around the run.
 
@@ -357,16 +360,16 @@ Deviations from the plan: (1) kill-on-attempt replaces counting kernel log lines
 
 | Phase | RSS mean / p95 / max (MiB) | CPU mean / p95 / max (%) | Target |
 |---|---|---|---|
-| Window open, 5 min (run 1 / run 2) | 373 / 406 / 448; 343 / 407 / 449 | 0.1 / 0 / 16.7; 0.2 / 0.5 / 13.1 | M5 ≤ 450 MB |
-| Window closed, 5 min (run 1 / run 2) | 270 / 275 / 275; 198 / 225 / 225 | 0.0 / 0 / 0.2; 0.1 / 0.1 / 3.2 | M4 ≤ 250 MB, CPU ≤ 1% |
+| Window open, 5 min (runs 1 / 2 / 3) | 373 / 406 / 448; 343 / 407 / 449; 266 / 404 / 437 | 0.1 / 0 / 16.7; 0.2 / 0.5 / 13.1; 0.2 / 1.6 / 9.8 | M5 ≤ 450 MB |
+| Window closed, 5 min (runs 1 / 2 / 3) | 270 / 275 / 275; 198 / 225 / 225; 134 / 143 / 144 | 0.0 / 0 / 0.2; 0.1 / 0.1 / 3.2; 0 / 0.2 / 0.7 | M4 ≤ 250 MB, CPU ≤ 1% |
 
-The second run followed the pre-freeze review fixes (forwarder stats check, counted service deaths, NetLog in pass/fail) and repeated every control and scenario.
+Run 2 followed the pre-freeze review fixes (forwarder stats check, counted service deaths, NetLog in pass/fail); run 3 followed the Codex review fixes (clean service exit at quit, shutdown-attempt control, output drained before results). Each repeated every control and scenario.
 
 - **Keychain.** No keychain item was created under the app's name; the guard showed 0 agent keychain changes and 0 credential changes. It also showed real-config and non-agent keychain changes during the window, which the spike app has no code path to cause; the owner confirmed they were the owner's own sessions (D-P0-32).
 
 **2.5 Decision.** record_decision 34. Audit method: the kill-on-attempt profile with positive controls; the existing P2 policy (request filter for non-`file:` URLs, navigation and `window.open` denial, permission denial) is sufficient; no Chromium switch is added; `--use-mock-keychain` is not needed on this evidence.
 
-**2.6 Consequences.** Gate 1 E2E (EC-60, P1-T05) reuses `audit.sb` and the unexpected-death check, with the controls run once per gate; the MCP process is audited the same way before v1-C. M4 is at risk: window-closed RSS was 270 MiB mean in one run and 198 MiB (max 225) in the other against ≤ 250 MB, so it varies between runs (summed RSS overstates it; Phase 3 measures with a footprint-based method and without the spike receivers). M5 has little headroom (max 448–449 MiB). Residual gaps: the audited app runs with Chromium's own sandbox off, so a difference that only appears with it on is not covered; `sandbox-exec` is deprecated; DNS detection assumes lookups go through `mDNSResponder` or a direct IP connection; `~/Library/Preferences/local.xaibo.spike.plist` is still written (P0-T03 finding).
+**2.6 Consequences.** Gate 1 E2E (EC-60, P1-T05) reuses `audit.sb` and the unexpected-death check, with the controls run once per gate; the MCP process is audited the same way before v1-C. M4 is at risk: window-closed RSS was 270, 198 and 134 MiB mean in three runs against ≤ 250 MB, so it varies a lot between runs (summed RSS overstates it; Phase 3 measures with a footprint-based method and without the spike receivers). M5 has little headroom (max 448–449 MiB). Residual gaps: the audited app runs with Chromium's own sandbox off, so a difference that only appears with it on is not covered; `sandbox-exec` is deprecated; DNS detection assumes lookups go through `mDNSResponder` or a direct IP connection; `~/Library/Preferences/local.xaibo.spike.plist` is still written (P0-T03 finding).
 
 ### S11 — Gemini and catalog
 
@@ -387,11 +390,11 @@ The second run followed the pre-freeze review fixes (forwarder stats check, coun
 | S11-C9 | Generic maps (catalog-required) | pass | `spikes/s11/catalog/gemini.entry.json` expresses the §6.8 mappings as exact event + field predicates |
 | S11-C10 | Synthetic custom-agent schema (catalog-required) | pass | `spikes/s11/catalog/agents.catalog.schema.draft.json` (§7.3 v1 fields, `additionalProperties: false`, argv-only launch templates, whole-argument placeholders); `synthetic-agent.entry.json` (report v1 only) passes (M15 feasible); six negatives fail for their intended reasons (unknown field, shell string, imported entry shadowing a bundled ID (loader rule), profile-root escape, code field, ACP field); adversarial review fixed five defects |
 | S11-C11 | Unsupported facts explicit (conditional) | pass | `spikes/s11/evidence/expressiveness.json`: 37 fact classes labelled data / needs a tested adapter / core / excluded |
-| S11-C12 | JSON Schema validator selected (catalog-required) | pass (owner approval at Gate 0) | `spikes/s11/evidence/validator.json` (source per cell): proposal `ajv` 8.20.0 exact pin, `ajv/dist/2020` with `strict: true`, `allErrors: true`, never `loadSchema`/`compileAsync`; 4 permissive dependencies; install at Phase 1 start (OQ-X6); costs: ~1.3 MB, CommonJS, runtime code generation. Selected from registry metadata and docs; the optional compile trial in the packaged utilityProcess was not run |
+| S11-C12 | JSON Schema validator selected (catalog-required) | pass (owner approved 2026-11-10, D-P0-34; install at Phase 1 start; optional runtime trial not run) | `spikes/s11/evidence/validator.json` (source per cell): proposal `ajv` 8.20.0 exact pin, `ajv/dist/2020` with `strict: true`, `allErrors: true`, never `loadSchema`/`compileAsync`; 4 permissive dependencies; install at Phase 1 start (OQ-X6); costs: ~1.3 MB, CommonJS, runtime code generation. Selected from registry metadata and docs; the optional compile trial in the packaged utilityProcess was not run |
 
 **2.3 Method.** Installed `@google/gemini-cli` 0.46.0 package read as text; temp Gemini profile through the runner (unauthenticated probe only); catalog draft and validator research by a workflow with an adversarial review; zero-dependency subset checker `spikes/s11/catalog/check.ts` (not the product validator).
 
-**2.5 Decision.** Gemini live observation UNVERIFIED and returned to the owner (report §4, decided: skip); `maxAge` offer not shown; catalog v1 draft adopted as the Phase 6 seed; validator proposal `ajv` 8.20.0 at Phase 1 start (record_decision 27).
+**2.5 Decision.** Gemini live observation UNVERIFIED and returned to the owner (report §4, decided: skip); `maxAge` offer not shown; catalog v1 draft adopted as the Phase 6 seed; validator `ajv` 8.20.0 at Phase 1 start (record_decision 27; owner approved 2026-11-10, D-P0-34).
 
 **2.6 Consequences.** Proposed PRD delta (D-P0-25): replace Gemini CLI with the Antigravity CLI (`agy`) as the third agent, evaluated in Phase 2 (public sources, unverified: lifecycle hooks with `transcript_path`, JSONL transcripts under `~/.gemini/antigravity-cli/brain/<id>/…`, no cwd or version stamp in the transcript; the IDE uses a separate store). App. E #16, #17, #24 (Gemini) stay UNVERIFIED; Q18 answer: Gemini observation unverified on 0.46.0 because personal Google sign-in is rejected (API key or Vertex would be needed); FR-51 Gemini effort: unavailable. EC-80/EC-81/EC-90 (Gates 2 and 6) have no Phase 0 evidence; Gemini fixtures not written (no observed semantics). App. C delta: `ajv` 8.20.0 in Phase 1. Catalog draft field names and enums go to Codex for design review at Gate 0.
 
@@ -409,7 +412,7 @@ The second run followed the pre-freeze review fixes (forwarder stats check, coun
 | S12-C4 | Worker isolation measured | pass (spike, not gate evidence) | Variants A, B, C × mixes file and hook25 (120 s each). Dispatch-loop delay max: A 441–446 ms, B 460–720 ms, C 13–24 ms (2.4 table) |
 | S12-C5 | Query times measured | pass (measured); one query over budget | n = 200 warm and 200 "cold" (new process, page cache warm). Lists, content and CJK/rare/recency search are within DB budgets. bm25 on a common term: cold p99 593 ms > 500 ms search budget before paint (2.4) |
 | S12-C6 | Watcher/FD strategy measured | pass | (b) per-active-file `fs.watch` and (c) `fs.watchFile` polling measured at 5 and 15 appenders, `launchctl` soft limit 256 recorded. (a) recursive `fs.watch` (FSEvents), measured afterwards outside the command sandbox: append→event p95 ≈ 14.6 s (max ≈ 15.0 s) at 5 and 15 appenders, 0 missed, so unusable for M2 |
-| S12-C7 | Queue age measured | pass (spike, not gate evidence) | Persistence queue age p95 124–241 ms in every whole run, 266 ms during the expiry window (≤1 s); drain 12–184 ms (≤5 s) |
+| S12-C7 | Queue age measured | pass (spike, not gate evidence) | Persistence queue age p95 124–241 ms in every whole run, 266 ms during the expiry window (≤1 s). Every committed run has its own measurements and pass flag (no nulls); that each came from a fresh run cannot be shown after the fact, because the runner could reuse an older result after a failed run (fixed after the Codex review); drain 12–184 ms (≤5 s) |
 | S12-C8 | Candidate forwarder hops measured | pass (service side, pipe transport); socket not-run in S12 | Hook deliveries used S3 framing + version + timing-safe token check over an inherited pipe (socket `bind()` EPERM in the sandbox). Receive→publish p95 0.06–0.09 ms in every variant. Send→publish p95 (spike, not gate evidence): A 83–97 ms, B 55 ms, C 0.19–0.32 ms. SEA spawn and socket connect hops: S3 table |
 | S12-C9 | 45-day minute-sampled quota histories, transition rows, context projections and price provenance included | pass | 2 streams (`5h`, `7d`; OQ-A8 = 2), each 64,800 minute samples + 648 transitions = 65,448 rows; 2,982 `context_snapshots`; 192 `price_provenance` rows; monthly totals and peaks tables |
 | S12-C10 | Synthetic row counts, table/index/WAL bytes, retention cost and live/query interference reported | pass | Rows per table and DBSTAT bytes; build WAL max ~183 MiB (build-time only), live WAL max 30–59 MB, checkpoint busy 0. One-day expiry 549 ms in 35 batches under C load, loop max 1.89 ms. Read latencies under load per variant (2.4) |
@@ -442,13 +445,13 @@ No real store was read. Data was written under the git-ignored `.cache/spike-dat
   - A wrong parameter fails the self-check. For example, `--median-bytes 20000` gives "median 23342 not ~200000 (±15%)" and exit 1.
   - `spikes/s12/check.ts` asserts the corpus and T4 thresholds. It failed before `load.json` existed.
 - **T2 build** (`npm run spike:s12 -- --build`).
-  - S1 schema shape: events, sessions, FTS5 external content over the first 64 KiB of each item, §7.4 indexes.
+  - S1 schema shape: events, sessions, FTS5 external content over the first 64 Ki characters of each item (SQLite `substr` counts characters: up to ~192 KiB of UTF-8 for CJK text), §7.4 indexes.
   - 30 commits of ≤20k rows / 64 MiB; `wal_checkpoint(TRUNCATE)`.
   - DBSTAT, `integrity_check` and FTS integrity-check.
 - **T3 queries** (`--queries`, read-only connection, default `cache_size`).
   - 200 warm runs: one connection, statements prepared once, 5 warm-up runs.
   - 200 "cold" runs: a new packaged process and connection per run, prepare included, OS page cache warm (OQ-A11). True cold (`sudo purge`) was not run.
-  - Pages: list 50 rows; FTS 20 rows with `snippet()`; content ≤50 rows × 64 KiB on the 50 MB session, pages 1–6 by keyset.
+  - Pages: list 50 rows; FTS 20 rows with `snippet()`; content ≤50 rows × 64 Ki characters on the 50 MB session, pages 1–6 by keyset.
   - Times are the DB portion only.
 - **T4 load** (`--load`, `spikes/s12/load.ts`). Each run works on an APFS clone of the T2 DB.
   - Variants:
@@ -484,7 +487,7 @@ No real store was read. Data was written under the git-ignored `.cache/spike-dat
 |---|---|
 | Sessions | 1,500 (median 221,703 B, p99 18.2 MB, max 50 MB × 2) |
 | Content | 1,955,170,274 B (1.82 GiB) |
-| Events | 364,829 (p50 2,043 B, p99 52,178 B, max 1.03 MB; 2,303 over the 64 KiB FTS prefix) |
+| Events | 364,829 (p50 2,043 B, p99 52,178 B, max 1.03 MB; 2,303 over the 64 Ki-character FTS prefix) |
 | Text mix | CJK 0.080, emoji 0.020; rare-term items 2 |
 | Build | 39.4 s total (load 36.0 s, indexes 3.3 s) |
 | Verify | `integrity_check` 7.9 s ok; FTS integrity-check 5.6 s ok |
@@ -710,9 +713,10 @@ Rule: no qualifying tee returns to the owner for a scope/implementation decision
 
 | Runtime | Listener up p50 / p95 / max | No listener | Listener never reads | Bound p95 ≤ 100 |
 |---|---|---|---|---|
-| SEA (packaged) | 29.3 / 32.8 / 62.3 | 30.5 / 33.1 / 49.4 | 74.9 / 77.7 / 83.5 | pass |
-| System Node, `node tee.ts` | 121.3 / 124.9 / 171.0 | 121.3 / 124.1 / 136.3 | 163.1 / 167.6 / 199.7 | **fail** |
+| SEA (packaged), run 1 / run 2 | 29.3 / 32.8 / 62.3; 28.6 / 31.0 / 1317 | 30.5 / 33.1 / 49.4; 28.6 / 30.4 / 34.5 | 74.9 / 77.7 / 83.5; 74.9 / 77.0 / 86.6 | pass |
+| System Node, `node tee.ts` (run 1; run 2 also fails: p95 135 / 134 / 191) | 121.3 / 124.9 / 171.0 | 121.3 / 124.1 / 136.3 | 163.1 / 167.6 / 199.7 | **fail** |
 
+- Run 2 (after the pre-gate Codex review) uses an explicit field allowlist in the capture record (numbers only, at the observed statusLine paths) instead of a value-shape filter, which had let number- or date-shaped content under unknown keys through; G10 has negative cases for that. The one 1.3 s outlier in run 2 (listener up) is a single sample; p95 is unchanged.
 - The tee's cost is runtime startup (~30 ms on the SEA) plus, only when a listener accepts and never reads, its 50 ms send deadline.
 - Invocation contract: shell command string, JSON on a stdin pipe, project cwd, event-driven (gaps 1.1–16.6 s, median 9.1 s). A slow command is cancelled with SIGTERM, which the tee forwards.
 - statusLine stdin has no measurement-time field and no `spend_limit` was seen. `current_usage` is null before the first response. `effort.level` is present here and absent from transcripts (S9).
@@ -736,7 +740,7 @@ Rule: no qualifying tee returns to the owner for a scope/implementation decision
 | Dependency list for approval (App. C delta) | PRD v1.1 App. C: electron 45.2.3, typescript 7.0.2, electron-builder 26.18.0 installed (Phase 0); `better-sqlite3` not needed (S1); `ajv` 8.20.0 proposed for Phase 1 start (S11-C12); official Node 26.10.0 tarball as a dev-time SEA build tool, product Node binary decided in Phase 3 (D-P0-21, OQ-A4); two SEA binaries (~138 MB each: forwarder, statusLine tee); 6 moderate `npm audit` advisories in the installed dev dependencies (§ Environment). **Owner approved 2026-11-10 (D-P0-34, G0-10)** | S1, S3, S11-T9, S13 |
 | Q8 watch-reconciliation default (FR-02) | 5 s at the personal profile (recovery 6 s); ≥15–30 s at ~10k files | S12 |
 | S13 tee-feasibility and account-scope decision | tee feasible as a SEA (added wait p95 33–78 ms); Claude scope unverified; Codex salted-hash epoch marker (owner approved; PRD §5.11 clarification in the Gate 0 delta) | S13 |
-| JSON Schema validator selection | proposal `ajv` 8.20.0, install at Phase 1 start (owner approval at Gate 0) | S11-C12 |
+| JSON Schema validator selection | `ajv` 8.20.0, owner approved 2026-11-10 (D-P0-34); installed at Phase 1 start; optional runtime trial not run | S11-C12 |
 | Compatibility matrix | Codex 0.160.0 rows (§ S6); Claude rows on 2.1.322 (§ S7), the installed version after an auto-update from the 2.1.319 pin (D-P0-33); untested cells carry reasons; record_decision 37 | S6, S7 |
 
 ## 4. Required-scope misses returned to owner
@@ -746,6 +750,7 @@ Rule: no qualifying tee returns to the owner for a scope/implementation decision
 | S3 M16 under a 50-way simultaneous burst (both process candidates) | § S3: added wait p95 A ≈ 453 ms, B ≈ 276 ms; own max 155/177 ms; nothing lost (spooled) | (1) accept the burst miss, choose A; (2) accept, choose B; (3) add a native forwarder candidate (OQ-A3); (4) narrow M16's burst requirement | 2026-11-10: (2) accept, SEA |
 | S11 core Gemini observation (C1–C5) | § Guard: Google rejected personal sign-in for Gemini CLI 0.46.0 | (1) skip the live parts (UNVERIFIED); (2) sign in with an API key or Vertex; (3) replace Gemini CLI with the Antigravity CLI, evaluated in Phase 2 (D-P0-25, proposed) | 2026-11-10: (1) skip (D-P0-19); (3) replace with the Antigravity CLI (D-P0-36) |
 | S12 capacity at plan scale (C1–C3 narrowed): 50 sessions / 200 events/s / 10 min, ≥10 GiB / 10,000 sessions and the 200 MB session not run (M13, M14, EC-57, EC-87); M3 import rate and M13 common-term bm25 at risk | § S12 | (1) keep plan scale at Gates 4/5; (2) amend the targets to the personal profile; (3) keep the targets and measure them in a deferred scale-up stage | 2026-11-10: personal profile for the spike (D-P0-24) and (3) (D-P0-26); the stage runs when the owner starts it, likely after the first version (D-P0-36) |
+| S5-C5 foreign-hook trust: removing Xaibo's Codex hooks shifted a foreign hook onto a stale trust key, and it stopped running; the append-after-existing mitigation is untested and does not cover a foreign hook added later | § S5 | (1) adopt the append rule plus a Disconnect conflict for later foreign groups, tested in Phase 3 (Gate 3); (2) use the untested Codex plugin route instead; (3) narrow FR-34 for Codex | 2026-11-10: (1) proposed in the PRD v1.1 delta (FR-31); owner decision with the Gate 0 approval |
 | Claude version drift: the install auto-updated from the pinned 2.1.319 to 2.1.322; the Claude compatibility rows and S7 facts are 2.1.322, S3/S4/S9/S13-T1..T5 are 2.1.319 (G0-5 names 2.1.319) | § S7, D-P0-33 | (1) accept 2.1.322 for the matrix and re-check the S9 facts on the installed version at Gate 1; (2) reinstall 2.1.319 and re-run S7 | 2026-11-10: (1) accept 2.1.322 (D-P0-34, record_decision 39) |
 
 ## 5. Decisions (`record_decision` references)

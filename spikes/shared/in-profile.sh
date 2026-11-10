@@ -14,13 +14,19 @@ prefix=("${plan[@]:5:n}")
 cmd=("${plan[@]:5+n}")
 cd "$cwd"
 
-# Version freeze check, only when the command is the agent itself (no agent binary runs otherwise).
-version() { "${prefix[@]}" "$vagent" --version 2>/dev/null | head -1 || true; }
-[ -n "$vagent" ] && before="$(version)"
+# Version freeze check, only when the command is the agent itself (no agent binary runs otherwise). The probe runs
+# under the same supervisor as the command (group cleanup, survivor check); a failed probe invalidates the run.
+version() {
+  local out rc=0
+  out="$(/usr/bin/perl "$here/supervise.pl" "$token" "$pids" -- "${prefix[@]}" "$vagent" --version 2>/dev/null)" || rc=$?
+  [ "$rc" -eq 0 ] || { echo "in-profile: version probe failed ($rc); run invalid" >&2; return 1; }
+  printf '%s\n' "$out" | sed -n 1p
+}
+if [ -n "$vagent" ]; then before="$(version)" || exit 124; fi
 rc=0
 /usr/bin/perl "$here/supervise.pl" "$token" "$pids" -- "${prefix[@]}" "${cmd[@]}" || rc=$?
 if [ -n "$vagent" ]; then
-  after="$(version)"
+  after="$(version)" || rc=124
   printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$before" "$after" >> "$(dirname "$pids")/versions.log"
   if [ "$before" != "$after" ]; then echo "in-profile: agent version changed during the run; run invalid" >&2; rc=124; fi
 fi

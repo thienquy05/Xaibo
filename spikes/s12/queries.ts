@@ -28,6 +28,7 @@ type Q = { name: string; budget: keyof typeof BUDGET | null; sql: string; args: 
 const LIST_COLS = 'id, agent, project_id, last_activity, bytes, items';
 const FTS = (order: string) => `SELECT f.rowid AS id, e.session_id, snippet(events_fts, 0, '[', ']', '…', 12) AS snip
   FROM events_fts f JOIN events e ON e.id = f.rowid WHERE events_fts MATCH ? ORDER BY ${order} LIMIT ${FTS_PAGE}`;
+// substr counts characters, not bytes: the cap is 64 Ki characters, up to ~192 KiB of UTF-8 for CJK text.
 const CONTENT = `SELECT id, source_seq, ts, kind, length(body) AS len, substr(body, 1, ${CONTENT_ITEM_CAP}) AS body
   FROM events WHERE session_id = ? AND source_seq > ? ORDER BY source_seq LIMIT ${CONTENT_ROWS}`;
 const QUERIES: Q[] = [

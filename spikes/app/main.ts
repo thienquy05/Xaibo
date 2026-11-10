@@ -116,6 +116,17 @@ app.whenReady().then(() => {
   startService();
 });
 
-app.on('before-quit', () => { quitting = true; service?.kill(); });
+// Quit asks the service to exit cleanly (S10: a 'killed' report at quit is then always unexpected); a service that
+// has not exited after 2 s is killed.
+app.on('before-quit', (e) => {
+  quitting = true;
+  const s = service;
+  if (!s) return;
+  e.preventDefault();
+  service = null;
+  const timer = setTimeout(() => s.kill(), 2_000);
+  s.once('exit', () => { clearTimeout(timer); app.quit(); });
+  s.postMessage({ type: 'quit' });
+});
 app.on('window-all-closed', () => { /* tray app: stay alive */ });
 process.on('SIGTERM', () => app.quit());

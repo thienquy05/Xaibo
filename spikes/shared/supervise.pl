@@ -111,12 +111,20 @@ if (!$group_ok) {
   exit $code;
 }
 
+# Registration must succeed, or the command group is stopped before exiting (cleanup finds runs by this record).
 my $lstart = `/bin/ps -o lstart= -p $$`;
 chomp $lstart;
 $lstart =~ s/^\s+//;
-open my $pf, '>>', $pids_file or die "pids file: $!\n";
-print $pf join("\t", $$, $lstart, $pg, join(' ', @cmd)), "\n";
-close $pf;
+my $pf;
+my $registered = $hook ne 'register-fail' && open($pf, '>>', $pids_file)
+  && (print $pf join("\t", $$, $lstart, $pg, join(' ', @cmd)), "\n") && close($pf);
+unless ($registered) {
+  stop_group('KILL');
+  waitpid($child, 0);
+  unlink $marker;
+  print STDERR "in-profile: refused (pids registration)\n";
+  exit 126;
+}
 give_tty($pg);
 
 until ($stop) {

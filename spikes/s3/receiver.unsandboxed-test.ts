@@ -54,9 +54,12 @@ test('startup replays the spool deduplicated by delivery_id; commit ack point pe
   const lines = [...ids, ...ids.slice(0, 100)].map((id) => JSON.stringify(delivery('t', { delivery_id: id })));
   writeFileSync(join(dir, 'spool', 'a.jsonl'), `${lines.slice(0, 500).join('\n')}\n`);
   writeFileSync(join(dir, 'spool', 'b.jsonl'), `${lines.slice(500).join('\n')}\n`);
+  mkdirSync(join(dir, 'run'), { recursive: true });
+  writeFileSync(join(dir, 'run', 'spool-bytes'), String(50 * 1024 * 1024)); // counter at the cap from earlier outages
   const rx = await startReceiver({ dataDir: dir, ackPoint: 'commit' });
   try {
     assert.equal(rx.stats.replayed, 900);
+    assert.equal(readFileSync(join(dir, 'run', 'spool-bytes'), 'utf8'), '0', 'replay resets the spool byte counter');
     const token = readFileSync(join(dir, 'run', 'token'), 'utf8');
     assert.equal((await send(rx.socketPath, frame(delivery(token, { delivery_id: ids[0] })))).ack, true, 'duplicate still acked');
     assert.equal(rx.stats.duplicates, 101);

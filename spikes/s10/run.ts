@@ -48,7 +48,8 @@ function launch(mode: string, extra: NodeJS.ProcessEnv = {}, profile = PROFILE, 
     buf += d;
     for (let i; (i = buf.indexOf('\n')) >= 0; buf = buf.slice(i + 1)) { try { lines.push(JSON.parse(buf.slice(0, i))); } catch { /* not ours */ } }
   });
-  const exited = new Promise<{ code: number | null; signal: string | null }>((res) => child.on('exit', (code, signal) => res({ code, signal })));
+  // 'close', not 'exit': a final child-gone line may still be in the pipe when the process exits.
+  const exited = new Promise<{ code: number | null; signal: string | null }>((res) => child.on('close', (code, signal) => res({ code, signal })));
   return { child, lines, exited, dataDir };
 }
 
@@ -90,6 +91,18 @@ function lsofNonLoopback(root: number): number {
     const name = l.trim().split(/\s+/).slice(8).join(' ').replace(/ \(.*\)$/, '');
     return !name.split('->').every((side) => LOCAL.test(side));
   }).length;
+}
+
+// Death lines of one app run, then how many are not explained by what the driver did itself. The service exits
+// cleanly at quit (main asks it to), so every 'killed' service report beyond the driver's own SIGKILL is an attempt.
+const deathsOf = (lines: Line[]) => lines.filter((l) => l.service === 'exit' || 'child-gone' in l)
+  .map((l) => (l.service === 'exit' ? 'service-exit' : `${String(l['child-gone'])}:${String(l.reason)}:${String(l.name ?? '')}`));
+function unexpectedDeaths(deaths: string[], allowed: { rendererCrashes: number; serviceKills: number }) {
+  const n = (f: (x: string) => boolean) => deaths.filter(f).length;
+  const svcKilled = (x: string) => x.startsWith('Utility:') && x.endsWith(':xaibo-spike-service') && !x.startsWith('Utility:clean-exit:');
+  const known = (x: string) => x === 'service-exit' || x.startsWith('Renderer:') || x.startsWith('Utility:clean-exit:') || svcKilled(x);
+  return n((x) => !known(x)) + Math.max(0, n((x) => x === 'service-exit') - allowed.serviceKills)
+    + Math.max(0, n((x) => x.startsWith('Renderer:')) - allowed.rendererCrashes) + Math.max(0, n(svcKilled) - allowed.serviceKills);
 }
 
 function netlog(file: string) {
@@ -149,13 +162,20 @@ async function controls() {
   const parsed = netlog(file);
   res.netlog = parsed.parsed === true && (parsed.nonLocal ?? 0) > 0;
   await stop(n);
+  // An attempt by the service during shutdown must be counted by the same classifier as the scenario run.
+  const sq = launch('idle', { XAIBO_S10_CONTROL: 'service-quit-tcp' });
+  await seen(sq, (l) => l.smoke === 'paint-ack');
+  send(sq, 'quit');
+  await Promise.race([sq.exited, sleep(STEP_MS)]);
+  res['service-at-quit-tcp'] = unexpectedDeaths(deathsOf(sq.lines), { rendererCrashes: 0, serviceKills: 0 }) > 0;
+  await stop(sq);
   // The same harness with no control must report nothing (else the controls prove nothing).
   const q = launch('idle');
   const up = await seen(q, (l) => l.smoke === 'paint-ack');
   await sleep(2000);
   send(q, 'quit');
   const qe = await Promise.race([q.exited, sleep(5000).then(() => null)]);
-  res['quiet-baseline'] = up && qe?.code === 0 && !q.lines.some((l) => l.service === 'exit' || 'child-gone' in l);
+  res['quiet-baseline'] = up && qe?.code === 0 && unexpectedDeaths(deathsOf(q.lines), { rendererCrashes: 0, serviceKills: 0 }) === 0;
   await stop(q);
   return { results: res, netlogControl: parsed };
 }
@@ -209,7 +229,7 @@ async function scenarios() {
     reached.quit = exit?.code === 0;
   } finally { clearInterval(sampler); clearInterval(lsofTimer); }
   const parsedNetlog = netlog(nl);
-  const deaths = a.lines.filter((l) => l.service === 'exit' || 'child-gone' in l).map((l) => (l.service === 'exit' ? 'service-exit' : `${String(l['child-gone'])}:${String(l.reason)}:${String(l.name ?? '')}`));
+  const deaths = deathsOf(a.lines);
   await stop(a);
 
   const down = mkdtempSync(join(tmpdir(), 's10-'));
@@ -223,19 +243,13 @@ async function scenarios() {
   const report = d.lines.find((l) => 'report' in l)?.report as { main?: { error?: string } } | undefined;
   const dExit = await Promise.race([d.exited, sleep(STEP_MS).then(() => null)]);
   reached['DB open error'] = gotReport && typeof report?.main?.error === 'string' && dExit?.code === 0;
-  const dDeaths = d.lines.filter((l) => l.service === 'exit' || 'child-gone' in l).length;
+  const dDeaths = unexpectedDeaths(deathsOf(d.lines), { rendererCrashes: 0, serviceKills: 0 });
   await stop(d);
 
   await sleep(3000); logger.kill();
   writeFileSync(klog, klogText);
   const kernelLines = klogText.split('\n').filter((l) => /XaiboSpike|xaibo-forwarder/.test(l)).length;
-  // Expected deaths: the renderer this driver crashed and the service it killed (reported once or twice by Electron).
-  const expected = (x: string) => x === 'service-exit' || x.startsWith('Renderer:') || (x.startsWith('Utility:') && x.endsWith(':xaibo-spike-service'));
-  // Allowed: one renderer crash, one service-exit line (the SIGKILL scenario) and at most two Utility service reports
-  // (that kill and the quit). A service killed by the audit during quit prints no service-exit line, so it shows up
-  // as a third Utility report.
-  const unexpected = deaths.filter((x) => !expected(x)).length + Math.max(0, deaths.filter((x) => x === 'service-exit').length - 1)
-    + Math.max(0, deaths.filter((x) => x.startsWith('Renderer:')).length - 1) + Math.max(0, deaths.filter((x) => x.startsWith('Utility:')).length - 2) + dDeaths;
+  const unexpected = unexpectedDeaths(deaths, { rendererCrashes: 1, serviceKills: 1 }) + dDeaths;
   const idle = Object.fromEntries(Object.entries(samples).map(([k, v]) => [k, v.rssMiB.length ? { rssMiB: summary(v.rssMiB), cpuPercent: summary(v.cpu) } : null]));
   return { reached, unexpectedDeaths: unexpected, mainExit: exit, forwarderExit: { up: fwdUp, down: fwdDown }, lsof: { runs: lsofRuns, nonLoopbackLines: lsofHits }, netlog: parsedNetlog, kernelLogLines: kernelLines, idleSeconds: IDLE_MS / 1000, idle };
 }

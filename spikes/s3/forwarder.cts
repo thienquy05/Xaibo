@@ -47,15 +47,17 @@ function spool(line: string): void {
     const dir = path.join(dataDir!, 'spool');
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     // ponytail: approximate cap via a byte counter (racy under concurrency, can overshoot slightly); exact accounting
-    // would need a lock. Avoids listing the spool on every run (O(files) sync work blew the deadline).
+    // would need a lock. Avoids listing the spool on every run (O(files) sync work blew the deadline). The receiver
+    // resets the counter after each replay.
     const bytesFile = path.join(dataDir!, 'run', 'spool-bytes');
     let used = 0;
     try { used = Number(fs.readFileSync(bytesFile, 'utf8')) || 0; } catch { /* first spool */ }
-    if (used + line.length > SPOOL_CAP) throw new Error('cap');
+    const bytes = Buffer.byteLength(line);
+    if (used + bytes > SPOOL_CAP) throw new Error('cap');
     const day = new Date().toISOString().slice(0, 10);
     fs.appendFileSync(path.join(dir, `${day}-${process.pid}.jsonl`), line, { mode: 0o600 });
     settled = true;
-    try { fs.mkdirSync(path.dirname(bytesFile), { recursive: true, mode: 0o700 }); fs.writeFileSync(bytesFile, String(used + line.length), { mode: 0o600 }); } catch { /* counter best effort */ }
+    try { fs.mkdirSync(path.dirname(bytesFile), { recursive: true, mode: 0o700 }); fs.writeFileSync(bytesFile, String(used + bytes), { mode: 0o600 }); } catch { /* counter best effort */ }
     outcome = 'spooled';
   } catch {
     try {
