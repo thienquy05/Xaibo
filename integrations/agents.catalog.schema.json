@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "xaibo:agents.catalog.schema.json",
+  "title": "Xaibo agent catalog, Phase 1 detection subset (P1-T08; S11 definitions; grows additively at v1)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "agents"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "agents": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/agent" } }
+  },
+  "$defs": {
+    "refId": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$" },
+    "envName": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$" },
+    "relPath": { "type": "string", "maxLength": 256, "pattern": "^\\.?[A-Za-z0-9_-][A-Za-z0-9._-]*(/\\.?[A-Za-z0-9_-][A-Za-z0-9._-]*)*$" },
+    "literalArg": { "type": "string", "pattern": "^[A-Za-z0-9@%+=:,./_-]+$" },
+    "displayText": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "displayName", "detection", "profileRoots"],
+      "properties": {
+        "id": { "$ref": "#/$defs/refId" },
+        "displayName": { "$ref": "#/$defs/displayText" },
+        "detection": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["binaries"],
+          "properties": {
+            "binaries": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["id", "names", "versionArgs"],
+                "properties": {
+                  "id": { "$ref": "#/$defs/refId" },
+                  "names": {
+                    "description": "Lowercase command names; shells and command launchers are refused so argv can never become a shell string.",
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 8,
+                    "items": { "type": "string", "pattern": "^(?!(?:sh|bash|zsh|dash|ash|ksh|mksh|fish|csh|tcsh|busybox|env|nohup|xargs|cmd|powershell|pwsh|osascript)(?:\\.exe)?$)[a-z0-9_][a-z0-9._-]{0,63}$" }
+                  },
+                  "versionArgs": { "type": "array", "maxItems": 4, "items": { "$ref": "#/$defs/literalArg" } }
+                }
+              }
+            },
+            "locations": {
+              "description": "Known install directories, searched after the login-shell PATH and before giving up. ~ = user home; no .. segments.",
+              "type": "array",
+              "maxItems": 16,
+              "items": { "type": "string", "maxLength": 256, "pattern": "^~?(/\\.?[A-Za-z0-9_@+-][A-Za-z0-9._@+-]*)+$" }
+            }
+          }
+        },
+        "profileRoots": {
+          "description": "Root = <home>/<relative>, or the envOverride value itself (replaces-root) or <value>/<relative> (replaces-base).",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "base", "relative"],
+            "properties": {
+              "id": { "$ref": "#/$defs/refId" },
+              "base": { "const": "home" },
+              "relative": { "$ref": "#/$defs/relPath" },
+              "envOverride": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name", "mode"],
+                "properties": { "name": { "$ref": "#/$defs/envName" }, "mode": { "enum": ["replaces-base", "replaces-root"] } }
+              }
+            }
+          }
+        },
+        "existenceEvidence": {
+          "description": "Files or dirs whose presence is evidence only, never proof of installation or authentication (FR-01).",
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["root", "path", "kind"],
+            "properties": { "root": { "$ref": "#/$defs/refId" }, "path": { "$ref": "#/$defs/relPath" }, "kind": { "enum": ["file", "directory"] } }
+          }
+        }
+      }
+    }
+  }
+}

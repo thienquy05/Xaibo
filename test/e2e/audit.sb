@@ -1,0 +1,11 @@
+; E2E audit profile (P1-T05), copied from the S10 profile (P0-S10-T1): everything allowed except non-loopback network and DNS. A process that attempts either is
+; killed (SIGKILL), so one attempt cannot go unnoticed; the kernel's denial log is kept only as a hint, because it
+; drops reports (8 of 12 identical attempts were logged on macOS 27.2). fixtures.ts strips the modifier for the one
+; NetLog control, which needs the process to survive its denied attempt.
+; Order matters (verified on macOS 27.2): the loopback allow must come last, or loopback is denied too.
+(version 1)
+(allow default)
+; DNS goes through this socket: denied, so a lookup counts as an attempt.
+(deny network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder")) (with send-signal SIGKILL)) ; privacy-scan:allow system socket, not a home path
+(deny network-outbound (remote ip "*:*") (with send-signal SIGKILL))
+(allow network-outbound (remote ip "localhost:*"))
