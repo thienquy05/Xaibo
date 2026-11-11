@@ -106,3 +106,17 @@ test('H2: the source option namespaces chunk ids', () => {
   assert.equal(a.filter((id) => ids('file-b').includes(id)).length, 0);
   assert.deepEqual(ids('file-a'), a, 'still deterministic');
 });
+
+test('H6: a lone escaped high surrogate followed by another character never exceeds the chunk bound', () => {
+  for (const pad of ['aaaaa', 'aaaa', 'aaaaaa', 'a'.repeat(7)]) {
+    const r = run(`{"type":"user","uuid":"U9","message":{"role":"user","content":"${pad}\\uD800éz"}}`, 3);
+    for (const c of r.chunks) assert.ok(Buffer.byteLength(c.content!) <= 8, `${pad}: ${Buffer.byteLength(c.content!)} bytes`);
+    assert.ok(r.chunks.map((c) => c.content).join('').endsWith('éz'), pad);
+  }
+  // Codex N1 at the default 64 KiB bound
+  const big = new OversizedRecord({ ...ctx, contentBytes: 64 * 1024 });
+  const recs = [...big.feed(Buffer.from(`{"type":"user","message":{"role":"user","content":"${'a'.repeat(65532)}\\ud800é"}}`)), ...big.end().records];
+  const chunks = recs.filter((x) => x.kind === 'content-chunk');
+  for (const c of chunks) assert.ok(Buffer.byteLength(c.content!) <= 64 * 1024);
+  assert.ok(chunks.at(-1)!.content!.endsWith('é'));
+});

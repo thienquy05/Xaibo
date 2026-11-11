@@ -28,15 +28,17 @@ type Frame = { t: 'o'; key: string; state: 'keyOrEnd' | 'key' | 'colon' | 'value
 type Target = 'readable' | 'small' | 'key' | 'skip';
 
 const isHigh = (c: number) => c >= 0xd800 && c < 0xdc00;
-const unitBytes = (c: number) => (c < 0x80 ? 1 : c < 0x800 ? 2 : isHigh(c) ? 4 : 3);
+const isLow = (c: number) => c >= 0xdc00 && c < 0xe000;
+/** A high surrogate followed by a low one at i (a pair, 4 UTF-8 bytes); a lone surrogate is one unit of 3 bytes. */
+const pairAt = (s: string, i: number) => isHigh(s.charCodeAt(i)) && isLow(s.charCodeAt(i + 1));
+const unitBytes = (c: number) => (c < 0x80 ? 1 : c < 0x800 ? 2 : 3);
 /** Length of the longest prefix of s within `room` UTF-8 bytes, never ending between a surrogate pair. */
 function fit(s: string, room: number): number {
   let bytes = 0;
   let i = 0;
   while (i < s.length) {
-    const c = s.charCodeAt(i);
-    const width = isHigh(c) && i + 1 < s.length ? 2 : 1;
-    const b = width === 2 ? 4 : unitBytes(c) === 4 ? 3 : unitBytes(c); // a lone high surrogate encodes as 3 bytes
+    const width = pairAt(s, i) ? 2 : 1;
+    const b = width === 2 ? 4 : unitBytes(s.charCodeAt(i));
     if (bytes + b > room) break;
     bytes += b;
     i += width;
@@ -74,7 +76,7 @@ class Cutter {
       const b = Buffer.byteLength(s);
       if (this.#bytes + b <= this.#max) { this.#buf += s; this.#bytes += b; return; }
       let n = fit(s, this.#max - this.#bytes);
-      if (n === 0 && !this.#buf) n = isHigh(s.charCodeAt(0)) ? 2 : 1; // one code point wider than the room: emit it alone
+      if (n === 0 && !this.#buf) n = pairAt(s, 0) ? 2 : 1; // one code point wider than the room: emit it alone
       this.#buf += s.slice(0, n);
       this.#cut();
       s = s.slice(n);

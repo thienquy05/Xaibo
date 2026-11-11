@@ -54,11 +54,13 @@ const serviceEvents = (data: string) => { const f = path.join(data, 'logs', 'ser
 // it before any packet leaves, and spawn.ts must report it as child_killed.
 script('claude', 'exec /usr/bin/nc -z -G 2 192.0.2.1 80');
 const control = launchApp(controlDir, path.join(root, 'control-netlog.json'));
-const controlClosed = new Promise((res) => control.on('close', res));
+const controlClosed = new Promise<boolean>((res) => control.on('close', () => res(true)));
 { const end = Date.now() + 30_000; while (Date.now() < end && !serviceEvents(controlDir).includes('detect')) await sleep(250); }
 const controlDetected = serviceEvents(controlDir).includes('child_killed');
 control.kill('SIGTERM');
-await Promise.race([controlClosed, sleep(20_000)]);
+// A control app that does not quit in time fails the audit and is killed before the main run starts.
+const controlQuit = await Promise.race([controlClosed, sleep(20_000).then(() => false)]);
+if (!controlQuit) { control.kill('SIGKILL'); await controlClosed; }
 script('claude', 'echo "2.1.319 (Claude Code)"');
 
 const app = launchApp(dataDir, netlog);
@@ -117,13 +119,14 @@ const result = {
   idleSeconds: IDLE_MS / 1000, reached, processesSeen: seen.size, unexpectedDeaths: unexpected.length,
   killedServiceDetected: killed !== undefined && vanished.includes(killed), // positive control for the death detector
   childKillControlDetected: controlDetected, // positive control for the child-kill detector
+  childKillControlQuit: controlQuit,
   childrenKilled: serviceEvents(dataDir).filter((e) => e === 'child_killed').length,
   unexpectedKinds: unexpected.map((p) => /--type=([\w-]+)/.exec(seen.get(p) ?? '')?.[1] ?? 'other'),
   mainExit: exit, serviceRestarts: count('service_restart'),
   netlog: { parsed: nl.parsed, events: nl.events, nonLoopback: nl.nonLocal },
   repoUnchanged: gitStatus(REPO) === gitBefore, fixtureStoresUnchanged: stores() === storesBefore,
 };
-const pass = Object.values(reached).every(Boolean) && result.killedServiceDetected && controlDetected && result.childrenKilled === 0 && unexpected.length === 0 && exit?.code === 0 && exit.signal === null
+const pass = Object.values(reached).every(Boolean) && result.killedServiceDetected && controlDetected && controlQuit && result.childrenKilled === 0 && unexpected.length === 0 && exit?.code === 0 && exit.signal === null
   && result.serviceRestarts === 1 && nl.parsed && nl.nonLocal === 0 && result.repoUnchanged && result.fixtureStoresUnchanged;
 const out = path.join(REPO, '.cache', 'gate-audit');
 mkdirSync(out, { recursive: true });
