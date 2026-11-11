@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "agents": [
+    {
+      "id": "claude",
+      "displayName": "Claude Code",
+      "detection": {
+        "binaries": [{ "id": "main", "names": ["claude"], "versionArgs": ["--version"] }],
+        "locations": ["~/.local/bin", "/opt/homebrew/bin", "/usr/local/bin"]
+      },
+      "profileRoots": [
+        { "id": "user", "base": "home", "relative": ".claude", "envOverride": { "name": "CLAUDE_CONFIG_DIR", "mode": "replaces-root" } }
+      ],
+      "existenceEvidence": [{ "root": "user", "path": "projects", "kind": "directory" }]
+    },
+    {
+      "id": "codex",
+      "displayName": "Codex",
+      "detection": {
+        "binaries": [{ "id": "main", "names": ["codex"], "versionArgs": ["--version"] }],
+        "locations": ["/opt/homebrew/bin", "/usr/local/bin"]
+      },
+      "profileRoots": [
+        { "id": "user", "base": "home", "relative": ".codex", "envOverride": { "name": "CODEX_HOME", "mode": "replaces-root" } }
+      ],
+      "existenceEvidence": [{ "root": "user", "path": "sessions", "kind": "directory" }]
+    }
+  ]
+}

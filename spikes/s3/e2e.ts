@@ -1,7 +1,7 @@
 // S3 end-to-end hop bench (P0-S3-T7): packaged app in mode s3, hooks dispatched through the shim per candidate,
 // hops dispatch/spawn, forwarder, transport, service, renderer+paint (upper bound incl. return hop) and end-to-end
 // p50/p95/p99/max; candidate C via a synthetic loopback POST. Also the clock sanity check and both ack points.
-// Run unsandboxed after `npm run dist:mac`: node spikes/s3/e2e.ts [--n 1000]
+// Run unsandboxed after `npm run spike:dist:mac`: node spikes/s3/e2e.ts [--n 1000]
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';

@@ -5,10 +5,12 @@
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "erasableSyntaxOnly": true,
-    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "rewriteRelativeImportExtensions": true,
     "noEmit": true,
     "types": ["node"],
     "skipLibCheck": true
   },
-  "include": ["scripts/**/*.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.cts", "scripts/**/*.ts", "test/**/*.ts", "vite.config.ts"],
+  "exclude": ["src/renderer"]
 }

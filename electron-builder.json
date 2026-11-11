@@ -1,0 +1,10 @@
+{
+  "appId": "local.xaibo.app",
+  "productName": "Xaibo",
+  "electronVersion": "45.2.3",
+  "electronDist": "node_modules/electron/dist",
+  "directories": { "output": "release" },
+  "files": ["package.json", "out/**", "dist/renderer/**", "integrations/**"],
+  "npmRebuild": false,
+  "mac": { "target": "dir", "identity": "-", "hardenedRuntime": false }
+}
