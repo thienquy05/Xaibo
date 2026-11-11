@@ -1,0 +1,25 @@
+{
+  "evidence": "P2-T02 compaction: spikes/s9/evidence/facts.json codex.compaction (recorded on 0.160.0) and the compacted shape in spikes/s9/schemas/codex-0.160.0.schema.json; window ids and the summary text are synthetic.",
+  "files": {
+    "00000000-0000-4000-8000-0000000c0032": {
+      "records": 7,
+      "kinds": { "session": 1, "turn_context": 1, "message": 2, "compaction": 1, "item": 1, "token_count": 1 },
+      "unknown": 0,
+      "session": { "id": "00000000-0000-4000-8000-0000000c0032", "filenameMatchesMeta": true, "cwd": "/tmp/xaibo-fixture/alpha", "source": "cli", "originator": "codex-tui", "cliVersion": "0.160.0" },
+      "turnIds": ["00000000-0000-4000-8000-0000000c1032"],
+      "models": ["gpt-6.1-sol"],
+      "efforts": [null],
+      "approvalPolicies": [],
+      "sandboxPolicies": [],
+      "messages": [
+        { "role": "user", "content": "synthetic prompt", "injected": false },
+        { "role": "assistant", "content": "synthetic reply", "injected": false }
+      ],
+      "toolCalls": [],
+      "toolResults": [],
+      "compactions": ["synthetic summary"],
+      "tokenCountEvents": 1,
+      "rateLimitEvents": 0
+    }
+  }
+}
