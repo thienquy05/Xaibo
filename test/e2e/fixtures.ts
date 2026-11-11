@@ -45,6 +45,9 @@ export interface Xaibo {
   window(run: Run): Promise<Page>;
   quit(run: Run): Promise<Exit>;
   audit(run: Run): Promise<Audit>;
+  /** The test's own write to a fixture agent store (e.g. a transcript append): the stores must be unchanged before
+   *  it, and the post-write state becomes the expected one. */
+  touchStore(write: () => void): void;
 }
 
 export const alive = (pid?: number) => { if (!pid) return false; try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -84,7 +87,8 @@ export const test = base.extend<{ xaibo: Xaibo }>({
     const logOnlyProfile = path.join(root, 'audit-log-only.sb');
     writeFileSync(logOnlyProfile, readFileSync(PROFILE, 'utf8').replaceAll(' (with send-signal SIGKILL)', ''));
     const storesOf = () => JSON.stringify(STORES.map((d) => treeHashes(path.join(home, d))));
-    const storesBefore = storesOf();
+    let storesBefore = storesOf();
+    const problems: string[] = [];
     const gitBefore = gitStatus(REPO);
     const runs: Run[] = [];
 
@@ -150,11 +154,15 @@ export const test = base.extend<{ xaibo: Xaibo }>({
         try { netlog = parseNetLog(readFileSync(run.netlog, 'utf8')); } catch { netlog = { parsed: false, events: 0, nonLocal: 0, types: [] }; }
         return { exit, deaths: unexpectedDeaths(run.gone, { serviceKills: run.opts.serviceKills ?? 0 }), netlog };
       },
+      touchStore(write) {
+        if (storesOf() !== storesBefore) problems.push('fixture agent stores changed before the test wrote to them');
+        write();
+        storesBefore = storesOf();
+      },
     };
 
     await use(x);
 
-    const problems: string[] = [];
     for (const [i, r] of runs.entries()) await x.quit(r).catch((e: Error) => problems.push(`run ${i}: ${e.message}`));
     for (const [i, r] of runs.entries()) {
       const a = await x.audit(r);

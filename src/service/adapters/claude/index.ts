@@ -9,6 +9,7 @@ import type { Batch, EventRow, QuarantineRow, SessionUpsert, SourceFileCheckpoin
 import { headHash, HEAD_BYTES, readRange, readZstd, startOffset, zstdAvailable, type Checkpoint } from '../../tail.ts';
 import { Watcher, type WatchFn } from '../../watch.ts';
 import { discover, type ClaudeFile } from './discover.ts';
+import { OversizedRecord } from './oversized.ts';
 import { parseLine, type ClaudeRecord } from './parse.ts';
 
 export interface ClaudeAdapterOptions {
@@ -22,11 +23,17 @@ export interface ClaudeAdapterOptions {
   eventsPerBatch?: number; // S12 bounds: 100 rows / 1 MiB per transaction
   bytesPerBatch?: number;
   chunkBytes?: number;
+  maxLineBytes?: number; // parse cap (OQ-P1-06): longer lines stream through oversized.ts
   watch?: WatchFn;
   now?: () => number;
 }
 
 type Stored = Checkpoint & { status: SourceFileCheckpoint['status'] };
+
+// In-memory parse cap (D-P1-13, OQ-P1-06 measured): an in-memory line costs about 7x its size in the service (bytes,
+// raw and parsed strings, SQLite binds and record build), so 64 MiB could not meet the EC-15 RSS bound; longer lines
+// take the bounded streaming path (oversized.ts).
+export const PARSE_CAP = 8 * 1024 * 1024;
 
 export class ClaudeAdapter {
   readonly #o: Required<Omit<ClaudeAdapterOptions, 'watch'>> & Pick<ClaudeAdapterOptions, 'watch'>;
@@ -35,7 +42,7 @@ export class ClaudeAdapter {
   readonly #reads = new Map<string, number>();
 
   constructor(o: ClaudeAdapterOptions) {
-    this.#o = { zstd: zstdAvailable, intervalMs: 5000, activeMs: 10 * 60_000, eventsPerBatch: 100, bytesPerBatch: 1 << 20, chunkBytes: 1 << 20, now: Date.now, ...o };
+    this.#o = { zstd: zstdAvailable, intervalMs: 5000, activeMs: 10 * 60_000, eventsPerBatch: 100, bytesPerBatch: 1 << 20, chunkBytes: 1 << 20, maxLineBytes: PARSE_CAP, now: Date.now, ...o };
     this.#watcher = new Watcher<ClaudeFile>({
       list: () => discover(this.#o.root),
       onChange: (f) => void this.sync(f, true).catch(() => undefined), // a failed sync is retried on the next change or scan
@@ -87,21 +94,22 @@ export class ClaudeAdapter {
         return;
       }
       this.#count(file.path);
-      await this.#ingest(file, readZstd(file.path, this.#o.chunkBytes), 0, base, live, () => '');
+      await this.#ingest(file, readZstd(file.path, this.#o.chunkBytes), 0, base, live, () => '', 'ok');
       return;
     }
     if (cp && cp.dev === st.dev && cp.ino === st.ino && cp.size === st.size && cp.mtime === st.mtimeMs) return; // nothing new
     this.#count(file.path);
-    const { offset } = await startOffset(file.path, st, cp);
+    const { offset, reset } = await startOffset(file.path, st, cp);
     let full: string | undefined; // hash of the first HEAD_BYTES once the checkpoint passes them
     const hashAt = async (committed: number) => (committed >= HEAD_BYTES ? (full ??= await headHash(file.path, HEAD_BYTES)) : headHash(file.path, committed));
     const stream = offset < st.size ? readRange(file.path, offset, st.size, this.#o.chunkBytes) : Readable.from([]);
-    await this.#ingest(file, stream, offset, base, live, hashAt);
+    await this.#ingest(file, stream, offset, base, live, hashAt, cp?.status === 'oversized' && !reset ? 'oversized' : 'ok');
   }
 
   async #ingest(file: ClaudeFile, stream: Readable, from: number, base: Omit<SourceFileCheckpoint, 'offset' | 'headHash' | 'status'>,
-    live: boolean, hashAt: (committed: number) => Promise<string> | string): Promise<void> {
-    const splitter = new LineSplitter(from);
+    live: boolean, hashAt: (committed: number) => Promise<string> | string, status: 'ok' | 'oversized'): Promise<void> {
+    const splitter = new LineSplitter(from, { maxLine: this.#o.maxLineBytes });
+    let big: OversizedRecord | undefined;
     const receivedTs = this.#o.now();
     let records: ClaudeRecord[] = [];
     let quarantine: QuarantineRow[] = [];
@@ -111,7 +119,7 @@ export class ClaudeAdapter {
     // An intermediate checkpoint records only the bytes examined so far, so a restart after a crash reads the rest;
     // the final one records the whole size seen at stat time (a trailing partial line stays after `offset`).
     const flush = async (final = false) => {
-      const cp = { ...base, size: final ? base.size : lastEnd, offset: lastEnd, headHash: await hashAt(lastEnd), status: 'ok' as const };
+      const cp = { ...base, size: final ? base.size : lastEnd, offset: lastEnd, headHash: await hashAt(lastEnd), status };
       const committed = this.#o.writer.enqueue(this.#batch(file, cp, records, quarantine), live);
       committed.catch(() => undefined); // observed below by Promise.all; avoids an unhandled rejection meanwhile
       pending.push(committed);
@@ -126,9 +134,19 @@ export class ClaudeAdapter {
       bytes += line.bytes.length;
       lastEnd = line.offset + line.bytes.length + 1;
     };
+    const takeBig = (rs: ClaudeRecord[]) => { for (const r of rs) { records.push(r); bytes += (r.content?.length ?? 0) + r.raw.length; } };
     for await (const chunk of stream) {
-      for (const line of splitter.push(chunk as Buffer)) {
-        take(line);
+      for (const p of splitter.pushPieces(chunk as Buffer)) {
+        if (!('big' in p)) take(p);
+        else if (p.big === 'start') big = new OversizedRecord({ offset: p.offset, fileMtime: base.mtime, receivedTs, subagentNativeId: file.subagentId });
+        else if (p.big === 'data') takeBig(big!.feed(p.bytes));
+        else { // the oversized line is complete (EC-15): head row last; a gap only for what could not be read
+          const r = big!.end();
+          takeBig(r.records);
+          if (r.unreadable) { quarantine.push({ nativeSessionId: file.sessionId, byteOffset: p.offset, reason: 'oversized-unreadable', receivedTs }); status = 'oversized'; }
+          big = undefined;
+          lastEnd = p.offset + p.length + 1;
+        }
         if (records.length >= this.#o.eventsPerBatch || bytes >= this.#o.bytesPerBatch) await flush();
       }
     }
@@ -155,7 +173,7 @@ export class ClaudeAdapter {
         nativeSessionId: sid, source: 'transcript', confidence: 'confirmed', nativeId: r.nativeId, parentNativeId: r.parentNativeId,
         messageId: r.messageId, kind: r.kind, role: r.role, subagentNativeId: r.subagentNativeId, byteOffset: r.sourceSeq,
         sourceSeq: r.sourceSeq, sourceTs: r.sourceTs, fileMtime: r.fileMtime, receivedTs: r.receivedTs, injected: r.injected,
-        content: r.content, raw: r.raw,
+        content: r.content, raw: r.raw === '' ? undefined : r.raw, ingestId: r.ingestId,
       };
     });
     const own = session(file.sessionId);

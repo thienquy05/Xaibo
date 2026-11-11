@@ -74,3 +74,13 @@ test('install secret: 32 random bytes, 0600, stable across calls', () => {
   assert.deepEqual(a, b);
   assert.equal(statSync(join(dir, 'install-secret')).mode & 0o777, 0o600);
 });
+
+test('canary: logs', () => {
+  const dir = temp();
+  const log = createLogger({ dir, secret, now: () => 0 });
+  const c = canaries();
+  for (const [k, v] of Object.entries(c)) log.log('canary_probe', { error: v, sessionId: v, note: v, [k.replace(/\W/g, '')]: v, count: 1 });
+  const text = read(dir);
+  for (const v of Object.values(c)) for (const f of [v, JSON.stringify(v).slice(1, -1)]) assert.ok(!text.includes(f), 'a canary reached the log');
+  assert.equal(text.trim().split('\n').length, Object.keys(c).length);
+});

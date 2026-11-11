@@ -85,3 +85,56 @@ test('kill/restart mid-backfill: committed rows survive, nothing duplicates, the
   assert.equal(count(p.db, 'SELECT count(*) FROM events'), 15);
   assert.equal(count(p.db, 'SELECT sum(record_count) FROM sessions'), 15);
 });
+
+// P1-T14 (XAIBO-PROD-112, EC-15): a record above the parse cap is ingested as a head row plus bounded content chunks
+// (each one FTS item) and raw chunks; a crash mid-record and a restart give no duplicates.
+test('EC-15: an oversized record becomes head, content and raw rows; searchable; restart-safe', async () => {
+  const p = await claudeProfile(['identifiers']);
+  const word = (i: number) => `w${i.toString(36)}`;
+  const text = Array.from({ length: 60_000 }, (_, i) => word(i)).join(' ') + ' needlezeta';
+  appendFileSync(transcript(p.root), JSON.stringify({ parentUuid: null, type: 'user', uuid: '00000000-0000-4000-8000-0000000025ee', timestamp: '2026-01-01T00:02:00.000Z',
+    cwd: '/tmp/xaibo-fixture/beta', sessionId: BETA, message: { role: 'user', content: text } }) + '\n');
+  appendFileSync(transcript(p.root), userLine(4));
+  const opts = { profileId: 'p1', root: p.root, intervalMs: 60_000, maxLineBytes: 64 * 1024, eventsPerBatch: 3 };
+  const dying = new ClaudeAdapter({ db: p.db, writer: new DyingWriter(p.db, 3), ...opts });
+  await dying.start();
+  dying.stop();
+  const again = new ClaudeAdapter({ db: p.db, writer: p.writer, ...opts });
+  await again.start();
+  again.stop();
+  const chunks = p.db.prepare("SELECT content FROM events WHERE kind = 'content-chunk' ORDER BY source_seq, native_id").all() as { content: string }[];
+  assert.ok(chunks.length >= 5);
+  assert.equal(chunks.map((c) => c.content).join(''), text);
+  for (const c of chunks) assert.ok(Buffer.byteLength(c.content) <= 64 * 1024);
+  assert.equal(count(p.db, "SELECT count(*) FROM events WHERE kind = 'raw-chunk'"), 1);
+  assert.equal(count(p.db, "SELECT count(*) FROM events WHERE native_id = '00000000-0000-4000-8000-0000000025ee' AND kind = 'message' AND content IS NULL"), 1);
+  assert.equal(count(p.db, "SELECT count(*) FROM event_fts WHERE event_fts MATCH 'needlezeta'"), 1);
+  assert.equal(count(p.db, 'SELECT count(*) FROM (SELECT native_id FROM events GROUP BY session_id, native_id HAVING count(*) > 1)'), 0);
+  assert.equal(count(p.db, "SELECT count(*) FROM events WHERE native_id = '00000000-0000-4000-8000-000000002504'"), 1, 'the line after it arrives');
+  assert.equal(count(p.db, 'SELECT count(*) FROM quarantine'), 0);
+});
+
+// P1-T14 EC-15 measurement (D-P1-13): the default parse cap is 8 MiB; a longer line takes the bounded streaming path.
+test('EC-15: with default options a line above 8 MiB is chunked, not parsed in memory', async () => {
+  const p = await claudeProfile(['identifiers']);
+  const text = 'ab '.repeat(Math.ceil((8 * 1024 * 1024 + 4096) / 3));
+  appendFileSync(transcript(p.root), JSON.stringify({ parentUuid: null, type: 'user', uuid: '00000000-0000-4000-8000-0000000025ef', timestamp: '2026-01-01T00:03:00.000Z',
+    cwd: '/tmp/xaibo-fixture/beta', sessionId: BETA, message: { role: 'user', content: text } }) + '\n');
+  const a = new ClaudeAdapter({ db: p.db, writer: p.writer, profileId: 'p1', root: p.root, intervalMs: 60_000 });
+  await a.start();
+  a.stop();
+  assert.ok(count(p.db, "SELECT count(*) FROM events WHERE kind = 'content-chunk'") > 100);
+  assert.equal(count(p.db, "SELECT count(*) FROM events WHERE native_id = '00000000-0000-4000-8000-0000000025ef' AND content IS NULL"), 1);
+});
+
+// P1-T14 review: chunk rows are storage, not records; they must not dilute the EC-04 drift ratio.
+test('EC-15/EC-04: oversized chunk rows do not count as records', async () => {
+  const p = await claudeProfile(['identifiers']);
+  appendFileSync(transcript(p.root), JSON.stringify({ parentUuid: null, type: 'user', uuid: '00000000-0000-4000-8000-0000000025ed', timestamp: '2026-01-01T00:04:00.000Z',
+    cwd: '/tmp/xaibo-fixture/beta', sessionId: BETA, message: { role: 'user', content: 'y '.repeat(200_000) } }) + '\n');
+  const a = new ClaudeAdapter({ db: p.db, writer: p.writer, profileId: 'p1', root: p.root, intervalMs: 60_000, maxLineBytes: 64 * 1024 });
+  await a.start();
+  a.stop();
+  assert.ok(count(p.db, "SELECT count(*) FROM events WHERE kind LIKE '%-chunk'") > 5);
+  assert.equal(count(p.db, 'SELECT sum(record_count) FROM sessions'), count(p.db, "SELECT count(*) FROM events WHERE kind NOT LIKE '%-chunk'"));
+});

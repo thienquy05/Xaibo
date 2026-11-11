@@ -34,6 +34,8 @@ export interface ClaudeRecord {
   isSidechain: boolean;
   subagentNativeId?: string;
   raw: string;
+  /** Oversized records (oversized.ts): the content key linking a head row to its chunk rows. */
+  ingestId?: string;
 }
 export type ParseResult = { ok: true; record: ClaudeRecord } | { ok: false; reason: 'malformed' };
 

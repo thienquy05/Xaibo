@@ -18,6 +18,7 @@ async function ruleIds(code: string, file = 'src/service/sample.ts'): Promise<st
 
 const cases: Array<[string, string, string, string?]> = [
   ['global fetch', "fetch('x');\n", 'no-restricted-globals'],
+  ['crashReporter.start (OQ-P1-10)', "declare const crashReporter: any;\ncrashReporter.start({});\n", 'no-restricted-syntax'],
   ['WebSocket global', "new WebSocket('x');\n", 'no-restricted-globals'],
   ['globalThis.fetch', "globalThis.fetch('x');\n", 'no-restricted-syntax'],
   ['session.fetch', "declare const session: any;\nsession.fetch('x');\n", 'no-restricted-syntax'],

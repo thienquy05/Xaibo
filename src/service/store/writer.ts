@@ -101,6 +101,7 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
         e.fileMtime ?? null, e.receivedTs, e.ingestId ?? null, e.injected ? 1 : 0, e.content ?? null, e.raw ?? null) as { id: number } | undefined;
       if (!row) continue; // already stored (reparse after truncation or rotation)
       if (e.content) st.insertFts.run(row.id, ftsPrefix(e.content));
+      if (e.kind.endsWith('-chunk')) continue; // storage of an oversized record (EC-15), not a record: keeps EC-04's ratio
       bump(sid, 0);
       if (e.kind === 'unknown') bump(sid, 1);
     }

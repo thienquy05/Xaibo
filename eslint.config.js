@@ -13,6 +13,7 @@ const netPaths = [
   { name: 'undici', message: netMsg },
   { name: 'ws', message: netMsg },
   { name: 'electron', importNames: ['net'], message: netMsg },
+  { name: 'electron', importNames: ['crashReporter'], message: 'No crash reporter (OQ-P1-10).' },
 ];
 const spawnPaths = ['child_process', 'node:child_process'].map((name) => ({ name, message: spawnMsg }));
 const spikePattern = { regex: '(^|/)spikes(/|$)', message: 'src/ never imports spikes/.' };
@@ -24,7 +25,9 @@ const loads = (re, message) => [
   { selector: `ImportExpression[source.value=${re}]`, message },
   { selector: `CallExpression[callee.name='require'][arguments.0.value=${re}]`, message },
 ];
+const crashMsg = 'No crash reporter (OQ-P1-10): errors become sanitized error-code log entries.';
 const syntax = [
+  { selector: "MemberExpression[object.name='crashReporter']", message: crashMsg },
   ...loads(NET_RE, netMsg),
   { selector: "MemberExpression[property.name='fetch']", message: netMsg },
   { selector: "MemberExpression[object.name=/^(globalThis|window|self)$/][property.name=/^(XMLHttpRequest|WebSocket|EventSource)$/]", message: netMsg },
