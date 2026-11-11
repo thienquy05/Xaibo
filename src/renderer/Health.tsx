@@ -20,7 +20,7 @@ export function AgentStrip({ agents, onSetPath }: { agents: AgentStatus[] | null
   return (
     <section aria-label="Agents">
       <h2>Agents</h2>
-      {agents === null ? <p>Detecting agents…</p> : (
+      {agents === null ? <p>Detecting agents…</p> : agents.length === 0 ? <p>No agents detected</p> : (
         <ul>
           {agents.map((a) => (
             <li key={a.agent}>

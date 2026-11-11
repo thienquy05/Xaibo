@@ -8,6 +8,7 @@ import { constants, realpathSync, statSync } from 'node:fs';
 import { access, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
+import type { Logger } from '../../shared/log.ts';
 import { run, succeeded } from '../spawn.ts';
 import type { LoginEnv } from './env.ts';
 import type { AgentEntry, Catalog } from './validate.ts';
@@ -15,7 +16,7 @@ import type { AgentEntry, Catalog } from './validate.ts';
 export type Detection =
   | { agent: string; state: 'detected'; path: string; version: string | null }
   | { agent: string; state: 'not-detected' };
-export interface DetectOptions { env: LoginEnv; home: string; manualPath?: string | undefined; timeoutMs?: number }
+export interface DetectOptions { env: LoginEnv; home: string; manualPath?: string | undefined; timeoutMs?: number; log?: Logger }
 export type Origin = 'default' | 'env' | 'manual';
 export interface ProfileRoot { agent: string; root: string; origin: Origin }
 export interface Profile extends ProfileRoot { id: string }
@@ -49,7 +50,7 @@ export async function detectAgent(entry: AgentEntry, o: DetectOptions): Promise<
       const real = await checkExecutable(candidate);
       if (!real || tried.has(real)) continue;
       tried.add(real);
-      const r = await run(real, b.versionArgs, { timeoutMs: o.timeoutMs ?? 3_000, maxBytes: PROBE_BYTES, env });
+      const r = await run(real, b.versionArgs, { timeoutMs: o.timeoutMs ?? 3_000, maxBytes: PROBE_BYTES, env, ...(o.log ? { log: o.log } : {}) });
       if (succeeded(r)) return { agent: entry.id, state: 'detected', path: real, version: VERSION.exec(r.stdout.toString('utf8'))?.[0] ?? null };
     }
   }

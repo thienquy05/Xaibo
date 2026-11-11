@@ -51,3 +51,12 @@ test('initDataDir never throws: a bad override returns null with one stderr line
   assert.equal(statSync(dir).mode & 0o777, 0o700);
   assert.equal(lines.length, 1);
 });
+
+test('H4: a filesystem error prints a fixed code, never the failing path', () => {
+  const root = mkdtempSync(join(tmpdir(), 'xpaths-'));
+  writeFileSync(join(root, 'file'), '');
+  const dir = join(root, 'file', 'data'); // under a regular file: ENOTDIR
+  const lines: string[] = [];
+  assert.equal(initDataDir({ env: { XAIBO_DATA_DIR: dir }, packaged: true, appData }, (s) => lines.push(s)), null);
+  assert.deepEqual(lines, ['xaibo: cannot prepare the data directory (ENOTDIR)\n']);
+});

@@ -138,3 +138,39 @@ test('EC-15/EC-04: oversized chunk rows do not count as records', async () => {
   assert.ok(count(p.db, "SELECT count(*) FROM events WHERE kind LIKE '%-chunk'") > 5);
   assert.equal(count(p.db, 'SELECT sum(record_count) FROM sessions'), count(p.db, "SELECT count(*) FROM events WHERE kind NOT LIKE '%-chunk'"));
 });
+
+// Gate 1 hotfix H1 (Codex 1, 2): a failed commit stops that file's ingest (no later checkpoint passes it) and the next
+// scan or wake retries the file.
+class FailOnceWriter extends Writer {
+  #failed = false;
+  override enqueue(batch: Batch, live: boolean) {
+    if (!this.#failed) { this.#failed = true; return Promise.reject(new Error('transient write failure')); }
+    return super.enqueue(batch, live);
+  }
+}
+
+test('H1: a failed commit is not skipped; the file is retried on the next wake', async () => {
+  const p = await claudeProfile(['usage-basic']);
+  const a = new ClaudeAdapter({ db: p.db, writer: new FailOnceWriter(p.db), profileId: 'p1', root: p.root, eventsPerBatch: 3, intervalMs: 60_000 });
+  await a.start();
+  assert.equal(count(p.db, 'SELECT count(*) FROM events'), 0, 'nothing commits past the failed batch');
+  assert.equal(count(p.db, 'SELECT count(*) FROM source_files WHERE offset > 0'), 0, 'no checkpoint advanced');
+  await a.wake();
+  await until(() => count(p.db, 'SELECT count(*) FROM events') === 9, 2_000);
+  a.stop();
+  assert.equal(count(p.db, 'SELECT count(*) FROM events'), 9);
+});
+
+// Gate 1 hotfix H2 (Codex 3): oversized records in two files of one session keep separate chunk ids.
+test('H2: identical oversized lines at the same offset in a transcript and its subagent file both keep their chunks', async () => {
+  const p = await claudeProfile(['identifiers']);
+  const big = JSON.stringify({ type: 'user', message: { role: 'user', content: 'k '.repeat(80_000) }, sessionId: BETA }) + '\n';
+  const dir = join(p.root, 'projects', '-tmp-xaibo-fixture-identifiers');
+  writeFileSync(join(dir, `${BETA}.jsonl`), big);
+  writeFileSync(join(dir, BETA, 'subagents', 'agent-00000000-0000-4000-8000-000000002100.jsonl'), big);
+  const a = new ClaudeAdapter({ db: p.db, writer: p.writer, profileId: 'p1', root: p.root, intervalMs: 60_000, maxLineBytes: 64 * 1024 });
+  await a.start();
+  a.stop();
+  const perFile = Math.ceil(Buffer.byteLength('k '.repeat(80_000)) / (64 * 1024));
+  assert.equal(count(p.db, "SELECT count(*) FROM events WHERE kind = 'content-chunk'"), 2 * perFile);
+});

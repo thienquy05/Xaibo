@@ -3,7 +3,8 @@
 // large-payload fields) become content chunks of at most `contentBytes` UTF-8 bytes, each one FTS item; the raw text is
 // kept in `rawBytes` chunks; a head row carries the small fields. A syntax error stops extraction there: what was read
 // stays, the rest is a gap. Memory stays O(contentBytes + rawBytes + 4 KiB) whatever the line size. Chunk ids hash
-// the line's offset and first 4 KiB, so any input chunking (and a reparse after a crash) gives the same ids.
+// the source file, the line's offset and its first 4 KiB, so any input chunking (and a reparse after a crash) gives the
+// same ids.
 // ponytail: chunk source_seq is the input position when the chunk started, exact only to one input piece.
 import { createHash } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
@@ -43,15 +44,31 @@ function fit(s: string, room: number): number {
   return i;
 }
 
-/** Accumulates text and cuts it into pieces of at most `max` UTF-8 bytes; `at` is the byte position of a piece's start. */
+/** Accumulates text and cuts it into pieces of at most `max` UTF-8 bytes; `at` is the byte position of a piece's start.
+ *  A trailing high surrogate is held until the next add, so a pair that arrives in two calls (`\uD83D` `\uDE00`
+ *  escapes) is never cut apart. */
 class Cutter {
   #buf = '';
   #bytes = 0;
   #at = 0;
+  #high = '';
+  #highAt = 0;
   readonly #max: number;
   readonly out: { text: string; at: number }[] = [];
   constructor(max: number) { this.#max = max; }
   add(s: string, at: number): void {
+    if (this.#high) { s = this.#high + s; at = this.#highAt; this.#high = ''; }
+    if (s && isHigh(s.charCodeAt(s.length - 1))) { this.#high = s.slice(-1); this.#highAt = at; s = s.slice(0, -1); }
+    this.#put(s, at);
+  }
+  /** Emits everything held, a lone trailing high surrogate included. */
+  flush(): void {
+    const high = this.#high;
+    this.#high = '';
+    this.#put(high, this.#highAt);
+    this.#cut();
+  }
+  #put(s: string, at: number): void {
     while (s.length) {
       if (!this.#buf) this.#at = at;
       const b = Buffer.byteLength(s);
@@ -59,18 +76,20 @@ class Cutter {
       let n = fit(s, this.#max - this.#bytes);
       if (n === 0 && !this.#buf) n = isHigh(s.charCodeAt(0)) ? 2 : 1; // one code point wider than the room: emit it alone
       this.#buf += s.slice(0, n);
-      this.flush();
+      this.#cut();
       s = s.slice(n);
     }
   }
-  flush(): void {
+  #cut(): void {
     if (this.#buf) this.out.push({ text: this.#buf, at: this.#at });
     this.#buf = '';
     this.#bytes = 0;
   }
 }
 
-export interface OversizedOptions { offset: number; fileMtime: number; receivedTs: number; subagentNativeId?: string | undefined; contentBytes?: number; rawBytes?: number }
+/** `source` names the file (its path): chunk ids are unique per session, and a session's transcript and subagent files
+ *  can hold identical lines at the same offset. */
+export interface OversizedOptions { offset: number; fileMtime: number; receivedTs: number; source?: string; subagentNativeId?: string | undefined; contentBytes?: number; rawBytes?: number }
 
 export class OversizedRecord {
   readonly #o: OversizedOptions;
@@ -121,9 +140,10 @@ export class OversizedRecord {
     return { records: [...this.#drain(), this.#headRecord()], unreadable };
   }
 
-  // The line's offset is part of the key: two records with the same first 4 KiB stay distinct (a shifted record in a
-  // rewritten file duplicates its chunks instead of losing them).
-  #keyOf() { return `x:${createHash('sha256').update(`${this.#o.offset}:`).update(this.#head).digest('hex').slice(0, 16)}`; }
+  // The source file and the line's offset are part of the key: two records with the same first 4 KiB stay distinct,
+  // in one file or in two files of one session (a shifted record in a rewritten file duplicates its chunks instead of
+  // losing them).
+  #keyOf() { return `x:${createHash('sha256').update(`${this.#o.source ?? ''}\0${this.#o.offset}:`).update(this.#head).digest('hex').slice(0, 16)}`; }
 
   #take(text: string): void {
     if (!text) return;

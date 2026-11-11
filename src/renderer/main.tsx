@@ -31,7 +31,8 @@ function App() {
         const c = createClient(e.ports[0] as unknown as PortLike, { sessions: (rows) => setList((s) => applyDelta(s, rows)), agents: setAgents });
         client.current = c;
         setLoading(false);
-        void c.listSessions(null, PAGE).then((page) => { if (client.current === c) setList((s) => applyPage(s, page, false)); });
+        // An invalid first page leaves the list empty; deltas and the next restart still fill it.
+        c.listSessions(null, PAGE).then((page) => { if (client.current === c) setList((s) => applyPage(s, page, false)); }, () => undefined);
         return;
       }
       const h = parseHealth(e.data);
@@ -47,11 +48,11 @@ function App() {
     const c = client.current;
     if (!c || !list.next || loading) return;
     setLoading(true);
-    void c.listSessions(list.next, PAGE).then((page) => {
+    c.listSessions(list.next, PAGE).then((page) => {
       if (client.current !== c) return;
       setList((s) => applyPage(s, page, true));
       setLoading(false);
-    });
+    }, () => { if (client.current === c) setLoading(false); }); // an invalid page: "Load more" works again
   };
 
   return (

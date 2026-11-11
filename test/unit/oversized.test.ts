@@ -89,3 +89,20 @@ test('two oversized records with the same first 4 KiB at different offsets keep 
   const b = at(10_000);
   assert.equal(a.filter((id) => b.includes(id) && id !== 'U7').length, 0);
 });
+
+test('H2: an escaped surrogate pair at a chunk boundary stays whole', () => {
+  for (const pad of ['aaaaa', 'aaaa', 'aaaaaa', 'a'.repeat(7)]) {
+    const r = run(`{"type":"user","uuid":"U8","message":{"role":"user","content":"${pad}\\uD83D\\uDE00z"}}`, 3);
+    const text = r.chunks.map((c) => c.content).join('');
+    assert.equal(text, `${pad}\u{1F600}z`, pad);
+    for (const c of r.chunks) assert.ok(!c.content!.includes('�') && !/[\uD800-\uDBFF]$/.test(c.content!) && !/^[\uDC00-\uDFFF]/.test(c.content!), pad);
+  }
+});
+
+test('H2: the source option namespaces chunk ids', () => {
+  const line = '{"type":"user","message":{"role":"user","content":"' + 'q'.repeat(3000) + '"}}';
+  const ids = (source: string) => { const r = new OversizedRecord({ ...ctx, source, contentBytes: 1024 }); return [...r.feed(Buffer.from(line)), ...r.end().records].map((x) => x.nativeId); };
+  const a = ids('file-a');
+  assert.equal(a.filter((id) => ids('file-b').includes(id)).length, 0);
+  assert.deepEqual(ids('file-a'), a, 'still deterministic');
+});

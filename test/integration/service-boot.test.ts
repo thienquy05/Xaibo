@@ -74,3 +74,14 @@ test('a read-only store (failed migration) is reported and nothing is ingested',
   assert.equal(count(svc.store.db, "SELECT count(*) FROM sqlite_master WHERE name = 'sessions'"), 0);
   svc.stop();
 });
+
+test('H3: a failed detection leaves an empty agent list, not "detecting" forever', async () => {
+  const s = setup();
+  const broken = { schemaVersion: 1, agents: null } as unknown as Catalog;
+  const announced: unknown[] = [];
+  const svc = await boot({ dataDir: s.dataDir, home: s.home, catalog: broken, intervalMs: 60_000, onAgents: (a) => announced.push(a) });
+  await assert.rejects(svc.done);
+  assert.deepEqual(svc.agents(), []);
+  assert.deepEqual(announced, [[]]);
+  svc.stop();
+});

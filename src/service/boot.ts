@@ -44,22 +44,25 @@ export async function boot(o: BootOptions): Promise<Service> {
   let markDetected = () => {};
   const detection = new Promise<void>((resolve) => { markDetected = resolve; });
 
-  const agents = (): AgentStatus[] | null => (!detected || !catalog ? null : detections.map((d) => ({
-    agent: d.agent, name: catalog!.agents.find((a) => a.id === d.agent)?.displayName ?? d.agent, state: d.state,
+  const agents = (): AgentStatus[] | null => (!detected ? null : detections.map((d) => ({
+    agent: d.agent, name: catalog?.agents.find((a) => a.id === d.agent)?.displayName ?? d.agent, state: d.state,
     version: d.state === 'detected' ? d.version : null,
   })));
   const announce = () => { const a = agents(); if (a) o.onAgents?.(a); };
 
   const start = async () => {
-    catalog = o.catalog ?? loadCatalog();
-    env = await readLoginEnv({ shell: o.shell, ...(o.log ? { log: o.log } : {}) });
-    // A read-only store may lack kv (failed first migration): detect without manual paths then.
-    detections.push(...await Promise.all(catalog.agents.map((a) =>
-      detectAgent(a, { env, home: o.home, manualPath: readOnly ? undefined : manualPath(db, a.id) }))));
-    detected = true;
-    markDetected();
-    o.log?.log('detect', Object.fromEntries(detections.map((d) => [d.agent, d.state === 'detected'])));
-    announce();
+    try {
+      catalog = o.catalog ?? loadCatalog();
+      env = await readLoginEnv({ shell: o.shell, ...(o.log ? { log: o.log } : {}) });
+      // A read-only store may lack kv (failed first migration): detect without manual paths then.
+      detections.push(...await Promise.all(catalog.agents.map((a) =>
+        detectAgent(a, { env, home: o.home, manualPath: readOnly ? undefined : manualPath(db, a.id), ...(o.log ? { log: o.log } : {}) }))));
+      o.log?.log('detect', Object.fromEntries(detections.map((d) => [d.agent, d.state === 'detected'])));
+    } finally { // a failed detection (e.g. a bad catalog) announces an empty list, never "detecting" forever
+      detected = true;
+      markDetected();
+      announce();
+    }
     if (stopped || readOnly) return;
     const manual = Object.fromEntries(catalog.agents.map((a) => [a.id, manualRoots(db, a.id)]));
     const profiles = syncProfiles(db, profileRoots(catalog, env, o.home, manual));
@@ -81,7 +84,7 @@ export async function boot(o: BootOptions): Promise<Service> {
       const entry = catalog?.agents.find((a) => a.id === agent);
       const i = detections.findIndex((d) => d.agent === agent);
       if (stopped || readOnly || !entry || i < 0 || !(await setManualPath(db, agent, file))) return false;
-      detections[i] = await detectAgent(entry, { env, home: o.home, manualPath: manualPath(db, agent) });
+      detections[i] = await detectAgent(entry, { env, home: o.home, manualPath: manualPath(db, agent), ...(o.log ? { log: o.log } : {}) });
       announce();
       return true;
     },

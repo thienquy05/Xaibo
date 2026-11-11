@@ -6,6 +6,10 @@ import type { Cursor, Page, PortMessage, PortRequest, SessionRow } from '../shar
 
 export const PAGE_DEFAULT = 50;
 export const PAGE_MAX = 100;
+/** Display strings (cwd, entrypoint, title) are cut to this many UTF-16 units plus "…" before IPC, far below the
+ *  64 KiB per-string limit the renderer validates, so one long transcript value cannot void a page. The store keeps
+ *  the original. */
+export const DISPLAY_MAX = 4096;
 
 export interface SessionKey { agent: string; profileId: string; nativeSessionId: string }
 
@@ -16,8 +20,13 @@ const ROW = `SELECT s.id, s.agent, s.entrypoint, s.cwd, s.title, s.last_activity
 const ORDER = 'ORDER BY s.last_activity DESC, s.id LIMIT ?';
 
 interface Raw { id: number; agent: string; entrypoint: string | null; cwd: string | null; title: string | null; last_activity: number | null; drift: number; quarantined_count: number; compressed: number }
+const display = (s: string | null): string | null => {
+  if (s === null || s.length <= DISPLAY_MAX) return s;
+  const c = s.charCodeAt(DISPLAY_MAX - 1);
+  return `${s.slice(0, c >= 0xd800 && c < 0xdc00 ? DISPLAY_MAX - 1 : DISPLAY_MAX)}…`; // never ends inside a surrogate pair
+};
 const toRow = (r: Raw): SessionRow => ({
-  id: r.id, agent: r.agent, entrypoint: r.entrypoint, cwd: r.cwd, title: r.title, lastActivity: r.last_activity,
+  id: r.id, agent: r.agent, entrypoint: display(r.entrypoint), cwd: display(r.cwd), title: display(r.title), lastActivity: r.last_activity,
   drift: r.drift === 1, compressed: r.compressed === 1, quarantined: r.quarantined_count,
 });
 

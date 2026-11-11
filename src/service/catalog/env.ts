@@ -33,7 +33,7 @@ export async function readLoginEnv(o: LoginEnvOptions): Promise<LoginEnv> {
     o.log?.log('login_env', { ok: false });
     return {};
   }
-  const r = await run(shell, ARGV, { timeoutMs, maxBytes, ...(o.env ? { env: o.env } : {}) });
+  const r = await run(shell, ARGV, { timeoutMs, maxBytes, ...(o.env ? { env: o.env } : {}), ...(o.log ? { log: o.log } : {}) });
   const env = succeeded(r) ? parseEnv0(r.stdout) : {};
   o.log?.log('login_env', { ok: succeeded(r), timedOut: r.timedOut, overflow: r.overflow, keys: Object.keys(env).length });
   return env;

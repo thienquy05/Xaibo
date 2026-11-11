@@ -48,6 +48,9 @@ export class Watcher<E extends { path: string }> {
 
   scan(): Promise<void> { return this.#run(false); }
 
+  /** Drops what was seen of a file, so the next scan reports it again (a failed sync is retried). */
+  forget(path: string): void { this.#seen.delete(path); }
+
   #run(initial: boolean): Promise<void> {
     // One scan at a time; a call during a scan waits for it and then runs once more.
     const next = (this.#scan ?? Promise.resolve()).then(() => this.#pass(initial));

@@ -22,12 +22,17 @@ export function prepareDataDir(dir: string): void {
 
 /** resolve + prepare without throwing (a top-level throw in Electron main shows an error dialog); null on failure. */
 export function initDataDir(input: DataDirInput, writeErr: (s: string) => void): string | null {
+  let dir;
+  try { dir = resolveDataDir(input); } catch (e) {
+    writeErr(`xaibo: ${(e as Error).message}\n`); // our own fixed message
+    return null;
+  }
   try {
-    const dir = resolveDataDir(input);
     prepareDataDir(dir);
     return dir;
-  } catch (e) {
-    writeErr(`xaibo: ${(e as Error).message}\n`);
+  } catch (e) { // fs messages carry the absolute path: print the error code only (EC-35)
+    const code = (e as NodeJS.ErrnoException).code;
+    writeErr(`xaibo: cannot prepare the data directory (${typeof code === 'string' && /^[A-Z0-9_]{1,32}$/.test(code) ? code : 'unknown'})\n`);
     return null;
   }
 }

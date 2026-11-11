@@ -20,3 +20,7 @@ test('bidi overrides and isolates become visible escapes', () => {
 test('ordinary text, Unicode, HTML and markdown are left as they are', () => {
   for (const s of ['plain', '/tmp/xaibo-fixture/café \u{1F600} 日本', '<img src=x onerror=alert(1)>', '**bold** [l](u)', '']) assert.equal(visible(s), s);
 });
+
+test('H3: LRM, RLM and ALM marks become visible escapes', () => {
+  assert.equal(visible('a‎b‏c؜d'), 'a\\u200Eb\\u200Fc\\u061Cd');
+});

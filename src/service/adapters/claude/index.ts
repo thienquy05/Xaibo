@@ -72,7 +72,8 @@ export class ClaudeAdapter {
 
   sync(file: ClaudeFile, live: boolean): Promise<void> {
     const next = (this.#chains.get(file.path) ?? Promise.resolve()).then(() => this.#sync(file, live));
-    this.#chains.set(file.path, next.catch(() => undefined));
+    // A failed sync (read or commit) makes the watcher forget the file, so the next scan or wake retries it.
+    this.#chains.set(file.path, next.catch(() => this.#watcher.forget(file.path)));
     return next;
   }
 
@@ -115,17 +116,17 @@ export class ClaudeAdapter {
     let quarantine: QuarantineRow[] = [];
     let bytes = 0;
     let lastEnd = from;
-    const pending: Promise<void>[] = [];
     // An intermediate checkpoint records only the bytes examined so far, so a restart after a crash reads the rest;
-    // the final one records the whole size seen at stat time (a trailing partial line stays after `offset`).
+    // the final one records the whole size seen at stat time (a trailing partial line stays after `offset`). Each
+    // batch is awaited: a failed commit throws and stops this file, so no later checkpoint can pass the lost records.
     const flush = async (final = false) => {
       const cp = { ...base, size: final ? base.size : lastEnd, offset: lastEnd, headHash: await hashAt(lastEnd), status };
       const committed = this.#o.writer.enqueue(this.#batch(file, cp, records, quarantine), live);
-      committed.catch(() => undefined); // observed below by Promise.all; avoids an unhandled rejection meanwhile
-      pending.push(committed);
       records = [];
       quarantine = [];
       bytes = 0;
+      if (final) this.#o.writer.flush(); // each batch is its own transaction; no reason to wait for the timer
+      await committed;
     };
     const take = (line: Line) => {
       const r = parseLine(line.bytes, { offset: line.offset, fileMtime: base.mtime, receivedTs, subagentNativeId: file.subagentId });
@@ -138,7 +139,7 @@ export class ClaudeAdapter {
     for await (const chunk of stream) {
       for (const p of splitter.pushPieces(chunk as Buffer)) {
         if (!('big' in p)) take(p);
-        else if (p.big === 'start') big = new OversizedRecord({ offset: p.offset, fileMtime: base.mtime, receivedTs, subagentNativeId: file.subagentId });
+        else if (p.big === 'start') big = new OversizedRecord({ offset: p.offset, source: file.path, fileMtime: base.mtime, receivedTs, subagentNativeId: file.subagentId });
         else if (p.big === 'data') takeBig(big!.feed(p.bytes));
         else { // the oversized line is complete (EC-15): head row last; a gap only for what could not be read
           const r = big!.end();
@@ -152,8 +153,6 @@ export class ClaudeAdapter {
     }
     lastEnd = splitter.committedOffset; // stops before a trailing partial line (EC-14)
     await flush(true); // always: the last batch stores the final size/mtime, even with no new records
-    this.#o.writer.flush(); // each batch is its own transaction; no reason to wait for the timer
-    await Promise.all(pending);
   }
 
   #batch(file: ClaudeFile, cp: SourceFileCheckpoint, records: ClaudeRecord[], quarantine: QuarantineRow[]): Batch {

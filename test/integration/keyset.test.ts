@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { answer, coalesce, listSessions, PAGE_DEFAULT, PAGE_MAX, sessionsByKey } from '../../src/service/api.ts';
+import { answer, coalesce, DISPLAY_MAX, listSessions, PAGE_DEFAULT, PAGE_MAX, sessionsByKey } from '../../src/service/api.ts';
 import { parsePortMessage } from '../../src/shared/ipc.ts';
 import { openStore } from '../../src/service/store/db.ts';
 
@@ -79,4 +79,15 @@ test('coalesce: one flush per window with each key once', () => {
   add('c');
   timers.shift()!();
   assert.deepEqual(flushed, [['a', 'b'], ['c']]);
+});
+
+test('H3: display strings are bounded before IPC; the stored original is untouched', async () => {
+  const db = await store(1, () => 1);
+  const long = `/tmp/xaibo-fixture/${'x'.repeat(100_000)}`;
+  db.prepare('UPDATE sessions SET cwd = ?, entrypoint = ? WHERE id = 1').run(long, 'e'.repeat(70_000));
+  const msg = answer(db, { v: 1, type: 'listSessions', id: 1, cursor: null, limit: 10 });
+  assert.deepEqual(parsePortMessage(msg), msg, 'the page still validates');
+  assert.ok(msg.rows[0]!.cwd!.length <= DISPLAY_MAX + 1 && msg.rows[0]!.cwd!.endsWith('…'));
+  assert.equal((db.prepare('SELECT length(cwd) AS n FROM sessions').get() as { n: number }).n, long.length);
+  assert.ok(sessionsByKey(db, [{ agent: 'claude', profileId: 'p1', nativeSessionId: '00000000-0000-4000-8000-000000000001' }])[0]!.entrypoint!.length <= DISPLAY_MAX + 1);
 });

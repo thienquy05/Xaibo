@@ -51,3 +51,12 @@ test('close detaches and closes the port', () => {
   assert.equal(f.port.onmessage, null);
   assert.equal(f.port.closed, true);
 });
+
+test('H3: an invalid reply to a request settles it with an error instead of leaving it pending', { timeout: 5_000 }, async () => {
+  const f = fakePort();
+  const c = createClient(f.port, { sessions() {}, agents() {} });
+  const p = c.listSessions(null, 50);
+  f.deliver({ v: 1, type: 'page', id: 1, rows: [{ id: 'bad' }], next: null });
+  await assert.rejects(p, /invalid reply/);
+  assert.equal(c.dropped, 1);
+});

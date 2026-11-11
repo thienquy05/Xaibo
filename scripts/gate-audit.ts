@@ -1,8 +1,12 @@
 // Gate 1 packaged S10-style audit (P1-T15; EC-60, M6; D-P1-08 item 2, spikes/s10 method), without Playwright: the
 // packaged app runs under test/e2e/audit.sb (a process is killed on its first non-loopback or DNS attempt) with NetLog
 // on, in a temp HOME/data dir/agent homes, cwd at the repo. Scenarios: startup, idle (default 5 min, window open),
-// service SIGKILL and restart, shutdown (SIGTERM -> Quit). Pass = no descendant process vanished except the one killed on
-// purpose, main exits 0 by itself, NetLog has no non-loopback event, one restart, repo and fixture store unchanged.
+// service SIGKILL and restart, shutdown (SIGTERM -> Quit). Pass = no Electron helper vanished except the one killed on
+// purpose, no child of the service killed by the profile (`child_killed` in the service log, reported by spawn.ts),
+// main exits 0 by itself, NetLog has no non-loopback event, one restart, repo and fixture store unchanged. A positive
+// control launch first: a fake agent whose version probe attempts TEST-NET-1 must be killed and reported.
+// Limit: a grandchild forked (not exec'd) by a child and killed while its parent exits 0 is not seen (root-level
+// tracing would be needed); the audit's fake scripts exec, so none exist here.
 // Run unsandboxed (Seatbelt does not nest). Aggregates only: printed and kept under .cache/gate-audit/.
 //   node scripts/gate-audit.ts [--idle-s 300]
 import { execFileSync, spawn } from 'node:child_process';
@@ -31,17 +35,33 @@ script('claude', 'echo "2.1.319 (Claude Code)"');
 script('codex', 'echo "codex-cli 0.160.0"');
 const shell = script('fake-shell', 'while [ $# -gt 0 ]; do [ "$1" = -c ] && exec /bin/sh -c "$2"; shift; done');
 const dataDir = path.join(root, 'data');
+const controlDir = path.join(root, 'control-data');
 const netlog = path.join(root, 'netlog.json');
 const stores = () => JSON.stringify(['.claude', '.codex'].map((d) => treeHashes(path.join(home, d))));
 
 const storesBefore = stores();
 const gitBefore = gitStatus(REPO);
-const env = {
+const envFor = (data: string) => ({
   HOME: home, PATH: `${bin}:/usr/bin:/bin`, SHELL: shell, TMPDIR: path.join(root, 'tmp'), LANG: 'en_US.UTF-8',
-  CLAUDE_CONFIG_DIR: path.join(home, '.claude'), CODEX_HOME: path.join(home, '.codex'), GEMINI_CLI_HOME: home, XAIBO_DATA_DIR: dataDir,
-};
-const app = spawn('/usr/bin/sandbox-exec', ['-f', PROFILE, BIN, '--no-sandbox', `--log-net-log=${netlog}`, '-ApplePersistenceIgnoreState', 'YES', '-NSQuitAlwaysKeepsWindows', 'NO'],
-  { env, cwd: REPO, stdio: 'ignore' });
+  CLAUDE_CONFIG_DIR: path.join(home, '.claude'), CODEX_HOME: path.join(home, '.codex'), GEMINI_CLI_HOME: home, XAIBO_DATA_DIR: data,
+});
+const launchApp = (data: string, log: string) => spawn('/usr/bin/sandbox-exec', ['-f', PROFILE, BIN, '--no-sandbox', `--log-net-log=${log}`,
+  '-ApplePersistenceIgnoreState', 'YES', '-NSQuitAlwaysKeepsWindows', 'NO'], { env: envFor(data), cwd: REPO, stdio: 'ignore' });
+const serviceEvents = (data: string) => { const f = path.join(data, 'logs', 'service', 'xaibo.log');
+  return existsSync(f) ? readFileSync(f, 'utf8').trim().split('\n').map((l) => (JSON.parse(l) as { event: string }).event) : []; };
+
+// Positive control: the version probe of a fake agent attempts a TEST-NET-1 connection (never routed); the profile kills
+// it before any packet leaves, and spawn.ts must report it as child_killed.
+script('claude', 'exec /usr/bin/nc -z -G 2 192.0.2.1 80');
+const control = launchApp(controlDir, path.join(root, 'control-netlog.json'));
+const controlClosed = new Promise((res) => control.on('close', res));
+{ const end = Date.now() + 30_000; while (Date.now() < end && !serviceEvents(controlDir).includes('detect')) await sleep(250); }
+const controlDetected = serviceEvents(controlDir).includes('child_killed');
+control.kill('SIGTERM');
+await Promise.race([controlClosed, sleep(20_000)]);
+script('claude', 'echo "2.1.319 (Claude Code)"');
+
+const app = launchApp(dataDir, netlog);
 const exited = new Promise<{ code: number | null; signal: string | null }>((res) => app.on('close', (code, signal) => res({ code, signal })));
 
 // Electron/Chromium helpers under main (sandbox-exec execs the app, so app.pid is main), tracked once per second.
@@ -96,12 +116,14 @@ try { nl = parseNetLog(readFileSync(netlog, 'utf8')); } catch { nl = { parsed: f
 const result = {
   idleSeconds: IDLE_MS / 1000, reached, processesSeen: seen.size, unexpectedDeaths: unexpected.length,
   killedServiceDetected: killed !== undefined && vanished.includes(killed), // positive control for the death detector
+  childKillControlDetected: controlDetected, // positive control for the child-kill detector
+  childrenKilled: serviceEvents(dataDir).filter((e) => e === 'child_killed').length,
   unexpectedKinds: unexpected.map((p) => /--type=([\w-]+)/.exec(seen.get(p) ?? '')?.[1] ?? 'other'),
   mainExit: exit, serviceRestarts: count('service_restart'),
   netlog: { parsed: nl.parsed, events: nl.events, nonLoopback: nl.nonLocal },
   repoUnchanged: gitStatus(REPO) === gitBefore, fixtureStoresUnchanged: stores() === storesBefore,
 };
-const pass = Object.values(reached).every(Boolean) && result.killedServiceDetected && unexpected.length === 0 && exit?.code === 0 && exit.signal === null
+const pass = Object.values(reached).every(Boolean) && result.killedServiceDetected && controlDetected && result.childrenKilled === 0 && unexpected.length === 0 && exit?.code === 0 && exit.signal === null
   && result.serviceRestarts === 1 && nl.parsed && nl.nonLocal === 0 && result.repoUnchanged && result.fixtureStoresUnchanged;
 const out = path.join(REPO, '.cache', 'gate-audit');
 mkdirSync(out, { recursive: true });

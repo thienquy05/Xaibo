@@ -43,7 +43,7 @@ test('psLookup: fixed argv and C locale, no shell; a failed or mismatched ps row
   const calls: unknown[] = [];
   const fake = (out: string, code = 0) => async (file: string, args: readonly string[], o: RunOptions): Promise<RunResult> => {
     calls.push({ file, args, env: o.env, bounded: o.timeoutMs > 0 && o.maxBytes > 0 });
-    return { code, stdout: Buffer.from(out), timedOut: false, overflow: false, error: false };
+    return { code, signal: null, stdout: Buffer.from(out), timedOut: false, overflow: false, error: false };
   };
   assert.deepEqual(await psLookup(4242, { run: fake('  4242 Thu Jan  1 09:30:15 2026     /usr/local/bin/claude\n') }), proc);
   assert.deepEqual(calls[0], { file: '/bin/ps', args: ['-o', 'pid=,lstart=,comm=', '-p', '4242'], env: { LC_ALL: 'C', PATH: '/usr/bin:/bin' }, bounded: true });
