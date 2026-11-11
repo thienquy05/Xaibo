@@ -1,0 +1,5 @@
+# Reviewed `privacy-scan.ts --history` findings in published commits (P1-T02, D-P1-04).
+# Each one was checked and holds no owner data; history is never rewritten to remove them.
+history:f0ddc992a070 scripts/privacy-scan.ts home-path  # the scanner's own Windows-path pattern line (pattern documentation)
+history:84af83d4a0b4 scripts/privacy-scan.ts home-path  # same pattern line, earlier version
+history:f185deb09eb5 docs/process/HARNESS_PROCESS.md home-path  # upstream harness author's example path; reworded in the tree

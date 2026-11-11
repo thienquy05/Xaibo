@@ -6,20 +6,20 @@ Live status file for `docs/plans/xaibo_plan.md` (HARNESS_PROCESS §2, PRD §1.6 
 
 | Item | Value |
 |---|---|
-| Current phase | **Phase 0: spikes complete; Gate 0 pre-freeze** |
-| Branch | `feat/phase0-spikes` |
+| Current phase | **Phase 1: Skeleton + Claude ingest, started 2026-11-10** |
+| Branch | `feat/phase1-claude-ingest` |
 | Plan version | Approved v1.0 (2026-11-09) |
-| Gate state | Gate 0 not started. Phase 0 runs only on the reference Mac (D-P0-03). |
-| Next step | Gate 0: pre-freeze review fixes, then owner OK for the gate commit, Codex review, Claude review, owner stop |
-| Blockers | None |
-| Baseline for Gate 0 review | `master` at `e6b39ab` |
+| Gate state | Gate 0 approved 2026-11-10 (`docs/plans/gates/gate0.md`), merged to `master` by PR #2. Gate 1 not started. |
+| Next step | P1-T04, then T05, T08, T06, T11, T12, T13, T14, Gate 1. Done: T01, T02, T03, T07, T09, T10. Approvals 48/53/54/55 given |
+| Blockers | Owner: `git config core.hooksPath .githooks`; delete the untracked `test/fixtures/synthetic/.claude/` copies. T05 runs under `new-feature` (owner, D-P1-06; run 21 abandoned) |
+| Baseline for Gate 1 review | `master` at `d09ab65` |
 
 ## 2. Per-phase status
 
 | Phase | Branch | Status | Gate | Gate date | PR |
 |---|---|---|---|---|---|
-| 0 Spikes | `feat/phase0-spikes` | spikes complete (S1–S13; S2/S8 pre-v1); Gate 0 pre-freeze | Gate 0 | — | — |
-| 1 Skeleton + Claude ingest | `feat/phase1-claude-ingest` | not started | Gate 1 | — | — |
+| 0 Spikes | `feat/phase0-spikes` | done (S1–S13; S2/S8 pre-v1) | Gate 0 approved | 2026-11-10 | #2 (merged) |
+| 1 Skeleton + Claude ingest | `feat/phase1-claude-ingest` | in progress | Gate 1 | — | — |
 | 2 Codex + normalization + Gemini ingest | `feat/phase2-codex-gemini-normalization` | not started | Gate 2 | — | — |
 | 3 Live status | `feat/phase3-live-status` | not started | Gate 3 | — | — |
 | D Design system | `docs/design-system` | not started | Gate D | — | — |
@@ -70,6 +70,14 @@ Status values: todo / doing / done / blocked / waived. "done" requires the task'
 | P0-G-T1 (report complete), P0-G-T3 (decision records) | done; owner items open (§8) | decisions 16, 23–28, 32–37; `phase0_spikes.md` §5 | 2026-11-10 |
 | P0-T09 (cleanup), final `baseline` compare | P0-T09 after approval (P0-G-T5); `baseline` compare not possible (snapshot lost with the emptied `.cache/`) | report § Guard | 2026-11-10 |
 | Gate 0 suite after the review fixes (working tree, quiet machine) | typecheck green; `npm test` 53/53; `spike:test` 50/50; `spike:test:unsandboxed` 12/12; `dist:mac` and S10 green; `privacy:scan` clean over `docs/plans`, `docs/PRD.md`, `spikes`, `scripts`, `test` | this run; the clean-checkout run on the gate SHA follows the gate commit | 2026-11-10 |
+| P1 installs (phase start) | done | `npm ls --depth=0`: devDependencies `typescript` 6.0.3 (Apache-2.0, replaces 7.0.2, D-P1-01), `vite` 8.3.7, `@vitejs/plugin-react` 6.3.0, `eslint` 10.14.0, `typescript-eslint` 8.72.2, `@types/react` 19.3.0, `@types/react-dom` 19.3.0, `@types/node` 26.6.6 (all MIT), `@playwright/test` 1.65.0 (Apache-2.0); dependencies `react` 19.3.1, `react-dom` 19.3.1, `ajv` 8.20.0 (all MIT). After the switch: `npm run typecheck` green (one cast added in `spikes/app/service.ts` for the newer `@types/node`), `npm test` 55/55, `spike:test` 50/50. `npm audit`: one moderate `minimatch` advisory, dev tooling only (eslint, typescript-eslint, electron-builder), not shipped | 2026-11-10 |
+| P1-T01 (toolchain scaffold) | done | `test/unit/lint-rules.test.ts` RED (22/22 fail: no ESLint config) → GREEN 22/22; `npm run lint` and `npm run typecheck` green; `npm test` 77/77; `vite.config.ts` and `electron-builder.json` load. `build`, `dev` and `dist:mac` first run in P1-T04 (no `src/main` yet), as planned. Layout choices in D-P1-03 | 2026-11-10 |
+| P1-T02 (privacy tooling, EC-62 U) | done; `core.hooksPath` pending owner | RED (12 new tests fail: modes, `nameMatchers`, `fixture-lint.ts` missing) → GREEN: `privacy-scan.test.ts` 25, `fixture-lint.test.ts` 9 (Phase 0 fixtures pass, OQ-B9); `privacy:scan -- --all` and `--history` clean; `fixtures:lint` clean; `npm test` 90/90, lint and typecheck green. Manual: a runtime-generated canary staged in the repo index made `.githooks/pre-commit` exit 1 (secret-generic, opaque-id; no raw match printed), then unstaged and deleted. `git commit --dry-run` (plan wording) does not run hooks, so the hook was run directly. `git config core.hooksPath .githooks` was refused in this session (sandbox, then auto-mode denial): owner runs it once (§8) | 2026-11-10 |
+| P1-T07 (SQLite store, EC-45) | done | XAIBO-PROD-105, run 24 completed. RED host-observed through `npm test` (modules missing) → GREEN: `store.test.ts` 5, `migration-failure.test.ts` 3 (EC-45 both cases, latest backup only), `fts-prefix.test.ts` 3; the 8 SQLite integration tests also green under Electron 45.2.3's Node 24.22.2 / SQLite 3.53.4 (`npm run test:electron`, OQ-P1-15). `schema.sql` snapshot test. `build` now copies `migrations/` into `out/` | 2026-11-10 |
+| P1-T09 (Claude parser, EC-04/08/14/16) | done | XAIBO-PROD-107, run 25 completed. RED host-observed → GREEN `claude-parse.test.ts` 10, `lines.test.ts` 2, `paths.test.ts` 2. Known types = S9 2.1.319 list plus the owner-audit names (S9 2.6). Deviation: the plan's new fixture dirs (clock-skew, unicode-paths, long-dirname, injected-content) are inline test inputs; the S9 fixture test pins the case list; the other cases reuse Phase 0 fixtures | 2026-11-10 |
+| P1-T10 (tailer, watch, zstd, Claude ingest; EC-03/13/18/19) | done | XAIBO-PROD-108, run 26 completed. RED host-observed → GREEN `tail` 5, `zst` 2, `claude-ingest` 4 (backfill + subagents, tail, partial line, rotation, kill/restart), `watch` 3 (EC-19 within interval + 1 s, zero reads of unchanged files, wake, live watch), `symlink` 2; integration suite green under Electron Node (17). The kill/restart test found a checkpoint bug (intermediate checkpoints stored the full size), fixed. Watch strategy per S12 (scan + per-active-file `fs.watch`), not the plan's recursive watch | 2026-11-10 |
+| P1-T03 (`sanitize()`, content-free logger, canary generator; EC-33/35 logs) | done | XAIBO-PROD-101, run 19 completed after owner approval 48. RED host-observed (modules missing) → GREEN `sanitize.test.ts` 17, `log.test.ts` 6; the pattern list moved to `src/shared/secret-patterns.ts` and `privacy-scan.ts` imports it (its 25 tests unchanged); full suite 154/154; lint, typecheck, `privacy:scan -- --all` clean | 2026-11-10 |
+| P1-T04, T08, T13 (security-change runs 20, 22, 23) | approved (53, 54, 55); not implemented | harness-os advanced these runs to finalize on P1-T03's decisions 75/76 (decisions are not bound to runs, D-P1-05); their real evidence will be their own RED/GREEN, review records and Gate 1. T05 runs under new-feature (D-P1-06) | 2026-11-10 |
 | Gate 0 review fixes (round 1) | done | 20 findings fixed: runner (supervised version probe, registration failure stops the group), S1 orphan check by pid + start time, S3 never-closed stdin and paint ack (re-measured), spool counter reset, scanner (JSON-escaped Windows paths, fixture diff headers), S10 (clean service exit, shutdown-attempt control, drained output; re-run), S7 anchored elicitation check (recomputed), tee field allowlist (overhead re-run), S12 fresh-result and null checks, PRD/report consistency; owner OK for the fix commit | 2026-11-10 |
 
 ## 4. Design-decision log
@@ -117,6 +125,12 @@ Entry format:
 | D-P0-34 | 2026-11-10 | Gate 0 owner answers: Claude 2.1.322 accepted for the compatibility matrix (Gate 1 re-checks the S9 facts on the installed version); dependency list approved as listed (PRD v1.1 App. C; `ajv` 8.20.0 at Phase 1 start) | Owner answers | G0-5, G0-10; D-P0-33 | 39 | owner |
 | D-P0-35 | 2026-11-10 | Guard (owner delegated: "you decide"): the three non-agent keychain changes (`s6b-pre`, `s7d-pre`, `s10b-pre`) are treated as owner activity and left unmarked, so the guard keeps reporting those services; the lost Phase 0 `baseline` is replaced by the per-block snapshots from S10 on | Same pattern as D-P0-20/32: 0 agent items, 0 credential files; the spike code has no keychain path; leaving them unmarked keeps detection | G0-13; plan P0-T04 | 39 | Claude (owner-delegated) |
 | D-P0-36 | 2026-11-10 | The deferred scale-up stage (plan-scale M13, M14, EC-57, EC-87) runs only when the owner starts it, likely after the first version is finished; it is not part of the MVP Gate. The third agent is the Antigravity CLI (`agy`) instead of Gemini CLI, evaluated in Phase 2 | Owner answers: "the large-scale will implement when i told you to do. Possibly after finish the first version"; "Yes, replace Gemini CLI with Antigravity CLI" | PRD §10, Q19, Q23; D-P0-25, D-P0-26 | 40 | owner |
+| D-P1-01 | 2026-11-10 | TypeScript pinned at 6.0.3 instead of 7.0.2 for all compiling and linting | TypeScript 7.0.2's package exposes no compiler API (`require('typescript')` returns only the version), and every `typescript-eslint` release, canary included, requires `typescript <6.1.0`; 6.0.3 supports every tsconfig option the plan uses | plan §3.4, P1-T01; App. C | 42 | owner |
+| D-P1-02 | 2026-11-10 | Phase 1 installs approved as listed, including `@types/react`, `@types/react-dom` and `@types/node` (OQ-P1-02); plan defaults accepted for OQ-P1-03..12 and OQ-P1-15..17 | Owner answers at Phase 1 start | plan §3.4, §6 | 42 | owner |
+| D-P1-03 | 2026-11-10 | P1-T01 details the plan left open: (1) `tsconfig.scripts.json` merged into the root `tsconfig.json` (one Node-side config for `src`, `scripts`, `test`, `vite.config.ts`; renderer excluded), `tsconfig.build.json` extends it and emits `src` to `out/`; (2) `src/renderer/tsconfig.json`, and its `typecheck` entry, land with the first renderer `.ts(x)` file, since tsc fails on an empty include (same rule as Phase 0's scripts tsconfig); likewise the `test:e2e`, `perf` and `fixtures:lint` scripts land with their files (P1-T05, P1-T14, P1-T02) and the migrations copy step with `migrations/` (P1-T07); (3) the sanctioned spawn module is `src/service/spawn.ts`; lint rules apply to `src/` only, `spikes/` is not linted (typecheck still covers it); dynamic `import()`/`require()` of network or spawn modules and `globalThis`/`window` network globals are also banned; (4) ad-hoc signing through electron-builder `mac.identity: "-"` with `hardenedRuntime: false` instead of the Phase 0 `codesign` post-step, so `npm run dist:mac -- --dir` reaches electron-builder; product output in git-ignored `release/`; the Phase 0 packaging stays as `spike:dist:mac` because S3 spike tools use `dist/spike`; (5) dev origin passed to main as `XAIBO_DEV_SERVER_URL`; (6) the empty stray root file `sh-thd-1794271456` merged with PR #2 removed (owner OK) | Smallest working layout (owner OK for item 6); electron-builder 26 documents `identity: "-"` as explicit ad-hoc signing (verified at the first `dist:mac` in P1-T04) | plan P1-T01, §7.7; D-P0-11 | — | Claude |
+| D-P1-04 | 2026-11-10 | P1-T02 scanner policy: (1) modes `--staged` (index blobs), `--all` (tracked files), `--history` (`git log -p --all` with message and patch, no author header; findings `history:<sha12> <file> <id>`); (2) the email rule skips only the required `Co-Authored-By:` trailer with Anthropic's no-reply address and npm `"deprecated":` lockfile lines, every other pattern still applies there; (3) reviewed findings in published commits live in `scripts/privacy-history.allow` (3: the scanner's own pattern line in two old versions, the upstream harness author's example path); (4) `HARNESS_PROCESS.md` no longer quotes that author's home path; (5) fixture lint = all scanner patterns plus "absolute paths only under `/tmp/xaibo-fixture/`"; with no argument it lints tracked fixtures, so untracked local files are ignored | `--all`/`--history` must be clean (EC-62 R) and history is never rewritten; the remaining hits were third-party public metadata or pattern documentation, none owner data | plan P1-T02; EC-62 | 46 | Claude |
+| D-P1-05 | 2026-11-10 | harness-os mechanics as found in Phase 1: (1) spec ids must match `XAIBO-PROD-nnn` for product specs, so the plan's `XAIBO-1nn` maps to `XAIBO-PROD-1nn`; (2) `security-change` runs stop for a human `harness approve <id>`, `new-feature` runs do not; (3) decisions and risk assessments are not bound to a run (one review advanced two parallel runs), so runs are driven one at a time and each unit still gets its own review record; (4) a host-observed RED is recorded only for the exact command `npm test` (no pipes); (5) the implement-stage directive names the `orch-add-feature` skill; units are implemented directly per plan §2.3 and the decision says so; (6) the store review also moved `writer.ts` to per-connection cached statements (§7.4) | Observed while running P1-T03/T04/T05/T07/T08/T13 workflows | plan §2.3 | 47–59 | Claude |
+| D-P1-06 | 2026-11-10 | P1-T05 (env-flag test hook) runs under the `new-feature` workflow instead of `security-change`; security-change run 21 is abandoned | harness-os rated it medium, below security-change's high minimum; owner chose new-feature | plan P1-T05, §2.3 | — | owner |
 ## 5. Deviations from plan or PRD
 
 | Date | Deviation | Owner approval reference |
@@ -127,6 +141,7 @@ Entry format:
 | 2026-11-10 | S3 M16 miss under a 50-way simultaneous burst accepted | D-P0-22 |
 | 2026-11-10 | Claude evidence split across 2.1.319 and 2.1.322 after an auto-update | D-P0-33, D-P0-34 (owner accepted 2.1.322) |
 | 2026-11-10 | `redactPaths` (P0-T02) deleted as unused; evidence stays path-free through the reducers and `privacy:scan` | pre-freeze review, Claude |
+| 2026-11-10 | TypeScript 6.0.3 replaces the Phase 0 pin 7.0.2 | D-P1-01 |
 
 ## 6. Spike results
 
@@ -181,7 +196,9 @@ Every result records hardware class, macOS version, app/agent versions, corpus s
 | Plan-revision decisions (machine, real stores, App. C errata, gate commit) | done (D-P0-03, D-P0-04, D-P0-05, D-P0-07) |
 | Confirm Phase 0 installs (P0-T01) | done (2026-11-10): electron 45.2.3, typescript 7.0.2, electron-builder 26.18.0 |
 | Sign in to temp profiles (P0-T06) | done for Claude and Codex; Gemini blocked by Google, skipped (D-P0-19) |
-| Answer or accept defaults for open questions (plan §6) | pending |
+| Answer or accept defaults for open questions (plan §6) | Phase 1 done (D-P1-02); later phases pending |
+| Approve Phase 1 installs (incl. OQ-P1-02) | done (D-P1-02) |
+| Run `git config core.hooksPath .githooks` once in the repo (P1-T02; refused inside the Claude session) | pending |
 | Gate 0: approve the dependency list (G0-10, report §3) | done (D-P0-34) |
 | Gate 0: Claude version drift (report §4, D-P0-33) | done: accept 2.1.322 (D-P0-34) |
 | Gate 0: placement of the deferred scale-up stage and the Antigravity CLI proposal | done (D-P0-36) |
@@ -194,8 +211,7 @@ Post-freeze gate evidence (gate SHA, final-SHA results, Codex and Claude verdict
 
 | Gate | Gate record | Outcome (filled by the next phase's first commit) |
 |---|---|---|
-
-(none yet)
+| Gate 0 | `docs/plans/gates/gate0.md` | Approved 2026-11-10 on gate SHA `7deb8cb`; merged to `master` by PR #2 |
 
 ## 9a. Plan challenge record (Codex, 2026-11-09, plan v0.1 → v0.2)
 

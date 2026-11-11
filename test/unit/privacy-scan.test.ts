@@ -84,6 +84,66 @@ test('diff headers naming synthetic fixture files pass; other headers and fixtur
   assert.equal(content.status, 1);
 });
 
+test('email exemptions cover only the co-author trailer and npm deprecation notices', () => {
+  const other = `someone@${rnd(8, az)}.com`;
+  assert.equal(scanText('    Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n').status, 0); // privacy-scan:allow synthetic test input
+  assert.equal(scanText(`    Co-Authored-By: Someone <${other}>\n`).status, 1);
+  assert.equal(scanText(`      "deprecated": "Support may be purchased by contacting ${other}",\n`).status, 0);
+  assert.equal(scanText(`      "deprecated": "x ${`sk-${mixed(32)}`}",\n`).status, 1, 'secrets still flagged');
+  assert.equal(scanText(`  "maintainer": "${other}",\n`).status, 1);
+});
+
+test('machine-name check uses the injected names', async () => {
+  const { scanText: scan, nameMatchers } = await import('../../scripts/privacy-scan.ts');
+  const user = `u${rnd(10, az)}`;
+  const hits = scan('x', `owner is ${user}\nhost ${user}.local\n`, nameMatchers([user, 'ab']));
+  assert.deepEqual(hits, ['x:1 machine-name', 'x:2 machine-name']);
+  assert.ok(!hits.join('\n').includes(user));
+  assert.deepEqual(scan('x', `prefix${user}suffix\n`, nameMatchers([user])), []);
+});
+
+// --staged, --all, --history run in a throwaway repo with a canary built at test time.
+function repo() {
+  const cwd = mkdtempSync(join(tmpdir(), 'pscan-repo-'));
+  const git = (...a: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', ...a], { cwd, encoding: 'utf8' });
+  git('init', '-q');
+  const run = (mode: string) => spawnSync(process.execPath, [SCAN, mode], { cwd, encoding: 'utf8' });
+  return { cwd, git, run };
+}
+
+test('--staged scans staged blobs, not the working tree', () => {
+  const { cwd, git, run } = repo();
+  const canary = `sk-${mixed(32)}`;
+  writeFileSync(join(cwd, 'a.txt'), `clean\nkey ${canary}\n`);
+  assert.equal(run('--staged').status, 0, 'nothing staged yet');
+  git('add', 'a.txt');
+  writeFileSync(join(cwd, 'a.txt'), 'clean\n'); // working tree clean, staged blob not
+  const r = run('--staged');
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /^a\.txt:2 secret-generic$/m);
+  assert.ok(!r.stdout.includes(canary));
+});
+
+test('--all scans tracked files only; --history scans every commit', () => {
+  const { cwd, git, run } = repo();
+  const canary = `AKIA${rnd(16, AZ + D)}`;
+  writeFileSync(join(cwd, 'a.txt'), 'clean\n');
+  writeFileSync(join(cwd, 'untracked.txt'), `key ${canary}\n`);
+  git('add', 'a.txt');
+  git('commit', '-q', '-m', 'clean');
+  assert.equal(run('--all').status, 0, run('--all').stdout);
+  assert.equal(run('--history').status, 0, run('--history').stdout);
+  writeFileSync(join(cwd, 'a.txt'), `key ${canary}\n`);
+  git('commit', '-q', '-am', 'leak');
+  writeFileSync(join(cwd, 'a.txt'), 'clean\n');
+  git('commit', '-q', '-am', 'fix');
+  assert.equal(run('--all').status, 0, 'current tree is clean');
+  const h = run('--history');
+  assert.equal(h.status, 1);
+  assert.match(h.stdout, /^history:[0-9a-f]{12} a\.txt secret-aws$/m);
+  assert.ok(!h.stdout.includes(canary));
+});
+
 test('Windows home paths are flagged plain and JSON-escaped', () => {
   assert.equal(scanStdin('path C:\\Users\\someone\\x\n').status, 1); // privacy-scan:allow synthetic test input
   assert.equal(scanStdin(JSON.stringify({ p: 'C:\\Users\\someone\\x' }) + '\n').status, 1); // privacy-scan:allow synthetic test input

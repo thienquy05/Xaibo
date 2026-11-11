@@ -23,7 +23,7 @@ async function s1Probe() {
     try {
       const w = new Worker(path.join(import.meta.dirname, '..', 's1', 'worker.js'), { workerData: { file: path.join(dataDir, 's1-worker.db') } });
       w.once('message', res);
-      w.once('error', (e) => res({ error: e.message }));
+      w.once('error', (e) => res({ error: (e as Error).message }));
     } catch (e) { res({ error: (e as Error).message }); }
   });
   report.versions = { node: process.versions.node, electron: process.versions.electron, sqlite: process.versions.sqlite };

@@ -53,7 +53,7 @@ When harness-os governance is active for the project, each unit of work follows 
 - It writes `.claude/` (hooks, `settings.json`, `harness.config.json`, `agents/AGENTS.md`) **and makes a git commit** ("harness: initial project scaffold").
 - For Python it gates every `**/*.py` file: writes are blocked until a validated spec covers the file and its test has been seen failing.
 - Its gate daemon can only see the folder mounted as `HARNESS_PROJECTS_ROOT`, so the project must live under it.
-- Its runbook uses the author's own paths (`/home/lehoa/...`) and a WSL2 + Docker setup; adapt them to your machine.
+- Its runbook uses the author's own home paths (`~/...`) and a WSL2 + Docker setup; adapt them to your machine.
 - Risk is classified by keywords in the request text and paths. Words such as `order`, `token`, `session` or `credential` can raise the level and trigger a human approval prompt even in harmless work; expect to see this and read the rationale rather than ignoring it.
 - Config files are integrity-checked; if you edit one deliberately, run `harness reconcile-config <project>`.
 

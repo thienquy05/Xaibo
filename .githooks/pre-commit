@@ -1,0 +1,6 @@
+#!/bin/sh
+# Blocks a commit whose staged content trips the privacy scan or the fixture lint (EC-62).
+# Enable once per clone: git config core.hooksPath .githooks
+set -e
+node scripts/privacy-scan.ts --staged
+node scripts/fixture-lint.ts --staged
