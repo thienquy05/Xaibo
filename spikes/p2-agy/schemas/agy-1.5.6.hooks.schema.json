@@ -1,0 +1,320 @@
+{
+  "SessionStart": {
+    "artifactDirectoryPath": [
+      "string"
+    ],
+    "conversationId": [
+      "string"
+    ],
+    "cwd": [
+      "string"
+    ],
+    "hookEventName": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "SessionStart"
+      ]
+    },
+    "lastUserInput": [
+      "string"
+    ],
+    "modelName": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "gemini-3.8-flash-high"
+      ]
+    },
+    "transcriptPath": [
+      "string"
+    ],
+    "workspacePaths": [
+      "array"
+    ],
+    "workspacePaths[]": [
+      "string"
+    ]
+  },
+  "PreInvocation": {
+    "artifactDirectoryPath": [
+      "string"
+    ],
+    "conversationId": [
+      "string"
+    ],
+    "cwd": [
+      "string"
+    ],
+    "hookEventName": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "PreInvocation"
+      ]
+    },
+    "initialNumSteps": [
+      "number"
+    ],
+    "invocationNum": [
+      "number"
+    ],
+    "lastUserInput": [
+      "string"
+    ],
+    "modelName": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "gemini-3.8-flash-high",
+        "gemini-3.8-flash-low"
+      ]
+    },
+    "transcriptPath": [
+      "string"
+    ],
+    "workspacePaths": [
+      "array"
+    ],
+    "workspacePaths[]": [
+      "string"
+    ]
+  },
+  "PostInvocation": {
+    "artifactDirectoryPath": [
+      "string"
+    ],
+    "conversationId": [
+      "string"
+    ],
+    "cwd": [
+      "string"
+    ],
+    "hookEventName": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "PostInvocation"
+      ]
+    },
+    "initialNumSteps": [
+      "number"
+    ],
+    "invocationNum": [
+      "number"
+    ],
+    "lastUserInput": [
+      "string"
+    ],
+    "modelName": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "gemini-3.8-flash-high",
+        "gemini-3.8-flash-low"
+      ]
+    },
+    "transcriptPath": [
+      "string"
+    ],
+    "workspacePaths": [
+      "array"
+    ],
+    "workspacePaths[]": [
+      "string"
+    ]
+  },
+  "Stop": {
+    "artifactDirectoryPath": [
+      "string"
+    ],
+    "continuationActive": [
+      "boolean"
+    ],
+    "conversationId": [
+      "string"
+    ],
+    "cwd": [
+      "string"
+    ],
+    "error": [
+      "string"
+    ],
+    "executionNum": [
+      "number"
+    ],
+    "fullyIdle": [
+      "boolean"
+    ],
+    "hookEventName": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "Stop"
+      ]
+    },
+    "lastUserInput": [
+      "string"
+    ],
+    "modelName": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "gemini-3.8-flash-high",
+        "gemini-3.8-flash-low"
+      ]
+    },
+    "terminationReason": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "NO_TOOL_CALL"
+      ]
+    },
+    "transcriptPath": [
+      "string"
+    ],
+    "workspacePaths": [
+      "array"
+    ],
+    "workspacePaths[]": [
+      "string"
+    ]
+  },
+  "PreToolUse": {
+    "artifactDirectoryPath": [
+      "string"
+    ],
+    "conversationId": [
+      "string"
+    ],
+    "cwd": [
+      "string"
+    ],
+    "hookEventName": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "PreToolUse"
+      ]
+    },
+    "lastUserInput": [
+      "string"
+    ],
+    "modelName": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "gemini-3.8-flash-high"
+      ]
+    },
+    "stepIdx": [
+      "number"
+    ],
+    "toolCall": [
+      "object"
+    ],
+    "toolCall.args": [
+      "object"
+    ],
+    "toolCall.args.Path": [
+      "string"
+    ],
+    "toolCall.id": [
+      "string"
+    ],
+    "toolCall.name": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "read_file"
+      ]
+    },
+    "transcriptPath": [
+      "string"
+    ],
+    "workspacePaths": [
+      "array"
+    ],
+    "workspacePaths[]": [
+      "string"
+    ]
+  },
+  "PostToolUse": {
+    "artifactDirectoryPath": [
+      "string"
+    ],
+    "conversationId": [
+      "string"
+    ],
+    "cwd": [
+      "string"
+    ],
+    "error": [
+      "string"
+    ],
+    "hookEventName": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "PostToolUse"
+      ]
+    },
+    "lastUserInput": [
+      "string"
+    ],
+    "modelName": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "gemini-3.8-flash-high"
+      ]
+    },
+    "stepIdx": [
+      "number"
+    ],
+    "toolCall": [
+      "object"
+    ],
+    "toolCall.args": [
+      "object"
+    ],
+    "toolCall.args.Path": [
+      "string"
+    ],
+    "toolCall.id": [
+      "string"
+    ],
+    "toolCall.name": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "read_file"
+      ]
+    },
+    "transcriptPath": [
+      "string"
+    ],
+    "workspacePaths": [
+      "array"
+    ],
+    "workspacePaths[]": [
+      "string"
+    ]
+  }
+}

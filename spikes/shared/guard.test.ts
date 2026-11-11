@@ -100,6 +100,25 @@ test('agent keychain item removed, added under new name, second account', () => 
   }
 });
 
+test('agy (P2-T00): Antigravity keychain items are agent items; agy config files are watched', () => {
+  const f = fixture();
+  f.setKeychain([AGENT, OTHER, { svce: 'Antigravity Synthetic Token', acct: 'synthetic-user', mdat: '1' }]);
+  expectCounts(f.check(), { keychain: 1 }, 1);
+  f.done();
+  for (const rel of ['.gemini/config/config.json', '.gemini/config/hooks.json', '.gemini/antigravity-cli/settings.json']) {
+    const g = fixture();
+    mkdirSync(join(g.home, rel, '..'), { recursive: true });
+    writeFileSync(join(g.home, rel), '{}');
+    expectCounts(g.check(), { config: 1 }, 1);
+    g.done();
+  }
+  const h = fixture(); // runtime-verified token file (P2-T00 sign-in): stat only
+  mkdirSync(join(h.home, '.gemini/antigravity-cli'), { recursive: true });
+  writeFileSync(join(h.home, '.gemini/antigravity-cli/antigravity-oauth-token'), 'synthetic');
+  expectCounts(h.check(), { credential: 1 }, 1);
+  h.done();
+});
+
 test('unrelated keychain item added, modified, removed pauses; non-agent marking silences it', () => {
   for (const k of [
     [AGENT, OTHER, { svce: 'Another Synthetic App', acct: 'u', mdat: '1' }],

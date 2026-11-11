@@ -1,0 +1,171 @@
+{
+  "USER_INPUT": {
+    "step_index": [
+      "number"
+    ],
+    "source": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "USER_EXPLICIT"
+      ]
+    },
+    "type": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "USER_INPUT"
+      ]
+    },
+    "status": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "DONE"
+      ]
+    },
+    "created_at": [
+      "string"
+    ],
+    "content": [
+      "string"
+    ]
+  },
+  "PLANNER_RESPONSE": {
+    "step_index": [
+      "number"
+    ],
+    "source": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "MODEL"
+      ]
+    },
+    "type": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "PLANNER_RESPONSE"
+      ]
+    },
+    "status": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "DONE"
+      ]
+    },
+    "created_at": [
+      "string"
+    ],
+    "input_tokens": [
+      "number"
+    ],
+    "cache_read_tokens": [
+      "number"
+    ],
+    "output_tokens": [
+      "number"
+    ],
+    "content": [
+      "string"
+    ],
+    "tool_calls": [
+      "array"
+    ],
+    "tool_calls[]": [
+      "object"
+    ],
+    "tool_calls[].name": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "read_file"
+      ]
+    },
+    "tool_calls[].args": [
+      "object"
+    ],
+    "tool_calls[].args.Path": [
+      "string"
+    ]
+  },
+  "SYSTEM_MESSAGE": {
+    "step_index": [
+      "number"
+    ],
+    "source": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "SYSTEM"
+      ]
+    },
+    "type": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "SYSTEM_MESSAGE"
+      ]
+    },
+    "status": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "DONE"
+      ]
+    },
+    "created_at": [
+      "string"
+    ],
+    "content": [
+      "string"
+    ]
+  },
+  "GENERIC": {
+    "step_index": [
+      "number"
+    ],
+    "source": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "MODEL"
+      ]
+    },
+    "type": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "GENERIC"
+      ]
+    },
+    "status": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "DONE"
+      ]
+    },
+    "created_at": [
+      "string"
+    ],
+    "content": [
+      "string"
+    ]
+  }
+}

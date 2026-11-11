@@ -1,0 +1,177 @@
+{
+  "init": {
+    "event": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "init"
+      ]
+    },
+    "conversation_id": [
+      "string"
+    ],
+    "init": [
+      "object"
+    ],
+    "init.cwd": [
+      "string"
+    ],
+    "init.tools": [
+      "array"
+    ],
+    "init.tools[]": [
+      "string"
+    ],
+    "init.permission_mode": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "request-review"
+      ]
+    }
+  },
+  "step_update": {
+    "event": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "step_update"
+      ]
+    },
+    "step_update": [
+      "object"
+    ],
+    "step_update.conversation_id": [
+      "string"
+    ],
+    "step_update.step_index": [
+      "number"
+    ],
+    "step_update.state": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "ACTIVE",
+        "DONE"
+      ]
+    },
+    "step_update.step_type": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "agent_response",
+        "system_message",
+        "tool",
+        "user_input"
+      ]
+    },
+    "step_update.text_delta": [
+      "string"
+    ],
+    "step_update.duration_seconds": [
+      "number"
+    ],
+    "step_update.usage": [
+      "object"
+    ],
+    "step_update.usage.input_tokens": [
+      "number"
+    ],
+    "step_update.usage.output_tokens": [
+      "number"
+    ],
+    "step_update.usage.thinking_tokens": [
+      "number"
+    ],
+    "step_update.usage.cache_read_tokens": [
+      "number"
+    ],
+    "step_update.usage.total_tokens": [
+      "number"
+    ],
+    "step_update.tool_name": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "read_file"
+      ]
+    },
+    "step_update.tool_info": [
+      "object"
+    ],
+    "step_update.tool_info.name": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "read_file"
+      ]
+    },
+    "step_update.tool_info.parameters": [
+      "object"
+    ],
+    "step_update.tool_info.parameters.Path": [
+      "string"
+    ],
+    "step_update.tool_info.output": [
+      "string"
+    ]
+  },
+  "result": {
+    "event": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "result"
+      ]
+    },
+    "result": [
+      "object"
+    ],
+    "result.conversation_id": [
+      "string"
+    ],
+    "result.status": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "SUCCESS"
+      ]
+    },
+    "result.response": [
+      "string"
+    ],
+    "result.duration_seconds": [
+      "number"
+    ],
+    "result.num_turns": [
+      "number"
+    ],
+    "result.usage": [
+      "object"
+    ],
+    "result.usage.input_tokens": [
+      "number"
+    ],
+    "result.usage.output_tokens": [
+      "number"
+    ],
+    "result.usage.thinking_tokens": [
+      "number"
+    ],
+    "result.usage.cache_read_tokens": [
+      "number"
+    ],
+    "result.usage.total_tokens": [
+      "number"
+    ]
+  }
+}

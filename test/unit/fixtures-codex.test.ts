@@ -92,9 +92,9 @@ for (const c of ['usage-basic', 'identifiers', 'unknown-records', 'partial-line'
   test(`codex 0.160.0 ${c}`, () => assert.deepEqual(rollouts(c), readJson(c, 'expected.json').files));
 }
 
-test('codex 0.160.0 compaction stays unverified and unfixtured', () => {
+test('codex 0.160.0 compaction is recorded and a known record type (P2-T02 re-extraction)', () => {
   assert.equal(readJson('compaction', 'expected.json').compaction.verified, FACTS.compaction.recorded);
-  assert.equal(KNOWN.has('compacted'), false);
+  assert.equal(KNOWN.has('compacted'), true);
 });
 
 test('codex 0.160.0 model-effort: only null effort observed', () => {

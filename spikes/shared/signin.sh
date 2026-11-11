@@ -1,17 +1,19 @@
 #!/bin/bash
 # P0-T06 steps 2-5 for one agent. The OWNER runs this in their own terminal, with no real session of that agent
 # running (for claude: every Claude Code session exited, incl. editor extensions). Guard output is counts only.
-# Usage: bash spikes/shared/signin.sh claude|codex|gemini
+# Usage: bash spikes/shared/signin.sh claude|codex|gemini|agy
 set -euo pipefail
 agent="${1:-}"
 repo="$(cd "$(dirname "$0")/../.." && pwd -P)"
 guard() { node "$repo/spikes/shared/guard.ts" "$@"; }
 run() { bash "$repo/spikes/shared/in-profile.sh" "$@"; }
-project="$repo/.cache/spike-projects/p0"
+spike=p0
+[ "$agent" = agy ] && spike=p2-agy
+project="$repo/.cache/spike-projects/$spike"
 
 case "$agent" in
-  claude|codex|gemini) ;;
-  *) echo "usage: signin.sh claude|codex|gemini" >&2; exit 2 ;;
+  claude|codex|gemini|agy) ;;
+  *) echo "usage: signin.sh claude|codex|gemini|agy" >&2; exit 2 ;;
 esac
 mkdir -p "$project"
 [ -f "$project/README.txt" ] || echo synthetic > "$project/README.txt"
@@ -24,6 +26,9 @@ case "$agent" in
   claude) run claude a -- claude auth status || true ;;
   codex) run codex a -- codex login status || true ;;
   gemini) (cd "$project" && run --spike p0 gemini a -- gemini -p "Reply with the single word OK.") || true ;;
+  agy) echo "agy 1.5.6 has no auth-status command; checking the temp profile home holds no agy state instead"
+       [ -z "$(ls -A "$HOME/.xaibo-spike-profiles/agy-a/home" 2>/dev/null)" ] && echo "temp profile home is empty: not signed in" \
+         || echo "temp profile home is NOT empty: press Ctrl-C and tell Claude" ;;
 esac
 if ! guard compare "pre-login-$agent"; then echo "STOP: guard did not MATCH after the probe. Tell Claude; do not sign in." >&2; exit 1; fi
 
@@ -38,6 +43,9 @@ case "$agent" in
          run codex a -- codex login ;;
   gemini) echo "Pick 'Login with Google' (or your usual method), finish in the browser, then type /quit."
           (cd "$project" && run --spike p0 gemini a -- gemini) ;;
+  agy) echo "Sign in with your Google account (finish in the browser). If macOS says a keychain cannot be found, click Cancel."
+       echo "When the prompt box appears, do NOT type a prompt: leave with /quit (or Ctrl-C twice)."
+       (cd "$project" && run --spike p2-agy agy a -- agy) || true ;;
 esac
 
 echo "== step 5: guard compare after sign-in"

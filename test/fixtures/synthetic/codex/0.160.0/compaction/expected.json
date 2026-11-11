@@ -1,5 +1,5 @@
 {
-  "compaction": { "verified": false, "evidence": "spikes/s9/evidence/facts.json codex.compaction.recorded is false on 0.160.0; no compacted shape is fixtured" },
+  "compaction": { "verified": true, "evidence": "spikes/s9/evidence/facts.json codex.compaction.recorded is true on 0.160.0 (no-prompt re-extraction, P2-T02); shape in spikes/s9/schemas/codex-0.160.0.schema.json; this case has no compacted record" },
   "files": {
     "00000000-0000-4000-8000-0000000c0006": {
       "lines": 6, "malformedLines": [], "partialTrailing": false,

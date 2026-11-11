@@ -72,6 +72,44 @@ function claudeFacts() {
   };
 }
 
+const flat = (s: string) => s.replace(/\s+/g, ' ').trim();
+const textOf = (content: unknown) => (Array.isArray(content) ? flat(content.map((c: Rec) => (typeof c?.text === 'string' ? c.text : '')).join(' ')) : '');
+const ITEM_ROLE: Record<string, string> = { UserMessage: 'user', AgentMessage: 'assistant' };
+
+/** Do event_msg item_completed User/AgentMessage items mirror response_item messages (same file, role, text)? Booleans only. */
+export function mirroring(perFile: Rec[][]) {
+  let items = 0, user = 0, agent = 0, matched = 0, idPairs = 0;
+  let userOk = true, agentOk = true, after = true, idsEqual = true, userNoItem = false, assistantNoItem = false;
+  for (const recs of perFile) {
+    const resps = recs.flatMap((r, i) => (r.type === 'response_item' && r.payload?.type === 'message' && (r.payload.role === 'user' || r.payload.role === 'assistant')
+      ? [{ i, role: r.payload.role as string, text: textOf(r.payload.content), id: r.payload.id, used: false }] : []));
+    recs.forEach((r, i) => {
+      const it = r.type === 'event_msg' && r.payload?.type === 'item_completed' ? r.payload.item : undefined;
+      const role = ITEM_ROLE[it?.type];
+      if (!role) return;
+      items++;
+      if (role === 'user') user++; else agent++;
+      const text = textOf(it.content);
+      const m = resps.find((x) => !x.used && x.role === role && x.text === text);
+      if (!m) { if (role === 'user') userOk = false; else agentOk = false; return; }
+      m.used = true;
+      matched++;
+      if (m.i > i) after = false;
+      if (it.id !== undefined || m.id !== undefined) { idPairs++; if (it.id !== m.id) idsEqual = false; }
+    });
+    for (const x of resps) if (!x.used) { if (x.role === 'user') userNoItem = true; else assistantNoItem = true; }
+  }
+  return {
+    itemCompletedMessages: items > 0,
+    userItemsMirrored: user ? userOk : null,
+    agentItemsMirrored: agent ? agentOk : null,
+    itemAlwaysAfterResponse: matched ? after : null,
+    itemIdEqualsResponseId: idPairs ? idsEqual : null,
+    responseUserWithoutItem: items ? userNoItem : null,
+    responseAssistantWithoutItem: items ? assistantNoItem : null,
+  };
+}
+
 function codexFacts() {
   const rollouts = files(join(CODEX, 'sessions'), /rollout-.*\.jsonl$/);
   const perFile = rollouts.map(lines);
@@ -107,6 +145,7 @@ function codexFacts() {
     tokenUsageRecord: recs.some((r) => r.type === 'token_usage_record' || r.payload?.type === 'token_usage_record'),
     turnContextKeys: keys(tcx), turnContextModels: vals(tcx.map((t) => t?.model)), effortValues: vals(tcx.map((t) => t?.collaboration_mode?.settings?.reasoning_effort)), // FR-51 path; observed only as null on 0.160.0
     mirroredUserMessages: recs.some((r) => r.payload?.type === 'user_message') && recs.some((r) => r.type === 'response_item' && r.payload?.role === 'user'),
+    messageMirroring: mirroring(perFile), // P2-T02: 0.160.0 mirrors through item_completed, not user_message
     compaction: { recorded: recs.some((r) => r.type === 'compacted'), keys: keys(recs.filter((r) => r.type === 'compacted').map((r) => r.payload)) },
     sessionIndex: existsSync(join(CODEX, 'session_index.jsonl')) ? { present: true, keys: keys(lines(join(CODEX, 'session_index.jsonl'))) } : { present: false },
     stateDbNames: [...new Set(stateFiles)].sort(),
@@ -115,14 +154,21 @@ function codexFacts() {
   };
 }
 
-mkdirSync(OUT, { recursive: true });
-mkdirSync(SCHEMAS, { recursive: true });
-const facts = { claude: claudeFacts(), codex: codexFacts() };
-writeFileSync(join(OUT, 'facts.json'), `${JSON.stringify(facts, null, 2)}\n`);
-const ENUMS = ['hook_event_name', 'type', 'subtype', 'role', 'model', 'version', 'stop_reason', 'entrypoint', 'userType', 'level', 'originator', 'source'];
-for (const [agent, root, re, ver] of [['claude', join(CLAUDE, 'projects'), /\.jsonl$/, '2.1.319'], ['codex', join(CODEX, 'sessions'), /rollout-.*\.jsonl$/, '0.160.0']] as const) {
-  const red = reduce(files(root, re).flatMap(lines).map((r) => ({ event: String(r.type ?? 'unknown'), payload: r })), ENUMS);
-  const schema = Object.fromEntries(Object.entries(red).map(([t, v]) => [t, Object.fromEntries(Object.entries(v.keys).map(([k, s]) => [k, s.values ? { types: s.types, values: s.values } : s.types]))]));
-  writeFileSync(join(SCHEMAS, `${agent}-${ver}.schema.json`), `${JSON.stringify(schema, null, 2)}\n`);
+if (import.meta.main) {
+  // --out <dir>: write facts.json and schemas there instead of over the committed evidence (re-extraction runs).
+  const i = process.argv.indexOf('--out');
+  const out = i > 0 ? process.argv[i + 1]! : undefined;
+  const OUT_DIR = out ?? OUT;
+  const SCHEMA_DIR = out ?? SCHEMAS;
+  mkdirSync(OUT_DIR, { recursive: true });
+  mkdirSync(SCHEMA_DIR, { recursive: true });
+  const facts = { claude: claudeFacts(), codex: codexFacts() };
+  writeFileSync(join(OUT_DIR, 'facts.json'), `${JSON.stringify(facts, null, 2)}\n`);
+  const ENUMS = ['hook_event_name', 'type', 'subtype', 'role', 'model', 'version', 'stop_reason', 'entrypoint', 'userType', 'level', 'originator', 'source'];
+  for (const [agent, root, re, ver] of [['claude', join(CLAUDE, 'projects'), /\.jsonl$/, '2.1.319'], ['codex', join(CODEX, 'sessions'), /rollout-.*\.jsonl$/, '0.160.0']] as const) {
+    const red = reduce(files(root, re).flatMap(lines).map((r) => ({ event: String(r.type ?? 'unknown'), payload: r })), ENUMS);
+    const schema = Object.fromEntries(Object.entries(red).map(([t, v]) => [t, Object.fromEntries(Object.entries(v.keys).map(([k, s]) => [k, s.values ? { types: s.types, values: s.values } : s.types]))]));
+    writeFileSync(join(SCHEMA_DIR, `${agent}-${ver}.schema.json`), `${JSON.stringify(schema, null, 2)}\n`);
+  }
+  console.log(JSON.stringify(facts, null, 1));
 }
-console.log(JSON.stringify(facts, null, 1));

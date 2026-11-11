@@ -11,10 +11,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { readRootEnv, type EnvKey } from './guard.ts';
 
-export const AGENTS = ['claude', 'codex', 'gemini'] as const;
+export const AGENTS = ['claude', 'codex', 'gemini', 'agy'] as const;
 export type Agent = (typeof AGENTS)[number];
 export type GeminiLayout = 'default' | 'unset' | 'custom';
-export interface Root { path: string; file: boolean }
+export interface Root { path: string; file: boolean; writeOnly?: boolean } // writeOnly: readable/executable, never written
 export interface Layout {
   repo: string; P: string; profile: string; home: string; data: string; tmp: string;
   geminiCliHome?: string; raw?: string; projects?: string;
@@ -31,11 +31,15 @@ const FREEZE_FILES: Record<Agent, (l: Layout) => [string, string][]> = {
   claude: () => [],
   codex: (l) => [[path.join(l.home, '.codex', 'config.toml'), 'check_for_update_on_startup = false\ncli_auth_credentials_store = "file"\nsandbox_mode = "danger-full-access"\n']],
   gemini: (l) => [[path.join(l.geminiCliHome ?? l.home, '.gemini', 'settings.json'), '{"general": {"enableAutoUpdate": false, "enableAutoUpdateNotification": false}}\n']],
+  agy: () => [],
 };
 const PASS_THROUGH = ['PATH', 'TERM', 'LANG', 'USER', 'LOGNAME', 'SHELL'] as const;
 const DEFAULTS: Record<string, string> = { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', TERM: 'dumb', LANG: 'en_US.UTF-8' };
 // UNVERIFIED names until confirmed from the installed version's docs (P0-T05 version freeze, P0-T06 step 1).
 const CLAUDE_FREEZE = { DISABLE_AUTOUPDATER: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' };
+// agy 1.5.6 self-updates in the background; name read from the binary's strings (P2-T00), UNVERIFIED at runtime.
+// The runner's version-before/after check still invalidates a run whose binary changed.
+const AGY_FREEZE = { AGY_CLI_DISABLE_AUTO_UPDATE: '1' };
 // Gemini 0.46.0 keeps OAuth tokens in one fixed-name keychain item shared by every profile unless this is set;
 // with it, tokens go to <GEMINI_CLI_HOME>/.gemini/gemini-credentials.json inside the profile (P0-T06 step 1).
 const ISOLATION_FIXED = { GEMINI_FORCE_FILE_STORAGE: 'true' };
@@ -54,10 +58,15 @@ export function realRoots(home: string, env: Partial<Record<EnvKey, string[]>>):
   const dirs = [
     path.join(home, '.claude'), path.join(home, '.codex'), path.join(home, '.gemini'),
     path.join(home, 'Library/Application Support/Xaibo'), path.join(home, 'Library/Application Support/XaiboSpike'),
+    // P2-T00: the Antigravity desktop app's data and the agy installer/updater staging; the real login keychain
+    // (a temp HOME has none, but a framework that resolved the real path must still be refused).
+    path.join(home, 'Library/Application Support/Antigravity'), path.join(home, '.cache/antigravity'), path.join(home, 'Library/Keychains'),
     ...(env.CLAUDE_CONFIG_DIR ?? []), ...(env.CODEX_HOME ?? []),
     ...(env.GEMINI_CLI_HOME ?? []).map((g) => path.join(g, '.gemini')), // GEMINI_CLI_HOME is the store's parent, never a root
   ];
-  return [...dirs.map((p) => ({ path: p, file: false })), { path: path.join(home, '.claude.json'), file: true }];
+  // Installed agent binaries: agy 1.5.6 still runs its updater with AGY_CLI_DISABLE_AUTO_UPDATE set (P2-T00).
+  const installs: Root = { path: path.join(home, '.local/bin'), file: false, writeOnly: true };
+  return [...dirs.map((p) => ({ path: p, file: false })), { path: path.join(home, '.claude.json'), file: true }, installs];
 }
 
 export function layoutFor(repo: string, agent: Agent, slot: string, gemini: GeminiLayout, spike?: string, P = DEFAULT_PROFILE_ROOT): Layout {
@@ -88,6 +97,7 @@ export function buildEnv(l: Layout, agent: Agent, inherited: NodeJS.ProcessEnv, 
   if (l.geminiCliHome) env.GEMINI_CLI_HOME = l.geminiCliHome;
   if (l.raw) env.XAIBO_SPIKE_RAW = l.raw;
   if (agent === 'claude') Object.assign(env, CLAUDE_FREEZE);
+  if (agent === 'agy') Object.assign(env, AGY_FREEZE);
   return env;
 }
 
@@ -125,7 +135,7 @@ export function denyProfile(roots: Root[]): string {
     const forms = [...new Set([path.resolve(r.path), resolveReal(r.path)])];
     if (forms.some((f) => UNSAFE.test(f))) throw new Error('deny root has characters that cannot be quoted safely');
     const filters = forms.map((f) => `(${r.file ? 'literal' : 'subpath'} "${f}")`).join(' ');
-    return `(deny file-read* file-write* ${filters})`;
+    return `(deny ${r.writeOnly ? '' : 'file-read* '}file-write* ${filters})`;
   });
   return ['(version 1)', '(allow default)', ...rules, ''].join('\n');
 }

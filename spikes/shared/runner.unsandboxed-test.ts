@@ -7,7 +7,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync,
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { canaryOk, denyProfile } from './in-profile.ts';
+import { canaryOk, denyProfile, realRoots } from './in-profile.ts';
 
 const HERE = import.meta.dirname;
 const SUP = join(HERE, 'supervise.pl');
@@ -17,6 +17,37 @@ const readPid = (f: string) => Number(readFileSync(f, 'utf8').trim());
 async function until(f: () => boolean, ms = 5000) { const end = Date.now() + ms; while (!f()) { if (Date.now() > end) return false; await sleep(25); } return true; }
 const groupAlive = (pg: number) => spawnSync('/bin/ps', ['-A', '-o', 'pgid=,stat='], { encoding: 'utf8' }).stdout.split('\n')
   .some((l) => { const [g, st] = l.trim().split(/\s+/); return Number(g) === pg && !!st && !st.startsWith('Z'); });
+
+// P2-T00: a temp profile must never open the real login keychain, even by explicit path (show-keychain-info reads
+// lock settings only, never items).
+test('the real login keychain is unreadable inside the wrapper', (t) => {
+  const kc = join(homedir(), 'Library', 'Keychains', 'login.keychain-db');
+  if (!existsSync(kc)) return t.skip('no login keychain on this machine');
+  const T = realpathSync(mkdtempSync(join(tmpdir(), 'kc-deny-')));
+  const sb = join(T, 'sb');
+  writeFileSync(sb, denyProfile(realRoots(homedir(), {})));
+  const run = (argv: string[]) => spawnSync(argv[0]!, argv.slice(1), { stdio: 'ignore' }).status;
+  assert.equal(run(['/usr/bin/security', 'show-keychain-info', kc]), 0, 'readable outside the wrapper');
+  assert.notEqual(run(['/usr/bin/sandbox-exec', '-f', sb, '/usr/bin/security', 'show-keychain-info', kc]), 0, 'denied inside the wrapper');
+  rmSync(T, { recursive: true, force: true });
+});
+
+test('a write-only root stays readable and executable but cannot be written, replaced or added to', () => {
+  const T = realpathSync(mkdtempSync(join(tmpdir(), 'wo-deny-')));
+  mkdirSync(join(T, 'bin'));
+  writeFileSync(join(T, 'bin', 'tool'), '#!/bin/sh\necho ok\n', { mode: 0o755 });
+  writeFileSync(join(T, 'other'), 'x');
+  const sb = join(T, 'sb');
+  writeFileSync(sb, denyProfile([{ path: join(T, 'bin'), file: false, writeOnly: true }]));
+  const run = (cmd: string) => spawnSync('/usr/bin/sandbox-exec', ['-f', sb, '/bin/sh', '-c', cmd], { cwd: T, stdio: 'ignore' }).status;
+  assert.equal(run(`${join(T, 'bin', 'tool')}`), 0, 'executable');
+  assert.equal(run(`/bin/cat ${join(T, 'bin', 'tool')}`), 0, 'readable');
+  assert.notEqual(run(`echo x >> ${join(T, 'bin', 'tool')}`), 0, 'no append');
+  assert.notEqual(run(`/bin/mv ${join(T, 'other')} ${join(T, 'bin', 'tool')}`), 0, 'no replace by rename');
+  assert.notEqual(run(`/usr/bin/touch ${join(T, 'bin', 'new')}`), 0, 'no new file');
+  assert.equal(readFileSync(join(T, 'bin', 'tool'), 'utf8'), '#!/bin/sh\necho ok\n');
+  rmSync(T, { recursive: true, force: true });
+});
 
 test('deny profile blocks every protected root and allows the temp profile', () => {
   const T = realpathSync(mkdtempSync(join(tmpdir(), 'deny-test-')));
