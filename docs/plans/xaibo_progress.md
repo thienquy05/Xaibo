@@ -6,11 +6,11 @@ Live status file for `docs/plans/xaibo_plan.md` (HARNESS_PROCESS §2, PRD §1.6 
 
 | Item | Value |
 |---|---|
-| Current phase | **Phase 1: Skeleton + Claude ingest, started 2026-11-10** |
+| Current phase | **Phase 1 done (Gate 1 approved 2026-11-11); Phase 2 starts after PR #3 is merged** |
 | Branch | `feat/phase1-claude-ingest` |
 | Plan version | Approved v1.0 (2026-11-09) |
-| Gate state | Gate 0 approved 2026-11-10 (`docs/plans/gates/gate0.md`), merged to `master` by PR #2. Gate 1: gate SHA `dbf5243` (unpushed); clean-checkout suite green; Codex review **reject** (7 major), Claude second review **reject** (decision 209); owner: fix all, add a child-kill detector (2026-11-11); hotfix run 31 (H1–H5) committed as `3801dd8` (unpushed; D-P1-16); suite green; Codex fix-only re-review and Claude re-review **reject** on one new finding (decision 221); hotfix run 32 (H6) completed in the working tree (implement 227, review 228, finalize 229; D-P1-17) |
-| Next step | Owner OK for a further unpushed commit (= new gate SHA), full step-1 suite, Codex fix-only re-review of `3801dd8..<new>`, Claude re-review. Done: T01–T14. Approvals 48/53/54/55/210/222 given |
+| Gate state | Gate 0 approved 2026-11-10 (`docs/plans/gates/gate0.md`), merged by PR #2. Gate 1 approved 2026-11-11 on gate SHA `5defefa` (`docs/plans/gates/gate1.md`, record_decision 231); PR #3 to `master` open, the owner merges |
+| Next step | Owner: merge PR #3 (Phase 2 plan revision approved, D-P2-01). Then cut `feat/phase2-codex-agy-normalization`, run the version check (plan §2.4) and start P2-T00 (static isolation review before any `agy` binary runs) |
 | Blockers | None. Unsandboxed Electron/Playwright runs approved by the owner 2026-11-11 (R-P1-01) |
 | Baseline for Gate 1 review | `master` at `d09ab65` |
 
@@ -19,8 +19,8 @@ Live status file for `docs/plans/xaibo_plan.md` (HARNESS_PROCESS §2, PRD §1.6 
 | Phase | Branch | Status | Gate | Gate date | PR |
 |---|---|---|---|---|---|
 | 0 Spikes | `feat/phase0-spikes` | done (S1–S13; S2/S8 pre-v1) | Gate 0 approved | 2026-11-10 | #2 (merged) |
-| 1 Skeleton + Claude ingest | `feat/phase1-claude-ingest` | in progress | Gate 1 | — | — |
-| 2 Codex + normalization + Gemini ingest | `feat/phase2-codex-gemini-normalization` | not started | Gate 2 | — | — |
+| 1 Skeleton + Claude ingest | `feat/phase1-claude-ingest` | done | Gate 1 approved | 2026-11-11 | #3 |
+| 2 Codex + normalization + Antigravity CLI ingest | `feat/phase2-codex-agy-normalization` | not started | Gate 2 | — | — |
 | 3 Live status | `feat/phase3-live-status` | not started | Gate 3 | — | — |
 | D Design system | `docs/design-system` | not started | Gate D | — | — |
 | 4 Session workspace UI | `feat/phase4-session-workspace` | not started | Gate 4 | — | — |
@@ -176,6 +176,7 @@ Entry format:
 | D-P1-15 | 2026-11-11 | Gate 1 owner answers and the approved runs: (1) keep the 8 MiB parse cap (D-P1-13); (2) EC-55 through cwd/entrypoint with titles "Untitled" accepted (D-P1-11); (3) unsandboxed runs approved "as long as the command is not harmful and from trusted sources; check the integrity of all of these runs". Integrity checks done first: `/bin/ps` verifies as an Apple platform binary; the installed `claude` verifies as signed by Anthropic (team id Q6L2SF6YDW), version 2.1.322; the project Electron is ad-hoc signed as shipped, and its binaries match the cached release zip byte for byte, whose SHA-256 matches `checksums.json` in the lockfile-pinned `electron@45.2.3` package. Runs: (a) `liveness.test.ts` outside the sandbox 7/7, the real-`ps` case included; (b) Playwright MCP visual check without any MCP config change: the unpackaged app (built `out/`, `dist/renderer`), temp synthetic HOME/data, a remote-debugging port bound to 127.0.0.1 for the check only, attached through Playwright's `connectOverCDP` from `browser_run_code_unsafe`: renders health Running, the agent strip and the session row; 0 console errors; Tab moves through the labeled buttons with a visible focus ring; instance stopped, port closed afterwards; (c) S9 re-check: guard snapshot, then one PR-OK prompt through `in-profile.sh` — Claude refused with a revoked OAuth token, so no prompt reached the model; guard compare MATCH; runner cleanup clean; the re-check waits for the owner's temp-profile sign-in | Owner answers 2026-11-11 | D-P0-34; OQ-X11; OQ-P1-06 | — | owner |
 | D-P1-16 | 2026-11-11 | Gate 1 hotfix (H1–H5; owner: fix all Codex and Claude findings and add a child-kill detector, decision 209, approval 210): (1) the Claude adapter awaits every batch commit, so a failed commit stops that file and no later checkpoint passes it; a failed sync makes the watcher forget the file, which the next scan (5 s) or wake retries; a permanently failing file is retried every scan interval; (2) oversized chunk keys hash the source file path as well (no migration: no shipped data has the old keys); the content cutter holds a trailing high surrogate until the next piece; (3) display strings (cwd, entrypoint, title) are cut to 4,096 UTF-16 units + "…" before IPC, the store keeps the original; an invalid page reply rejects its request, the list stays usable; `visible()` also escapes LRM, RLM and ALM; a failed detection announces an empty agent list ("No agents detected"; not visually checked in a window: needs a broken bundled catalog, no test hook); (4) a data-dir preparation failure prints only its error code; (5) `spawn.ts` reports a child ended by a signal it did not send as `child_killed` (signal name only); the gate audit adds a positive control (fake version probe attempting TEST-NET-1) and fails on any `child_killed`. Limit: a grandchild forked by a child and killed while its parent exits 0 is not seen | Codex and Claude Gate 1 reviews (`.handoff/gate1-codex-result.md`, `gate1-claude-review.md`) | EC-15, EC-35, EC-55, EC-60, M6; FR-08 | 209, 210, 214–220 | owner (scope), Claude (details) |
 | D-P1-17 | 2026-11-11 | Gate 1 re-review of `3801dd8` (Codex fix-only + Claude, decision 221): reject on Codex N1 (major: the content cutter paired a high surrogate with any next unit, so a lone escaped high surrogate followed by another character made a chunk exceed its byte bound and cut the searchable tail) and N2 (minor: the audit ignored the positive-control shutdown timeout); hotfix run 32 (H6) fixes both. Owner answers: (1) Codex #7 partial accepted: the M6 audit covers Xaibo processes and their direct children, a forked grandchild killed while its parent exits 0 is not seen; (2) the partial S9 re-check is accepted (record types confirmed on 2.1.322, no model reply); (3) agent-version coverage from now on is version-triggered, without live prompts per gate: compare the installed agent versions with the recorded ones at each gate; only on a change run the synthetic fixture tests and `spikes/s9/facts.ts` over the temp profiles (no prompt); a live PR-OK prompt only if new record types or fields appear (owner OK per run); in real use the EC-04 drift flag covers the owner's own transcripts. Plan wording for (3) approved by the owner and added to plan §2.4 | Temp-profile sign-ins were revoked twice; ingest depends on the record format, which the extractor and the drift flag cover without tokens | M6, EC-04, EC-60; D-P0-33/34 | 221, 222, 223 | owner |
+| D-P2-01 | 2026-11-11 | Phase 2 preparation: (1) owner accepts every Phase 2 open-question default (OQ-P2-01..05, 07..09), Gemini items read as the Antigravity CLI (`agy`); (2) plan Phase 2 revised for `agy` (D-P0-25, D-P0-36): Codex drafted as lead designer, Claude reviewed and fixed four items (S11 checklist range C1–C14, spike test commands, no harness workflow for spike-only P2-T00, `agy` facts extractor in the §2.4 version check). New P2-T00 evaluates `agy` in a disposable temp profile and pins its input contract before any dependent work; nothing is inherited from Gemini; unverified facts stay unavailable and the affected EC/FR rows (EC-80/81, M3-full) go to the owner; branch renamed `feat/phase2-codex-agy-normalization`; OQ-P2-10: at most 4 tiny synthetic prompts for the first `agy` evaluation, retries included, one working session; OQ-P2-11: an unverified `agy` behaviour stops the dependent work and the owner decides waive/defer/narrow per EC row, never a pass. (3) The revision rides on PR #3 after the Gate 1 record, at the owner's request | Owner answers 2026-11-11 ("Accept all defaults"; "revise those so PR 3 can carry those new items") | §10 Phase 2; EC-80, EC-81; D-P0-36 | 232 | owner (defaults, placement, revision approved 2026-11-11, OQ-P2-10/11), Codex (draft), Claude (review) |
 
 ## 5. Deviations from plan or PRD
 
@@ -191,6 +192,7 @@ Entry format:
 | 2026-11-11 | In-memory parse cap 8 MiB instead of 64 MiB (OQ-P1-06): the 64 MiB cap missed the EC-15 RSS bound (~427 vs 256 MiB); the bound is kept | D-P1-13; owner confirmed 2026-11-11 (D-P1-15) |
 | 2026-11-11 | EC-55 is exercised through the cwd and entrypoint, not the title: Claude title record shapes are unverified (S9), so titles show "Untitled" in Phase 1 | D-P1-11; owner accepted 2026-11-11 (D-P1-15) |
 | 2026-11-11 | P1-T05 ships no env-flag test hook in `src/`; main-side attempts run through Playwright `evaluate` | D-P1-08 (Claude, owner-delegated 2026-11-11: keep, no `src/` hook) |
+| 2026-11-11 | PR #3 carries docs-only commits after the Gate 1 record (Phase 2 plan revision, progress status); plan §2.4 step 6 has the next phase's first commit do the status update. No `src/`, test or script change rides along | D-P2-01 (owner request) |
 
 ## 6. Spike results
 
@@ -269,7 +271,7 @@ Post-freeze gate evidence (gate SHA, final-SHA results, Codex and Claude verdict
 | Gate | Gate record | Outcome (filled by the next phase's first commit) |
 |---|---|---|
 | Gate 0 | `docs/plans/gates/gate0.md` | Approved 2026-11-10 on gate SHA `7deb8cb`; merged to `master` by PR #2 |
-| Gate 1 | `docs/plans/gates/gate1.md` (added by the gate-record commit) | — |
+| Gate 1 | `docs/plans/gates/gate1.md` | Approved 2026-11-11 on gate SHA `5defefa`; PR #3 to `master` |
 
 ## 9a. Plan challenge record (Codex, 2026-11-09, plan v0.1 → v0.2)
 
