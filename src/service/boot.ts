@@ -1,11 +1,13 @@
 // Service boot (P1-T06; T08 rescan on start, D-P1-09): opens the store in the data dir, then in the background reads
-// the login-shell env, detects agents, syncs profiles and starts one Claude adapter per Claude profile (Codex profiles
-// are detected but not ingested until Phase 2). A read-only store (EC-45) is reported and skips ingest. P1-T12: commit
-// and agent-status hooks for the renderer, and a manual executable path ("Set path…") that re-detects that agent.
+// the login-shell env, detects agents, syncs profiles and starts one adapter per Claude or Codex profile (P2-T03).
+// A read-only store (EC-45) is reported and skips ingest. P1-T12: commit and agent-status hooks for the renderer, and
+// a manual executable path ("Set path…") that re-detects that agent.
 import path from 'node:path';
 import type { AgentStatus } from '../shared/ipc.ts';
 import type { Logger } from '../shared/log.ts';
 import { ClaudeAdapter } from './adapters/claude/index.ts';
+import { CodexAdapter } from './adapters/codex/index.ts';
+import type { Ingester } from './adapters/tail-adapter.ts';
 import { detectAgent, manualPath, manualRoots, profileRoots, setManualPath, syncProfiles, type Detection } from './catalog/detect.ts';
 import { readLoginEnv, type LoginEnv } from './catalog/env.ts';
 import { loadCatalog, type Catalog } from './catalog/validate.ts';
@@ -20,7 +22,7 @@ export interface BootOptions {
 export interface Service {
   store: Store;
   detections: Detection[];
-  adapters: ClaudeAdapter[];
+  adapters: Ingester[];
   /** Settles when detection, profile sync and the initial backfill are done. */
   done: Promise<void>;
   /** Agent status for the renderer; null until detection has run. */
@@ -36,7 +38,7 @@ export async function boot(o: BootOptions): Promise<Service> {
   const { db, readOnly } = store;
   const writer = new Writer(db, o.onCommit ? { onCommit: o.onCommit } : {});
   const detections: Detection[] = [];
-  const adapters: ClaudeAdapter[] = [];
+  const adapters: Ingester[] = [];
   let stopped = false;
   let catalog: Catalog | undefined;
   let env: LoginEnv = {};
@@ -66,9 +68,10 @@ export async function boot(o: BootOptions): Promise<Service> {
     if (stopped || readOnly) return;
     const manual = Object.fromEntries(catalog.agents.map((a) => [a.id, manualRoots(db, a.id)]));
     const profiles = syncProfiles(db, profileRoots(catalog, env, o.home, manual));
-    for (const p of profiles.filter((x) => x.agent === 'claude')) {
+    const Adapters: Record<string, typeof ClaudeAdapter | typeof CodexAdapter> = { claude: ClaudeAdapter, codex: CodexAdapter };
+    for (const p of profiles.filter((x) => Adapters[x.agent])) {
       if (stopped) return;
-      const a = new ClaudeAdapter({ db, writer, profileId: p.id, root: p.root, ...(o.intervalMs ? { intervalMs: o.intervalMs } : {}) });
+      const a = new Adapters[p.agent]!({ db, writer, profileId: p.id, root: p.root, ...(o.intervalMs ? { intervalMs: o.intervalMs } : {}) });
       adapters.push(a);
       await a.start();
     }

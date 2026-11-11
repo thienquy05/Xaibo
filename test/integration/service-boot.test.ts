@@ -28,6 +28,21 @@ function setup() {
   return { tmp, home, dataDir: join(tmp, 'data'), transcript: join(project, `${SESSION}.jsonl`) };
 }
 
+test('P2-T03: a Codex profile gets its own adapter and its rollouts are ingested', async () => {
+  const s = setup();
+  const dated = join(s.home, '.codex', 'sessions', '2026', '01', '01');
+  mkdirSync(dated, { recursive: true });
+  const codexFix = join(import.meta.dirname, '..', 'fixtures', 'synthetic', 'codex', '0.160.0', 'simple-turn');
+  cpSync(codexFix, dated, { recursive: true, filter: (f) => !f.endsWith('expected.json') });
+  const svc = await boot({ dataDir: s.dataDir, home: s.home, catalog, intervalMs: 60_000 });
+  await svc.done;
+  assert.equal(svc.adapters.length, 2);
+  const db = svc.store.db;
+  assert.equal(count(db, "SELECT count(*) FROM sessions WHERE agent = 'codex' AND native_session_id = '00000000-0000-4000-8000-0000000c0030'"), 1);
+  assert.equal(count(db, "SELECT count(*) FROM events WHERE source = 'rollout'"), 15);
+  svc.stop();
+});
+
 test('boot: store in the data dir, detection, the default Claude profile ingested', async () => {
   const s = setup();
   const svc = await boot({ dataDir: s.dataDir, home: s.home, catalog, intervalMs: 60_000 });

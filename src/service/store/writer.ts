@@ -11,7 +11,7 @@ export interface SourceFileCheckpoint {
 }
 export interface SessionUpsert {
   nativeSessionId: string; cwd?: string; cwdKey?: string; entrypoint?: string; interactive?: boolean; title?: string;
-  startedAt?: number; lastActivity?: number;
+  startedAt?: number; lastActivity?: number; originator?: string; nativeArchived?: boolean;
 }
 export interface EventRow {
   nativeSessionId: string; source: string; confidence: string; nativeId: string; parentNativeId?: string; messageId?: string;
@@ -42,11 +42,14 @@ const statements = (db: DatabaseSync) => cache.get(db) ?? cache.set(db, prepare(
 
 function prepare(db: DatabaseSync) {
   return {
-    upsertSession: db.prepare(`INSERT INTO sessions (agent, profile_id, native_session_id, cwd, cwd_key, entrypoint, interactive, title, started_at, last_activity)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    // ponytail: native_archived only rises (a rollout seen under archived_sessions/); unarchiving needs a scan-level check.
+    upsertSession: db.prepare(`INSERT INTO sessions (agent, profile_id, native_session_id, cwd, cwd_key, entrypoint, interactive, title, started_at, last_activity,
+        originator, native_archived)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (agent, profile_id, native_session_id) DO UPDATE SET
         cwd = coalesce(sessions.cwd, excluded.cwd), cwd_key = coalesce(sessions.cwd_key, excluded.cwd_key),
         entrypoint = coalesce(sessions.entrypoint, excluded.entrypoint), interactive = coalesce(sessions.interactive, excluded.interactive),
+        originator = coalesce(sessions.originator, excluded.originator), native_archived = max(sessions.native_archived, excluded.native_archived),
         title = coalesce(excluded.title, sessions.title),
         started_at = min(coalesce(sessions.started_at, excluded.started_at), coalesce(excluded.started_at, sessions.started_at)),
         last_activity = max(coalesce(sessions.last_activity, excluded.last_activity), coalesce(excluded.last_activity, sessions.last_activity))
@@ -78,7 +81,7 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
     const ids = new Map<string, number | bigint>();
     for (const s of batch.sessions) {
       const row = st.upsertSession.get(batch.agent, batch.profileId, s.nativeSessionId, s.cwd ?? null, s.cwdKey ?? null, s.entrypoint ?? null,
-        b(s.interactive), s.title ?? null, s.startedAt ?? null, s.lastActivity ?? null) as { id: number };
+        b(s.interactive), s.title ?? null, s.startedAt ?? null, s.lastActivity ?? null, s.originator ?? null, s.nativeArchived ? 1 : 0) as { id: number };
       ids.set(s.nativeSessionId, row.id);
     }
     const sessionId = (nativeId: string) => {
