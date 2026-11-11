@@ -1,0 +1,20 @@
+{
+  "session_id": [
+    "string"
+  ],
+  "transcript_path": [
+    "string"
+  ],
+  "cwd": [
+    "string"
+  ],
+  "prompt_id": [
+    "string"
+  ],
+  "hook_event_name": [
+    "string"
+  ],
+  "reason": [
+    "string"
+  ]
+}

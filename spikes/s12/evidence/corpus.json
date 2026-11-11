@@ -1,0 +1,203 @@
+{
+ "tag": "spike, not gate evidence",
+ "task": "P0-S12-T2",
+ "profile": {
+  "name": "personal (owner decision 2026-11-10; overrides plan scale)",
+  "declared": {
+   "sessions": 1500,
+   "medianBytes": 200000,
+   "p99Bytes": 20000000,
+   "maxBytes": 50000000,
+   "minContentBytes": 1073741824
+  },
+  "estimate": "~"
+ },
+ "runtime": "packaged Electron runtime (ELECTRON_RUN_AS_NODE=1), node:sqlite DatabaseSync",
+ "env": {
+  "cpu": "Apple M4",
+  "macos": "27.2",
+  "ramGiB": 16,
+  "electron": "45.2.3",
+  "node": "24.22.2",
+  "sqlite": "3.53.4",
+  "agents": {}
+ },
+ "seeds": {
+  "corpus": 12001,
+  "text": 12002,
+  "live": 12003,
+  "usage": 12004,
+  "build": 12005
+ },
+ "generator": {
+  "sessions": {
+   "n": 1500,
+   "medianBytes": 221703,
+   "p99Bytes": 18221960,
+   "maxBytes": 50000000,
+   "atMax": 2,
+   "totalBytes": 1955170274
+  },
+  "items": {
+   "n": 364829,
+   "mean": 5359.141608808511,
+   "p50": 2043,
+   "p95": 20087,
+   "p99": 52178,
+   "max": 1032863,
+   "total": 364829,
+   "overFtsPrefix": 2303,
+   "ftsPrefixBytes": 65536,
+   "ftsIndexedBytes": 1846923369
+  },
+  "text": {
+   "tokens": 2341878,
+   "cjk": 187507,
+   "emoji": 46903,
+   "cjkFraction": 0.08006693773117131,
+   "emojiFraction": 0.020027943385607618,
+   "vocabulary": 5000,
+   "cjkWords": 200
+  },
+  "terms": {
+   "common": "kape",
+   "cjk": "嘶泷",
+   "rare": "zqxrare",
+   "rareItems": 2
+  },
+  "bigSessionId": 1,
+  "usage": {
+   "streams": 2,
+   "samplesPerStream": 64800,
+   "transitionsPerStream": 648,
+   "rows": 130896,
+   "transitions": 1296,
+   "contextRows": 2982,
+   "priceRows": 192
+  },
+  "contentBytes": 1955170274
+ },
+ "build": {
+  "loadMs": 36014,
+  "usageMs": 79,
+  "indexMs": 3262,
+  "checkpointMs": 8,
+  "totalMs": 39363,
+  "commits": 30,
+  "batchBytes": 67108864,
+  "batchRows": 20000,
+  "buildCacheKiB": 262144
+ },
+ "db": {
+  "pageSize": 4096,
+  "pageCount": 685297,
+  "bytes": 2806976512,
+  "gib": 2.6142005920410156,
+  "freelistPages": 0,
+  "walBytesMaxDuringLoad": 192399912,
+  "walBytesBeforeCheckpoint": 192399912,
+  "walBytesAfterCheckpoint": 0,
+  "checkpoint": {
+   "busy": 0,
+   "log": 0,
+   "checkpointed": 0
+  },
+  "pragmas": {
+   "journal_mode": "wal",
+   "synchronous": 1,
+   "foreign_keys": 1,
+   "busy_timeout": 5000,
+   "auto_vacuum": 2,
+   "temp_store": 2
+  }
+ },
+ "rows": {
+  "sessions": 1500,
+  "events": 364829,
+  "checkpoints": 1500,
+  "context_snapshots": 2982,
+  "usage_snapshots": 130896,
+  "price_provenance": 192,
+  "events_fts_data": 160239,
+  "events_fts_idx": 42994,
+  "events_fts_docsize": 364829,
+  "events_fts_config": 1
+ },
+ "dbstat": {
+  "events": {
+   "bytes": 2156048384,
+   "payload": 1964575356
+  },
+  "events_fts_data": {
+   "bytes": 628428800,
+   "payload": 619120291
+  },
+  "usage_snapshots": {
+   "bytes": 6463488,
+   "payload": 5614224
+  },
+  "events_session_seq": {
+   "bytes": 4964352,
+   "payload": 3842384
+  },
+  "events_fts_docsize": {
+   "bytes": 3923968,
+   "payload": 1719949
+  },
+  "usage_scope_limit_asof": {
+   "bytes": 2469888,
+   "payload": 2061441
+  },
+  "events_fts_idx": {
+   "bytes": 811008,
+   "payload": 579791
+  },
+  "context_snapshots": {
+   "bytes": 131072,
+   "payload": 108211
+  },
+  "checkpoints": {
+   "bytes": 106496,
+   "payload": 93320
+  },
+  "sessions": {
+   "bytes": 61440,
+   "payload": 47898
+  },
+  "context_session_generation": {
+   "bytes": 40960,
+   "payload": 24958
+  },
+  "sessions_agent_activity": {
+   "bytes": 36864,
+   "payload": 26649
+  },
+  "sessions_project": {
+   "bytes": 20480,
+   "payload": 8638
+  },
+  "price_provenance": {
+   "bytes": 16384,
+   "payload": 8601
+  },
+  "sessions_trashed": {
+   "bytes": 16384,
+   "payload": 7564
+  },
+  "sqlite_schema": {
+   "bytes": 4096,
+   "payload": 3060
+  },
+  "events_fts_config": {
+   "bytes": 4096,
+   "payload": 11
+  }
+ },
+ "verify": {
+  "integrity": "ok",
+  "integrityMs": 7895,
+  "ftsIntegrity": true,
+  "ftsIntegrityMs": 5596,
+  "dbstatMs": 3299
+ }
+}

@@ -1,0 +1,23 @@
+{
+  "notVerified": ["only the S9 facts.json sources cli/exec and originators codex-tui/codex_exec are fixtured; other kinds named in the owner audit note (phase0_spikes.md S9) are not pinned in facts.json and are not covered here"],
+  "files": {
+    "00000000-0000-4000-8000-0000000c0007": {
+      "lines": 5, "malformedLines": [], "partialTrailing": false,
+      "recordTypes": { "session_meta": 1, "turn_context": 1, "response_item": 2, "event_msg": 1 },
+      "unknownRecords": 0, "unknownShareAbove5pct": false,
+      "session": { "id": "00000000-0000-4000-8000-0000000c0007", "filenameIdMatchesMeta": true, "source": "cli", "originator": "codex-tui", "cwd": "/tmp/xaibo-fixture/alpha", "cliVersion": "0.160.0" },
+      "turnIds": ["00000000-0000-4000-8000-0000000c1013"],
+      "models": ["gpt-6.1-sol"], "efforts": [null],
+      "usage": null, "rateLimits": null
+    },
+    "00000000-0000-4000-8000-0000000c0008": {
+      "lines": 5, "malformedLines": [], "partialTrailing": false,
+      "recordTypes": { "session_meta": 1, "turn_context": 1, "response_item": 2, "event_msg": 1 },
+      "unknownRecords": 0, "unknownShareAbove5pct": false,
+      "session": { "id": "00000000-0000-4000-8000-0000000c0008", "filenameIdMatchesMeta": true, "source": "exec", "originator": "codex_exec", "cwd": "/tmp/xaibo-fixture/beta", "cliVersion": "0.160.0" },
+      "turnIds": ["00000000-0000-4000-8000-0000000c1014"],
+      "models": ["gpt-6.1-sol"], "efforts": [null],
+      "usage": null, "rateLimits": null
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "main": "spikes/app/build/s3/forwarder.cjs",
+  "output": ".cache/sea/xaibo-forwarder-sea",
+  "useCodeCache": true,
+  "disableExperimentalSEAWarning": true
+}

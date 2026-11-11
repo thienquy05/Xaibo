@@ -1,0 +1,171 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:xaibo:spike:s11:agents.catalog.schema.draft",
+  "title": "Xaibo agent catalog entry, schema v1 (Phase 0 draft)",
+  "description": "PRD §7.3 catalog schema v1 fields only. Data, never code: no shell strings, no executable mappings, no arbitrary write paths, no ACP (v1-only). Unknown fields fail.",
+  "$comment": "Loader rules JSON Schema cannot express (enforced outside the schema): (1) an entry's origin is where it was read from, never a field; an imported entry whose id equals a bundled id is rejected (SEC5). (2) profile roots: the schema rejects absolute, ~ and .. segments lexically; the loader also realpath-checks every resolved root and file reference, rejecting symlinks that escape the root and non-regular files (SEC5). (3) cross-references (launchTemplates.binary -> detection.binaries.id, root -> profileRoots.id) must resolve. (4) imported entries run no detection probe and no launch without an explicit grant (FR-01). (5) proposed, not enforced in the spike: an imported entry's resolved profile roots (incl. a replaces-root env override such as HOME) must not equal, contain or sit inside a bundled agent's root or Xaibo app data, so its config edits cannot reach another agent's settings (§7.6, SEC5).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "displayName", "entryVersion", "lifecycle", "testedVersions", "detection", "adapters", "capabilities"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,31}$" },
+    "displayName": { "type": "string", "$ref": "#/$defs/displayText", "maxLength": 64 },
+    "entryVersion": { "$ref": "#/$defs/semver" },
+    "lifecycle": { "enum": ["experimental", "supported", "deprecated"] },
+    "testedVersions": {
+      "type": "array", "minItems": 1, "maxItems": 32,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["version", "status"],
+        "properties": {
+          "version": { "$ref": "#/$defs/semver" },
+          "status": { "enum": ["verified", "unverified"] }
+        }
+      }
+    },
+    "detection": {
+      "type": "object", "additionalProperties": false, "required": ["binaries"],
+      "properties": {
+        "binaries": {
+          "type": "array", "minItems": 1, "maxItems": 8,
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["id", "names", "versionArgs"],
+            "properties": {
+              "id": { "$ref": "#/$defs/refId" },
+              "names": { "description": "Lowercase command names; shells and command launchers are refused so argv can never become a shell string (denylist; the FR-01 grant and realpath check stay the real guard).", "type": "array", "minItems": 1, "maxItems": 8, "items": { "type": "string", "pattern": "^(?!(?:sh|bash|zsh|dash|ash|ksh|mksh|fish|csh|tcsh|busybox|env|nohup|xargs|cmd|powershell|pwsh|osascript)(?:\\.exe)?$)[a-z0-9_][a-z0-9._-]{0,63}$" } },
+              "versionArgs": { "type": "array", "maxItems": 4, "items": { "$ref": "#/$defs/literalArg" } }
+            }
+          }
+        },
+        "locations": {
+          "description": "Known install directories, searched in addition to PATH and manual paths. ~ = user home; no .. segments.",
+          "type": "array", "maxItems": 16,
+          "items": { "type": "string", "maxLength": 256, "pattern": "^~?(/\\.?[A-Za-z0-9_@+-][A-Za-z0-9._@+-]*)+$" }
+        }
+      }
+    },
+    "profileRoots": {
+      "description": "Root = <base or envOverride value>/<relative> (replaces-base), or the envOverride value itself (replaces-root).",
+      "type": "array", "maxItems": 4,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["id", "base", "relative"],
+        "properties": {
+          "id": { "$ref": "#/$defs/refId" },
+          "base": { "const": "home" },
+          "relative": { "$ref": "#/$defs/relPath" },
+          "envOverride": {
+            "type": "object", "additionalProperties": false, "required": ["name", "mode"],
+            "properties": {
+              "name": { "$ref": "#/$defs/envName" },
+              "mode": { "enum": ["replaces-base", "replaces-root"] }
+            }
+          }
+        }
+      }
+    },
+    "existenceEvidence": {
+      "description": "Files/dirs whose presence is evidence only, never proof of installation or authentication (FR-01).",
+      "type": "array", "maxItems": 8,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["root", "path", "kind"],
+        "properties": {
+          "root": { "$ref": "#/$defs/refId" },
+          "path": { "$ref": "#/$defs/relPath" },
+          "kind": { "enum": ["file", "directory"] }
+        }
+      }
+    },
+    "adapters": {
+      "type": "object", "additionalProperties": false, "required": ["channels"],
+      "properties": {
+        "native": { "description": "Built-in code adapter selected by reference; imports cannot add new ones.", "enum": ["claude", "codex", "gemini"] },
+        "channels": {
+          "type": "array", "minItems": 1, "maxItems": 2,
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["kind", "version"],
+            "properties": { "kind": { "enum": ["hook", "report"] }, "version": { "const": 1 } }
+          }
+        }
+      }
+    },
+    "capabilities": {
+      "type": "array", "maxItems": 8,
+      "items": { "enum": ["lifecycle", "permission-requests", "content", "tokens", "launch", "resume"] }
+    },
+    "setupSteps": {
+      "description": "Ordered, display-only prerequisites and steps. Rendered as plain text; never executed.",
+      "type": "array", "maxItems": 16,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["kind", "text"],
+        "properties": { "kind": { "enum": ["prerequisite", "step"] }, "text": { "$ref": "#/$defs/displayText" } }
+      }
+    },
+    "installHints": {
+      "description": "Copy-only documentation/install hints. Never executed.",
+      "type": "array", "maxItems": 8,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["platform", "text"],
+        "properties": { "platform": { "enum": ["any", "macos", "linux", "windows"] }, "text": { "$ref": "#/$defs/displayText" } }
+      }
+    },
+    "configEdits": {
+      "description": "Supported config-edit declarations. Only the tested writers exist; the writer generates the Xaibo hook command itself, so no command text appears here.",
+      "type": "array", "maxItems": 2,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["writer", "root", "file", "operations"],
+        "properties": {
+          "writer": { "enum": ["claude-like-hooks-json", "gemini-settings-json"] },
+          "root": { "$ref": "#/$defs/refId" },
+          "file": { "$ref": "#/$defs/relPath" },
+          "operations": { "type": "array", "minItems": 1, "maxItems": 1, "items": { "const": "hooks" } }
+        }
+      }
+    },
+    "hookMappings": {
+      "description": "Exact event name plus optional exact field-value predicates (all must match) -> normalized event. No expressions.",
+      "type": "array", "maxItems": 32,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["event", "normalized"],
+        "properties": {
+          "event": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,63}$" },
+          "when": {
+            "type": "array", "maxItems": 4,
+            "items": {
+              "type": "object", "additionalProperties": false, "required": ["field", "equals"],
+              "properties": {
+                "field": { "type": "string", "maxLength": 128, "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*$" },
+                "equals": { "type": "string", "maxLength": 128 }
+              }
+            }
+          },
+          "normalized": { "enum": ["session.start", "session.end", "turn.start", "turn.end", "tool.start", "tool.end", "permission.request"] }
+        }
+      }
+    },
+    "launchTemplates": {
+      "description": "argv arrays only. The executable is the detected binary (by id); each arg is a literal without whitespace or shell metacharacters, or one whole-argument placeholder.",
+      "type": "array", "maxItems": 4,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["purpose", "binary", "args"],
+        "properties": {
+          "purpose": { "enum": ["new", "resume"] },
+          "binary": { "$ref": "#/$defs/refId" },
+          "args": { "type": "array", "maxItems": 16, "items": { "type": "string", "pattern": "^(\\{sessionId\\}|[A-Za-z0-9@%+=:,./_-]+)$" } }
+        }
+      }
+    },
+    "envKeyGrants": {
+      "description": "Environment keys Xaibo may set for this agent's probes and launches (for example a profile override).",
+      "type": "array", "maxItems": 8,
+      "items": { "$ref": "#/$defs/envName" }
+    }
+  },
+  "$defs": {
+    "semver": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$" },
+    "refId": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$" },
+    "envName": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$" },
+    "relPath": { "type": "string", "maxLength": 256, "pattern": "^\\.?[A-Za-z0-9_-][A-Za-z0-9._-]*(/\\.?[A-Za-z0-9_-][A-Za-z0-9._-]*)*$" },
+    "literalArg": { "type": "string", "pattern": "^[A-Za-z0-9@%+=:,./_-]+$" },
+    "displayText": { "type": "string", "minLength": 1, "maxLength": 500, "pattern": "^[^<>]*$" }
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "session_id": [
+    "string"
+  ],
+  "turn_id": [
+    "string"
+  ],
+  "transcript_path": [
+    "string"
+  ],
+  "cwd": [
+    "string"
+  ],
+  "hook_event_name": [
+    "string"
+  ],
+  "model": [
+    "string"
+  ],
+  "permission_mode": [
+    "string"
+  ],
+  "stop_hook_active": [
+    "boolean"
+  ],
+  "last_assistant_message": [
+    "string"
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "main": "spikes/app/build/s13/tee.js",
+  "mainFormat": "module",
+  "output": ".cache/sea/xaibo-tee-sea",
+  "useCodeCache": false,
+  "disableExperimentalSEAWarning": true
+}

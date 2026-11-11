@@ -1,0 +1,13 @@
+{
+  "files": {
+    "00000000-0000-4000-8000-0000000c0005": {
+      "lines": 5, "malformedLines": [4], "partialTrailing": true,
+      "recordTypes": { "session_meta": 1, "turn_context": 1, "response_item": 1, "event_msg": 1 },
+      "unknownRecords": 0, "unknownShareAbove5pct": false,
+      "session": { "id": "00000000-0000-4000-8000-0000000c0005", "filenameIdMatchesMeta": true, "source": "cli", "originator": "codex-tui", "cwd": "/tmp/xaibo-fixture/alpha", "cliVersion": "0.160.0" },
+      "turnIds": ["00000000-0000-4000-8000-0000000c1011"],
+      "models": ["gpt-6.1-sol"], "efforts": [null],
+      "usage": null, "rateLimits": null
+    }
+  }
+}

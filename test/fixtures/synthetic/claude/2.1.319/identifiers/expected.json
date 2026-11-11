@@ -1,0 +1,18 @@
+{
+  "case": "identifiers",
+  "verifiedBy": "S9 facts.json claude.identifiers, claude.subagent: sessionId/uuid/parentUuid chain; sidechain records in <session-uuid>/subagents/agent-<id>.jsonl",
+  "notVerified": [
+    "subagent records carrying the parent sessionId and the agentId field matching the file name are fixture choices; S9 did not record identifier values",
+    "agent id format is not asserted (synthetic UUID pattern used)"
+  ],
+  "facts": {
+    "files": {
+      "00000000-0000-4000-8000-000000002000.jsonl": { "records": 4, "malformed": [], "partialTrailing": null, "types": {"user": 2, "assistant": 2}, "unknown": 0, "unknownAbove5pct": false, "sessionIds": ["00000000-0000-4000-8000-000000002000"], "entrypoints": ["sdk-cli"], "models": ["claude-opus-5-5"], "effort": "unavailable", "uuids": 4, "roots": 1, "danglingParents": 0, "sidechainRecords": 0, "compactions": [] },
+      "00000000-0000-4000-8000-000000002000/subagents/agent-00000000-0000-4000-8000-000000002100.jsonl": { "records": 2, "malformed": [], "partialTrailing": null, "types": {"user": 1, "assistant": 1}, "unknown": 0, "unknownAbove5pct": false, "sessionIds": ["00000000-0000-4000-8000-000000002000"], "entrypoints": ["sdk-cli"], "models": ["claude-opus-5-5"], "effort": "unavailable", "uuids": 2, "roots": 1, "danglingParents": 0, "sidechainRecords": 2, "compactions": [] }
+    },
+    "subagents": [
+      { "file": "00000000-0000-4000-8000-000000002000/subagents/agent-00000000-0000-4000-8000-000000002100.jsonl", "parentSessionId": "00000000-0000-4000-8000-000000002000", "agentId": "00000000-0000-4000-8000-000000002100", "parentTranscriptPresent": true }
+    ],
+    "usage": {"messages": 3, "lines": 3, "input_tokens": 15, "output_tokens": 25, "cache_read_input_tokens": 110, "cache_creation_input_tokens": 30, "ephemeral_5m_input_tokens": 30, "ephemeral_1h_input_tokens": 0}
+  }
+}

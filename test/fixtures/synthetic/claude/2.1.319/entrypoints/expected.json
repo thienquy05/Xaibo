@@ -1,0 +1,12 @@
+{
+  "case": "entrypoints",
+  "verifiedBy": "S9 facts.json claude.entrypoints: sdk-cli (headless) only",
+  "notVerified": ["interactive entrypoint 'cli' was not observed in S9 recordings and is not included"],
+  "facts": {
+    "files": {
+      "00000000-0000-4000-8000-000000006000.jsonl": { "records": 2, "malformed": [], "partialTrailing": null, "types": {"user": 1, "assistant": 1}, "unknown": 0, "unknownAbove5pct": false, "sessionIds": ["00000000-0000-4000-8000-000000006000"], "entrypoints": ["sdk-cli"], "models": ["claude-opus-5-5"], "effort": "unavailable", "uuids": 2, "roots": 1, "danglingParents": 0, "sidechainRecords": 0, "compactions": [] }
+    },
+    "subagents": [],
+    "usage": {"messages": 1, "lines": 1, "input_tokens": 1, "output_tokens": 1, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0, "ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 0}
+  }
+}

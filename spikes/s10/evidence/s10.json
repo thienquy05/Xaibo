@@ -1,0 +1,144 @@
+{
+  "env": {
+    "cpu": "Apple M4",
+    "macos": "27.2",
+    "ramGiB": 16,
+    "electron": null,
+    "node": "26.10.0",
+    "sqlite": "3.53.4",
+    "agents": {}
+  },
+  "method": "sandbox-exec kill-on-attempt profile; app run with --no-sandbox",
+  "controls": {
+    "results": {
+      "main-tcp": true,
+      "service-tcp": true,
+      "forwarder-runtime-tcp": true,
+      "electron-node-runtime-tcp": true,
+      "main-dns": true,
+      "service-dns": true,
+      "forwarder-runtime-dns": true,
+      "electron-node-runtime-dns": true,
+      "netlog": true,
+      "service-at-quit-tcp": true,
+      "quiet-baseline": true
+    },
+    "netlogControl": {
+      "parsed": true,
+      "events": 384,
+      "nonLocal": 69,
+      "types": [
+        "CORS_REQUEST",
+        "DISK_CACHE_MEM_ENTRY_IMPL",
+        "DNS_TRANSACTION",
+        "HOST_RESOLVER_MANAGER_JOB",
+        "HOST_RESOLVER_MANAGER_REQUEST",
+        "HTTP_STREAM_JOB",
+        "HTTP_STREAM_JOB_CONTROLLER",
+        "QUIC_SESSION_POOL_JOB",
+        "REQUEST_ALIVE",
+        "SOCKET_CONNECT",
+        "SOCKET_POOL_CONNECT_JOB_CREATED",
+        "TCP_CLIENT_SOCKET_POOL_REQUESTED_SOCKET",
+        "TRANSPORT_SECURITY_STATE_SHOULD_UPGRADE_TO_SSL",
+        "UDP_CONNECT",
+        "URL_REQUEST_START_JOB"
+      ]
+    }
+  },
+  "scenarios": {
+    "reached": {
+      "cold start": true,
+      "idle, window open": true,
+      "idle, window closed": true,
+      "renderer crash and reload": true,
+      "service SIGKILL and restart": true,
+      "forwarders, service up": true,
+      "blocked window.open, fetch and navigation": true,
+      "quit": true,
+      "forwarders, service down": true,
+      "DB open error": true
+    },
+    "unexpectedDeaths": 0,
+    "mainExit": {
+      "code": 0,
+      "signal": null
+    },
+    "forwarderExit": {
+      "up": {
+        "sea": {
+          "exit": 0,
+          "ran": true,
+          "outcome": "acked"
+        },
+        "electron-node": {
+          "exit": 0,
+          "ran": true,
+          "outcome": "acked"
+        }
+      },
+      "down": {
+        "sea": {
+          "exit": 0,
+          "ran": true,
+          "outcome": "spooled"
+        },
+        "electron-node": {
+          "exit": 0,
+          "ran": true,
+          "outcome": "spooled"
+        }
+      }
+    },
+    "lsof": {
+      "runs": 2416,
+      "nonLoopbackLines": 0
+    },
+    "netlog": {
+      "parsed": true,
+      "events": 12,
+      "nonLocal": 0,
+      "types": []
+    },
+    "kernelLogLines": 0,
+    "idleSeconds": 300,
+    "idle": {
+      "open": {
+        "rssMiB": {
+          "n": 299,
+          "mean": 265.4802989130435,
+          "p50": 233.484375,
+          "p95": 403.5,
+          "p99": 407.40625,
+          "max": 436.46875
+        },
+        "cpuPercent": {
+          "n": 299,
+          "mean": 0.2020066889632107,
+          "p50": 0,
+          "p95": 1.6,
+          "p99": 5.1,
+          "max": 9.799999999999999
+        }
+      },
+      "closed": {
+        "rssMiB": {
+          "n": 299,
+          "mean": 134.2663043478261,
+          "p50": 133.96875,
+          "p95": 143.25,
+          "p99": 143.328125,
+          "max": 143.5
+        },
+        "cpuPercent": {
+          "n": 299,
+          "mean": 0.018060200668896322,
+          "p50": 0,
+          "p95": 0.2,
+          "p99": 0.4,
+          "max": 0.7
+        }
+      }
+    }
+  }
+}

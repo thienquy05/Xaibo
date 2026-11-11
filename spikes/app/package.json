@@ -1,0 +1,7 @@
+{
+  "name": "xaibo-spike",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "build/app/main.js"
+}

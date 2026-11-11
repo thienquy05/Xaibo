@@ -1,0 +1,22 @@
+{
+  "files": {
+    "00000000-0000-4000-8000-0000000c0009": {
+      "lines": 7, "malformedLines": [], "partialTrailing": false,
+      "recordTypes": { "session_meta": 1, "turn_context": 1, "response_item": 2, "event_msg": 3 },
+      "unknownRecords": 0, "unknownShareAbove5pct": false,
+      "session": { "id": "00000000-0000-4000-8000-0000000c0009", "filenameIdMatchesMeta": true, "source": "cli", "originator": "codex-tui", "cwd": "/tmp/xaibo-fixture/alpha", "cliVersion": "0.160.0" },
+      "turnIds": ["00000000-0000-4000-8000-0000000c1015"],
+      "models": ["gpt-6.1-sol"], "efforts": [null],
+      "usage": {
+        "tokenCountEvents": 2, "modelContextWindow": 200000,
+        "total": { "uncachedInput": 200, "cacheRead": 100, "cacheWrite": 0, "output": 60, "reasoningOutput": 10, "total": 360 },
+        "last": { "uncachedInput": 100, "cacheRead": 100, "cacheWrite": 0, "output": 40, "reasoningOutput": 10, "total": 240 },
+        "cumulativeNonDecreasing": true, "cachedSubsetOfInput": true, "reasoningSubsetOfOutput": true
+      },
+      "rateLimits": {
+        "primary": { "usedPercent": 12.5, "windowMinutes": 300, "resetsAtMs": 1767243600000 },
+        "secondary": { "usedPercent": 40, "windowMinutes": 10080, "resetsAtMs": 1767830400000 }
+      }
+    }
+  }
+}

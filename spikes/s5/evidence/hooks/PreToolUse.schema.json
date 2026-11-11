@@ -1,0 +1,35 @@
+{
+  "session_id": [
+    "string"
+  ],
+  "turn_id": [
+    "string"
+  ],
+  "transcript_path": [
+    "string"
+  ],
+  "cwd": [
+    "string"
+  ],
+  "hook_event_name": [
+    "string"
+  ],
+  "model": [
+    "string"
+  ],
+  "permission_mode": [
+    "string"
+  ],
+  "tool_name": [
+    "string"
+  ],
+  "tool_input": [
+    "object"
+  ],
+  "tool_input.command": [
+    "string"
+  ],
+  "tool_use_id": [
+    "string"
+  ]
+}

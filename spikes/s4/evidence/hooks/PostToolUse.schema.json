@@ -1,0 +1,209 @@
+{
+  "session_id": [
+    "string"
+  ],
+  "transcript_path": [
+    "string"
+  ],
+  "cwd": [
+    "string"
+  ],
+  "prompt_id": [
+    "string"
+  ],
+  "permission_mode": [
+    "string"
+  ],
+  "effort": [
+    "object"
+  ],
+  "effort.level": [
+    "string"
+  ],
+  "hook_event_name": [
+    "string"
+  ],
+  "tool_name": [
+    "string"
+  ],
+  "tool_input": [
+    "object"
+  ],
+  "tool_input.command": [
+    "string"
+  ],
+  "tool_input.description": [
+    "string"
+  ],
+  "tool_response": [
+    "object"
+  ],
+  "tool_response.stdout": [
+    "string"
+  ],
+  "tool_response.stderr": [
+    "string"
+  ],
+  "tool_response.interrupted": [
+    "boolean"
+  ],
+  "tool_response.isImage": [
+    "boolean"
+  ],
+  "tool_response.noOutputExpected": [
+    "boolean"
+  ],
+  "tool_use_id": [
+    "string"
+  ],
+  "duration_ms": [
+    "number"
+  ],
+  "agent_id": [
+    "string"
+  ],
+  "agent_type": [
+    "string"
+  ],
+  "tool_input.prompt": [
+    "string"
+  ],
+  "tool_input.subagent_type": [
+    "string"
+  ],
+  "tool_input.run_in_background": [
+    "boolean"
+  ],
+  "tool_response.status": [
+    "string"
+  ],
+  "tool_response.prompt": [
+    "string"
+  ],
+  "tool_response.agentId": [
+    "string"
+  ],
+  "tool_response.agentType": [
+    "string"
+  ],
+  "tool_response.toolsUsed": [
+    "array"
+  ],
+  "tool_response.toolsUsed[]": [
+    "string"
+  ],
+  "tool_response.harnessNoteCount": [
+    "number"
+  ],
+  "tool_response.harnessTailCount": [
+    "number"
+  ],
+  "tool_response.harnessSectionHash": [
+    "string"
+  ],
+  "tool_response.content": [
+    "array"
+  ],
+  "tool_response.content[]": [
+    "object"
+  ],
+  "tool_response.content[].type": [
+    "string"
+  ],
+  "tool_response.content[].text": [
+    "string"
+  ],
+  "tool_response.resolvedModel": [
+    "string"
+  ],
+  "tool_response.totalDurationMs": [
+    "number"
+  ],
+  "tool_response.totalTokens": [
+    "number"
+  ],
+  "tool_response.totalToolUseCount": [
+    "number"
+  ],
+  "tool_response.usage": [
+    "object"
+  ],
+  "tool_response.usage.output_tokens_details": [
+    "object"
+  ],
+  "tool_response.usage.output_tokens_details.thinking_tokens": [
+    "number"
+  ],
+  "tool_response.usage.input_tokens": [
+    "number"
+  ],
+  "tool_response.usage.cache_creation_input_tokens": [
+    "number"
+  ],
+  "tool_response.usage.cache_read_input_tokens": [
+    "number"
+  ],
+  "tool_response.usage.output_tokens": [
+    "number"
+  ],
+  "tool_response.usage.server_tool_use": [
+    "object"
+  ],
+  "tool_response.usage.server_tool_use.web_search_requests": [
+    "number"
+  ],
+  "tool_response.usage.server_tool_use.web_fetch_requests": [
+    "number"
+  ],
+  "tool_response.usage.service_tier": [
+    "string"
+  ],
+  "tool_response.usage.cache_creation": [
+    "object"
+  ],
+  "tool_response.usage.cache_creation.ephemeral_1h_input_tokens": [
+    "number"
+  ],
+  "tool_response.usage.cache_creation.ephemeral_5m_input_tokens": [
+    "number"
+  ],
+  "tool_response.usage.inference_geo": [
+    "string"
+  ],
+  "tool_response.usage.iterations": [
+    "array"
+  ],
+  "tool_response.usage.speed": [
+    "string"
+  ],
+  "tool_response.usage.fallback_credit": [
+    "null"
+  ],
+  "tool_response.toolStats": [
+    "object"
+  ],
+  "tool_response.toolStats.readCount": [
+    "number"
+  ],
+  "tool_response.toolStats.searchCount": [
+    "number"
+  ],
+  "tool_response.toolStats.bashCount": [
+    "number"
+  ],
+  "tool_response.toolStats.editFileCount": [
+    "number"
+  ],
+  "tool_response.toolStats.linesAdded": [
+    "number"
+  ],
+  "tool_response.toolStats.linesRemoved": [
+    "number"
+  ],
+  "tool_response.toolStats.otherToolCount": [
+    "number"
+  ],
+  "tool_response.canContinueAgent": [
+    "boolean"
+  ]
+}

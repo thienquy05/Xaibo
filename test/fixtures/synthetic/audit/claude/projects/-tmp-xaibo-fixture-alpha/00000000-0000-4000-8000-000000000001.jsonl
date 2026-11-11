@@ -1,0 +1,6 @@
+{"type":"user","entrypoint":"cli","uuid":"00000000-0000-4000-8000-000000000011","sessionId":"00000000-0000-4000-8000-000000000001","cwd":"/tmp/xaibo-fixture/alpha","timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"user","content":"synthetic prompt"}}
+{"type":"assistant","entrypoint":"cli","uuid":"00000000-0000-4000-8000-000000000012","sessionId":"00000000-0000-4000-8000-000000000001","cwd":"/tmp/xaibo-fixture/alpha","timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"assistant","content":[{"type":"text","text":"synthetic reply"}]}}
+{"type":"system","entrypoint":"cli","sessionId":"00000000-0000-4000-8000-000000000001","cwd":"/tmp/xaibo-fixture/alpha","timestamp":"2026-01-01T00:00:00.000Z"}
+{"type":"xaibo_future_type","entrypoint":"cli","sessionId":"00000000-0000-4000-8000-000000000001","cwd":"/tmp/xaibo-fixture/alpha","timestamp":"2026-01-01T00:00:00.000Z"}
+{"type":"not a/valid type","entrypoint":"cli","sessionId":"00000000-0000-4000-8000-000000000001","cwd":"/tmp/xaibo-fixture/alpha","timestamp":"2026-01-01T00:00:00.000Z"}
+{not json

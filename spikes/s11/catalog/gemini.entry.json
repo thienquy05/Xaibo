@@ -1,0 +1,149 @@
+{
+  "schemaVersion": 1,
+  "id": "gemini",
+  "displayName": "Gemini CLI",
+  "entryVersion": "0.1.0",
+  "lifecycle": "experimental",
+  "testedVersions": [
+    {
+      "version": "0.46.0",
+      "status": "unverified"
+    }
+  ],
+  "detection": {
+    "binaries": [
+      {
+        "id": "main",
+        "names": [
+          "gemini"
+        ],
+        "versionArgs": [
+          "--version"
+        ]
+      }
+    ]
+  },
+  "profileRoots": [
+    {
+      "id": "user",
+      "base": "home",
+      "relative": ".gemini",
+      "envOverride": {
+        "name": "GEMINI_CLI_HOME",
+        "mode": "replaces-base"
+      }
+    }
+  ],
+  "existenceEvidence": [
+    {
+      "root": "user",
+      "path": "settings.json",
+      "kind": "file"
+    }
+  ],
+  "adapters": {
+    "native": "gemini",
+    "channels": [
+      {
+        "kind": "hook",
+        "version": 1
+      }
+    ]
+  },
+  "capabilities": [
+    "lifecycle",
+    "permission-requests",
+    "content",
+    "tokens",
+    "launch",
+    "resume"
+  ],
+  "setupSteps": [
+    {
+      "kind": "prerequisite",
+      "text": "Gemini CLI is installed and signed in. Xaibo does not sign in for you."
+    },
+    {
+      "kind": "step",
+      "text": "Open Connect for Gemini and review the preview of the hook entries added to the user-profile settings.json."
+    },
+    {
+      "kind": "step",
+      "text": "Xaibo never bypasses Gemini folder trust or tool approval settings."
+    }
+  ],
+  "installHints": [
+    {
+      "platform": "macos",
+      "text": "brew install gemini-cli"
+    },
+    {
+      "platform": "any",
+      "text": "npm install -g @google/gemini-cli"
+    }
+  ],
+  "configEdits": [
+    {
+      "writer": "gemini-settings-json",
+      "root": "user",
+      "file": "settings.json",
+      "operations": [
+        "hooks"
+      ]
+    }
+  ],
+  "hookMappings": [
+    {
+      "event": "SessionStart",
+      "normalized": "session.start"
+    },
+    {
+      "event": "BeforeAgent",
+      "normalized": "turn.start"
+    },
+    {
+      "event": "AfterAgent",
+      "normalized": "turn.end"
+    },
+    {
+      "event": "BeforeTool",
+      "normalized": "tool.start"
+    },
+    {
+      "event": "AfterTool",
+      "normalized": "tool.end"
+    },
+    {
+      "event": "SessionEnd",
+      "normalized": "session.end"
+    },
+    {
+      "event": "Notification",
+      "when": [
+        {
+          "field": "notification_type",
+          "equals": "ToolPermission"
+        }
+      ],
+      "normalized": "permission.request"
+    }
+  ],
+  "launchTemplates": [
+    {
+      "purpose": "new",
+      "binary": "main",
+      "args": []
+    },
+    {
+      "purpose": "resume",
+      "binary": "main",
+      "args": [
+        "--resume",
+        "{sessionId}"
+      ]
+    }
+  ],
+  "envKeyGrants": [
+    "GEMINI_CLI_HOME"
+  ]
+}

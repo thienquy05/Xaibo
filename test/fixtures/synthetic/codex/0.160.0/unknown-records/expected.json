@@ -1,0 +1,22 @@
+{
+  "files": {
+    "00000000-0000-4000-8000-0000000c0003": {
+      "lines": 10, "malformedLines": [], "partialTrailing": false,
+      "recordTypes": { "session_meta": 1, "world_state": 1, "turn_context": 1, "event_msg": 3, "response_item": 3, "synthetic_future_record": 1 },
+      "unknownRecords": 1, "unknownShareAbove5pct": true,
+      "session": { "id": "00000000-0000-4000-8000-0000000c0003", "filenameIdMatchesMeta": true, "source": "cli", "originator": "codex-tui", "cwd": "/tmp/xaibo-fixture/alpha", "cliVersion": "0.160.0" },
+      "turnIds": ["00000000-0000-4000-8000-0000000c1005"],
+      "models": ["gpt-6.1-sol"], "efforts": [null],
+      "usage": null, "rateLimits": null
+    },
+    "00000000-0000-4000-8000-0000000c0004": {
+      "lines": 21, "malformedLines": [], "partialTrailing": false,
+      "recordTypes": { "session_meta": 1, "turn_context": 5, "response_item": 9, "event_msg": 5, "synthetic_future_record": 1 },
+      "unknownRecords": 1, "unknownShareAbove5pct": false,
+      "session": { "id": "00000000-0000-4000-8000-0000000c0004", "filenameIdMatchesMeta": true, "source": "cli", "originator": "codex-tui", "cwd": "/tmp/xaibo-fixture/beta", "cliVersion": "0.160.0" },
+      "turnIds": ["00000000-0000-4000-8000-0000000c1006", "00000000-0000-4000-8000-0000000c1007", "00000000-0000-4000-8000-0000000c1008", "00000000-0000-4000-8000-0000000c1009", "00000000-0000-4000-8000-0000000c100a"],
+      "models": ["gpt-6.1-sol"], "efforts": [null],
+      "usage": null, "rateLimits": null
+    }
+  }
+}

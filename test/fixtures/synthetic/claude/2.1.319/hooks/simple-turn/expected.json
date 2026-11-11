@@ -1,0 +1,1 @@
+{"events": ["SessionStart", "UserPromptSubmit", "SessionEnd"], "notObserved": ["Stop: async Stop is lost in headless runs (S4), so no Stop payload schema exists"]}

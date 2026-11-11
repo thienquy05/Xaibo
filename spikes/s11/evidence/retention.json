@@ -1,0 +1,12 @@
+{
+  "source": "installed @google/gemini-cli 0.46.0 bundle, read as text (not runtime-verified: Gemini sign-in skipped, D-P0-19; OQ-C11)",
+  "keys": ["general.sessionRetention.enabled", "general.sessionRetention.maxAge", "general.sessionRetention.maxCount", "general.sessionRetention.minRetention"],
+  "defaults": { "enabled": true, "maxAge": "30d", "maxCount": null, "minRetention": "1d" },
+  "maxAgeFormat": "^(\\d+)([hdwm])$, value > 0; h = hour, d = day, w = 7 days, m = 30 days",
+  "invalidConfig": "cleanup disabled with a debug warning: bad format, maxAge < minRetention, maxCount < 1, or neither maxAge nor maxCount",
+  "ageBasis": "chat metadata lastUpdated (not file mtime); current session never deleted; chat files whose session info cannot be read are deleted",
+  "scope": "per project chats dir under the project temp dir; tool-output files cleaned under the same enabled switch",
+  "trigger": "once at CLI startup after config load (main entry), not periodic",
+  "effectiveValue": "settings.merged (Gemini's own merge of system defaults, user, workspace, system settings); precedence not runtime-verified",
+  "narrowing": "plan default applies: Xaibo does not show the maxAge retention offer until runtime-verified"
+}

@@ -1,0 +1,1 @@
+{"events": ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "SessionEnd"], "notObserved": ["grant after an interactive PermissionRequest (S4 was headless; Bash here is allowed by a config rule, no PermissionRequest)"]}

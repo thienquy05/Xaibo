@@ -1,0 +1,10 @@
+{
+  "notVerified": ["event order within a turn: S5 recorded per-event counts and payload schemas, not a timeline", "no PostToolUse and no Stop after Interrupt is inferred from S5 counts (one PreToolUse without PostToolUse, one UserPromptSubmit without Stop), not observed per turn"],
+  "hooks": {
+    "lines": 5, "malformedLines": [],
+    "events": { "SessionStart": 1, "UserPromptSubmit": 1, "PreToolUse": 1, "Interrupt": 1, "SessionEnd": 1 },
+    "sessionIds": ["00000000-0000-4000-8000-0000000c0021"],
+    "turns": { "00000000-0000-4000-8000-0000000c1021": ["UserPromptSubmit", "PreToolUse", "Interrupt"] },
+    "interrupted": true
+  }
+}

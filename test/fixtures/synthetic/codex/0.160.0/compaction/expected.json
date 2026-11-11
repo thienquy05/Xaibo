@@ -1,0 +1,20 @@
+{
+  "compaction": { "verified": false, "evidence": "spikes/s9/evidence/facts.json codex.compaction.recorded is false on 0.160.0; no compacted shape is fixtured" },
+  "files": {
+    "00000000-0000-4000-8000-0000000c0006": {
+      "lines": 6, "malformedLines": [], "partialTrailing": false,
+      "recordTypes": { "session_meta": 1, "turn_context": 1, "response_item": 2, "event_msg": 2 },
+      "unknownRecords": 0, "unknownShareAbove5pct": false,
+      "session": { "id": "00000000-0000-4000-8000-0000000c0006", "filenameIdMatchesMeta": true, "source": "cli", "originator": "codex-tui", "cwd": "/tmp/xaibo-fixture/alpha", "cliVersion": "0.160.0" },
+      "turnIds": ["00000000-0000-4000-8000-0000000c1012"],
+      "models": ["gpt-6.1-sol"], "efforts": [null],
+      "usage": {
+        "tokenCountEvents": 1, "modelContextWindow": 200000,
+        "total": { "uncachedInput": 1000, "cacheRead": 3000, "cacheWrite": 200, "output": 400, "reasoningOutput": 100, "total": 4400 },
+        "last": { "uncachedInput": 1000, "cacheRead": 3000, "cacheWrite": 200, "output": 400, "reasoningOutput": 100, "total": 4400 },
+        "cumulativeNonDecreasing": true, "cachedSubsetOfInput": true, "reasoningSubsetOfOutput": true
+      },
+      "rateLimits": null
+    }
+  }
+}
