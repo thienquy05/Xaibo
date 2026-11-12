@@ -192,7 +192,7 @@ test('engine (P3-T09): findings per step', async (t) => {
   for (const fx of set(false)) await t.test(fx.id, (tt) => check(tt, factory, fx, true));
 });
 
-test('engine (P3-T13): agy and report/v1 replay set', { todo: 'P3-T13 agy and report mappings' }, async (t) => {
+test('engine (P3-T13): agy and report/v1 replay set', async (t) => {
   const factory = await engine();
   assert.ok(factory, 'P3-T08 status engine absent');
   for (const fx of set(true)) await t.test(fx.id, (tt) => check(tt, factory, fx, false));

@@ -9,8 +9,12 @@
 import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import type { Envelope } from '../../shared/hook-protocol.ts';
+import { agyFileEvidence } from '../adapters/agy/status-map.ts';
 import { claudeEvidence } from '../adapters/claude/status-map.ts';
 import { codexEvidence } from '../adapters/codex/status-map.ts';
+import { hookMapper } from '../adapters/generic/mapping.ts';
+import { reportEvidence } from '../adapters/generic/report.ts';
+import { loadCatalog, type Catalog } from '../catalog/validate.ts';
 import { awake, freshPatterns, onCall, RULE_DEFAULTS, type Patterns, type RuleSettings } from './rules.ts';
 
 export type Lifecycle = 'idle' | 'busy' | 'waiting-for-permission' | 'needs-input' | 'error' | 'ended' | 'unknown';
@@ -53,13 +57,18 @@ export interface EngineOptions {
    *  received within the last 60 s. Requests are confirmed-only evidence, so a heuristic wait never calls it; evidence
    *  reloaded at start never calls it. A request that changes kind under the same id is not new (review LOW-2). */
   onWait?: (agent: string, sessionId: string, state: WaitState) => void;
+  /** Agent catalog for hook mappings (P3-T13a); the bundled catalog by default. */
+  catalog?: Catalog;
 }
 
 /** Normalized evidence, the output of an agent's status map. Ids are native ids; nothing here is content. */
 export type Ev =
   | { k: 'session.start' } | { k: 'session.end' }
   | { k: 'turn.start'; typed: boolean; turn?: string }
-  | { k: 'activity' }
+  /** reopen: work started again even after a stop or idle (agy PreInvocation, P3-T13a); never counts a turn. */
+  | { k: 'activity'; reopen?: true }
+  /** Reported model id and effort (FR-51), kept as reported; the latest of each wins. */
+  | { k: 'model'; id?: string; effort?: string }
   /** sig: tool and normalized args; on tool.end, the result (or error, with err). Hashes for R2–R4, never content. */
   | { k: 'tool.start'; id: string; tool?: string; background?: true; child?: true; sig?: string }
   | { k: 'tool.end'; id: string; sig?: string; err?: true }
@@ -74,8 +83,20 @@ export type Ev =
   /** Usage under a key (message id, or 'total' for a cumulative counter); the latest per key wins, keys are summed. */
   | { k: 'usage'; key: string; usage: Record<string, number> };
 
-// A Map, so an agent name such as `constructor` can never reach Object.prototype (security review).
-const MAPS = new Map<string, (o: Observation) => Ev[]>([['claude', claudeEvidence], ['codex', codexEvidence]]);
+/** null = no mapping matched: reduced coverage, nothing stored (P3-T13a). */
+type StatusMap = (o: Observation) => Ev[] | null;
+const FILE_MAPS: Record<string, (line: string) => Ev[]> = { agy: agyFileEvidence };
+// A Map, so an agent name such as `constructor` can never reach Object.prototype (security review). Claude and Codex are
+// hand-written (§6.2/§6.3); other agents map hooks through their catalog rules (§6.8) and files through FILE_MAPS.
+function statusMaps(catalog: Catalog): Map<string, StatusMap> {
+  const maps = new Map<string, StatusMap>([['claude', claudeEvidence], ['codex', codexEvidence]]);
+  for (const a of catalog.agents) {
+    if (maps.has(a.id) || !a.hookMappings) continue;
+    const hook = hookMapper(a.hookMappings), file = Object.hasOwn(FILE_MAPS, a.id) ? FILE_MAPS[a.id]! : null;
+    maps.set(a.id, (o) => (o.source === 'file' ? (file ? file(o.line) : []) : o.source === 'otel' ? [] : hook(o.envelope)));
+  }
+  return maps;
+}
 const HEURISTIC_MS = 5000;
 /** P3-T11: older requests do not notify; above the service's 30 s restart backoff cap (D-P3-10). */
 const NOTIFY_MAX_AGE_MS = 60_000;
@@ -100,12 +121,15 @@ interface Fold {
   /** Calls started by the authoritative source, waiting for their end: id -> args signature and tool (R2–R4). */
   calls: Map<string, { sig: string | undefined; tool: string }>;
   pat: Patterns;
+  /** Calls that ended (or were rejected): a start delivered after its own end never runs again (P3-T13a). */
+  done: Set<string>;
+  model: string | null; effort: string | null;
 }
 const fresh = (): Fold => ({
   hooked: false, started: false, ended: false, error: false, active: false, activeConf: 'inferred', stopAt: null, stopConf: 'inferred',
   idle: null, outcome: null, requests: new Map(), inflight: new Map(), lastTool: null, reqSeq: 0, children: new Set(), bgTurn: false,
   background: false, tools: new Set(), turnIds: new Set(), typed: { confirmed: 0, inferred: 0 }, usage: new Map(), lastTs: -Infinity,
-  lastFileTs: -Infinity, calls: new Map(), pat: freshPatterns(),
+  lastFileTs: -Infinity, calls: new Map(), pat: freshPatterns(), done: new Set(), model: null, effort: null,
 });
 
 function activate(f: Fold, conf: Confidence) {
@@ -129,11 +153,15 @@ function step(f: Fold, x: Entry, r: RuleSettings, conflict?: (kind: string) => v
         if (!ignored) { activate(f, x.conf); f.outcome = null; f.pat = freshPatterns(); f.calls.clear(); }
         break;
       case 'activity':
-        if (!ignored && !f.active && f.stopAt === null && f.idle === null && !f.error) activate(f, x.conf);
+        if (!ignored && !f.active && (e.reopen || (f.stopAt === null && f.idle === null && !f.error))) activate(f, x.conf);
+        break;
+      case 'model':
+        if (e.id) f.model = e.id;
+        if (e.effort) f.effort = e.effort;
         break;
       case 'tool.start':
         f.tools.add(e.id);
-        if (e.child) break;
+        if (e.child || f.done.has(e.id)) break;
         if (!inferred) f.lastTool = e.id;
         if (!f.inflight.has(e.id)) f.inflight.set(e.id, { at: x.ts, agentTool: e.tool === 'Agent' || e.tool === 'Task' });
         if (e.background) f.bgTurn = true;
@@ -141,7 +169,8 @@ function step(f: Fold, x: Entry, r: RuleSettings, conflict?: (kind: string) => v
         if (!ignored && !f.active) activate(f, x.conf);
         break;
       case 'tool.end': {
-        f.tools.add(e.id); f.inflight.delete(e.id); f.requests.delete(e.id);
+        // Only a confirmed end marks the call done: a transcript end sorted before the hook start must not swallow it (review M1).
+        f.tools.add(e.id); f.inflight.delete(e.id); f.requests.delete(e.id); if (!inferred) f.done.add(e.id);
         const c = f.calls.get(e.id);
         if (c && !ignored) {
           f.calls.delete(e.id);
@@ -156,7 +185,7 @@ function step(f: Fold, x: Entry, r: RuleSettings, conflict?: (kind: string) => v
       case 'tool.rejected':
         f.tools.add(e.id);
         if (!f.inflight.has(e.id)) break; // only a call still in flight can be denied or interrupted
-        f.inflight.delete(e.id); f.requests.delete(e.id); f.calls.delete(e.id); f.pat = freshPatterns();
+        f.inflight.delete(e.id); f.requests.delete(e.id); f.calls.delete(e.id); f.done.add(e.id); f.pat = freshPatterns();
         f.active = false; f.stopAt = null; f.idle = 'inferred'; f.outcome = 'interrupted';
         break;
       case 'request':
@@ -219,7 +248,7 @@ function life(f: Fold, agent: string, now: number, settleMs: number): Life {
 function usageOf(f: Fold): Record<string, number> | null {
   if (!f.usage.size) return null;
   const out: Record<string, number> = {};
-  for (const u of f.usage.values()) for (const [k, v] of Object.entries(u)) out[k] = (out[k] ?? 0) + v;
+  for (const u of f.usage.values()) for (const [k, v] of Object.entries(u)) out[k] = (Object.hasOwn(out, k) ? out[k]! : 0) + v;
   return out;
 }
 
@@ -234,6 +263,7 @@ export function createEngine(o: EngineOptions): StatusEngine {
   // existing hook entries costs O(n²). Compact settled sessions to a snapshot and fold from the insertion point when
   // retention, session counts or a hostile local hook client make that matter.
   const rules: RuleSettings = { ...RULE_DEFAULTS, ...o.rules };
+  const maps = statusMaps(o.catalog ?? loadCatalog());
   const sessions = new Map<string, Sess>();
   const key = (agent: string, sid: string) => `${agent}\0${sid}`;
   const get = (agent: string, sid: string) => {
@@ -264,13 +294,18 @@ export function createEngine(o: EngineOptions): StatusEngine {
     const hookish = obs.source !== 'file';
     const agent = hookish ? obs.envelope.agent : obs.agent;
     const sid = hookish ? obs.envelope.session_id : obs.sessionId;
-    const map = MAPS.get(agent);
-    if (!sid || !map) return; // agents without a status map are not tracked (agy and report: P3-T13)
+    // Report events map by the report contract whatever agent the registration binds (§5.10); hooks and files by agent.
+    const map: StatusMap | undefined = obs.source === 'report' ? (x) => (x.source === 'report' ? reportEvidence(x.envelope) : null) : maps.get(agent);
+    if (!sid || !map) return; // agents without a status map are not tracked
     // A file is keyed by a hash of its path, so no path is stored (security review).
     const dedup = hookish ? `d:${obs.envelope.delivery_id}` : `f:${createHash('sha256').update(obs.file).digest('hex').slice(0, 16)}:${obs.offset}`;
     if (sessions.get(key(agent, sid))?.dedup.has(dedup)) return;
     let evs: Ev[];
-    try { evs = map(obs).slice(0, MAX_EVS); } catch { o.log('status_map_failed'); return; } // no session, nothing stored
+    try {
+      const mapped = map(obs);
+      if (mapped === null) { o.log('status_unmapped'); return; } // reduced coverage: no invented state (§6.8)
+      evs = mapped.slice(0, MAX_EVS);
+    } catch { o.log('status_map_failed'); return; } // no session, nothing stored
     const s = get(agent, sid);
     s.dedup.add(dedup);
     const x: Entry = hookish
@@ -311,7 +346,7 @@ export function createEngine(o: EngineOptions): StatusEngine {
       ...l,
       health: suspendedAt !== null && f.lastTs <= suspendedAt ? 'stale' : 'connected',
       outcome: f.outcome, findings: findings.sort(), toolCalls: f.tools.size, turns: f.turnIds.size + Math.max(f.typed.confirmed, f.typed.inferred),
-      usage: usageOf(f), model: null, effort: null,
+      usage: usageOf(f), model: f.model, effort: f.effort,
     };
   };
 
