@@ -7,9 +7,9 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpath
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const FWD = join(import.meta.dirname, '..', '..', 'src', 'forwarder', 'forwarder.ts');
+const FWD = join(import.meta.dirname, '..', '..', 'src', 'forwarder', 'forwarder.ts'); // run as Node under test:electron too (ELECTRON_RUN_AS_NODE), as the SEA would
 const PAYLOAD = { session_id: '00000000-0000-4000-8000-0000000f0201', cwd: '/tmp/xaibo-fixture/secret-path', hook_event_name: 'Stop', prompt: 'payload-canary' };
-const run = (dir: string, payload: object = PAYLOAD) => spawnSync(process.execPath, [FWD, 'hook', 'claude', 'p1'], { input: JSON.stringify(payload), env: { PATH: process.env.PATH ?? '', XAIBO_DATA_DIR: dir }, timeout: 10_000 });
+const run = (dir: string, payload: object = PAYLOAD) => spawnSync(process.execPath, [FWD, 'hook', 'claude', 'p1'], { input: JSON.stringify(payload), env: { ELECTRON_RUN_AS_NODE: '1', PATH: process.env.PATH ?? '', XAIBO_DATA_DIR: dir }, timeout: 10_000 });
 
 function fullSpool() {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'xo-')));

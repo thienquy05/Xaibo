@@ -1,7 +1,8 @@
 // Service boot (P1-T06; T08 rescan on start, D-P1-09): opens the store in the data dir, then in the background reads
 // the login-shell env, detects agents, syncs profiles and starts one adapter per Claude or Codex profile (P2-T03).
 // A read-only store (EC-45) is reported and skips ingest. P1-T12: commit and agent-status hooks for the renderer, and
-// a manual executable path ("Set path…") that re-detects that agent.
+// a manual executable path ("Set path…") that re-detects that agent. P3-T04: once profiles are synced, the hook socket
+// listens and the spool replays, before the file backfill; a full disk is logged and its hook-only gap written on recovery.
 import path from 'node:path';
 import type { AgentStatus } from '../shared/ipc.ts';
 import type { Logger } from '../shared/log.ts';
@@ -17,6 +18,7 @@ import { priceUsage } from './usage/cost.ts';
 import { loadPrices, type Prices } from './usage/prices.ts';
 import { errorCode } from '../shared/crash.ts';
 import { openStore, type Store } from './store/db.ts';
+import { startHooks, type Hooks } from './receivers/intake.ts';
 import { Writer, type Batch } from './store/writer.ts';
 
 export interface BootOptions {
@@ -61,7 +63,11 @@ export async function boot(o: BootOptions): Promise<Service> {
       pricedUpTo = top;
     } catch (e) { o.log?.log('pricing_failed', { error: errorCode(e) }); }
   };
-  const writer = new Writer(db, { onCommit: (b) => { price(); o.onCommit?.(b); } });
+  let hooks: Hooks | undefined;
+  const writer = new Writer(db, {
+    onCommit: (b) => { price(); o.onCommit?.(b); },
+    onDiskFull: (full) => { o.log?.log('disk_full', { full }); if (!full) hooks?.intake.recovered(); },
+  });
   const detections: Detection[] = [];
   const reloadPrices = () => {
     try {
@@ -101,6 +107,8 @@ export async function boot(o: BootOptions): Promise<Service> {
     if (stopped || readOnly) return;
     const manual = Object.fromEntries(catalog.agents.map((a) => [a.id, manualRoots(db, a.id)]));
     const profiles = syncProfiles(db, profileRoots(catalog, env, o.home, manual));
+    hooks = await startHooks({ dataDir: o.dataDir, db, writer, ...(o.log ? { log: o.log } : {}) });
+    if (stopped) { void hooks.close(); return; }
     const Adapters: Record<string, typeof ClaudeAdapter | typeof CodexAdapter | typeof AgyAdapter> = { claude: ClaudeAdapter, codex: CodexAdapter, agy: AgyAdapter };
     for (const p of profiles.filter((x) => Adapters[x.agent])) {
       if (stopped) return;
@@ -131,6 +139,7 @@ export async function boot(o: BootOptions): Promise<Service> {
     wake: async () => { await Promise.all(adapters.map((a) => a.wake())); },
     stop: () => {
       stopped = true;
+      void hooks?.close();
       for (const a of adapters) a.stop();
       writer.flush();
       db.close();

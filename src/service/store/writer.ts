@@ -48,8 +48,15 @@ export type UsageObs =
 export interface QuarantineRow { nativeSessionId?: string; byteOffset: number; reason: string; raw?: Uint8Array; receivedTs: number }
 export interface SubagentLink { nativeSessionId: string; nativeId: string; agentType?: string }
 export interface Batch {
-  profileId: string; agent: string; file: SourceFileCheckpoint; fileSession?: string;
+  /** Absent for hook deliveries (P3-T04): they carry no source file checkpoint. */
+  profileId: string; agent: string; file?: SourceFileCheckpoint; fileSession?: string;
   sessions: SessionUpsert[]; events: EventRow[]; quarantine?: QuarantineRow[]; subagents?: SubagentLink[];
+  /** P3-T04 (EC-09): the hook delivery this batch commits; a delivery_id already stored commits nothing else. */
+  delivery?: HookDelivery;
+}
+export interface HookDelivery {
+  deliveryId: string; agent: string; profileKey: string; nativeSessionId: string | null; event: string;
+  receivedTs: number; committedTs: number; unattributed: 'unknown-profile' | 'no-session' | null;
 }
 
 /** Adds a cwd to the session's batch history, keeping its earliest timestamp (EC-06). */
@@ -104,6 +111,8 @@ function prepare(db: DatabaseSync) {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (session_id, source, native_id) DO NOTHING RETURNING id`),
     insertFts: db.prepare('INSERT INTO event_fts (rowid, content) VALUES (?, ?)'),
+    delivery: db.prepare(`INSERT INTO hook_delivery (delivery_id, agent, profile_key, native_session_id, event, received_ts, committed_ts, unattributed)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (delivery_id) DO NOTHING RETURNING delivery_id`),
     deleteFts: db.prepare("INSERT INTO event_fts (event_fts, rowid, content) VALUES ('delete', ?, ?)"),
     supersede: db.prepare(`UPDATE events SET revision_status = CASE WHEN source_seq = ? THEN 'superseded' ELSE 'rewound' END
       WHERE session_id = ? AND source = ? AND source_seq >= ? AND revision_status = 'current' AND native_id != ? RETURNING id, content`),
@@ -230,6 +239,11 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
   const st = statements(db);
   db.exec('BEGIN IMMEDIATE');
   try {
+    const d = batch.delivery;
+    if (d && !st.delivery.get(d.deliveryId, d.agent, d.profileKey, d.nativeSessionId, d.event, d.receivedTs, d.committedTs, d.unattributed)) {
+      db.exec('COMMIT'); // already stored (spool replay of an acked delivery, or a retry)
+      return;
+    }
     const ids = new Map<string, number | bigint>();
     for (const s of batch.sessions) {
       const row = st.upsertSession.get(batch.agent, batch.profileId, s.nativeSessionId, s.cwd ?? null, s.cwdKey ?? null, s.entrypoint ?? null,
@@ -245,8 +259,8 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
     };
 
     const f = batch.file;
-    const file = st.upsertFile.get(batch.profileId, batch.fileSession ? sessionId(batch.fileSession) : null, f.path, f.kind, f.dev, f.ino,
-      f.size, f.mtime, f.offset, f.headHash, f.status) as { id: number };
+    const file = f ? st.upsertFile.get(batch.profileId, batch.fileSession ? sessionId(batch.fileSession) : null, f.path, f.kind, f.dev, f.ino,
+      f.size, f.mtime, f.offset, f.headHash, f.status) as { id: number } : { id: null };
 
     const added = new Map<number | bigint, [number, number, number]>();
     const bump = (id: number | bigint, i: 0 | 1 | 2) => { const c = added.get(id) ?? [0, 0, 0]; c[i]++; added.set(id, c); };
@@ -295,7 +309,7 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
       if (e.kind === 'unknown') bump(sid, 1);
     }
 
-    for (const q of batch.quarantine ?? []) {
+    for (const q of file.id === null ? [] : batch.quarantine ?? []) {
       const row = st.quarantine.get(file.id, q.byteOffset, q.reason, q.raw ?? null, q.receivedTs);
       if (row && q.nativeSessionId) bump(sessionId(q.nativeSessionId), 2);
     }
@@ -308,16 +322,26 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
     }
     db.exec('COMMIT');
   } catch (e) {
-    db.exec('ROLLBACK');
+    if (db.isTransaction) db.exec('ROLLBACK'); // SQLite already rolled back on SQLITE_FULL; keep that error, not ours
     throw e;
   }
 }
+
+/** SQLITE_FULL (primary code 13) or ENOSPC: the store cannot grow (EC-44). */
+export const isDiskFull = (e: unknown) => {
+  const x = e as { errcode?: unknown; code?: unknown } | null;
+  return (typeof x?.errcode === 'number' && (x.errcode & 0xff) === 13) || x?.code === 'ENOSPC';
+};
 
 interface Pending { batch: Batch; resolve: () => void; reject: (e: unknown) => void }
 export interface WriterOptions {
   maxRows?: number; maxBytes?: number; maxDelayMs?: number;
   setTimer?: (fn: () => void, ms: number) => void;
   onCommit?: (batch: Batch) => void;
+  /** EC-44: called when the store becomes full and again when a commit succeeds after that, outside any transaction. */
+  onDiskFull?: (full: boolean) => void;
+  /** Fault injection for tests (Q3-15); commitBatch otherwise. */
+  commit?: (db: DatabaseSync, batch: Batch) => void;
 }
 
 const batchBytes = (b: Batch) => b.events.reduce((n, e) => n + (e.content?.length ?? 0) + (e.raw?.length ?? 0), 0);
@@ -325,7 +349,8 @@ const batchBytes = (b: Batch) => b.events.reduce((n, e) => n + (e.content?.lengt
 /** Queues batches; live work is committed before backfill. Each batch is its own transaction. */
 export class Writer {
   readonly #db: DatabaseSync;
-  readonly #o: Required<Omit<WriterOptions, 'onCommit'>> & Pick<WriterOptions, 'onCommit'>;
+  readonly #o: Required<Omit<WriterOptions, 'onCommit' | 'onDiskFull'>> & Pick<WriterOptions, 'onCommit' | 'onDiskFull'>;
+  #full = false;
   #live: Pending[] = [];
   #backfill: Pending[] = [];
   #rows = 0;
@@ -334,7 +359,28 @@ export class Writer {
 
   constructor(db: DatabaseSync, o: WriterOptions = {}) {
     this.#db = db;
-    this.#o = { maxRows: 100, maxBytes: 1 << 20, maxDelayMs: 50, setTimer: (fn, ms) => void setTimeout(fn, ms), ...o };
+    this.#o = { maxRows: 100, maxBytes: 1 << 20, maxDelayMs: 50, setTimer: (fn, ms) => void setTimeout(fn, ms), commit: commitBatch, ...o };
+  }
+
+  /** True from a disk-full commit until the next commit succeeds (EC-44). */
+  get diskFull(): boolean { return this.#full; }
+
+  /** A live hook delivery (OQ-A1): its own small transaction now, ahead of anything queued; throws on failure. */
+  commitLive(batch: Batch): void {
+    this.#commit(batch);
+  }
+
+  #commit(batch: Batch): void {
+    // ponytail: while full every commit still runs as the probe (SQLite fails fast without growing); a pause timer if
+    // the retried file reads ever cost too much.
+    try {
+      this.#o.commit(this.#db, batch);
+    } catch (e) {
+      if (isDiskFull(e) && !this.#full) { this.#full = true; this.#o.onDiskFull?.(true); }
+      throw e;
+    }
+    if (this.#full) { this.#full = false; this.#o.onDiskFull?.(false); }
+    this.#o.onCommit?.(batch);
   }
 
   enqueue(batch: Batch, live: boolean): Promise<void> {
@@ -358,8 +404,7 @@ export class Writer {
     this.#bytes = 0;
     for (const j of jobs) {
       try {
-        commitBatch(this.#db, j.batch);
-        this.#o.onCommit?.(j.batch);
+        this.#commit(j.batch);
         j.resolve();
       } catch (e) {
         j.reject(e);

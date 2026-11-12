@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { parseEnvelope, type Envelope } from '../../src/shared/hook-protocol.ts';
 import { startSocketServer } from '../../src/service/receivers/socket.ts';
 
-const FWD = join(import.meta.dirname, '..', '..', 'src', 'forwarder', 'forwarder.ts');
+const FWD = join(import.meta.dirname, '..', '..', 'src', 'forwarder', 'forwarder.ts'); // run as Node under test:electron too (ELECTRON_RUN_AS_NODE), as the SEA would
 const PAYLOAD = { session_id: '00000000-0000-4000-8000-0000000f0101', cwd: '/tmp/xaibo-fixture/alpha', hook_event_name: 'Stop', prompt: 'payload-canary' };
 const dataDir = () => realpathSync(mkdtempSync(join(tmpdir(), 'xd-')));
 const probe = await new Promise<string>((resolve) => {
@@ -23,7 +23,7 @@ const skip = probe === 'EPERM' ? 'Unix socket bind is denied here (Claude sandbo
 
 function forward(dir: string) {
   const t0 = performance.now();
-  const r = spawnSync(process.execPath, [FWD, 'hook', 'claude', 'p1'], { input: JSON.stringify(PAYLOAD), env: { PATH: process.env.PATH ?? '', XAIBO_DATA_DIR: dir }, timeout: 10_000 });
+  const r = spawnSync(process.execPath, [FWD, 'hook', 'claude', 'p1'], { input: JSON.stringify(PAYLOAD), env: { ELECTRON_RUN_AS_NODE: '1', PATH: process.env.PATH ?? '', XAIBO_DATA_DIR: dir }, timeout: 10_000 });
   assert.equal(r.status, 0);
   assert.equal(r.stdout.length + r.stderr.length, 0);
   return performance.now() - t0;
@@ -56,7 +56,7 @@ const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.len
 // time spent after entry (the M7 contract), without the dev runtime's TypeScript loading that the packaged SEA lacks.
 const baseline = () => median(Array.from({ length: 7 }, () => {
   const t0 = performance.now();
-  const r = spawnSync(process.execPath, [FWD, 'hook', 'claude', 'p1'], { env: { PATH: process.env.PATH ?? '' }, input: '{}', timeout: 10_000 });
+  const r = spawnSync(process.execPath, [FWD, 'hook', 'claude', 'p1'], { env: { ELECTRON_RUN_AS_NODE: '1', PATH: process.env.PATH ?? '' }, input: '{}', timeout: 10_000 });
   const ms = performance.now() - t0;
   assert.ok(!r.error && r.status === 0 && r.stdout.length + r.stderr.length === 0, 'a failed baseline sample would hide a slow path');
   return ms;
@@ -87,7 +87,7 @@ test('the forwarder delivers to the real P3-T02 server: accepted ack, nothing sp
     const runs: number[] = [];
     for (let i = 0; i < 5; i++) {
       const t0 = performance.now();
-      const child = spawn(process.execPath, [FWD, 'hook', 'claude', 'p1'], { env: { PATH: process.env.PATH ?? '', XAIBO_DATA_DIR: dir2 } });
+      const child = spawn(process.execPath, [FWD, 'hook', 'claude', 'p1'], { env: { ELECTRON_RUN_AS_NODE: '1', PATH: process.env.PATH ?? '', XAIBO_DATA_DIR: dir2 } });
       let out = 0;
       child.stdout.on('data', (d: Buffer) => { out += d.length; });
       child.stderr.on('data', (d: Buffer) => { out += d.length; });

@@ -71,6 +71,27 @@ CREATE TABLE events (
 );
 CREATE INDEX events_current_seq ON events (session_id, source, source_seq) WHERE revision_status = 'current';
 CREATE INDEX events_seq ON events (session_id, source_seq);
+CREATE TABLE hook_delivery (
+  delivery_id TEXT PRIMARY KEY,
+  agent TEXT NOT NULL,
+  profile_key TEXT NOT NULL,
+  native_session_id TEXT,
+  event TEXT NOT NULL,
+  received_ts INTEGER NOT NULL,
+  committed_ts INTEGER NOT NULL,
+  unattributed TEXT CHECK (unattributed IN ('unknown-profile', 'no-session'))
+);
+CREATE TABLE hook_gaps (
+  id INTEGER PRIMARY KEY,
+  reason TEXT NOT NULL CHECK (reason IN ('spool-overflow', 'spool-saturated', 'spool-torn', 'disk-full')),
+  agent TEXT,
+  native_session_id TEXT,
+  from_ts INTEGER,
+  to_ts INTEGER,
+  count INTEGER,
+  locator TEXT NOT NULL UNIQUE,
+  recorded_at INTEGER NOT NULL
+);
 CREATE TABLE kv (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
