@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync, execFileSync } from 'node:child_process';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
@@ -15,7 +15,7 @@ function scanText(text: string) {
   return spawnSync(process.execPath, [SCAN, f], { encoding: 'utf8' });
 }
 const scanStdin = (text: string) => spawnSync(process.execPath, [SCAN, '--stdin'], { input: text, encoding: 'utf8' });
-const rnd = (len: number, alphabet: string) => Array.from(randomBytes(len), (b) => alphabet[b % alphabet.length]).join('');
+const rnd = (len: number, alphabet: string) => Array.from({ length: len }, () => alphabet[randomInt(alphabet.length)]).join('');
 const AZ = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', az = 'abcdefghijklmnopqrstuvwxyz', D = '0123456789';
 const mixed = (len: number) => `Ab1${rnd(len - 3, AZ + az + D)}`;
 
@@ -23,7 +23,7 @@ const CANARIES: Record<string, string> = {
   home: `${homedir()}/project/file.txt`,
   uuid: randomUUID(),
   email: `someone@${rnd(8, az)}.com`,
-  loopback: `http://127.0.0.1:${4000 + (randomBytes(1)[0] % 999)}/x`,
+  loopback: `http://127.0.0.1:${4000 + randomInt(999)}/x`,
   hex32: rnd(40, 'abcdef0123456789'),
   base64url: mixed(40),
   'sk-generic': `sk-${mixed(32)}`,
