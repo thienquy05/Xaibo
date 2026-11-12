@@ -11,10 +11,13 @@ const ROOT = 'test/fixtures/synthetic';
 // URL paths, `~/…`, `<project>/…` and relative paths are excluded by the lookbehind.
 const ABS = /(?<![\w.~<>/:\\-])(?:\/[\w.-]+\/[^\s"'\\]*|file:\/\/[^\s"'\\]*)|(?<!\w)[A-Za-z]:\\{1,2}[\w.-]/g;
 const FIXTURE_ROOT = /^\/tmp\/xaibo-fixture(\/|$)/;
+// A line-1 shebang naming a standard interpreter (`#!/bin/sh`, `#!/usr/bin/env node`) is not machine data.
+const SHEBANG = /^#!\/(?:usr\/)?bin\/[\w.-]+(?: [\w.-]+)?$/;
 
 export function lintText(label: string, text: string): string[] {
   const out = scanText(label, text);
   text.split('\n').forEach((line, i) => {
+    if (i === 0 && SHEBANG.test(line)) return;
     if ((line.match(ABS) ?? []).some((m) => !FIXTURE_ROOT.test(m.replace(/^file:\/\//, '')))) out.push(`${label}:${i + 1} fixture-path`);
   });
   return out;
