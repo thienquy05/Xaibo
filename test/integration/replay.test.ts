@@ -5,7 +5,7 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { b1, b2, score } from './replay-baselines.ts';
-import { CONFIDENCES, HEALTHS, INTERLEAVINGS, isObs, LIFECYCLES, canonical, loadAll, replay, schedules,
+import { CONFIDENCES, HEALTHS, INTERLEAVINGS, isObs, LIFECYCLES, canonical, loadAll, replay, schedules, withoutTerminal,
   type EngineFactory, type Expect, type Fixture, type SessionStatus } from './replay-harness.ts';
 
 const ALL = loadAll();
@@ -101,7 +101,7 @@ for (const fx of ALL) {
   });
 }
 
-test('baselines: B1 and B2 false positives and negatives per fixture (§6.6)', async (t) => {
+test('baselines: B1 and B2 canonical lifecycle false positives and negatives per fixture (§6.6)', async (t) => {
   for (const fx of REPLAYABLE) {
     const [r1, r2] = [await replay(b1, fx, canonical(fx)), await replay(b2, fx, canonical(fx))];
     const [s1, s2] = [score(fx, r1), score(fx, r2)];
@@ -152,9 +152,12 @@ async function check(t: TestContext, factory: EngineFactory, fx: Fixture, findin
     const keys = Object.keys(f) as (keyof typeof f)[];
     assert.deepEqual(Object.fromEntries(keys.map((k) => [k, got[k]])), f, `${fx.id} ${sid}: final`);
   }
+  const open = await replay(factory, fx, withoutTerminal(fx, all[0]!));
   for (const s of all.filter((x) => x.invariant && x.name !== 'canonical')) {
+    const openRun = await replay(factory, fx, withoutTerminal(fx, s));
     for (const sid of fx.sessions) {
       assert.deepEqual(invariantPart(runs.get(s.name)!.final[sid]), invariantPart(canon.final[sid]), `${fx.id} ${s.name} ${sid}: order invariance`);
+      assert.deepEqual(invariantPart(openRun.final[sid]), invariantPart(open.final[sid]), `${fx.id} ${s.name} ${sid}: order invariance before session end`);
     }
   }
   if (fx.hooksMissing) {

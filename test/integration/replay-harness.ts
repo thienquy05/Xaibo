@@ -53,6 +53,8 @@ export const SETTLE_MS = 4000;
 /** Past the last action the clock runs this far before the final state is read (> settle, > the 5 s heuristic). */
 export const DRAIN_MS = 10_000;
 export const SLEEP_GAP_MS = 2 * 3600_000;
+/** Fixture step times are ms after this epoch, the same instant the fixtures' record timestamps start at. */
+export const EPOCH = Date.parse('2026-01-01T00:00:00.000Z');
 
 export interface Expect {
   lifecycle: Lifecycle; confidence: Confidence; reason: string | null;
@@ -154,12 +156,13 @@ export function rng(seed: number) {
 }
 const hash = (s: string) => [...s].reduce((h, c) => (Math.imul(h, 31) + c.charCodeAt(0)) >>> 0, 7);
 
-/** Arrival times for re-ordered observations: never earlier than the step's time, strictly increasing. */
+/** Re-ordered delivery: arrival never earlier than the step's time and strictly increasing; the receive time stays the
+ * original one (the forwarder and tailer stamp an observation when it happens, delivery order is what changes). */
 function arrive(order: number[], fx: Fixture): Extract<Action, { kind: 'obs' }>[] {
   let t = -Infinity;
   return order.map((i) => {
     t = Math.max(t + 1, fx.steps[i]!.at);
-    return { kind: 'obs', step: i, at: t, receivedTs: t };
+    return { kind: 'obs', step: i, at: t, receivedTs: fx.steps[i]!.at };
   });
 }
 
@@ -188,6 +191,8 @@ export function schedules(fx: Fixture, seed = 1): Schedule[] {
   // Each spool redelivery lands on a later second than the last, keeping the original forwarder receive time.
   add('duplicate-spool-replay', [...base, ...base.filter((a) => hookish(a.step))
     .map((a, k) => ({ ...a, at: (Math.floor(end / 1000) + 1 + k) * 1000 + 1 }))]);
+  // Genuinely compressed timing: distinct observations 1 ms apart, stamped when they arrive. Ordering evidence is the
+  // receive time plus each source's own order; record timestamps inside file lines are content, not ordering evidence.
   const t0 = base[0]?.at ?? 0;
   add('rapid-distinct', obs.map((i, k) => ({ kind: 'obs' as const, step: i, at: t0 + k, receivedTs: t0 + k })));
   {
@@ -199,8 +204,8 @@ export function schedules(fx: Fixture, seed = 1): Schedule[] {
       order.splice(k, 1);
       order.splice(k + by, 0, i);
     }
-    // The delayed observation keeps its original receive time, so only source order can place it.
-    add('delayed-earlier', arrive(order, fx).map((a) => ({ ...a, receivedTs: fx.steps[a.step]!.at })));
+    // The delayed observation keeps its original receive time, so only that can place it.
+    add('delayed-earlier', arrive(order, fx));
   }
   {
     const k = base.length > 1 ? 1 + r.int(base.length - 1) : 0;
@@ -209,7 +214,7 @@ export function schedules(fx: Fixture, seed = 1): Schedule[] {
   {
     const k = base.length > 1 ? 1 + r.int(base.length - 1) : 0;
     const t = (base[k - 1]?.at ?? 0) + 1;
-    const gap = SLEEP_GAP_MS + 1;
+    const gap = SLEEP_GAP_MS + 1; // observations after the gap really happen later: arrival and receive time both shift
     add('sleep-gap', [...base.slice(0, k), { kind: 'suspend', step: -1, at: t }, { kind: 'resume', step: -1, at: t + SLEEP_GAP_MS },
       ...base.slice(k).map((a) => ({ ...a, at: a.at + gap, receivedTs: a.receivedTs + gap }))]);
   }
@@ -225,10 +230,17 @@ export interface ReplayResult {
   logs: string[];
 }
 
+const TERMINAL = new Set(['SessionEnd', 'session.end']);
+/** The schedule without session-end observations, so invariance is also checked before a terminal event can mask it. */
+export function withoutTerminal(fx: Fixture, sched: Schedule): Schedule {
+  return { ...sched, name: `${sched.name} (open)`, actions: sched.actions.filter((a) => a.kind !== 'obs'
+    || !TERMINAL.has((observation(fx, fx.steps[a.step] as ObsStep, 0) as { envelope?: Envelope }).envelope?.event ?? '')) };
+}
+
 export async function replay(factory: EngineFactory, fx: Fixture, sched: Schedule): Promise<ReplayResult> {
   const dir = mkdtempSync(join(tmpdir(), 'xaibo-replay-'));
   const { db } = await openStore({ file: join(dir, 'xaibo.db'), backupDir: join(dir, 'backups') });
-  let now = sched.actions[0]?.at ?? 0;
+  let now = EPOCH + (sched.actions[0]?.at ?? 0);
   const logs: string[] = [];
   const make = () => factory({ db, now: () => now, settleMs: SETTLE_MS, log: (l) => logs.push(l) });
   let engine = make();
@@ -238,9 +250,9 @@ export async function replay(factory: EngineFactory, fx: Fixture, sched: Schedul
     if (e) perStep.set(i, engine.status(fx.agent, e.session ?? fx.sessions[0]!));
   };
   for (const a of sched.actions) {
-    now = Math.max(now, a.at);
+    now = Math.max(now, EPOCH + a.at);
     engine.advance(now);
-    if (a.kind === 'obs') { engine.ingest(observation(fx, fx.steps[a.step] as ObsStep, a.receivedTs)); record(a.step); }
+    if (a.kind === 'obs') { engine.ingest(observation(fx, fx.steps[a.step] as ObsStep, EPOCH + a.receivedTs)); record(a.step); }
     else if (a.kind === 'tick') record(a.step);
     else if (a.kind === 'suspend') engine.suspend(now);
     else if (a.kind === 'resume') { engine.resume(now); record(a.step); }

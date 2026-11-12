@@ -15,7 +15,7 @@
  },
  "notVerified": [
   "S7 t4 order (2.1.322): SubagentStart, Stop, SubagentStop (backgrounded subagent)",
-  "after the settle interval the session is busy \"Background work\" while the SubagentStart has no SubagentStop (plan P3-T08); the end of the last child restarts the turn-settle window (this fixture's reading, not observed timing)",
+  "Finishing… is kept while a SubagentStart has no SubagentStop (PRD §6.2, S7; D-P3-07 as corrected by the Codex review); the end of the last child starts the turn-settle window",
   "SubagentStart/SubagentStop keys are the S4 set",
   "Claude Stop keys mirror SubagentStop without the agent fields (S4 lost the async Stop; S7 recorded event names only)"
  ],
@@ -126,7 +126,7 @@
    "expect": {
     "lifecycle": "busy",
     "confidence": "confirmed",
-    "reason": "Background work"
+    "reason": "Finishing…"
    }
   },
   {
@@ -135,7 +135,7 @@
    "expect": {
     "lifecycle": "busy",
     "confidence": "confirmed",
-    "reason": "Background work"
+    "reason": "Finishing…"
    }
   },
   {

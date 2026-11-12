@@ -23,7 +23,7 @@
    "line": 0,
    "at": 0,
    "expect": {
-    "lifecycle": "idle",
+    "lifecycle": "unknown",
     "confidence": "inferred",
     "reason": null
    }
@@ -62,6 +62,15 @@
    "src": "rollout",
    "line": 4,
    "at": 2150,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "inferred",
+    "reason": "Finishing…"
+   }
+  },
+  {
+   "tick": true,
+   "at": 7150,
    "expect": {
     "lifecycle": "idle",
     "confidence": "inferred",

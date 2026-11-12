@@ -16,7 +16,7 @@
  "notVerified": [
   "S7 t4 background (2.1.322): Stop while sleep 30 runs, then ~30 s later UserPromptSubmit and Stop with a queue-operation record",
   "the completion turn's UserPromptSubmit prompt field and its order relative to the queue-operation record were not recorded; this fixture omits prompt and delivers the hook first",
-  "a UserPromptSubmit without a typed prompt is the same background activity (§6.2 Gate 0 proposal)",
+  "known background work = a PreToolUse with run_in_background: true; after the settle the session is busy \"Background work\" until a later turn ends (Stop + settle); the completion turn itself is an ordinary busy turn, since a missing prompt alone is not validated evidence (Codex review of D-P3-07)",
   "Claude Stop keys mirror SubagentStop without the agent fields (S4 lost the async Stop; S7 recorded event names only)"
  ],
  "steps": [
@@ -114,9 +114,18 @@
    "tick": true,
    "at": 8100,
    "expect": {
-    "lifecycle": "idle",
+    "lifecycle": "busy",
     "confidence": "confirmed",
-    "reason": null
+    "reason": "Background work"
+   }
+  },
+  {
+   "tick": true,
+   "at": 20000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": "Background work"
    }
   },
   {
@@ -126,7 +135,7 @@
    "expect": {
     "lifecycle": "busy",
     "confidence": "confirmed",
-    "reason": "Background work"
+    "reason": null
    }
   },
   {
@@ -136,7 +145,7 @@
    "expect": {
     "lifecycle": "busy",
     "confidence": "confirmed",
-    "reason": "Background work"
+    "reason": null
    }
   },
   {
@@ -146,7 +155,7 @@
    "expect": {
     "lifecycle": "busy",
     "confidence": "confirmed",
-    "reason": "Background work"
+    "reason": null
    }
   },
   {

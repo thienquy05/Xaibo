@@ -1,5 +1,6 @@
 // Replay baselines (P3-T07, PRD §6.6): B1 files-only inference and B2 agent-flow-style hook rules, both behind the replay
-// engine contract, plus the per-fixture false-positive/false-negative count reported next to Xaibo (§6.7: Xaibo <= B1, B2).
+// engine contract, plus the per-fixture canonical lifecycle false-positive/false-negative count reported next to Xaibo
+// (§6.7: Xaibo <= B1, B2). It scores lifecycle only; confidence, reason and findings have their own exact assertions.
 //
 // FP/FN are counted per expected step of the canonical replay. A "positive" is a lifecycle that tells the user the agent
 // stopped or needs them: idle, waiting-for-permission, needs-input, error, ended. A step whose predicted lifecycle differs
