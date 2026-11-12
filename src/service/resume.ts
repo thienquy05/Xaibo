@@ -17,7 +17,8 @@ export function sessionKind(kinds: SessionKind[], s: KindInput): SessionKind | u
     && (k.match.originator === undefined || k.match.originator === s.originator));
 }
 
-export function resumeArgv(kinds: SessionKind[], s: KindInput & { nativeSessionId: string }): Resume {
+export function resumeArgv(kinds: SessionKind[], s: KindInput & { nativeSessionId: string; nativeAvailable?: boolean }): Resume {
+  if (s.nativeAvailable === false) return { disabled: true, reason: 'Native session deleted; resume unavailable' }; // EC-81
   const kind = sessionKind(kinds, s);
   if (!kind) return { disabled: true, reason: 'Entry point not verified; resume disabled' };
   if (!kind.resume) return { disabled: true, reason: kind.resumeDisabled ?? 'Resume not verified' };

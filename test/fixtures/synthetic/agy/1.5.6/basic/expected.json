@@ -1,0 +1,7 @@
+{
+  "evidence": "P2-T11 fixture; shapes from spikes/p2-agy/schemas/agy-1.5.6.transcript.schema.json and the history.jsonl key facts in spikes/p2-agy/evidence/facts.json (agy 1.5.6). Content, paths and numbers are synthetic. history.jsonl display text is a canary that must never be stored.",
+  "session": "00000000-0000-4000-8000-0000000a0001",
+  "cwd": "/tmp/xaibo-fixture/agy",
+  "kinds": { "user": 1, "system": 1, "assistant": 2, "tool_output": 1 },
+  "usage": { "step:2": { "uncached": 400, "cacheRead": 800, "output": 40 }, "step:4": { "uncached": 200, "cacheRead": 1100, "output": 25 } }
+}

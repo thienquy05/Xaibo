@@ -41,6 +41,7 @@ function connect(port: MessagePortMain) {
 const command = accept(parseServiceCommand, (m, transferred: MessagePortMain[]) => {
   if (m.type === 'quit') { svc?.stop(); process.exit(0); }
   else if (m.type === 'wake') void svc?.wake();
+  else if (m.type === 'reloadPrices') void booted.then((s) => s.reloadPrices());
   else if (m.type === 'port') transferred.forEach(connect);
   else if (m.type === 'setPath') { const { agent, path: file } = m; void booted.then((s) => s.setPath(agent, file)); }
 });

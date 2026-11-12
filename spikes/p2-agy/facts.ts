@@ -1,7 +1,7 @@
 // P2-T00 agy fact extraction over the TEMP profile only (plus the run's raw stream/hook captures in .cache).
 // Emits booleans, key sets, allowlisted values and masked file patterns; never content, IDs, paths or numbers.
 // Usage: node spikes/p2-agy/facts.ts [--out <dir>]   (default: spikes/p2-agy/evidence and spikes/p2-agy/schemas)
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative } from 'node:path';
 import { reduce } from '../shared/reduce.ts';
@@ -47,6 +47,27 @@ export function usageRelations(runs: { steps: Usage[]; result?: Usage }[]) {
     cacheReadWithinInput: all.every((u) => u.cache_read_tokens <= u.input_tokens),
     thinkingWithinOutput: all.every((u) => u.thinking_tokens <= u.output_tokens), // necessary, not sufficient, for inclusion
     resultCumulativeOverConversation: runs.some((r) => r.result) ? cumulative.every(Boolean) : null,
+  };
+}
+
+/** history.jsonl key names and relations (D-P2-02 (1)): a conversation-id key is present somewhere and every present
+ *  value is a known folder id; an absolute-path key holds only strings starting with '/'. Key names and booleans only. */
+export function historyRelations(entries: Rec[], convIds: string[], project: string) {
+  if (entries.length === 0) {
+    return { observed: false, keys: [] as string[], conversationIdKeys: [] as string[], absolutePathKeys: [] as string[], everyEntryHasConversationId: null, sameConversationSameWorkspace: null, pathEqualsEvaluationProject: null };
+  }
+  const keys = [...new Set(entries.flatMap((e) => Object.keys(e)))].sort();
+  const ids = new Set(convIds);
+  const only = (k: string, ok: (v: unknown) => boolean) => entries.some((e) => k in e) && entries.every((e) => !(k in e) || ok(e[k]));
+  const conversationIdKeys = keys.filter((k) => only(k, (v) => typeof v === 'string' && ids.has(v)));
+  const absolutePathKeys = keys.filter((k) => only(k, (v) => typeof v === 'string' && v.startsWith('/')));
+  const [c, w] = [conversationIdKeys[0], absolutePathKeys[0]];
+  const linked = c ? entries.filter((e) => c in e) : [];
+  return {
+    observed: true, keys, conversationIdKeys, absolutePathKeys,
+    everyEntryHasConversationId: c ? linked.length === entries.length : false,
+    sameConversationSameWorkspace: c && w ? linked.every((e) => linked.every((x) => x[c] !== e[c] || x[w] === e[w])) : null,
+    pathEqualsEvaluationProject: entries.some((e) => absolutePathKeys.some((k) => e[k] === project)),
   };
 }
 
@@ -111,6 +132,7 @@ function agyFacts() {
       resumeKeepsConversation: runs.length > 1 ? convIds.size === 1 : null,
       usage: usageRelations(runs),
     },
+    history: historyRelations(lines(join(ROOT, 'history.jsonl')), convDirs, ((p) => (existsSync(p) ? realpathSync(p) : p))(join(import.meta.dirname, '..', '..', '.cache', 'spike-projects', 'p2-agy'))),
     effortKeyAnywhere: everyKey.some((k) => /effort/i.test(k)),
     hooks: {
       labelsFired: hookLabels,

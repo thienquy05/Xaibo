@@ -164,7 +164,7 @@ if (import.meta.main) {
   mkdirSync(SCHEMA_DIR, { recursive: true });
   const facts = { claude: claudeFacts(), codex: codexFacts() };
   writeFileSync(join(OUT_DIR, 'facts.json'), `${JSON.stringify(facts, null, 2)}\n`);
-  const ENUMS = ['hook_event_name', 'type', 'subtype', 'role', 'model', 'version', 'stop_reason', 'entrypoint', 'userType', 'level', 'originator', 'source'];
+  const ENUMS = ['hook_event_name', 'type', 'subtype', 'role', 'model', 'version', 'stop_reason', 'entrypoint', 'userType', 'level', 'originator', 'source', 'service_tier', 'speed'];
   for (const [agent, root, re, ver] of [['claude', join(CLAUDE, 'projects'), /\.jsonl$/, '2.1.319'], ['codex', join(CODEX, 'sessions'), /rollout-.*\.jsonl$/, '0.160.0']] as const) {
     const red = reduce(files(root, re).flatMap(lines).map((r) => ({ event: String(r.type ?? 'unknown'), payload: r })), ENUMS);
     const schema = Object.fromEntries(Object.entries(red).map(([t, v]) => [t, Object.fromEntries(Object.entries(v.keys).map(([k, s]) => [k, s.values ? { types: s.types, values: s.values } : s.types]))]));

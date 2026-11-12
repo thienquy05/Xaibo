@@ -3,7 +3,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { mergeToolCalls, type ToolCallObservation } from '../normalize.ts';
 import { cwdKey } from '../paths.ts';
-import { claudeUsage, codexRateLimits, codexStep, codexUsage, tokenRecordDrift, type Usage } from '../usage/tokens.ts';
+import { agyUsage, claudeUsage, codexRateLimits, codexStep, codexUsage, tokenRecordDrift, type Usage } from '../usage/tokens.ts';
 import { contextStep, type ContextObs, type Snapshot } from '../usage/context.ts';
 
 export const SCHEMA_VERSION = 1;
@@ -16,6 +16,8 @@ export interface SourceFileCheckpoint {
 export interface SessionUpsert {
   nativeSessionId: string; cwd?: string; cwdKey?: string; entrypoint?: string; interactive?: boolean; title?: string;
   startedAt?: number; lastActivity?: number; originator?: string; nativeArchived?: boolean;
+  /** P2-T11 (EC-81): false once the native conversation is verifiably gone; true again when it reappears. */
+  nativeAvailable?: boolean;
   /** Every distinct cwd the batch saw (P2-T05, EC-06): cwd_history rows, never a second session. */
   cwds?: CwdSeen[];
 }
@@ -33,12 +35,16 @@ export interface EventRow {
   model?: { id: string; effort?: string | null; turn?: string };
   /** P2-T07: a context observation; a Codex one with model null takes the session's current model at write time. */
   context?: ContextObs;
+  /** P2-T11 (EC-80, agy): apply in source order by sourceSeq: current rows of the session with seq >= this one become
+   *  superseded (same seq) or rewound (higher), and this row is current again if it was stored before. */
+  revise?: boolean;
 }
 type Obj = Record<string, unknown>;
 export type UsageObs =
   | { kind: 'claude'; messageId: string; model?: string; raw: Obj }
   | { kind: 'codex-count'; total?: Obj; last?: Obj; rateLimits?: Obj }
-  | { kind: 'codex-record'; payload: Obj };
+  | { kind: 'codex-record'; payload: Obj }
+  | { kind: 'agy'; identity: string; raw: Obj };
 export interface QuarantineRow { nativeSessionId?: string; byteOffset: number; reason: string; raw?: Uint8Array; receivedTs: number }
 export interface SubagentLink { nativeSessionId: string; nativeId: string; agentType?: string }
 export interface Batch {
@@ -72,12 +78,13 @@ function prepare(db: DatabaseSync) {
   return {
     // ponytail: native_archived only rises (a rollout seen under archived_sessions/); unarchiving needs a scan-level check.
     upsertSession: db.prepare(`INSERT INTO sessions (agent, profile_id, native_session_id, cwd, cwd_key, entrypoint, interactive, title, started_at, last_activity,
-        originator, native_archived)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        originator, native_archived, native_available)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, coalesce(?, 1))
       ON CONFLICT (agent, profile_id, native_session_id) DO UPDATE SET
         cwd = coalesce(sessions.cwd, excluded.cwd), cwd_key = coalesce(sessions.cwd_key, excluded.cwd_key),
         entrypoint = coalesce(sessions.entrypoint, excluded.entrypoint), interactive = coalesce(sessions.interactive, excluded.interactive),
         originator = coalesce(sessions.originator, excluded.originator), native_archived = max(sessions.native_archived, excluded.native_archived),
+        native_available = coalesce(?, sessions.native_available),
         title = coalesce(excluded.title, sessions.title),
         started_at = min(coalesce(sessions.started_at, excluded.started_at), coalesce(excluded.started_at, sessions.started_at)),
         last_activity = max(coalesce(sessions.last_activity, excluded.last_activity), coalesce(excluded.last_activity, sessions.last_activity))
@@ -93,6 +100,13 @@ function prepare(db: DatabaseSync) {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (session_id, source, native_id) DO NOTHING RETURNING id`),
     insertFts: db.prepare('INSERT INTO event_fts (rowid, content) VALUES (?, ?)'),
+    deleteFts: db.prepare("INSERT INTO event_fts (event_fts, rowid, content) VALUES ('delete', ?, ?)"),
+    supersede: db.prepare(`UPDATE events SET revision_status = CASE WHEN source_seq = ? THEN 'superseded' ELSE 'rewound' END
+      WHERE session_id = ? AND source = ? AND source_seq >= ? AND revision_status = 'current' AND native_id != ? RETURNING id, content`),
+    replaced: db.prepare(`UPDATE events SET revision_status = 'superseded' WHERE session_id = ? AND source = ? AND source_seq = ? AND revision_status = 'rewound'
+      AND native_id != ?`),
+    revive: db.prepare(`UPDATE events SET revision_status = 'current' WHERE session_id = ? AND source = ? AND native_id = ? AND revision_status != 'current'
+      RETURNING id, content`),
     counts: db.prepare(`UPDATE sessions SET record_count = record_count + ?, unknown_count = unknown_count + ?,
       quarantined_count = quarantined_count + ? WHERE id = ?`),
     quarantine: db.prepare(`INSERT INTO quarantine (file_id, byte_offset, reason, raw, received_ts) VALUES (?, ?, ?, ?, ?)
@@ -158,6 +172,7 @@ function usage(st: ReturnType<typeof prepare>, batch: Batch, sid: number | bigin
       n?.cacheWrite ?? null, n?.cacheWriteClasses ? JSON.stringify(n.cacheWriteClasses) : null, n?.output ?? null, JSON.stringify(raw),
       JSON.stringify(gap ?? n!.completeness), e.sourceTs ?? null);
   if (u.kind === 'claude') put(u.messageId, 'message', null, claudeUsage(u.raw), u.raw, u.model);
+  else if (u.kind === 'agy') put(u.identity, 'message', null, agyUsage(u.raw), u.raw); // per step; a rewritten step replaces it
   else if (u.kind === 'codex-record') { if (tokenRecordDrift(u.payload)) put(e.nativeId, 'turn', null, null, u.payload, undefined, { record: 'shape-drift' }); }
   else {
     const total = typeof u.total?.total_tokens === 'number' ? u.total.total_tokens : undefined;
@@ -201,7 +216,8 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
     const ids = new Map<string, number | bigint>();
     for (const s of batch.sessions) {
       const row = st.upsertSession.get(batch.agent, batch.profileId, s.nativeSessionId, s.cwd ?? null, s.cwdKey ?? null, s.entrypoint ?? null,
-        b(s.interactive), s.title ?? null, s.startedAt ?? null, s.lastActivity ?? null, s.originator ?? null, s.nativeArchived ? 1 : 0) as { id: number };
+        b(s.interactive), s.title ?? null, s.startedAt ?? null, s.lastActivity ?? null, s.originator ?? null, s.nativeArchived ? 1 : 0,
+        b(s.nativeAvailable), b(s.nativeAvailable)) as { id: number };
       ids.set(s.nativeSessionId, row.id);
       for (const c of s.cwds ?? []) st.cwd.run(row.id, SCHEMA_VERSION, c.source, c.cwd, c.cwdKey, c.firstSeen ?? null);
     }
@@ -218,12 +234,25 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
     const added = new Map<number | bigint, [number, number, number]>();
     const bump = (id: number | bigint, i: 0 | 1 | 2) => { const c = added.get(id) ?? [0, 0, 0]; c[i]++; added.set(id, c); };
 
+    type Fts = { id: number; content: string | null };
     for (const e of batch.events) {
       const sid = sessionId(e.nativeSessionId);
+      if (e.revise) { // FTS holds current rows only; deletes pass the indexed text (external-content table)
+        for (const r of st.supersede.all(e.sourceSeq, sid, e.source, e.sourceSeq, e.nativeId) as Fts[]) if (r.content) st.deleteFts.run(r.id, ftsPrefix(r.content));
+        st.replaced.run(sid, e.source, e.sourceSeq, e.nativeId); // rewound earlier in this replay, now replaced by this step
+      }
       const row = st.insertEvent.get(sid, SCHEMA_VERSION, e.source, e.confidence, e.nativeId, e.parentNativeId ?? null, e.messageId ?? null,
         e.kind, e.role ?? null, e.subagentNativeId ?? null, file.id, e.byteOffset ?? null, e.sourceSeq, e.sourceTs ?? null,
         e.fileMtime ?? null, e.receivedTs, e.ingestId ?? null, e.injected ? 1 : 0, e.content ?? null, e.raw ?? null) as { id: number } | undefined;
-      if (!row) continue; // already stored (reparse after truncation or rotation)
+      if (!row) { // already stored (reparse after truncation or rotation); a revised row seen again is current again
+        if (e.revise) {
+          for (const r of st.revive.all(sid, e.source, e.nativeId) as Fts[]) {
+            if (r.content) st.insertFts.run(r.id, ftsPrefix(r.content));
+            if (e.usage) usage(st, batch, sid, r.id, e, e.usage);
+          }
+        }
+        continue;
+      }
       if (e.content) st.insertFts.run(row.id, ftsPrefix(e.content));
       if (e.turn) {
         const ts = e.sourceTs ?? null;

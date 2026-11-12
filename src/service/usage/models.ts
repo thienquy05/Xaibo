@@ -8,10 +8,14 @@ export interface Rates { input: number; output: number; cache_read?: number; cac
 export interface ModelEntry {
   id: string; display_name: string; family?: string; context_window?: number; source: string; prices_verified: boolean;
   rates?: Rates; tiers?: { above_prompt_tokens: number; rates: Rates }[];
+  /** Price-affecting qualifier values the rates cover (P2-T10), e.g. service_tier: ['standard']. */
+  qualifiers?: Record<string, string[]>;
 }
 export interface ModelList {
   schemaVersion: 1; revision: string; currency: 'USD'; prices_as_of: string;
   sources: { id: string; url: string; retrieved: string }[]; models: ModelEntry[];
+  /** Owner-set fallbacks, private override only (P2-T09, D-P2-06). */
+  fallbacks?: { models: string[]; agent?: string; qualifiers?: Record<string, string[]>; rates: Rates }[];
 }
 
 const DIR = new URL('../../../integrations/', import.meta.url); // same depth under src/ and out/

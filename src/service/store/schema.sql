@@ -180,6 +180,7 @@ CREATE TABLE turns (
   effort TEXT,
   UNIQUE (session_id, native_turn_id)
 );
+CREATE INDEX turns_started ON turns (session_id, started_at);
 CREATE TABLE usage (
   id INTEGER PRIMARY KEY,
   session_id INTEGER NOT NULL REFERENCES sessions(id),

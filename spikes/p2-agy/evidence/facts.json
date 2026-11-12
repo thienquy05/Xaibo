@@ -121,6 +121,24 @@
       "resultCumulativeOverConversation": true
     }
   },
+  "history": {
+    "observed": true,
+    "keys": [
+      "conversationId",
+      "display",
+      "timestamp",
+      "workspace"
+    ],
+    "conversationIdKeys": [
+      "conversationId"
+    ],
+    "absolutePathKeys": [
+      "workspace"
+    ],
+    "everyEntryHasConversationId": false,
+    "sameConversationSameWorkspace": true,
+    "pathEqualsEvaluationProject": true
+  },
   "effortKeyAnywhere": false,
   "hooks": {
     "labelsFired": [

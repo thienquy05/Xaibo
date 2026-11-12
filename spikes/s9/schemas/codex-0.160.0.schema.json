@@ -435,9 +435,14 @@
     "payload.thread_settings.model_provider_id": [
       "string"
     ],
-    "payload.thread_settings.service_tier": [
-      "string"
-    ],
+    "payload.thread_settings.service_tier": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "default"
+      ]
+    },
     "payload.thread_settings.approval_policy": [
       "string"
     ],

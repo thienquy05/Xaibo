@@ -1,7 +1,42 @@
 // P2-T00: agy usage relationships, booleans only (EC-93/95 inputs for T06/T10). Synthetic numbers.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { usageRelations } from './facts.ts';
+import { historyRelations, usageRelations } from './facts.ts';
+
+// P2-T11 input (D-P2-02 (1)): which history.jsonl keys hold the conversation folder id and the workspace path. Key
+// names and booleans only; synthetic values.
+test('history: key names, the key holding folder ids, absolute-path keys, project match', () => {
+  const r = historyRelations([
+    { display: 'x', conversationId: 'c1', workspace: '/w/p', ts: 1 },
+    { display: 'y', conversationId: 'c2', workspace: '/w/q', ts: 2 },
+  ], ['c1', 'c2'], '/w/q');
+  assert.deepEqual(r, {
+    observed: true, keys: ['conversationId', 'display', 'ts', 'workspace'], conversationIdKeys: ['conversationId'],
+    absolutePathKeys: ['workspace'], everyEntryHasConversationId: true, sameConversationSameWorkspace: true, pathEqualsEvaluationProject: true,
+  });
+});
+
+test('history: a key with any non-folder value is not a conversation key; relative paths are not path keys', () => {
+  const r = historyRelations([{ id: 'c1', dir: 'rel' }, { id: 'zz', dir: '/abs' }, { other: 1 }], ['c1'], '/nope');
+  assert.deepEqual(r.conversationIdKeys, []);
+  assert.deepEqual(r.absolutePathKeys, []);
+  assert.equal(r.everyEntryHasConversationId, false);
+  assert.equal(r.pathEqualsEvaluationProject, false);
+});
+
+test('history: a key missing from some entries still counts when every present value is a folder id', () => {
+  const r = historyRelations([{ conversationId: 'c1', workspace: '/a' }, { workspace: '/a' }], ['c1', 'c2'], '/a');
+  assert.deepEqual(r.conversationIdKeys, ['conversationId']);
+  assert.equal(r.everyEntryHasConversationId, false);
+  assert.equal(r.sameConversationSameWorkspace, true);
+  assert.equal(historyRelations([{ conversationId: 'c1', workspace: '/a' }, { conversationId: 'c1', workspace: '/b' }], ['c1'], '/a').sameConversationSameWorkspace, false);
+});
+
+test('history: nothing observed is null, never false', () => {
+  assert.deepEqual(historyRelations([], [], '/p'), {
+    observed: false, keys: [], conversationIdKeys: [], absolutePathKeys: [], everyEntryHasConversationId: null, sameConversationSameWorkspace: null, pathEqualsEvaluationProject: null,
+  });
+});
 
 const u = (input_tokens: number, output_tokens: number, thinking_tokens: number, cache_read_tokens: number, total_tokens = input_tokens + output_tokens + thinking_tokens) =>
   ({ input_tokens, output_tokens, thinking_tokens, cache_read_tokens, total_tokens });

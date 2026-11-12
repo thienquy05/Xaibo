@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { accept, healthText, parseHealth, parsePortMessage, parsePortRequest, parseServiceCommand, parseServiceEvent, READ_ONLY_BANNER } from '../../src/shared/ipc.ts';
 
 test('service commands: known types pass, extra fields are stripped', () => {
-  for (const type of ['quit', 'wake', 'port'] as const) assert.deepEqual(parseServiceCommand({ v: 1, type, extra: 'x' }), { v: 1, type });
+  for (const type of ['quit', 'wake', 'port', 'reloadPrices'] as const) assert.deepEqual(parseServiceCommand({ v: 1, type, extra: 'x' }), { v: 1, type });
 });
 
 test('unknown versions, unknown types and non-objects are rejected', () => {

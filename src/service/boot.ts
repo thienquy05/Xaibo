@@ -5,13 +5,17 @@
 import path from 'node:path';
 import type { AgentStatus } from '../shared/ipc.ts';
 import type { Logger } from '../shared/log.ts';
+import { AgyAdapter } from './adapters/agy/index.ts';
 import { ClaudeAdapter } from './adapters/claude/index.ts';
 import { CodexAdapter } from './adapters/codex/index.ts';
 import type { Ingester } from './adapters/tail-adapter.ts';
 import { detectAgent, manualPath, manualRoots, profileRoots, setManualPath, syncProfiles, type Detection } from './catalog/detect.ts';
 import { readLoginEnv, type LoginEnv } from './catalog/env.ts';
 import { loadCatalog, type Catalog, type SessionKind } from './catalog/validate.ts';
-import { loadModels, type ModelEntry } from './usage/models.ts';
+import type { ModelEntry } from './usage/models.ts';
+import { priceUsage } from './usage/cost.ts';
+import { loadPrices, type Prices } from './usage/prices.ts';
+import { errorCode } from '../shared/crash.ts';
 import { openStore, type Store } from './store/db.ts';
 import { Writer, type Batch } from './store/writer.ts';
 
@@ -30,8 +34,12 @@ export interface Service {
   agents(): AgentStatus[] | null;
   /** Catalog session kinds for list badges (P2-T04); empty if the catalog failed to load. */
   kinds(): SessionKind[];
-  /** Bundled model list for display names (P2-T08); empty if it failed to load (names fall back to raw ids). */
+  /** Model list for display names (P2-T08; with the owner override, P2-T09); empty if the bundled list failed to load. */
   models(): ModelEntry[];
+  /** Current prices (P2-T09): accepted revision, or the last valid one with an error code; null if the bundled list is invalid. */
+  prices(): Prices | null;
+  /** Re-reads <dataDir>/models.override.json (the reloadPrices command). */
+  reloadPrices(): Prices | null;
   /** Validates and stores a manual executable path, then re-detects that agent; false if refused. */
   setPath(agent: string, file: string): Promise<boolean>;
   wake(): Promise<void>;
@@ -41,10 +49,28 @@ export interface Service {
 export async function boot(o: BootOptions): Promise<Service> {
   const store = await openStore({ file: path.join(o.dataDir, 'xaibo.db'), backupDir: path.join(o.dataDir, 'backups') });
   const { db, readOnly } = store;
-  const writer = new Writer(db, o.onCommit ? { onCommit: o.onCommit } : {});
+  let prices: Prices | null = null;
+  // P2-T10/T14: after each commit price only usage rows above the high-water mark; after a price load, every pending row.
+  let pricedUpTo = 0;
+  const topUsage = readOnly ? undefined : db.prepare('SELECT coalesce(max(id), 0) AS id FROM usage');
+  const price = (full = false) => {
+    if (readOnly || !prices) return;
+    try {
+      const top = Number((topUsage!.get() as { id: number }).id);
+      priceUsage(db, prices, full ? {} : { afterUsageId: pricedUpTo });
+      pricedUpTo = top;
+    } catch (e) { o.log?.log('pricing_failed', { error: errorCode(e) }); }
+  };
+  const writer = new Writer(db, { onCommit: (b) => { price(); o.onCommit?.(b); } });
   const detections: Detection[] = [];
-  let models: ModelEntry[] = [];
-  try { models = loadModels().models; } catch { o.log?.log('models_invalid', {}); } // ponytail: override + revisions in P2-T09
+  const reloadPrices = () => {
+    try {
+      prices = loadPrices({ db: readOnly ? null : db, overridePath: path.join(o.dataDir, 'models.override.json'), previous: prices, ...(o.log ? { log: o.log } : {}) });
+    } catch { o.log?.log('models_invalid', {}); }
+    price(true);
+    return prices;
+  };
+  reloadPrices();
   const adapters: Ingester[] = [];
   let stopped = false;
   let catalog: Catalog | undefined;
@@ -75,7 +101,7 @@ export async function boot(o: BootOptions): Promise<Service> {
     if (stopped || readOnly) return;
     const manual = Object.fromEntries(catalog.agents.map((a) => [a.id, manualRoots(db, a.id)]));
     const profiles = syncProfiles(db, profileRoots(catalog, env, o.home, manual));
-    const Adapters: Record<string, typeof ClaudeAdapter | typeof CodexAdapter> = { claude: ClaudeAdapter, codex: CodexAdapter };
+    const Adapters: Record<string, typeof ClaudeAdapter | typeof CodexAdapter | typeof AgyAdapter> = { claude: ClaudeAdapter, codex: CodexAdapter, agy: AgyAdapter };
     for (const p of profiles.filter((x) => Adapters[x.agent])) {
       if (stopped) return;
       const a = new Adapters[p.agent]!({ db, writer, profileId: p.id, root: p.root, ...(o.intervalMs ? { intervalMs: o.intervalMs } : {}) });
@@ -90,7 +116,9 @@ export async function boot(o: BootOptions): Promise<Service> {
   return {
     store, detections, adapters, done, agents,
     kinds: () => catalog?.sessionKinds ?? [],
-    models: () => models,
+    models: () => prices?.table.models ?? [],
+    prices: () => prices,
+    reloadPrices,
     async setPath(agent, file) {
       await Promise.race([detection, done.catch(() => undefined)]); // detection, not the whole backfill
       const entry = catalog?.agents.find((a) => a.id === agent);

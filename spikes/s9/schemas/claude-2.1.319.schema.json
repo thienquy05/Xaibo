@@ -292,9 +292,14 @@
     "toolUseResult.usage.server_tool_use.web_fetch_requests": [
       "number"
     ],
-    "toolUseResult.usage.service_tier": [
-      "string"
-    ],
+    "toolUseResult.usage.service_tier": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "standard"
+      ]
+    },
     "toolUseResult.usage.cache_creation": [
       "object"
     ],
@@ -310,9 +315,14 @@
     "toolUseResult.usage.iterations": [
       "array"
     ],
-    "toolUseResult.usage.speed": [
-      "string"
-    ],
+    "toolUseResult.usage.speed": {
+      "types": [
+        "string"
+      ],
+      "values": [
+        "standard"
+      ]
+    },
     "toolUseResult.usage.fallback_credit": [
       "null"
     ],
@@ -1561,9 +1571,15 @@
     "message.usage.server_tool_use.web_fetch_requests": [
       "number"
     ],
-    "message.usage.service_tier": [
-      "string"
-    ],
+    "message.usage.service_tier": {
+      "types": [
+        "null",
+        "string"
+      ],
+      "values": [
+        "standard"
+      ]
+    },
     "message.usage.cache_creation": [
       "object"
     ],
@@ -1579,9 +1595,15 @@
     "message.usage.iterations": [
       "array"
     ],
-    "message.usage.speed": [
-      "string"
-    ],
+    "message.usage.speed": {
+      "types": [
+        "null",
+        "string"
+      ],
+      "values": [
+        "standard"
+      ]
+    },
     "message.usage.fallback_credit": [
       "null"
     ],

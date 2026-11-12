@@ -10,8 +10,9 @@ export const READ_ONLY_BANNER: Record<ReadOnlyReason, string> = {
   'insufficient-space': 'Not enough disk space to migrate the database: read-only',
 };
 
-/** main -> service; setPath carries a file the user picked in the native dialog (validated again by the service). */
-export type ServiceCommand = { v: 1; type: 'quit' | 'wake' | 'port' } | { v: 1; type: 'setPath'; agent: string; path: string };
+/** main -> service; setPath carries a file the user picked in the native dialog (validated again by the service);
+ *  reloadPrices re-reads the private price override (P2-T09; sent by Settings in P6-T11). */
+export type ServiceCommand = { v: 1; type: 'quit' | 'wake' | 'port' | 'reloadPrices' } | { v: 1; type: 'setPath'; agent: string; path: string };
 /** service -> main */
 export type ServiceEvent = { v: 1; type: 'ready'; readOnly: ReadOnlyReason | null };
 export type HealthState = 'starting' | 'running' | 'restarting' | 'stopped';
@@ -36,7 +37,7 @@ const timeOrNull = (x: unknown): x is number | null => x === null || Number.isFi
 export function parseServiceCommand(x: unknown): ServiceCommand | null {
   const m = envelope(x);
   if (!m) return null;
-  if (oneOf(['quit', 'wake', 'port'] as const, m.type)) return { v: 1, type: m.type };
+  if (oneOf(['quit', 'wake', 'port', 'reloadPrices'] as const, m.type)) return { v: 1, type: m.type };
   if (m.type !== 'setPath' || !text(m.agent) || !AGENT_ID.test(m.agent)) return null;
   if (!text(m.path, 4096) || !m.path.startsWith('/') || m.path.includes('\0')) return null;
   return { v: 1, type: 'setPath', agent: m.agent, path: m.path };
