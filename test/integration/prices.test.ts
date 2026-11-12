@@ -75,3 +75,30 @@ test('EC-96: boot and reload price from the latest valid revision; old estimates
   }
   assert.deepEqual(seen, [], 'no socket or HTTP request while prices load');
 });
+
+test('G2-8: reloadPrices prices usage that was unpriced (an owner fallback added later), through boot only', async () => {
+  const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'xprices-reload-')));
+  const home = join(tmp, 'home');
+  const project = join(home, '.claude', 'projects', '-tmp-xaibo-fixture-project');
+  mkdirSync(project, { recursive: true });
+  const fixture = join(import.meta.dirname, '..', 'fixtures', 'synthetic', 'claude', '2.1.319', 'usage-basic');
+  for (const f of readdirSync(fixture).filter((n) => n.endsWith('.jsonl'))) {
+    writeFileSync(join(project, f), readFileSync(join(fixture, f), 'utf8').replaceAll('"model":"claude-opus-5-5"', '"model":"synthetic-unlisted-model"'));
+  }
+  const dataDir = join(tmp, 'data');
+  const svc = await boot({ dataDir, home, catalog, intervalMs: 60_000 });
+  await svc.done;
+  const rows = () => svc.store.db.prepare('SELECT amount_usd AS amount, basis, unavailable_reason AS reason, price_revision_id AS rev FROM cost_estimates ORDER BY covered_scope')
+    .all().map((r) => ({ ...r }) as { amount: number | null; basis: string; reason: string | null; rev: number | null });
+  assert.deepEqual(rows().map((r) => [r.amount, r.reason]), [[null, 'unpriced-model'], [null, 'unpriced-model']]);
+  writeFileSync(join(dataDir, 'models.override.json'), JSON.stringify({
+    schemaVersion: 1, revision: 'owner-fallback', currency: 'USD', prices_as_of: '2026-11-12', sources: [{ id: 'owner', url: 'https://example.com/prices', retrieved: '2026-11-12' }],
+    models: [], fallbacks: [{ models: ['synthetic-unlisted-model'], agent: 'claude', qualifiers: { service_tier: ['standard'], speed: ['standard'] },
+      rates: { input: 1, output: 1, cache_read: 1, cache_write: { '5m': 1, '1h': 1 } } }],
+  }));
+  const next = svc.reloadPrices()!;
+  const after = rows();
+  assert.ok(after.every((r) => r.basis === 'owner_fallback' && r.rev === next.revisionId && r.reason === null));
+  assert.deepEqual(after.map((r) => Math.round(r.amount! * 1e6)), [10 + 100 + 30 + 20, 5 + 140 + 15 + 40]);
+  svc.stop();
+});

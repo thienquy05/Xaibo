@@ -1,7 +1,7 @@
 // Single-writer batches (P1-T07): records commit together with their source-file checkpoint in one transaction;
 // live batches are committed ahead of backfill; flush at the S12 bounds (100 rows, 1 MiB or 50 ms).
 import type { DatabaseSync } from 'node:sqlite';
-import { mergeToolCalls, type ToolCallObservation } from '../normalize.ts';
+import { byRank, mergeToolCalls, type ToolCallObservation } from '../normalize.ts';
 import { cwdKey } from '../paths.ts';
 import { agyUsage, claudeUsage, codexRateLimits, codexStep, codexUsage, tokenRecordDrift, type Usage } from '../usage/tokens.ts';
 import { contextStep, type ContextObs, type Snapshot } from '../usage/context.ts';
@@ -69,6 +69,10 @@ export function ftsPrefix(text: string, maxBytes = FTS_MAX_BYTES): string {
 }
 
 const b = (v: boolean | undefined) => (v === undefined ? null : v ? 1 : 0);
+/** A Codex thread_settings record that states an explicit service tier (D-P2-08). */
+const codexTierIn = (raw: string | undefined) => {
+  try { return typeof (JSON.parse(raw ?? '') as { payload?: { thread_settings?: { service_tier?: unknown } } }).payload?.thread_settings?.service_tier === 'string'; } catch { return false; }
+};
 
 // Prepared once per connection (§7.4 cached prepared statements).
 const cache = new WeakMap<DatabaseSync, ReturnType<typeof prepare>>();
@@ -143,23 +147,31 @@ function prepare(db: DatabaseSync) {
       WHERE session_id = ? AND source = ? AND scope = 'session' ORDER BY segment DESC LIMIT 1`),
     snapshot: db.prepare(`INSERT INTO usage_snapshots (schema_version, agent, profile_id, session_id, source, source_locator, limit_id, plan,
         credits, windows, as_of, observed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (profile_id, source, source_locator) DO NOTHING`),
-    getCall: db.prepare('SELECT sources, tool, args_event_id, result_event_id FROM tool_calls WHERE session_id = ? AND native_call_id = ?'),
-    putCall: db.prepare(`INSERT INTO tool_calls (session_id, schema_version, sources, native_call_id, tool, args_event_id, result_event_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (session_id, native_call_id) DO UPDATE SET sources = excluded.sources, tool = excluded.tool,
-        args_event_id = excluded.args_event_id, result_event_id = excluded.result_event_id`),
+    getCall: db.prepare('SELECT sources, tool, tool_source, args_event_id, result_event_id FROM tool_calls WHERE session_id = ? AND native_call_id = ?'),
+    putCall: db.prepare(`INSERT INTO tool_calls (session_id, schema_version, sources, native_call_id, tool, tool_source, args_event_id, result_event_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (session_id, native_call_id) DO UPDATE SET sources = excluded.sources, tool = excluded.tool,
+        tool_source = excluded.tool_source, args_event_id = excluded.args_event_id, result_event_id = excluded.result_event_id`),
+    // G2-2: priced request rows whose evidence changes are re-priced (with their own revision) by the next pricing pass.
+    pricedUsage: db.prepare(`SELECT u.model_id, u.uncached_input, u.cache_read, u.cache_write, u.cache_write_classes, u.output FROM usage u
+      JOIN cost_estimates e ON e.session_id = u.session_id AND e.covered_scope = 'usage:' || u.source || ':' || u.identity
+      WHERE u.session_id = ? AND u.source = ? AND u.scope = 'message' AND u.identity = ?`),
+    markDirty: db.prepare("UPDATE cost_estimates SET dirty = 1 WHERE session_id = ? AND covered_scope = ?"),
+    markSessionDirty: db.prepare("UPDATE cost_estimates SET dirty = 1 WHERE session_id = ? AND source = ?"),
   };
 }
 
-type Row = { sources: string; tool: string | null; args_event_id: number | null; result_event_id: number | null };
-/** Merges a new observation into the stored call through mergeToolCalls (the stored fields stand for every stored
- *  source), so precedence and provenance follow one rule whatever order the sources arrive in. */
+type Row = { sources: string; tool: string | null; tool_source: string | null; args_event_id: number | null; result_event_id: number | null };
+/** Merges a new observation into the stored call through mergeToolCalls. The stored tool name is attributed only to the
+ *  source that supplied it (G2-6), so precedence and provenance follow one rule whatever order the sources arrive in. */
 function putToolCall(st: ReturnType<typeof prepare>, sid: number | bigint, callId: string, o: ToolCallObservation) {
   const prev = st.getCall.get(sid, callId) as Row | undefined;
-  const fields = prev ? { ...(prev.tool !== null ? { tool: prev.tool } : {}), ...(prev.args_event_id !== null ? { argsEventId: prev.args_event_id } : {}),
-    ...(prev.result_event_id !== null ? { resultEventId: prev.result_event_id } : {}) } : {};
-  const stored: ToolCallObservation[] = prev ? (JSON.parse(prev.sources) as string[]).map((source) => ({ source, callId, ...fields })) : [];
-  const [m] = mergeToolCalls([...stored, o]);
-  st.putCall.run(sid, SCHEMA_VERSION, JSON.stringify(m!.sources), callId, m!.tool, m!.argsEventId, m!.resultEventId);
+  const ids = prev ? { ...(prev.args_event_id !== null ? { argsEventId: prev.args_event_id } : {}), ...(prev.result_event_id !== null ? { resultEventId: prev.result_event_id } : {}) } : {};
+  const stored: ToolCallObservation[] = prev ? (JSON.parse(prev.sources) as string[])
+    .map((source) => ({ source, callId, ...ids, ...(prev.tool !== null && source === prev.tool_source ? { tool: prev.tool } : {}) })) : [];
+  const all = [...stored, o];
+  const [m] = mergeToolCalls(all);
+  const toolSource = all.filter((x) => x.tool !== undefined).sort(byRank)[0]?.source ?? null;
+  st.putCall.run(sid, SCHEMA_VERSION, JSON.stringify(m!.sources), callId, m!.tool, toolSource, m!.argsEventId, m!.resultEventId);
 }
 
 /** Usage rows and rate-limit snapshots for one newly stored event (P2-T06). Claude: one row per message.id, the latest
@@ -167,10 +179,17 @@ function putToolCall(st: ReturnType<typeof prepare>, sid: number | bigint, callI
  *  advance; duplicates add nothing; a missing rate_limits reading writes no snapshot; a drifted token_usage_record is a
  *  gap row (D-P2-03), never consumption. */
 function usage(st: ReturnType<typeof prepare>, batch: Batch, sid: number | bigint, eventId: number | bigint, e: EventRow, u: UsageObs) {
-  const put = (identity: string, scope: string, segment: number | null, n: Usage | null, raw: Obj, model?: string, gap?: Obj) =>
+  type Priced = { model_id: string | null; uncached_input: number | null; cache_read: number | null; cache_write: number | null; cache_write_classes: string | null; output: number | null };
+  const put = (identity: string, scope: string, segment: number | null, n: Usage | null, raw: Obj, model?: string, gap?: Obj) => {
+    const before = scope === 'message' ? st.pricedUsage.get(sid, e.source, identity) as Priced | undefined : undefined;
+    const classes = n?.cacheWriteClasses ? JSON.stringify(n.cacheWriteClasses) : null;
     st.putUsage.run(sid, SCHEMA_VERSION, e.source, identity, scope, segment, eventId, model ?? null, n?.uncachedInput ?? null, n?.cacheRead ?? null,
-      n?.cacheWrite ?? null, n?.cacheWriteClasses ? JSON.stringify(n.cacheWriteClasses) : null, n?.output ?? null, JSON.stringify(raw),
-      JSON.stringify(gap ?? n!.completeness), e.sourceTs ?? null);
+      n?.cacheWrite ?? null, classes, n?.output ?? null, JSON.stringify(raw), JSON.stringify(gap ?? n!.completeness), e.sourceTs ?? null);
+    if (before && (before.uncached_input !== (n?.uncachedInput ?? null) || before.cache_read !== (n?.cacheRead ?? null) || before.cache_write !== (n?.cacheWrite ?? null)
+      || before.cache_write_classes !== classes || before.output !== (n?.output ?? null) || (model !== undefined && before.model_id !== model))) {
+      st.markDirty.run(sid, `usage:${e.source}:${identity}`); // G2-2: evidence changed after pricing
+    }
+  };
   if (u.kind === 'claude') put(u.messageId, 'message', null, claudeUsage(u.raw), u.raw, u.model);
   else if (u.kind === 'agy') put(u.identity, 'message', null, agyUsage(u.raw), u.raw); // per step; a rewritten step replaces it
   else if (u.kind === 'codex-record') { if (tokenRecordDrift(u.payload)) put(e.nativeId, 'turn', null, null, u.payload, undefined, { record: 'shape-drift' }); }
@@ -179,10 +198,9 @@ function usage(st: ReturnType<typeof prepare>, batch: Batch, sid: number | bigin
     if (u.total && total !== undefined) {
       const prev = st.lastSegment.get(sid, e.source) as { segment: number; total: number | null } | undefined;
       const step = codexStep(prev && prev.total !== null ? { segment: prev.segment, total: prev.total } : null, total);
-      if (step.advanced) {
-        put(`segment:${step.segment}`, 'session', step.segment, codexUsage(u.total), u.total);
-        if (u.last) put(`${step.segment}:${total}`, 'message', step.segment, codexUsage(u.last), u.last);
-      }
+      // G2-3: a new segment is stored even when its first reading is zero, so the next reading continues it.
+      if (step.advanced || (prev && step.segment !== prev.segment)) put(`segment:${step.segment}`, 'session', step.segment, codexUsage(u.total), u.total);
+      if (step.advanced && u.last) put(`${step.segment}:${total}`, 'message', step.segment, codexUsage(u.last), u.last);
     }
     if (u.rateLimits) {
       const r = codexRateLimits(u.rateLimits);
@@ -272,6 +290,7 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
         else if (e.sourceTs !== undefined) st.latestTurnModel.run(e.model.id, effort, sid, e.sourceTs);
       }
       if (e.context) context(st, sid, e, e.context);
+      if (batch.agent === 'codex' && e.kind === 'settings' && codexTierIn(e.raw)) st.markSessionDirty.run(sid, e.source); // G2-2: tier evidence arrived
       if (e.kind.endsWith('-chunk')) continue; // storage of an oversized record (EC-15), not a record: keeps EC-04's ratio
       bump(sid, 0);
       if (e.kind === 'unknown') bump(sid, 1);

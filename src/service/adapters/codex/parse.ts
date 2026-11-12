@@ -112,6 +112,8 @@ function fromPayload(type: string, p: Obj): Partial<CodexRecord> & { kind: strin
   }
 }
 
+const ACCOUNT_KEYS = ['creator_account_id', 'creator_user_id'];
+
 export function parseLine(bytes: Buffer, ctx: ParseContext): ParseResult | null {
   const raw = bytes.toString('utf8');
   if (raw.trim() === '') return null;
@@ -122,6 +124,9 @@ export function parseLine(bytes: Buffer, ctx: ParseContext): ParseResult | null 
   const payload = isObj(value.payload) ? value.payload : {};
   const ts = typeof value.timestamp === 'string' ? Date.parse(value.timestamp) : NaN;
   const fields = KNOWN_TYPES.has(type) ? fromPayload(type, payload) : { kind: 'unknown' };
+  // G2-1: account identifiers in session_meta are never stored (PRD §5.11, EC-92, D-P0-27).
+  const stored = type === 'session_meta' && ACCOUNT_KEYS.some((k) => k in payload)
+    ? JSON.stringify({ ...value, payload: Object.fromEntries(Object.entries(payload).filter(([k]) => !ACCOUNT_KEYS.includes(k))) }) : raw;
   return {
     ok: true,
     record: {
@@ -133,7 +138,7 @@ export function parseLine(bytes: Buffer, ctx: ParseContext): ParseResult | null 
       fileMtime: ctx.fileMtime,
       receivedTs: ctx.receivedTs,
       injected: false,
-      raw,
+      raw: stored,
       ...fields,
     },
   };

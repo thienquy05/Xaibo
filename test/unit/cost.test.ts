@@ -67,12 +67,15 @@ test('EC-95: qualifiers must be listed for the model; unknown or unsupported -> 
   assert.equal(priceRequest(codex(), B, {}).reason, 'unknown-service_tier');
 });
 
-test('EC-95: no rates -> unavailable, never 0; an all-zero request is exactly 0', () => {
+test('EC-95: no rates -> unavailable, never 0; an all-zero request is exactly 0 only when it is eligible (G2-7)', () => {
   const none = priceRequest(claude(), null, QA, 'unlisted');
   assert.equal(none.amountUsd, null);
   assert.equal(none.reason, 'unpriced-model');
   assert.equal(priceRequest(claude(), null, QA, null).reason, 'model-unavailable');
-  const zero = priceRequest(claude({ uncachedInput: 0, cacheRead: 0, cacheWrite: 0, cacheWriteClasses: { '5m': 0, '1h': 0 }, output: 0 }), null, {}, null);
+  const zeros = claude({ uncachedInput: 0, cacheRead: 0, cacheWrite: 0, cacheWriteClasses: { '5m': 0, '1h': 0 }, output: 0 });
+  assert.deepEqual({ ...priceRequest(zeros, null, {}, 'unlisted') }, { amountUsd: null, coverage: 'none', gaps: [], applied: null, reason: 'unpriced-model' }, 'unknown model stays unavailable');
+  assert.equal(priceRequest(zeros, A, { service_tier: 'priority', speed: 'standard' }).reason, 'unsupported-service_tier');
+  const zero = priceRequest(zeros, A, QA);
   assert.equal(zero.amountUsd, 0);
   assert.equal(zero.coverage, 'full');
 });

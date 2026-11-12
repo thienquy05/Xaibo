@@ -6,7 +6,7 @@
 // is re-evaluated under a new revision. sessionCost selects at read time: an agent-reported session estimate replaces
 // the calculated total (never added); a model filter uses only attributable requests (opaque totals never prorated).
 import type { DatabaseSync } from 'node:sqlite';
-import type { Rates } from './models.ts';
+import type { ModelList, Rates } from './models.ts';
 import { ratesFor, type PriceRates, type Prices } from './prices.ts';
 import type { Completeness } from './tokens.ts';
 
@@ -21,11 +21,12 @@ export interface RequestCost { amountUsd: number | null; coverage: 'full' | 'par
 
 export function priceRequest(u: UsageIn, r: PriceRates | null, q: Qualifiers, modelId?: string | null): RequestCost {
   const none = (reason: string): RequestCost => ({ amountUsd: null, coverage: 'none', gaps: [], applied: null, reason });
-  if ([u.uncachedInput, u.cacheRead, u.cacheWrite, u.output].every((v) => v === 0)) return { amountUsd: 0, coverage: 'full', gaps: [], applied: r?.rates ?? null, reason: null };
   if (!r) return none(modelId === null ? 'model-unavailable' : 'unpriced-model');
   const listed = r.qualifiers ?? {};
   for (const [k, v] of Object.entries(q)) if (v !== null && !listed[k]?.includes(v)) return none(`unsupported-${k}`);
   for (const k of Object.keys(listed)) if (q[k] === undefined || q[k] === null) return none(`unknown-${k}`);
+  // An eligible all-zero request costs exactly 0 at any rate (G2-7: eligibility first).
+  if ([u.uncachedInput, u.cacheRead, u.cacheWrite, u.output].every((v) => v === 0)) return { amountUsd: 0, coverage: 'full', gaps: [], applied: r.rates, reason: null };
 
   let rates = r.rates;
   if (r.tiers?.length) {
@@ -99,7 +100,26 @@ export function priceUsage(db: DatabaseSync, prices: Prices, o: { afterUsageId?:
     LEFT JOIN cost_estimates e ON e.session_id = u.session_id AND e.covered_scope = 'usage:' || u.source || ':' || u.identity
     WHERE u.scope = 'message' AND (e.id IS NULL OR (e.amount_usd IS NULL AND e.price_revision_id IS NOT ?))
       AND u.id > ?`).all(rev, o.afterUsageId ?? 0) as UsageRow[];
+  // G2-2: estimates marked dirty (their evidence changed after pricing) are re-priced with their own revision.
+  const dirty = db.prepare(`SELECT u.session_id AS sid, s.agent, u.source, u.identity, u.model_id, u.uncached_input, u.cache_read, u.cache_write,
+      u.cache_write_classes, u.output, u.raw, u.completeness, u.source_ts, (ev.subagent_native_id IS NOT NULL) AS child, e.price_revision_id AS ownRev
+    FROM cost_estimates e JOIN usage u ON u.session_id = e.session_id AND u.scope = 'message' AND 'usage:' || u.source || ':' || u.identity = e.covered_scope
+    JOIN sessions s ON s.id = u.session_id LEFT JOIN events ev ON ev.id = u.event_id
+    WHERE e.dirty = 1`).all() as (UsageRow & { ownRev: number | null })[];
+  const seen = new Set(rows.map((u) => `${u.sid}\0${u.source}\0${u.identity}`));
+  for (const d of dirty) if (!seen.has(`${d.sid}\0${d.source}\0${d.identity}`)) rows.push(d);
   if (!rows.length) return 0;
+  const revTable = db.prepare('SELECT body FROM price_revisions WHERE id = ?');
+  const tables = new Map<number, ModelList>();
+  const tableOf = (id: number | null | undefined): ModelList => {
+    if (id === null || id === undefined || id === rev) return prices.table;
+    let t = tables.get(id);
+    if (!t) {
+      const row = revTable.get(id) as { body: string } | undefined;
+      tables.set(id, t = row ? (JSON.parse(row.body) as { table: ModelList }).table : prices.table);
+    }
+    return t;
+  };
   const turnModel = db.prepare(`SELECT model_id FROM turns WHERE session_id = ? AND model_id IS NOT NULL AND started_at <= ?
     ORDER BY started_at DESC, id DESC LIMIT 1`);
   // D-P2-08: the latest explicit thread_settings service_tier at or before the request, else the session's first explicit
@@ -118,7 +138,7 @@ export function priceUsage(db: DatabaseSync, prices: Prices, o: { afterUsageId?:
       applied_rates, unavailable_reason, as_of) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (session_id, covered_scope) DO UPDATE SET amount_usd = excluded.amount_usd, basis = excluded.basis, coverage = excluded.coverage,
       price_revision_id = excluded.price_revision_id, applied_rates = excluded.applied_rates, unavailable_reason = excluded.unavailable_reason,
-      as_of = excluded.as_of WHERE cost_estimates.amount_usd IS NULL`);
+      as_of = excluded.as_of, dirty = 0 WHERE cost_estimates.amount_usd IS NULL OR cost_estimates.dirty = 1`);
   db.exec('BEGIN IMMEDIATE');
   try {
     for (const u of rows) {
@@ -132,14 +152,15 @@ export function priceUsage(db: DatabaseSync, prices: Prices, o: { afterUsageId?:
         q.service_tier = tierAt(u.sid, ts);
       }
       const completeness = (u.completeness ? JSON.parse(u.completeness) : {}) as Record<string, Completeness>;
-      const r = ratesFor(prices.table, u.agent, model);
+      const own = (u as { ownRev?: number | null }).ownRev;
+      const r = ratesFor(tableOf(own), u.agent, model);
       const c = priceRequest({
         uncachedInput: u.uncached_input, cacheRead: u.cache_read, cacheWrite: u.cache_write, output: u.output,
         cacheWriteClasses: u.cache_write_classes ? JSON.parse(u.cache_write_classes) as Record<string, number> : null,
         cacheWriteInPrompt: completeness.cacheWrite === 'reported' || completeness.cacheWrite === 'missing',
       }, r, q, model);
       put.run(u.sid, u.source, `usage:${u.source}:${u.identity}`, c.amountUsd, r?.basis ?? 'token_table',
-        JSON.stringify({ coverage: c.coverage, gaps: c.gaps, model, child: u.child === 1 }), rev, c.applied ? JSON.stringify(c.applied) : null, c.reason, ts);
+        JSON.stringify({ coverage: c.coverage, gaps: c.gaps, model, child: u.child === 1 }), own ?? rev, c.applied ? JSON.stringify(c.applied) : null, c.reason, ts);
     }
     db.exec('COMMIT');
   } catch (e) {

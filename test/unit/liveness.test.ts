@@ -57,7 +57,9 @@ test('psLookup finds this process with a matching start time; invalid or absent 
   assert.ok(me);
   assert.equal(me.pid, process.pid);
   assert.ok(Math.abs(me.startTime - (Date.now() - process.uptime() * 1000)) < 2_000);
-  assert.equal(liveness({ pid: process.pid, startTime: Date.now() - process.uptime() * 1000, executable: me.executable }, new Map([[me.pid, me]])), 'live');
+  // G2-15: compare against the start time ps itself reported (1 s resolution); a value recomputed from uptime under
+  // heavy load could drift past the 1 s tolerance and make this assertion flaky.
+  assert.equal(liveness({ pid: process.pid, startTime: me.startTime, executable: me.executable }, new Map([[me.pid, me]])), 'live');
   for (const pid of [0, -1, 1.5, Number.NaN, 2 ** 31]) assert.equal(await psLookup(pid), undefined, String(pid));
   assert.equal(await psLookup(99_999_999), undefined);
 });

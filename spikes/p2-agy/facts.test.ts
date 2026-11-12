@@ -69,3 +69,24 @@ test('no usage observed: nulls, never false', () => {
     thinkingWithinOutput: null, resultCumulativeOverConversation: null,
   });
 });
+
+// G2-12: the extractor reads only real conversation directories and regular files inside the temp profile root.
+test('containment: symlinked conversation dirs and files outside the root are never read', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, realpathSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { conversationDirs, safeLines } = await import('./facts.ts');
+  const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'xfacts-')));
+  const root = join(tmp, 'root');
+  const outside = join(tmp, 'outside');
+  mkdirSync(join(root, 'brain', 'real'), { recursive: true });
+  mkdirSync(outside, { recursive: true });
+  writeFileSync(join(outside, 'secret.jsonl'), '{"real":true}\n');
+  writeFileSync(join(root, 'brain', 'real', 'ok.jsonl'), '{"a":1}\n');
+  symlinkSync(outside, join(root, 'brain', 'linked'));
+  symlinkSync(join(outside, 'secret.jsonl'), join(root, 'brain', 'real', 'link.jsonl'));
+  assert.deepEqual(conversationDirs(root), ['real']);
+  assert.deepEqual(safeLines(root, join(root, 'brain', 'real', 'ok.jsonl')), [{ a: 1 }]);
+  assert.deepEqual(safeLines(root, join(root, 'brain', 'real', 'link.jsonl')), []);
+  assert.deepEqual(safeLines(root, join(outside, 'secret.jsonl')), []);
+});

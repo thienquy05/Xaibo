@@ -1,9 +1,9 @@
 // P2-T00 agy fact extraction over the TEMP profile only (plus the run's raw stream/hook captures in .cache).
 // Emits booleans, key sets, allowlisted values and masked file patterns; never content, IDs, paths or numbers.
 // Usage: node spikes/p2-agy/facts.ts [--out <dir>]   (default: spikes/p2-agy/evidence and spikes/p2-agy/schemas)
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, relative } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { reduce } from '../shared/reduce.ts';
 
 const PROFILE = join(homedir(), '.xaibo-spike-profiles', 'agy-a');
@@ -26,6 +26,20 @@ const pattern = (rel: string) => rel
   .replace(/\d{8}_\d{6}/g, '<ts>')
   .replace(/\/\d{8}\.jsonl$/, '/<n>.jsonl');
 const same = (a: Usage, b: Usage) => (['input_tokens', 'output_tokens', 'thinking_tokens', 'cache_read_tokens', 'total_tokens'] as const).every((k) => a[k] === b[k]);
+
+
+/** G2-12: conversation folders that are real directories (symlinks skipped). */
+export function conversationDirs(root: string): string[] {
+  try { return readdirSync(join(root, 'brain'), { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort(); } catch { return []; }
+}
+/** G2-12: JSON lines of a regular file whose realpath stays inside the root; anything else reads as empty. */
+export function safeLines(root: string, file: string): Rec[] {
+  try {
+    if (!lstatSync(file).isFile() || !realpathSync(file).startsWith(realpathSync(root) + sep)) return [];
+  } catch { return []; }
+  return lines(file);
+}
+const safeText = (file: string) => safeLines(ROOT, file).length ? readFileSync(file, 'utf8') : '';
 
 /** Token relationships over the runs of one conversation, in order (per-step usages and each run's result usage). */
 export function usageRelations(runs: { steps: Usage[]; result?: Usage }[]) {
@@ -84,14 +98,14 @@ function streamRuns() {
 
 function agyFacts() {
   const all = files(ROOT, /./).filter((f) => !/\/(builtin|cache\/marketplaces)\//.test(f));
-  const convDirs = existsSync(join(ROOT, 'brain')) ? readdirSync(join(ROOT, 'brain')) : [];
+  const convDirs = conversationDirs(ROOT);
   const logs = (id: string) => join(ROOT, 'brain', id, '.system_generated', 'logs');
-  const transcript = convDirs.flatMap((id) => lines(join(logs(id), 'transcript.jsonl')));
-  const full = convDirs.flatMap((id) => lines(join(logs(id), 'transcript_full.jsonl')));
+  const transcript = convDirs.flatMap((id) => safeLines(ROOT, join(logs(id), 'transcript.jsonl')));
+  const full = convDirs.flatMap((id) => safeLines(ROOT, join(logs(id), 'transcript_full.jsonl')));
   const chunksEqual = convDirs.every((id) => ['transcript', 'transcript_full'].every((n) => {
     const main = join(logs(id), `${n}.jsonl`);
     const parts = files(join(logs(id), 'chunks', n), /\.jsonl$/).sort();
-    return !existsSync(main) || parts.map((p) => readFileSync(p, 'utf8')).join('') === readFileSync(main, 'utf8');
+    return !existsSync(main) || parts.map(safeText).join('') === safeText(main);
   }));
   const runs = streamRuns();
   const convIds = new Set(runs.flatMap((r) => r.recs.map((x) => x.conversation_id ?? x.step_update?.conversation_id ?? x.result?.conversation_id)).filter(Boolean));
@@ -117,11 +131,11 @@ function agyFacts() {
       modelFieldPerRecord: transcript.some((r) => keyPaths(r).some((k) => /model/i.test(k))),
       thinkingTokensInTranscript: transcript.some((r) => 'thinking_tokens' in r),
       toolCallKeys: [...new Set(transcript.flatMap((r) => (Array.isArray(r.tool_calls) ? r.tool_calls.flatMap((t: Rec) => keyPaths(t)) : [])))].sort(),
-      stepIndexStrictlyIncreasing: convDirs.every((id) => lines(join(logs(id), 'transcript.jsonl')).every((r, i, a) => i === 0 || r.step_index > a[i - 1].step_index)),
+      stepIndexStrictlyIncreasing: convDirs.every((id) => safeLines(ROOT, join(logs(id), 'transcript.jsonl')).every((r, i, a) => i === 0 || r.step_index > a[i - 1].step_index)),
       // PLANNER_RESPONSE usage equals the stream's per-step usage, in order (only meaningful with one evaluated conversation).
       plannerUsageMatchesStreamSteps: ((tr, st) => (st.length ? tr.length === st.length && tr.every((r, i) => r.input_tokens === st[i]!.input_tokens
         && r.output_tokens === st[i]!.output_tokens && r.cache_read_tokens === st[i]!.cache_read_tokens) : null))(
-        [...convIds].flatMap((id) => lines(join(logs(String(id)), 'transcript.jsonl'))).filter((r) => r.type === 'PLANNER_RESPONSE'), runs.flatMap((r) => r.steps)),
+        [...convIds].flatMap((id) => safeLines(ROOT, join(logs(String(id)), 'transcript.jsonl'))).filter((r) => r.type === 'PLANNER_RESPONSE'), runs.flatMap((r) => r.steps)),
     },
     stream: {
       events: vals(runs.flatMap((r) => r.recs.map((x) => x.event))),
@@ -132,7 +146,7 @@ function agyFacts() {
       resumeKeepsConversation: runs.length > 1 ? convIds.size === 1 : null,
       usage: usageRelations(runs),
     },
-    history: historyRelations(lines(join(ROOT, 'history.jsonl')), convDirs, ((p) => (existsSync(p) ? realpathSync(p) : p))(join(import.meta.dirname, '..', '..', '.cache', 'spike-projects', 'p2-agy'))),
+    history: historyRelations(safeLines(ROOT, join(ROOT, 'history.jsonl')), convDirs, ((p) => (existsSync(p) ? realpathSync(p) : p))(join(import.meta.dirname, '..', '..', '.cache', 'spike-projects', 'p2-agy'))),
     effortKeyAnywhere: everyKey.some((k) => /effort/i.test(k)),
     hooks: {
       labelsFired: hookLabels,
@@ -158,8 +172,8 @@ if (import.meta.main) {
   const schema = (recs: { event: string; payload: unknown }[]) => Object.fromEntries(Object.entries(reduce(recs, ENUMS))
     .map(([t, v]) => [t, Object.fromEntries(Object.entries(v.keys).map(([k, s]) => [k, s.values ? { types: s.types, values: s.values } : s.types]))]));
   const ver = facts.version ?? 'unknown';
-  const convDirs = existsSync(join(ROOT, 'brain')) ? readdirSync(join(ROOT, 'brain')) : [];
-  const tr = convDirs.flatMap((id) => lines(join(ROOT, 'brain', id, '.system_generated', 'logs', 'transcript_full.jsonl')));
+  const convDirs = conversationDirs(ROOT);
+  const tr = convDirs.flatMap((id) => safeLines(ROOT, join(ROOT, 'brain', id, '.system_generated', 'logs', 'transcript_full.jsonl')));
   writeFileSync(join(sc, `agy-${ver}.transcript.schema.json`), `${JSON.stringify(schema(tr.map((r) => ({ event: String(r.type ?? 'unknown'), payload: r }))), null, 2)}\n`);
   writeFileSync(join(sc, `agy-${ver}.stream.schema.json`), `${JSON.stringify(schema(streamRuns().flatMap((r) => r.recs).map((r) => ({ event: String(r.event ?? 'unknown'), payload: r }))), null, 2)}\n`);
   writeFileSync(join(sc, `agy-${ver}.hooks.schema.json`), `${JSON.stringify(schema(lines(join(RAW, 'agy.jsonl')).map((h) => ({ event: String(h.event).replace(/-(project|global)$/, ''), payload: h.payload }))), null, 2)}\n`);

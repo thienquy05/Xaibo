@@ -17,7 +17,7 @@ import { scan, transcriptOf, type AgyFile } from './discover.ts';
 import { parseLine, type AgyRecord } from './parse.ts';
 
 const HISTORY_LINE_MAX = 64 * 1024;
-type Known = { path: string; dev: number; ino: number; size: number; mtime: number; offset: number; headHash: string; status: string; sid: string };
+type Known = { path: string; dev: number; ino: number; size: number; mtime: number; offset: number; headHash: string; status: string; sid: string; avail: number };
 
 export class AgyAdapter extends TailAdapter<AgyFile, AgyRecord> {
   readonly #cwd = new Map<string, string>();
@@ -30,16 +30,19 @@ export class AgyAdapter extends TailAdapter<AgyFile, AgyRecord> {
   }
 
   async #reconcile(home: string, listed: Set<string>): Promise<void> {
-    const known = this.o.db.prepare(`SELECT f.path, f.dev, f.ino, f.size, f.mtime, f.offset, f.head_hash AS headHash, f.status, s.native_session_id AS sid
-      FROM source_files f JOIN sessions s ON s.id = f.session_id WHERE f.profile_id = ? AND f.kind = 'agy-transcript'`).all(this.o.profileId) as Known[];
+    const known = this.o.db.prepare(`SELECT f.path, f.dev, f.ino, f.size, f.mtime, f.offset, f.head_hash AS headHash, f.status, s.native_session_id AS sid,
+      s.native_available AS avail FROM source_files f JOIN sessions s ON s.id = f.session_id WHERE f.profile_id = ? AND f.kind = 'agy-transcript'`).all(this.o.profileId) as Known[];
     for (const k of known) {
       const present = listed.has(k.path);
-      if (present === (k.status !== 'gone')) continue;
+      const gone = k.status === 'gone';
+      // G2-4: a gone transcript whose session is still available is reassessed, so a later folder deletion is seen.
+      if (present ? !gone : gone && k.avail === 0) continue;
       let session: SessionUpsert = { nativeSessionId: k.sid, nativeAvailable: true }; // restored
       const quarantine: QuarantineRow[] = [];
       if (!present) {
         const missing = async (p: string) => { try { await lstat(p); return false; } catch (e) { return (e as NodeJS.ErrnoException).code === 'ENOENT'; } };
         if (await missing(path.join(home, 'brain', k.sid))) session = { nativeSessionId: k.sid, nativeAvailable: false };
+        else if (gone) continue; // already recorded as a missing transcript; nothing new
         else if (await missing(transcriptOf(home, k.sid))) {
           session = { nativeSessionId: k.sid };
           quarantine.push({ nativeSessionId: k.sid, byteOffset: -1, reason: 'transcript-missing', receivedTs: this.o.now() });

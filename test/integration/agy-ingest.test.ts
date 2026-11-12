@@ -85,9 +85,15 @@ test('EC-80: a rewritten, shorter transcript converges on the new projection; hi
     { identity: 'step:4', un: 200, cr: 1100, cw: null, out: 25 }, // consumed before the rewind: kept, never negative
   ]);
   integrity(p.db);
-  const snapshot = events(p.db);
-  await p.run();
-  assert.deepEqual(events(p.db), snapshot, 'a replay changes nothing');
+  // G2-9: a real replay from byte 0 (checkpoint reset), so every record is applied again in source order.
+  const snapshot = { events: events(p.db), usage: usage(p.db), delta: fts(p.db, 'delta'), bravo: fts(p.db, 'bravo') };
+  p.db.prepare("UPDATE source_files SET offset = 0, size = 0, mtime = 0, head_hash = '' WHERE kind = 'agy-transcript'").run();
+  const a = new AgyAdapter({ db: p.db, writer: new Writer(p.db), profileId: 'pa', root: p.root, intervalMs: 60_000 });
+  await a.start();
+  a.stop();
+  assert.equal(a.reads(p.transcript), 1, 'the transcript was read again');
+  assert.deepEqual({ events: events(p.db), usage: usage(p.db), delta: fts(p.db, 'delta'), bravo: fts(p.db, 'bravo') }, snapshot, 'a replay from 0 changes nothing');
+  integrity(p.db);
 });
 
 test('EC-80: a lower step appended after higher ones supersedes in source order; unknown types are counted', async () => {

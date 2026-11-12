@@ -7,7 +7,7 @@ export interface ToolCall { callId: string | null; sources: string[]; tool: stri
 // Field precedence follows the status precedence (hooks before native files before OTel); unknown sources last.
 const RANK = ['hook', 'transcript', 'rollout', 'otel'];
 const rank = (s: string) => { const i = RANK.indexOf(s); return i < 0 ? RANK.length : i; };
-const byRank = (a: ToolCallObservation, b: ToolCallObservation) => rank(a.source) - rank(b.source) || (a.tool ?? '').localeCompare(b.tool ?? '');
+export const byRank = (a: ToolCallObservation, b: ToolCallObservation) => rank(a.source) - rank(b.source) || (a.tool ?? '').localeCompare(b.tool ?? '');
 
 function merge(callId: string | null, group: ToolCallObservation[]): ToolCall {
   const g = [...group].sort(byRank);

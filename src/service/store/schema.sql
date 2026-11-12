@@ -26,9 +26,10 @@ CREATE TABLE cost_estimates (
   price_revision_id INTEGER REFERENCES price_revisions(id),
   applied_rates TEXT,
   unavailable_reason TEXT,
-  as_of INTEGER,
+  as_of INTEGER, dirty INTEGER NOT NULL DEFAULT 0,
   UNIQUE (session_id, covered_scope)
 );
+CREATE INDEX cost_estimates_dirty ON cost_estimates (session_id) WHERE dirty = 1;
 CREATE TABLE cwd_history (
   id INTEGER PRIMARY KEY,
   session_id INTEGER NOT NULL REFERENCES sessions(id),
@@ -68,6 +69,7 @@ CREATE TABLE events (
   raw TEXT, revision_status TEXT NOT NULL DEFAULT 'current' CHECK (revision_status IN ('current', 'superseded', 'rewound')),
   UNIQUE (session_id, source, native_id)
 );
+CREATE INDEX events_current_seq ON events (session_id, source, source_seq) WHERE revision_status = 'current';
 CREATE INDEX events_seq ON events (session_id, source_seq);
 CREATE TABLE kv (
   key TEXT PRIMARY KEY,
@@ -164,7 +166,7 @@ CREATE TABLE tool_calls (
   args_event_id INTEGER REFERENCES events(id),
   result_event_id INTEGER REFERENCES events(id),
   approval_state TEXT,
-  duration_ms INTEGER,
+  duration_ms INTEGER, tool_source TEXT,
   UNIQUE (session_id, native_call_id)
 );
 CREATE TABLE turns (

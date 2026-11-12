@@ -41,13 +41,15 @@ export async function m3Full(corpus: string, runs: number) {
     const done = await waitForEvent(l.dataDir, 'backfill_done', 30 * 60_000);
     if (done !== null) {
       const atEof = () => query<number>(l.dataDir, "SELECT count(*) FROM source_files WHERE status = 'ok' AND offset = size");
-      let reached = atEof() >= summary.files ? done : null;
+      const notAtEof = () => query<number>(l.dataDir, "SELECT count(*) FROM source_files WHERE NOT (status = 'ok' AND offset = size)");
+      const complete = () => atEof() === summary.files && notAtEof() === 0; // G2-13: exactly the expected files, none incomplete
+      let reached = complete() ? done : null;
       for (const end = Date.now() + 60_000; reached === null && Date.now() < end;) {
         await sleep(100);
-        if (atEof() >= summary.files) reached = Date.now();
+        if (complete()) reached = Date.now();
       }
       importMs = reached === null ? null : reached - l.created;
-      checkpoints = { expected: summary.files, atEof: atEof(), notAtEof: query<number>(l.dataDir, "SELECT count(*) FROM source_files WHERE NOT (status = 'ok' AND offset = size)") };
+      checkpoints = { expected: summary.files, atEof: atEof(), notAtEof: notAtEof() };
     }
     longFrames.push(...await longFramesOf(l));
     db = {
