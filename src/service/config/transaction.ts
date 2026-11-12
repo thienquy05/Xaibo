@@ -45,6 +45,8 @@ export interface ManifestEntry {
   postHash: string; owned: Owned[]; created: string[]; backup: string | null; at: string;
   /** Set by a structural revert that left conflicts: the backup no longer matches what may be restored. */
   partial?: true;
+  /** codex-hooks (P3-T06): the last observed fingerprint of Xaibo's declarations and the time it was first seen. */
+  seen?: { hash: string; since: number };
 }
 export interface RevertResult { result: 'restored' | 'removed' | 'structural' | 'unchanged'; conflicts: Array<{ pointer: string }> }
 
@@ -223,13 +225,16 @@ function remove(doc: unknown, segs: string[]) {
 }
 
 /** Undo owned values on a copy: unchanged ones are removed (or their replaced foreign value restored), changed ones
- * are conflicts; then Xaibo-created containers are dropped if empty. */
-function strip(doc: Record<string, unknown>, owned: Owned[], created: string[]) {
+ * are conflicts; then Xaibo-created containers are dropped if empty. `lastOnly` (codex-hooks, S5-C5): Codex keys hook
+ * trust by array position, so an owned element with anything after it is a conflict too, never shifted out. */
+function strip(doc: Record<string, unknown>, owned: Owned[], created: string[], lastOnly = false) {
   const out = structuredClone(doc);
   const conflicts: Array<{ pointer: string }> = [];
   for (const o of [...owned].reverse()) {
     const segs = segments(o.pointer);
-    if (!isDeepStrictEqual(get(out, segs), o.value)) { conflicts.push({ pointer: o.pointer }); continue; }
+    const parent = get(out, segs.slice(0, -1));
+    if (!isDeepStrictEqual(get(out, segs), o.value)
+      || (lastOnly && Array.isArray(parent) && Number(segs.at(-1)) !== parent.length - 1)) { conflicts.push({ pointer: o.pointer }); continue; }
     if ('old' in o) (get(out, segs.slice(0, -1)) as Record<string, unknown>)[segs.at(-1)!] = o.old;
     else remove(out, segs);
   }
@@ -346,7 +351,7 @@ function selfCheck(file: string, p: Plan): boolean {
   try {
     const cur = readFile(file);
     if (!cur) return false;
-    const stripped = strip(decode(cur.bytes).doc, p.owned, p.created);
+    const stripped = strip(decode(cur.bytes).doc, p.owned, p.created, p.route === 'codex-hooks');
     return !stripped.conflicts.length && isDeepStrictEqual(stripped.doc, p.base);
   } catch {
     return false;
@@ -429,7 +434,7 @@ export function revert(entry: ManifestEntry, o: { dataDir: string; bounds: Bound
     return done('restored');
   }
   const { doc, style } = decode(cur.bytes);
-  const { doc: stripped, conflicts } = strip(doc, entry.owned, entry.created);
+  const { doc: stripped, conflicts } = strip(doc, entry.owned, entry.created, entry.route === 'codex-hooks');
   const text = encode(stripped, style);
   if (!isDeepStrictEqual(stripped, doc)) {
     atomicWrite(entry.target, text, cur.mode, unchangedSince);

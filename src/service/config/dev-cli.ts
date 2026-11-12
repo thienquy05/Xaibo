@@ -4,6 +4,8 @@
 //   claude-plugin (P3-T05): apply|revert also take --claude <exe> --profile-key <key> [--forwarder <file>]; apply deploys
 //   the shim and forwarder into <dataDir>/integrations/bin, then installs through `claude plugin` with CLAUDE_CONFIG_DIR =
 //   <dir>/.claude and HOME = <dir>
+//   codex-hooks (P3-T06): plan|apply with --profile-key <key> [--forwarder <file>] instead of --change append the Xaibo
+//   hook groups to <dir>/.codex/hooks.json and print the guided trust steps; revert is the generic one
 // <dir> is a profile HOME. Real agent roots (~/.claude, ~/.codex, ~/.gemini, ~/.claude.json under both $HOME and the
 // passwd home, plus CLAUDE_CONFIG_DIR/CODEX_HOME/GEMINI_CLI_HOME from the login shell and this process) are refused,
 // with no override; a login environment that cannot be read refuses too. Writes need a typed `yes` on a TTY; `--yes`
@@ -14,9 +16,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { deployShim, installPlugin, MARKETPLACE, PLUGIN_REF, uninstallPlugin } from '../adapters/claude/setup.ts';
+import { codexHookOps, codexTrustSteps, installCodexHooks, shimPath } from '../adapters/codex/setup.ts';
 import { readLoginEnv } from '../catalog/env.ts';
 import {
-  apply, ConfigError, plan, readManifest, resolveTarget, revert, validateOps, within, type Bounds, type Route,
+  apply, ConfigError, plan, readManifest, resolveTarget, revert, validateOps, within, type Bounds, type Plan, type Route,
 } from './transaction.ts';
 
 const TARGETS: Record<string, { file: string; route: Route | null }> = {
@@ -116,6 +119,7 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
   if (a.target === 'claude-plugin') return plugin(a, dataDir!, profile, bounds);
+  if (a.target === 'codex-hooks' && a.profileKey && a.cmd !== 'revert') return codex(a, dataDir!, profile, bounds, target);
 
   if (a.cmd === 'revert') {
     const entry = readManifest(dataDir!).filter((e) => e.target === target).at(-1);
@@ -128,16 +132,34 @@ async function main(argv: string[]): Promise<number> {
   }
 
   if (!a.change) refuse('--change <ops.json> is required for plan and apply');
-  const p = plan(target, spec.route!, readOps(a.change!), bounds);
-  console.log(`${a.target}: ${p.existed ? 'edit' : 'create'} ${p.target}`);
-  for (const d of p.diff) {
-    console.log(`+ ${d.pointer} = ${show(d.new)}`);
-    if (d.replaced) console.log(`  replaces a ${d.replaced.type} (sha256 ${d.replaced.sha256}…)`);
-  }
+  const p = printPlan(a.target, plan(target, spec.route!, readOps(a.change!), bounds));
   if (a.cmd === 'plan') return 0;
   await confirm(a.yes, profile, `write ${a.target}`);
   const entry = apply(p, { dataDir: dataDir!, bounds });
   console.log(`${a.target}: applied ${entry.id}`);
+  return 0;
+}
+
+function printPlan(name: string, p: Plan): Plan {
+  console.log(`${name}: ${p.existed ? 'edit' : 'create'} ${p.target}`);
+  for (const d of p.diff) {
+    console.log(`+ ${d.pointer} = ${show(d.new)}`);
+    if (d.replaced) console.log(`  replaces a ${d.replaced.type} (sha256 ${d.replaced.sha256}…)`);
+  }
+  return p;
+}
+
+/** P3-T06: the Codex hook groups for --profile-key, appended to <dir>/.codex/hooks.json; revert is the generic one.
+ *  Codex runs them only after the owner approves them in Codex's own review, so apply prints the guided steps. */
+async function codex(a: ReturnType<typeof parseArgs>, dataDir: string, profile: string, bounds: Bounds, target: string): Promise<number> {
+  printPlan(a.target, plan(target, 'codex-hooks', codexHookOps(shimPath(dataDir), a.profileKey!), bounds));
+  if (a.cmd === 'plan') return 0;
+  await confirm(a.yes, profile, 'write codex-hooks');
+  deployShim(dataDir, { hook: path.join(REPO, 'src', 'forwarder', 'xaibo-hook'), forwarder: real(a.forwarder ?? path.join(REPO, '.cache', 'sea', 'xaibo-forwarder')) });
+  const codexHome = path.join(profile, '.codex');
+  const entry = installCodexHooks({ dataDir, codexHome, profileKey: a.profileKey!, bounds });
+  console.log(`codex-hooks: applied ${entry.id}; installed, awaiting trust`);
+  codexTrustSteps(codexHome, shimPath(dataDir), a.profileKey!).forEach((s, i) => console.log(`${i + 1}. ${s}`));
   return 0;
 }
 
@@ -169,7 +191,7 @@ const MESSAGES: Partial<Record<ConfigError['code'], string>> = {
   'outside-root': 'refused: the target resolves outside the profile',
   'parent-missing': 'refused: the config directory does not exist in this profile',
   changed: 'aborted: the file changed since it was read; nothing written',
-  duplicate: 'refused: the Xaibo plugin is already installed in this profile',
+  duplicate: 'refused: Xaibo hooks are already installed in this profile',
   exclusive: 'refused: this profile already has the other Claude hook route (plugin and settings fallback are exclusive)',
   'not-installed': 'nothing to uninstall: no Xaibo plugin recorded for this profile',
   cli: 'failed: a `claude plugin` step did not succeed; rolled back',
