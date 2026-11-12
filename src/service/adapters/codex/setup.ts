@@ -8,11 +8,11 @@
 // install, or after the last change to Xaibo's groups (Codex re-reviews a changed declaration, S5-C4). Rollout ingest
 // is independent of all this. Bounds come from the caller (dev CLI: disposable profiles only, real roots denied).
 import { createHash } from 'node:crypto';
-import { lstatSync, readFileSync, statSync } from 'node:fs';
+import { lstatSync, statSync } from 'node:fs';
 import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import {
-  apply, ConfigError, plan, readManifest, recordEntry, resolveTarget, revert, type Bounds, type ManifestEntry, type Op, type RevertResult,
+  apply, ConfigError, plan, readFile, readManifest, recordEntry, resolveTarget, revert, type Bounds, type ManifestEntry, type Op, type RevertResult,
 } from '../../config/transaction.ts';
 import { CODEX_ASYNC_EVENTS, CODEX_HOOK_EVENTS } from './hooks.ts';
 
@@ -73,10 +73,13 @@ export function codexTrustSteps(codexHome: string, shim: string, profileKey: str
 }
 
 const fingerprint = (values: unknown[]) => createHash('sha256').update(JSON.stringify(values)).digest('hex');
-/** What now stands at Xaibo's recorded positions (a shifted group changes it too); null when unreadable. */
+/** What now stands at Xaibo's recorded positions (a shifted group changes it too); null when unreadable. Read bounded,
+ *  never through a symlink or from a FIFO: the coverage poll runs this every 5 s (P3-T10 security review M2). */
 function declared(file: string, entry: ManifestEntry): string | null {
   try {
-    const doc: unknown = JSON.parse(readFileSync(file, 'utf8'));
+    const f = readFile(file);
+    if (!f) return null;
+    const doc: unknown = JSON.parse(f.bytes.toString('utf8'));
     return fingerprint(entry.owned.map((x) => x.pointer.slice(1).split('/')
       .reduce<unknown>((n, k) => (n !== null && typeof n === 'object' && Object.hasOwn(n, k) ? (n as Record<string, unknown>)[k] : undefined), doc) ?? null));
   } catch {

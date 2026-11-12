@@ -3,10 +3,11 @@
 // are counted; an invalid reply rejects its request, so the caller can recover. A service restart brings a new port
 // and a new client; replies owed on the old one never arrive.
 import { accept, IPC_VERSION, parsePortMessage } from '../shared/ipc.ts';
-import type { AgentStatus, Cursor, Page, PortRequest, SessionRow } from '../shared/ipc.ts';
+import type { AgentStatus, Banner, Cursor, Page, PortRequest, SessionRow } from '../shared/ipc.ts';
 
 export interface PortLike { onmessage: ((e: { data: unknown }) => void) | null; postMessage(m: unknown): void; close(): void }
-export interface Pushes { sessions(rows: SessionRow[]): void; agents(agents: AgentStatus[] | null): void }
+/** delta: the perf-trace id of a sessions push (P3-T10), present only under XAIBO_PERF_TRACE=1. */
+export interface Pushes { sessions(rows: SessionRow[], delta?: number): void; agents(agents: AgentStatus[] | null): void; coverage?(banners: Banner[]): void }
 
 export function createClient(port: PortLike, push: Pushes) {
   let nextId = 1;
@@ -15,7 +16,9 @@ export function createClient(port: PortLike, push: Pushes) {
     if (m.type === 'page') {
       pending.get(m.id)?.resolve({ rows: m.rows, next: m.next });
       pending.delete(m.id);
-    } else if (m.type === 'sessions') push.sessions(m.rows);
+    } else if (m.type === 'sessions') {
+      if (m.delta === undefined) push.sessions(m.rows); else push.sessions(m.rows, m.delta);
+    } else if (m.type === 'coverage') push.coverage?.(m.banners);
     else push.agents(m.agents);
   });
   port.onmessage = (e) => {

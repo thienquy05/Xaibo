@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CODEX_HOOK_EVENTS } from '../../src/service/adapters/codex/hooks.ts';
@@ -194,4 +194,18 @@ test('dev CLI: codex-hooks --profile-key plans, installs with steps, reverts byt
   const r = cli(['revert', '--yes']);
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(readFileSync(join(h.codexHome, 'hooks.json')), before);
+});
+
+// P3-T10 security review M2: the coverage poll runs codexHookStatus every 5 s, so the declarations are read bounded:
+// a hooks.json that became a symlink is not followed (unreadable: awaiting trust again), never trusted through the link.
+test('a symlinked hooks.json is not followed: unreadable, back to awaiting trust', async () => {
+  const h = await sandbox();
+  installCodexHooks(h.o);
+  await h.intake.deliver(envelope({ agent: 'codex', received_ts: Date.now() + 1000 }));
+  assert.equal(codexHookStatus(h.o).state, 'connected');
+  const moved = join(h.base, 'elsewhere.json');
+  copyFileSync(join(h.codexHome, 'hooks.json'), moved);
+  rmSync(join(h.codexHome, 'hooks.json'));
+  symlinkSync(moved, join(h.codexHome, 'hooks.json'));
+  assert.equal(codexHookStatus(h.o).state, 'awaiting-trust');
 });

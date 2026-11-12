@@ -33,6 +33,8 @@ export interface LaunchOptions {
   /** The test makes an attempt on purpose: teardown then requires that a detector fired. */
   expectAttempt?: boolean;
   serviceKills?: number;
+  /** Extra environment for the app (e.g. XAIBO_PERF_TRACE=1, P3-T10). */
+  env?: Record<string, string>;
 }
 export interface Exit { code: number | null; signal: NodeJS.Signals | null }
 export interface Run { proc: ChildProcess; app?: ElectronApplication; dataDir: string; netlog: string; gone: Gone[]; exit: Promise<Exit>; opts: LaunchOptions }
@@ -99,6 +101,7 @@ export const test = base.extend<{ xaibo: Xaibo }>({
         HOME: home, PATH: `${bin}:/usr/bin:/bin`, SHELL: shell, TMPDIR: path.join(root, 'tmp'), LANG: 'en_US.UTF-8',
         CLAUDE_CONFIG_DIR: path.join(home, '.claude'), CODEX_HOME: path.join(home, '.codex'), GEMINI_CLI_HOME: home,
         XAIBO_DATA_DIR: dataDir, XAIBO_AUDIT_PROFILE: o.logOnly ? logOnlyProfile : PROFILE, XAIBO_AUDIT_BIN: o.unpackaged ? ELECTRON : PACKAGED,
+        ...o.env,
       };
       return { dataDir, netlog, env, args: [...(o.unpackaged ? [REPO] : []), `--log-net-log=${netlog}`] };
     };

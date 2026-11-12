@@ -82,7 +82,7 @@ test('EC-05/EC-50: fixtures and audit-only kinds land in one list with badge and
 
 test('origin text: badge, raw entry point marked unverified (visible form), or a dash', () => {
   const r = (x: Partial<SessionRow>): SessionRow => ({ id: 1, agent: 'claude', entrypoint: null, origin: null, interactive: null, model: 'Model unavailable', cwd: null,
-    title: null, lastActivity: null, drift: false, compressed: false, quarantined: 0, ...x });
+    title: null, lastActivity: null, drift: false, compressed: false, quarantined: 0, live: null, contextPct: null, costUsd: null, costCoverage: 'unavailable', ...x });
   assert.equal(originText(r({})), '—');
   assert.equal(originText(r({ entrypoint: 'a\u001b[31m‮b' })), `${visible('a\u001b[31m‮b')} (unverified)`);
   assert.equal(originText(r({ entrypoint: 'cli', origin: 'CLI', interactive: true })), 'CLI');

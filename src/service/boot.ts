@@ -4,13 +4,16 @@
 // a manual executable path ("Set path…") that re-detects that agent. P3-T04: once profiles are synced, the hook socket
 // listens and the spool replays, before the file backfill; a full disk is logged and its hook-only gap written on recovery.
 import path from 'node:path';
-import type { AgentStatus } from '../shared/ipc.ts';
+import { OUTCOMES, REASONS, RULES, type AgentStatus, type Banner, type LiveStatus } from '../shared/ipc.ts';
 import type { Logger } from '../shared/log.ts';
 import { AgyAdapter } from './adapters/agy/index.ts';
 import { ClaudeAdapter } from './adapters/claude/index.ts';
 import { CodexAdapter } from './adapters/codex/index.ts';
 import type { Ingester } from './adapters/tail-adapter.ts';
-import { detectAgent, manualPath, manualRoots, profileRoots, setManualPath, syncProfiles, type Detection } from './catalog/detect.ts';
+import { detectAgent, manualPath, manualRoots, profileRoots, setManualPath, syncProfiles, type Detection, type Profile } from './catalog/detect.ts';
+import { coverageBanners } from './status/coverage.ts';
+import { createEngine, type StatusEngine } from './status/engine.ts';
+import { fileObservations } from './status/feed.ts';
 import { readLoginEnv, type LoginEnv } from './catalog/env.ts';
 import { loadCatalog, type Catalog, type SessionKind } from './catalog/validate.ts';
 import type { ModelEntry } from './usage/models.ts';
@@ -23,6 +26,8 @@ import { Writer, type Batch } from './store/writer.ts';
 
 export interface BootOptions {
   dataDir: string; home: string; shell?: string | undefined; catalog?: Catalog; intervalMs?: number; log?: Logger;
+  /** Status clock (tests); Date.now by default. */
+  now?: () => number;
   onCommit?: (batch: Batch) => void;
   onAgents?: (agents: AgentStatus[]) => void;
 }
@@ -42,11 +47,21 @@ export interface Service {
   prices(): Prices | null;
   /** Re-reads <dataDir>/models.override.json (the reloadPrices command). */
   reloadPrices(): Prices | null;
+  /** P3-T10: live status of a session by agent and native id; null without evidence (or a read-only store). */
+  status(agent: string, nativeSessionId: string, profileId?: string): LiveStatus | null;
+  /** Session keys (`agent\0profile\0native id`) whose status changed with time alone since the last call (settle,
+   *  heuristic wait, R1/R5); called on a timer. */
+  ticking(): string[];
+  /** Current coverage banners (hook-only gaps, disk full, hooks blocked, awaiting trust). */
+  coverage(): Banner[];
   /** Validates and stores a manual executable path, then re-detects that agent; false if refused. */
   setPath(agent: string, file: string): Promise<boolean>;
   wake(): Promise<void>;
   stop(): void;
 }
+
+/** The turn-settle interval (PRD §6.2/§6.3, Q8 default; a setting with the Settings screen after Gate D, Q3-14). */
+const SETTLE_MS = 4000;
 
 export async function boot(o: BootOptions): Promise<Service> {
   const store = await openStore({ file: path.join(o.dataDir, 'xaibo.db'), backupDir: path.join(o.dataDir, 'backups') });
@@ -64,8 +79,49 @@ export async function boot(o: BootOptions): Promise<Service> {
     } catch (e) { o.log?.log('pricing_failed', { error: errorCode(e) }); }
   };
   let hooks: Hooks | undefined;
+  // P3-T10: the status engine (P3-T08/T09) over durable hook deliveries and live-window file records.
+  const clock = o.now ?? Date.now;
+  const engine: StatusEngine | null = readOnly ? null : createEngine({ db, now: clock, settleMs: SETTLE_MS, log: (l) => o.log?.log(l.split(' ')[0]!) });
+  const read = (agent: string, sid: string): LiveStatus | null => {
+    const s = engine?.status(agent, sid);
+    if (!s) return null;
+    const known = <T extends string>(xs: readonly T[], x: string | null): T | null => (x !== null && (xs as readonly string[]).includes(x) ? x as T : null);
+    return { lifecycle: s.lifecycle, confidence: s.confidence, health: s.health, reason: known(REASONS, s.reason), outcome: known(OUTCOMES, s.outcome),
+      findings: s.findings.filter((r): r is LiveStatus['findings'][number] => (RULES as readonly string[]).includes(r)) };
+  };
+  // Sessions whose status can change with time alone (busy: settle, R1/R5; heuristic waits), with the last status seen.
+  const watched = new Map<string, { key: string; agent: string; sid: string; last: string }>();
+  const watch = (agent: string, profileId: string, sid: string) => {
+    watched.set(`${agent}\0${sid}`, { key: `${agent}\0${profileId}\0${sid}`, agent, sid, last: JSON.stringify(read(agent, sid)) });
+  };
+  const timeBound = (s: LiveStatus | null) => !!s && (s.lifecycle === 'busy' || s.confidence === 'heuristic');
+  // Rows are read through here: a time-bound session not yet watched is watched now, so one reloaded from the store at
+  // start (or after a restart) still settles, turns into a heuristic wait and gets R1/R5 without new evidence (review M3).
+  const status = (agent: string, sid: string, profileId?: string): LiveStatus | null => {
+    const s = read(agent, sid);
+    if (profileId !== undefined && timeBound(s) && !watched.has(`${agent}\0${sid}`)) {
+      watched.set(`${agent}\0${sid}`, { key: `${agent}\0${profileId}\0${sid}`, agent, sid, last: JSON.stringify(s) });
+    }
+    return s;
+  };
+  const ticking = () => {
+    const out: string[] = [];
+    for (const [k, w] of watched) {
+      const s = read(w.agent, w.sid);
+      const now = JSON.stringify(s);
+      if (now !== w.last) { w.last = now; out.push(w.key); }
+      if (!timeBound(s)) watched.delete(k); // new evidence or a row read re-adds it
+    }
+    return out;
+  };
+  const feed = (b: Batch) => {
+    if (!engine) return;
+    try {
+      for (const x of fileObservations(b, clock())) { engine.ingest(x); if (x.source === 'file') watch(b.agent, b.profileId, x.sessionId); }
+    } catch (e) { o.log?.log('status_feed_failed', { error: errorCode(e) }); }
+  };
   const writer = new Writer(db, {
-    onCommit: (b) => { price(); o.onCommit?.(b); },
+    onCommit: (b) => { price(); feed(b); o.onCommit?.(b); },
     onDiskFull: (full) => { o.log?.log('disk_full', { full }); if (!full) hooks?.intake.recovered(); },
   });
   const detections: Detection[] = [];
@@ -78,6 +134,7 @@ export async function boot(o: BootOptions): Promise<Service> {
   };
   reloadPrices();
   const adapters: Ingester[] = [];
+  let profiles: Profile[] = [];
   let stopped = false;
   let catalog: Catalog | undefined;
   let env: LoginEnv = {};
@@ -106,8 +163,15 @@ export async function boot(o: BootOptions): Promise<Service> {
     }
     if (stopped || readOnly) return;
     const manual = Object.fromEntries(catalog.agents.map((a) => [a.id, manualRoots(db, a.id)]));
-    const profiles = syncProfiles(db, profileRoots(catalog, env, o.home, manual));
-    hooks = await startHooks({ dataDir: o.dataDir, db, writer, ...(o.log ? { log: o.log } : {}) });
+    profiles = syncProfiles(db, profileRoots(catalog, env, o.home, manual));
+    hooks = await startHooks({
+      dataDir: o.dataDir, db, writer, ...(o.log ? { log: o.log } : {}),
+      publish: (e, durable) => {
+        // only attributed deliveries (a synced profile of the same agent) drive status (security review L1)
+        if (!durable || !engine || e.session_id === null || !profiles.some((p) => p.id === e.profile_key && p.agent === e.agent)) return;
+        try { engine.ingest({ source: 'hook', envelope: e }); watch(e.agent, e.profile_key, e.session_id); } catch (err) { o.log?.log('status_feed_failed', { error: errorCode(err) }); }
+      },
+    });
     if (stopped) { void hooks.close(); return; }
     const Adapters: Record<string, typeof ClaudeAdapter | typeof CodexAdapter | typeof AgyAdapter> = { claude: ClaudeAdapter, codex: CodexAdapter, agy: AgyAdapter };
     for (const p of profiles.filter((x) => Adapters[x.agent])) {
@@ -127,6 +191,12 @@ export async function boot(o: BootOptions): Promise<Service> {
     models: () => prices?.table.models ?? [],
     prices: () => prices,
     reloadPrices,
+    status,
+    ticking,
+    coverage: () => {
+      if (readOnly || !db.isOpen) return [];
+      try { return coverageBanners({ db, dataDir: o.dataDir, profiles, diskFull: writer.diskFull, now: clock() }); } catch { return []; }
+    },
     async setPath(agent, file) {
       await Promise.race([detection, done.catch(() => undefined)]); // detection, not the whole backfill
       const entry = catalog?.agents.find((a) => a.id === agent);
@@ -141,6 +211,7 @@ export async function boot(o: BootOptions): Promise<Service> {
       stopped = true;
       void hooks?.close();
       for (const a of adapters) a.stop();
+      engine?.close();
       writer.flush();
       db.close();
     },

@@ -3,6 +3,7 @@
 // (P1-T06): restarted with backoff, a fresh port brokered to the renderer after every start and every page load.
 import { app, BrowserWindow, dialog, ipcMain, Menu, MessageChannelMain, powerMonitor, utilityProcess } from 'electron';
 import type { MessagePortMain, Tray } from 'electron';
+import { appendFileSync } from 'node:fs';
 import { release } from 'node:os';
 import path from 'node:path';
 import { installCrashPolicy } from '../shared/crash.ts';
@@ -85,6 +86,14 @@ function start(dataDir: string) {
     }));
     log.log('diagnostics_saved');
   };
+  // Perf trace (P3-T10, XAIBO_PERF_TRACE=1 only): the renderer acks a painted delta id; stamped first, so the time is an
+  // upper bound that includes this one IPC hop. Only from our window, only a positive integer, IDs only.
+  const trace = process.env.XAIBO_PERF_TRACE === '1' ? path.join(app.getPath('logs'), 'perf-trace-main.jsonl') : null;
+  ipcMain.on('paint-ack', (e, delta: unknown) => {
+    const t = process.hrtime.bigint();
+    if (!trace || !win || e.sender !== win.webContents || !Number.isSafeInteger(delta) || (delta as number) <= 0) return;
+    appendFileSync(trace, `${JSON.stringify({ ev: 'paint', delta, t: t.toString() })}\n`);
+  });
   // "Set path…" (P1-T08/T12): only from our window, only an agent id; the user picks the file, the service validates it.
   ipcMain.on('set-agent-path', (e, agent: unknown) => {
     if (!win || e.sender !== win.webContents || typeof agent !== 'string' || !AGENT_ID.test(agent)) return;

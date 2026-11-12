@@ -64,14 +64,43 @@ export interface SessionRow {
   /** "<display name> · <effort>", the raw id, or "Model unavailable" (P2-T08). */
   model: string;
   lastActivity: number | null; drift: boolean; compressed: boolean; quarantined: number;
+  /** P3-T10: the status engine's view; null when it has no evidence for the session. */
+  live: LiveStatus | null;
+  /** Latest context generation's percentage (0–100), null when unavailable. */
+  contextPct: number | null;
+  /** Session ~$ estimate (Phase 2); null with coverage 'unavailable'. */
+  costUsd: number | null; costCoverage: CostCoverage;
 }
+export const LIFECYCLES = ['idle', 'busy', 'waiting-for-permission', 'needs-input', 'error', 'ended', 'unknown'] as const;
+export const REASONS = ['Finishing…', 'Background work', 'Probably waiting'] as const;
+export const OUTCOMES = ['interrupted', 'denied', 'declined', 'cancelled'] as const;
+export const RULES = ['R1', 'R2', 'R3', 'R4', 'R5'] as const;
+const CONFIDENCES = ['confirmed', 'inferred', 'heuristic'] as const;
+const HEALTHS = ['connected', 'stale', 'detached'] as const;
+const COSTS = ['full', 'partial', 'uncertain', 'unavailable'] as const;
+export type CostCoverage = typeof COSTS[number];
+export interface LiveStatus {
+  lifecycle: typeof LIFECYCLES[number]; confidence: typeof CONFIDENCES[number]; health: typeof HEALTHS[number];
+  reason: typeof REASONS[number] | null; outcome: typeof OUTCOMES[number] | null; findings: typeof RULES[number][];
+}
+export const GAP_REASONS = ['spool-overflow', 'spool-saturated', 'spool-torn', 'disk-full'] as const;
+/** Service coverage banners (P3-T10; EC-12, EC-44, EC-49, EC-25). Agents are catalog ids; the renderer names them. */
+export type Banner =
+  | { kind: 'hook-gap'; reason: typeof GAP_REASONS[number]; agent: string | null; count: number | null; from: number | null; to: number | null }
+  | { kind: 'disk-full' }
+  | { kind: 'hooks-blocked'; agent: string; state: 'blocked' | 'unknown' }
+  | { kind: 'awaiting-trust'; agent: string; steps: string[] };
+export const MAX_BANNERS = 64;
+const MAX_STEPS = 16;
 export interface Page { rows: SessionRow[]; next: Cursor | null }
 export interface AgentStatus { agent: string; name: string; state: 'detected' | 'not-detected'; version: string | null }
 export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Cursor | null; limit: number };
 export type PortMessage =
   | { v: 1; type: 'page'; id: number; rows: SessionRow[]; next: Cursor | null }
-  | { v: 1; type: 'sessions'; rows: SessionRow[] } // coalesced deltas: current rows of changed sessions
-  | { v: 1; type: 'agents'; agents: AgentStatus[] | null }; // null while detection runs
+  // coalesced deltas: current rows of changed sessions; delta only with XAIBO_PERF_TRACE=1 (the renderer acks its paint)
+  | { v: 1; type: 'sessions'; rows: SessionRow[]; delta?: number }
+  | { v: 1; type: 'agents'; agents: AgentStatus[] | null } // null while detection runs
+  | { v: 1; type: 'coverage'; banners: Banner[] };
 
 function parseCursor(x: unknown): Cursor | null | undefined { // undefined = invalid
   if (x === null) return null;
@@ -86,7 +115,40 @@ function parseRow(x: unknown): SessionRow | null {
   if (!count(r.id) || !text(r.agent, 64) || !textOrNull(r.entrypoint) || !textOrNull(r.cwd) || !textOrNull(r.title)) return null;
   if (!(r.origin === null || text(r.origin, 64)) || !boolOrNull(r.interactive) || !text(r.model)) return null;
   if (!timeOrNull(r.lastActivity) || typeof r.drift !== 'boolean' || typeof r.compressed !== 'boolean' || !count(r.quarantined)) return null;
-  return { id: r.id, agent: r.agent, entrypoint: r.entrypoint, origin: r.origin, interactive: r.interactive, model: r.model, cwd: r.cwd, title: r.title, lastActivity: r.lastActivity, drift: r.drift, compressed: r.compressed, quarantined: r.quarantined };
+  const live = r.live === null ? null : parseLive(r.live);
+  if (live === undefined || !(r.contextPct === null || (Number.isFinite(r.contextPct) && (r.contextPct as number) >= 0 && (r.contextPct as number) <= 100))) return null;
+  if (!(r.costUsd === null || (Number.isFinite(r.costUsd) && (r.costUsd as number) >= 0)) || !oneOf(COSTS, r.costCoverage)) return null;
+  return { id: r.id, agent: r.agent, entrypoint: r.entrypoint, origin: r.origin, interactive: r.interactive, model: r.model, cwd: r.cwd, title: r.title, lastActivity: r.lastActivity, drift: r.drift, compressed: r.compressed, quarantined: r.quarantined,
+    live, contextPct: r.contextPct as number | null, costUsd: r.costUsd as number | null, costCoverage: r.costCoverage };
+}
+
+function parseLive(x: unknown): LiveStatus | undefined { // undefined = invalid
+  if (typeof x !== 'object' || x === null || Array.isArray(x)) return undefined;
+  const l = x as Msg;
+  if (!oneOf(LIFECYCLES, l.lifecycle) || !oneOf(CONFIDENCES, l.confidence) || !oneOf(HEALTHS, l.health)) return undefined;
+  if (!(l.reason === null || oneOf(REASONS, l.reason)) || !(l.outcome === null || oneOf(OUTCOMES, l.outcome))) return undefined;
+  const f = l.findings;
+  if (!Array.isArray(f) || !f.every((r) => oneOf(RULES, r)) || new Set(f).size !== f.length) return undefined;
+  return { lifecycle: l.lifecycle, confidence: l.confidence, health: l.health, reason: l.reason, outcome: l.outcome, findings: [...f] as LiveStatus['findings'] };
+}
+
+const agentOk = (x: unknown): x is string => text(x, 32) && AGENT_ID.test(x);
+function parseBanner(x: unknown): Banner | null {
+  if (typeof x !== 'object' || x === null || Array.isArray(x)) return null;
+  const b = x as Msg;
+  switch (b.kind) {
+    case 'hook-gap':
+      if (!oneOf(GAP_REASONS, b.reason) || !(b.agent === null || agentOk(b.agent)) || !(b.count === null || count(b.count))) return null;
+      return timeOrNull(b.from) && timeOrNull(b.to) ? { kind: 'hook-gap', reason: b.reason, agent: b.agent, count: b.count, from: b.from, to: b.to } : null;
+    case 'disk-full': return { kind: 'disk-full' };
+    case 'hooks-blocked': return agentOk(b.agent) && oneOf(['blocked', 'unknown'] as const, b.state) ? { kind: 'hooks-blocked', agent: b.agent, state: b.state } : null;
+    case 'awaiting-trust': {
+      const s = b.steps;
+      if (!agentOk(b.agent) || !Array.isArray(s) || s.length > MAX_STEPS || !s.every((t) => text(t, 4096))) return null;
+      return { kind: 'awaiting-trust', agent: b.agent, steps: [...s] as string[] };
+    }
+    default: return null;
+  }
 }
 
 function parseRows(x: unknown): SessionRow[] | null {
@@ -119,7 +181,14 @@ export function parsePortMessage(x: unknown): PortMessage | null {
   }
   if (m.type === 'sessions') {
     const rows = parseRows(m.rows);
-    return rows ? { v: 1, type: 'sessions', rows } : null;
+    if (!rows) return null;
+    if (m.delta === undefined) return { v: 1, type: 'sessions', rows };
+    return Number.isSafeInteger(m.delta) && (m.delta as number) > 0 ? { v: 1, type: 'sessions', rows, delta: m.delta as number } : null;
+  }
+  if (m.type === 'coverage') {
+    if (!Array.isArray(m.banners) || m.banners.length > MAX_BANNERS) return null;
+    const banners = m.banners.map(parseBanner);
+    return banners.every((b) => b !== null) ? { v: 1, type: 'coverage', banners: banners as Banner[] } : null;
   }
   if (m.type === 'agents') {
     if (m.agents === null) return { v: 1, type: 'agents', agents: null };

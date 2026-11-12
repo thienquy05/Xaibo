@@ -93,7 +93,7 @@ function exists(p: string): boolean {
 interface FileState { bytes: Buffer; dev: number; ino: number; mode: number }
 
 /** null = absent. Never follows a symlink, never blocks on a FIFO, bounded, own uid only. */
-function readFile(file: string): FileState | null {
+export function readFile(file: string): FileState | null {
   let fd: number;
   try {
     fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
