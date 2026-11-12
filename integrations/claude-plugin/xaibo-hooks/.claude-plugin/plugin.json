@@ -1,0 +1,1 @@
+{ "name": "xaibo-hooks", "version": "1.0.0", "description": "Hooks-only: forwards Claude Code hook events to the local Xaibo service; prints nothing" }

@@ -16,14 +16,16 @@ import {
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 
-export type Route = 'claude-settings-fallback' | 'claude-tee' | 'codex-hooks' | 'agy-hooks';
+export type Route = 'claude-plugin' | 'claude-settings-fallback' | 'claude-tee' | 'codex-hooks' | 'agy-hooks';
 export type Op = { op: 'set' | 'append'; pointer: string; value: unknown };
 /** Realpaths: every target must resolve inside `root` and outside every `denied` root. */
 export interface Bounds { root: string; denied: string[] }
 export type Code =
   | 'invalid-json' | 'bom' | 'not-object' | 'symlink' | 'not-regular' | 'too-large' | 'unreadable' | 'not-owner'
   | 'parent-missing' | 'outside-root' | 'denied-root' | 'pointer' | 'ops' | 'forbidden-hook-type' | 'async-required'
-  | 'changed' | 'self-check' | 'private-dir' | 'manifest' | 'backup';
+  | 'changed' | 'self-check' | 'private-dir' | 'manifest' | 'backup'
+  // P3-T05 (claude-plugin route, EC-09): one install per profile; plugin and settings fallback exclude each other.
+  | 'duplicate' | 'exclusive' | 'not-installed' | 'cli' | 'shim-missing' | 'route';
 export class ConfigError extends Error {
   readonly code: Code;
   constructor(code: Code) {
@@ -150,7 +152,7 @@ function removeFile(file: string) {
 }
 
 /** <dataDir>/integrations and its backups/: 0700, own uid, never a symlink. */
-function privateDirs(dataDir: string) {
+export function privateDirs(dataDir: string) {
   const integrations = path.join(dataDir, 'integrations');
   const backups = path.join(integrations, 'backups');
   for (const d of [integrations, backups]) {
@@ -316,6 +318,20 @@ export function readManifest(dataDir: string): ManifestEntry[] {
   return m['entries'] as ManifestEntry[];
 }
 
+/** Adds or replaces (by id) an entry written outside apply(): the claude-plugin route (P3-T05). */
+export function recordEntry(dataDir: string, entry: ManifestEntry): void {
+  writeManifest(dataDir, [...readManifest(dataDir).filter((e) => e.id !== entry.id), entry]);
+}
+export function dropEntry(dataDir: string, id: string): void {
+  writeManifest(dataDir, readManifest(dataDir).filter((e) => e.id !== id));
+}
+
+/** EC-09 (S4-C4): plugin and settings fallback each deliver every event, so one profile has at most one of them. */
+export function assertExclusive(entries: ManifestEntry[], target: string, route: Route): void {
+  const other = route === 'claude-plugin' ? 'claude-settings-fallback' : route === 'claude-settings-fallback' ? 'claude-plugin' : null;
+  if (other && entries.some((e) => e.target === target && e.route === other)) fail('exclusive');
+}
+
 function writeManifest(dataDir: string, entries: ManifestEntry[]) {
   const file = privateDirs(dataDir).manifest;
   atomicWrite(file, `${JSON.stringify({ v: MANIFEST_VERSION, entries }, null, 2)}\n`, 0o600);
@@ -342,6 +358,8 @@ export interface ApplyOptions { dataDir: string; bounds: Bounds; afterRename?: (
 export function apply(p: Plan, o: ApplyOptions): ManifestEntry {
   if (resolveTarget(p.target, o.bounds) !== p.target) fail('changed');
   const dirs = privateDirs(o.dataDir);
+  if (p.route === 'claude-plugin') fail('route'); // installs through `claude plugin` (adapters/claude/setup.ts)
+  assertExclusive(readManifest(o.dataDir), p.target, p.route);
   const before = readFile(p.target);
   if (!sameFile(p, before)) fail('changed');
   const backup = before ? `${randomUUID()}.bak` : null;
@@ -384,6 +402,7 @@ function checkEntry(e: ManifestEntry) {
 }
 
 export function revert(entry: ManifestEntry, o: { dataDir: string; bounds: Bounds }): RevertResult {
+  if (entry.route === 'claude-plugin') fail('route'); // uninstalls through `claude plugin`
   checkEntry(entry);
   if (resolveTarget(entry.target, o.bounds) !== entry.target) fail('outside-root');
   const dirs = privateDirs(o.dataDir);

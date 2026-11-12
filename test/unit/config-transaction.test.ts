@@ -272,7 +272,7 @@ test('dev CLI: apply/revert/status in a temp profile with --yes; foreign entries
   assert.deepEqual(readFileSync(target), before);
 });
 
-test('dev CLI refuses real roots, login-shell overrides, failed login env, escapes, unconfirmed writes and claude-plugin writes', () => {
+test('dev CLI refuses real roots, login-shell overrides, failed login env, escapes, unconfirmed writes and incomplete claude-plugin installs', () => {
   const { base, root, dataDir } = sandbox();
   const change = join(base, 'ops.json');
   writeFileSync(change, JSON.stringify([{ op: 'set', pointer: '/statusLine', value: { type: 'command', command: '/tmp/xaibo-fixture/t' } }]));
@@ -313,7 +313,7 @@ test('dev CLI refuses real roots, login-shell overrides, failed login env, escap
     spawnSync('/bin/rm', ['-r', repoProfile]);
   }
 
-  const plugin = cli(args(root, 'claude-plugin'), env);
+  const plugin = cli(args(root, 'claude-plugin'), env); // P3-T05: installs only with --claude and --profile-key
   assert.notEqual(plugin.status, 0);
-  assert.match(plugin.stderr, /status only/);
+  assert.match(plugin.stderr, /--claude <exe> and --profile-key <key>/);
 });
