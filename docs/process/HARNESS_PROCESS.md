@@ -46,6 +46,8 @@ All documents live in `docs/`. A subfolder is used when several files share a pu
 
 When harness-os governance is active for the project, each unit of work follows its order: **Constitution → Specification → Test Suite → Generate Code → Code Review**, run through `run_workflow` (`new-feature`, `hotfix` or `security-change`). The server advances a stage only when it observes evidence (for example a test run observed failing).
 
+Test runs: the hook runs a matched test command once, records its exit code, then blocks the agent's identical Bash call and returns the result (exit code, last 80 lines, full log path). That block is the test result, not an error; read the log path rather than re-running. Only the configured command runs, plus arguments that are `--` or existing paths; anything piped or chained after it (`| tail`, `&& build`, `2>&1 | …`) and any other flag is dropped. Never pipe or chain the test command; run other steps as separate calls. `request_review` requires an independent, fresh-context reviewer subagent (Opus for high/critical risk, Sonnet for medium) given only the diff, spec and test results.
+
 ## 4. Before turning harness-os governance on for a project
 
 `harness init` is a one-time, per-project step. It is not "just configuration", so decide it deliberately:
@@ -54,7 +56,7 @@ When harness-os governance is active for the project, each unit of work follows 
 - For Python it gates every `**/*.py` file: writes are blocked until a validated spec covers the file and its test has been seen failing.
 - Its gate daemon can only see the folder mounted as `HARNESS_PROJECTS_ROOT`, so the project must live under it.
 - Its runbook uses the author's own home paths (`~/...`) and a WSL2 + Docker setup; adapt them to your machine.
-- Risk is classified by keywords in the request text and paths. Words such as `order`, `token`, `session` or `credential` can raise the level and trigger a human approval prompt even in harmless work; expect to see this and read the rationale rather than ignoring it.
+- Risk is classified by keywords in the request text and paths. Words such as `order`, `token`, `session` or `credential` can raise the level and trigger a human approval prompt even in harmless work; expect to see this and read the rationale rather than ignoring it. Keywords match whole words only (`border` is not `order`); a project can tune them with `risk` in `harness.config.json` (`ignoreKeywords`, `extraCritical`, `extraHigh`), applied only while the config verifies, and only with owner approval.
 - Config files are integrity-checked; if you edit one deliberately, run `harness reconcile-config <project>`.
 
 Ask the owner before running it, and say plainly that it commits.

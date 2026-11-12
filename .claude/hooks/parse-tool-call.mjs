@@ -4,7 +4,7 @@
 // one place, not copy-pasted into two shell scripts. Reads the hook JSON
 // payload from stdin, prints `KEY=value` lines the calling shell script
 // `eval`s directly.
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 let raw = '';
@@ -48,10 +48,19 @@ function matchConfiguredTestCommand(projectPath, command) {
     const config = JSON.parse(raw);
     const testCommands = Array.isArray(config.testCommands) ? config.testCommands : [];
     const trimmed = command.trim();
-    const matched = testCommands.some(
-      (entry) => typeof entry.command === 'string' && (trimmed === entry.command || trimmed.startsWith(`${entry.command} `)),
+    const entry = testCommands.find(
+      (e) => typeof e.command === 'string' && (trimmed === e.command || trimmed.startsWith(`${e.command} `)),
     );
-    return matched ? command : '';
+    if (!entry) return '';
+    // Only what harness-os can trust is run and recorded. Anything after the first pipe, list, redirect,
+    // substitution or quote is dropped (`npm test | tail` hid failures, `npm test | grep -q x` faked a
+    // RED). Of the arguments before it, only `--` and existing paths are kept: a missing path or an
+    // unknown flag makes a passing suite exit non-zero (a fake RED), and flags such as -u or
+    // --outputFile write files outside the gate. Otherwise the configured command runs alone.
+    const head = trimmed.slice(entry.command.length).split(/(?:\s\d+)?[|&;<>()$`'"\\\n]/)[0]; // `2>&1`: the fd belongs to the redirect
+    const args = head.split(/\s+/).filter(Boolean);
+    const plain = args.every((a) => a === '--' || (!a.startsWith('-') && existsSync(join(projectPath, a))));
+    return plain && args.length > 0 ? `${entry.command} ${args.join(' ')}` : entry.command;
   } catch {
     return '';
   }
