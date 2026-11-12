@@ -10,7 +10,9 @@ import { errorCode } from '../../shared/crash.ts';
 import type { Envelope } from '../../shared/hook-protocol.ts';
 import type { Logger } from '../../shared/log.ts';
 import { isDiskFull, type Batch, type Writer } from '../store/writer.ts';
-import { SocketError, startSocketServer, type IntakeResult, type SocketServer } from './socket.ts';
+import { openRegistry } from './registrations.ts';
+import { createReportIntake } from './report.ts';
+import { SocketError, startSocketServer, type IntakeResult, type SocketOptions, type SocketServer } from './socket.ts';
 import { replaySpool, type ReplayResult } from './spool-replay.ts';
 
 export interface IntakeOptions {
@@ -92,7 +94,12 @@ export function createIntake(o: IntakeOptions): Intake {
   return { deliver, recovered };
 }
 
-export interface HooksOptions extends IntakeOptions { dataDir: string; log?: Logger }
+export interface HooksOptions extends IntakeOptions {
+  dataDir: string;
+  log?: Logger;
+  /** P3-T13b: live projection of report deliveries (durable false before the commit, true after it). */
+  publishReport?: (e: Envelope, durable: boolean) => void;
+}
 export interface Hooks { intake: Intake; socket: SocketServer | null; replay: Promise<ReplayResult>; close(): Promise<void> }
 
 /** Service start (and each (re)listen): listen first, so hooks fired meanwhile are acked instead of spooling behind the
@@ -100,9 +107,16 @@ export interface Hooks { intake: Intake; socket: SocketServer | null; replay: Pr
  *  the replay still runs. */
 export async function startHooks(o: HooksOptions): Promise<Hooks> {
   const intake = createIntake(o);
+  let reports: SocketOptions['reports'];
+  try { // a chunk dir that is not ours disables report intake only; hooks still run
+    reports = { registry: openRegistry(o.dataDir), intake: createReportIntake({ db: o.db, writer: o.writer, dataDir: o.dataDir,
+      ...(o.now ? { now: o.now } : {}), ...(o.publishReport ? { publish: o.publishReport } : {}) }) };
+  } catch (e) {
+    o.log?.log('report_intake_failed', { error: errorCode(e) });
+  }
   let socket: SocketServer | null = null;
   try {
-    socket = await startSocketServer({ dataDir: o.dataDir, onEnvelope: intake.deliver, ...(o.log ? { log: o.log } : {}) });
+    socket = await startSocketServer({ dataDir: o.dataDir, onEnvelope: intake.deliver, ...(o.log ? { log: o.log } : {}), ...(reports ? { reports } : {}) });
   } catch (e) {
     o.log?.log('hook_socket_failed', { error: e instanceof SocketError ? e.code : errorCode(e) });
   }

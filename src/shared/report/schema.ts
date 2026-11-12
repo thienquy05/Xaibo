@@ -20,7 +20,8 @@ const KEYS = new Set([...REQUIRED, ...Object.keys(OPTIONAL), 'model']);
 const EVENT = /^[a-z][a-z0-9_]{0,31}(?:\.[a-z][a-z0-9_]{0,31}){0,3}$/;
 
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
-const str = (x: unknown, max: number): x is string => typeof x === 'string' && x.length > 0 && x.length <= max;
+// Well-formed only (P3-T13b, security review 872): JSON can carry lone surrogates, which would collide once stored as UTF-8.
+const str = (x: unknown, max: number): x is string => typeof x === 'string' && x.length > 0 && x.length <= max && x.isWellFormed();
 const count = (x: unknown, min = 0) => Number.isSafeInteger(x) && (x as number) >= min;
 
 export function parseReport(x: unknown): ReportParse {
@@ -41,7 +42,7 @@ export function parseReport(x: unknown): ReportParse {
   if (x.event === 'content.upsert') {
     if (!('item_id' in x)) return bad('item_id');
     const p = x.payload;
-    if (!count(p.revision, 1) || !str(p.role, 64) || !str(p.kind, 64) || typeof p.content !== 'string' || !count(p.chunk_index) || typeof p.final !== 'boolean') return bad('content');
+    if (!count(p.revision, 1) || !str(p.role, 64) || !str(p.kind, 64) || typeof p.content !== 'string' || !p.content.isWellFormed() || !count(p.chunk_index) || typeof p.final !== 'boolean') return bad('content');
   }
   return { ok: true, event: x as unknown as ReportEvent };
 }

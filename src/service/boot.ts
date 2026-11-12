@@ -179,6 +179,10 @@ export async function boot(o: BootOptions): Promise<Service> {
         if (!durable || !engine || e.session_id === null || !profiles.some((p) => p.id === e.profile_key && p.agent === e.agent)) return;
         try { engine.ingest({ source: 'hook', envelope: e }); watch(e.agent, e.profile_key, e.session_id); } catch (err) { o.log?.log('status_feed_failed', { error: errorCode(err) }); }
       },
+      publishReport: (e, durable) => { // the same rule for report deliveries: identity comes from the registration (P3-T13b)
+        if (!durable || !engine || e.session_id === null || !profiles.some((p) => p.id === e.profile_key && p.agent === e.agent)) return;
+        try { engine.ingest({ source: 'report', envelope: e }); } catch (err) { o.log?.log('status_feed_failed', { error: errorCode(err) }); }
+      },
     });
     if (stopped) { void hooks.close(); return; }
     const Adapters: Record<string, typeof ClaudeAdapter | typeof CodexAdapter | typeof AgyAdapter> = { claude: ClaudeAdapter, codex: CodexAdapter, agy: AgyAdapter };

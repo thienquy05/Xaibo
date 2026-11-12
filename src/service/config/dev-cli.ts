@@ -11,6 +11,9 @@
 // with no override; a login environment that cannot be read refuses too. Writes need a typed `yes` on a TTY; `--yes`
 // is accepted only for profiles strictly below the temp dir or <repo>/.cache/profiles/. The printed diff shows Xaibo
 // values only (replaced foreign values as type + hash). No renderer Connect IPC until Phase 6.
+//   P3-T13b report registrations: register --agent <id> --profile-key <key> [--yes] | revoke --id <uuid> [--yes]
+//   register prints the registration id and its token once (only the token's hash is stored, <dataDir>/registrations.json);
+//   --yes is accepted only for a data dir strictly below the temp dir. Revoking cuts the producer's open connections.
 import { closeSync, constants, fstatSync, openSync, readSync, realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,6 +21,7 @@ import { createInterface } from 'node:readline/promises';
 import { deployShim, installPlugin, MARKETPLACE, PLUGIN_REF, uninstallPlugin } from '../adapters/claude/setup.ts';
 import { codexHookOps, codexTrustSteps, installCodexHooks, shimPath } from '../adapters/codex/setup.ts';
 import { readLoginEnv } from '../catalog/env.ts';
+import { addRegistration, RegistrationError, removeRegistration } from '../receivers/registrations.ts';
 import {
   apply, ConfigError, plan, readManifest, resolveTarget, revert, validateOps, within, type Bounds, type Plan, type Route,
 } from './transaction.ts';
@@ -76,9 +80,9 @@ function yesAllowed(profile: string): boolean {
   return (below(tmp) && !within(real(os.userInfo().homedir), tmp)) || below(real(path.join(REPO, '.cache', 'profiles')));
 }
 
-async function confirm(yes: boolean, profile: string, what: string) {
+async function confirm(yes: boolean, profile: string, what: string, allowed = yesAllowed(profile)) {
   if (yes) {
-    if (!yesAllowed(profile)) refuse('refused: --yes is accepted only for profiles under the temp dir or .cache/profiles/; confirm on a TTY instead');
+    if (!allowed) refuse('refused: --yes is accepted only for disposable locations (temp dir, .cache/profiles/); confirm on a TTY instead');
     return;
   }
   if (!process.stdin.isTTY || !process.stdout.isTTY) refuse('refused: confirmation needs a TTY (type yes) or --yes for a disposable profile');
@@ -103,7 +107,41 @@ function readOps(file: string) {
 
 const show = (v: unknown) => JSON.stringify(v);
 
+/** P3-T13b: approve or revoke a report producer. --yes only for a data dir strictly below the temp dir (tests). */
+async function registration(argv: string[]): Promise<number> {
+  const [cmd, ...rest] = argv;
+  const flags: Record<string, string | true> = {};
+  for (let i = 0; i < rest.length; i++) {
+    const k = rest[i]!;
+    if (k === '--yes') flags['yes'] = true;
+    else if (['--agent', '--profile-key', '--id'].includes(k) && rest[i + 1] !== undefined) flags[k.slice(2)] = rest[++i]!;
+    else refuse(`unknown argument: ${k}`);
+  }
+  const dataDir = process.env['XAIBO_DATA_DIR'];
+  if (!dataDir || !path.isAbsolute(dataDir)) refuse('XAIBO_DATA_DIR must be an absolute path');
+  const tmp = real(os.tmpdir());
+  const dir = real(dataDir!);
+  const disposable = dir !== tmp && within(dir, tmp) && !within(real(os.userInfo().homedir), tmp);
+  const yes = flags['yes'] === true;
+  if (cmd === 'revoke') {
+    if (typeof flags['id'] !== 'string') refuse('usage: dev-cli.ts revoke --id <registration> [--yes]');
+    await confirm(yes, dir, `revoke report registration ${flags['id'] as string}`, disposable);
+    if (!removeRegistration(dataDir!, flags['id'] as string)) refuse('no such registration');
+    console.log(`revoked ${flags['id'] as string}`);
+    return 0;
+  }
+  const agent = flags['agent'], key = flags['profile-key'];
+  if (typeof agent !== 'string' || typeof key !== 'string') refuse('usage: dev-cli.ts register --agent <id> --profile-key <key> [--yes]');
+  await confirm(yes, dir, `register a report producer for agent ${agent as string}, profile ${key as string}`, disposable);
+  const { registration: r, token } = addRegistration(dataDir!, { agent: agent as string, profileKey: key as string });
+  console.log(`registered ${r.id} agent=${r.agent} profile=${r.profile_key}`);
+  console.log(`token: ${token}`);
+  console.log('The token is shown once; store it in a private (0600) file of the producer, never in argv or env.');
+  return 0;
+}
+
 async function main(argv: string[]): Promise<number> {
+  if (argv[0] === 'register' || argv[0] === 'revoke') return registration(argv);
   const a = parseArgs(argv);
   const dataDir = process.env['XAIBO_DATA_DIR'];
   if (!dataDir || !path.isAbsolute(dataDir)) refuse('XAIBO_DATA_DIR must be an absolute path');
@@ -203,6 +241,7 @@ if (import.meta.main) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (e: unknown) => {
     if (e instanceof UsageError) console.error(e.message);
     else if (e instanceof ConfigError) console.error(MESSAGES[e.code] ?? e.message);
+    else if (e instanceof RegistrationError) console.error(`refused: ${e.code} registration (agent ids are lowercase, profile keys [A-Za-z0-9._-])`);
     else console.error('failed:', (e as NodeJS.ErrnoException).code ?? 'error');
     process.exitCode = 1;
   });

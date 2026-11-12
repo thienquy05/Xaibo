@@ -53,6 +53,14 @@ export interface Batch {
   sessions: SessionUpsert[]; events: EventRow[]; quarantine?: QuarantineRow[]; subagents?: SubagentLink[];
   /** P3-T04 (EC-09): the hook delivery this batch commits; a delivery_id already stored commits nothing else. */
   delivery?: HookDelivery;
+  /** P3-T13b (§5.10): the report delivery this batch commits; a (registration, delivery_id) already stored commits nothing else. */
+  report?: ReportDelivery;
+}
+export interface ReportDelivery {
+  registrationId: string; deliveryId: string; agent: string; profileKey: string; nativeSessionId: string; event: string;
+  producerId: string; producerSeq: number; receivedTs: number; committedTs: number; unattributed: 'unknown-profile' | null;
+  /** The content.upsert item this delivery advanced; a settled (complete or incomplete) item is never changed. */
+  content?: { itemId: string; revision: number; role: string; kind: string; state: 'pending' | 'complete' | 'incomplete'; chunks: number; bytes: number; text: string | null };
 }
 export interface HookDelivery {
   deliveryId: string; agent: string; profileKey: string; nativeSessionId: string | null; event: string;
@@ -113,6 +121,12 @@ function prepare(db: DatabaseSync) {
     insertFts: db.prepare('INSERT INTO event_fts (rowid, content) VALUES (?, ?)'),
     delivery: db.prepare(`INSERT INTO hook_delivery (delivery_id, agent, profile_key, native_session_id, event, received_ts, committed_ts, unattributed)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (delivery_id) DO NOTHING RETURNING delivery_id`),
+    report: db.prepare(`INSERT INTO report_delivery (registration_id, delivery_id, agent, profile_key, native_session_id, event, producer_id, producer_seq,
+        received_ts, committed_ts, unattributed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING delivery_id`),
+    reportContent: db.prepare(`INSERT INTO report_content (registration_id, native_session_id, item_id, revision, role, kind, state, chunks, bytes, content, updated_ts)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT DO UPDATE SET state = excluded.state, chunks = excluded.chunks, bytes = excluded.bytes, content = excluded.content,
+        updated_ts = excluded.updated_ts WHERE report_content.state = 'pending'`),
     deleteFts: db.prepare("INSERT INTO event_fts (event_fts, rowid, content) VALUES ('delete', ?, ?)"),
     supersede: db.prepare(`UPDATE events SET revision_status = CASE WHEN source_seq = ? THEN 'superseded' ELSE 'rewound' END
       WHERE session_id = ? AND source = ? AND source_seq >= ? AND revision_status = 'current' AND native_id != ? RETURNING id, content`),
@@ -243,6 +257,13 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
     if (d && !st.delivery.get(d.deliveryId, d.agent, d.profileKey, d.nativeSessionId, d.event, d.receivedTs, d.committedTs, d.unattributed)) {
       db.exec('COMMIT'); // already stored (spool replay of an acked delivery, or a retry)
       return;
+    }
+    const r = batch.report;
+    if (r) {
+      if (!st.report.get(r.registrationId, r.deliveryId, r.agent, r.profileKey, r.nativeSessionId, r.event, r.producerId, r.producerSeq, r.receivedTs,
+        r.committedTs, r.unattributed)) { db.exec('COMMIT'); return; }
+      const c = r.content;
+      if (c) st.reportContent.run(r.registrationId, r.nativeSessionId, c.itemId, c.revision, c.role, c.kind, c.state, c.chunks, c.bytes, c.text, r.committedTs);
     }
     const ids = new Map<string, number | bigint>();
     for (const s of batch.sessions) {

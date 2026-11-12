@@ -5,14 +5,21 @@
 // Every connection must open with a hello; any bad frame, version, shape, token or a deadline miss (reset only by whole
 // frames) is answered with a fixed code and the connection is closed, before intake sees anything. Logs carry codes
 // only, at most one line per second. Durable ack and dedup are P3-T04 (onEnvelope).
+// Report producers (P3-T13b, SEC2, Q3-9, security review 872) open with their registration's own hello instead; the
+// connection is then bound to that registration (at most 8 per registration), frames are at most 256 KiB, run through
+// one round-robin scheduler across registrations (1,000 frames / 16 MiB queued per registration, 128 MiB in all), and a
+// frame of a revoked registration cuts its connection. A frame intake rejects is acked rejected and the connection stays.
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { chmodSync, closeSync, constants, fchmodSync, fsyncSync, lstatSync, mkdirSync, openSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import type { Logger } from '../../shared/log.ts';
 import {
-  createDecoder, encodeFrame, FrameError, parseEnvelope, parseHello, PROTOCOL_VERSION, type Ack, type Envelope,
+  createDecoder, encodeFrame, FrameError, MAX_FRAME, MAX_REPORT_FRAME, parseEnvelope, parseHello, parseRegistrationHello, PROTOCOL_VERSION,
+  type Ack, type Envelope,
 } from '../../shared/hook-protocol.ts';
+import type { Registration, Registry } from './registrations.ts';
+import type { ReportIntake } from './report.ts';
 
 export class SocketError extends Error {
   readonly code: 'path-too-long' | 'in-use' | 'run-dir' | 'listen';
@@ -30,6 +37,8 @@ export interface SocketOptions {
   deadlineMs?: number;
   maxConnections?: number;
   log?: Logger;
+  /** P3-T13b: report producers authenticated by their own registration. */
+  reports?: { registry: Registry; intake: ReportIntake };
 }
 export interface SocketServer { path: string; tokenFile: string; close(): Promise<void> }
 
@@ -44,6 +53,57 @@ const REJECT_GRACE_MS = 1_000;
 const PROBE_MS = 500;
 const LOG_INTERVAL_MS = 1_000;
 const TOKEN_BYTES = 32;
+const PER_REGISTRATION_CONNECTIONS = 8;
+const MAX_UNACKED = 1000; // report frames awaiting their ack on one connection (review L6: a client that never reads acks)
+// ponytail: bytes are serialized frame sizes; the parsed objects cost a few times that in heap (review L8).
+export const REPORT_QUEUE = { frames: 1000, bytes: 16 << 20, total: 128 << 20 };
+const CLOSED: IntakeResult = { status: 'rejected', code: 'closed' };
+
+export interface Scheduler {
+  /** Queues a job for `key`; null when that key or the whole queue is at its cap. */
+  submit(key: string, bytes: number, run: () => Promise<IntakeResult>): Promise<IntakeResult> | null;
+}
+
+/** Q3-9 fair scheduling: one job at a time, one per key per round; frames count while queued or running. */
+export function createScheduler(limits = REPORT_QUEUE): Scheduler {
+  interface Job { bytes: number; run: () => Promise<IntakeResult>; resolve: (r: IntakeResult) => void }
+  const keys = new Map<string, { jobs: Job[]; n: number; bytes: number }>();
+  let total = 0;
+  let running = false;
+  const pump = async () => {
+    if (running) return;
+    running = true;
+    for (;;) {
+      const ready = [...keys].filter(([, k]) => k.jobs.length);
+      if (!ready.length) break;
+      for (const [key, k] of ready) {
+        const j = k.jobs.shift()!;
+        const r = await j.run().catch((): IntakeResult => ({ status: 'rejected', code: 'intake' }));
+        k.n--; k.bytes -= j.bytes; total -= j.bytes;
+        if (!k.n) keys.delete(key);
+        j.resolve(r);
+      }
+    }
+    running = false;
+  };
+  return {
+    submit(key, bytes, run) {
+      const k = keys.get(key) ?? { jobs: [], n: 0, bytes: 0 };
+      if (k.n >= limits.frames || k.bytes + bytes > limits.bytes || total + bytes > limits.total) return null;
+      keys.set(key, k);
+      k.n++; k.bytes += bytes; total += bytes;
+      const p = new Promise<IntakeResult>((resolve) => k.jobs.push({ bytes, run, resolve }));
+      void pump();
+      return p;
+    },
+  };
+}
+
+/** The ack id of a report frame: its delivery_id when that is a plain bounded string, else null. */
+const reportId = (f: unknown): string | null => {
+  const id = typeof f === 'object' && f !== null ? (f as Record<string, unknown>)['delivery_id'] : undefined;
+  return typeof id === 'string' && id.length > 0 && id.length <= 128 && id.isWellFormed() ? id : null;
+};
 
 const uid = () => process.getuid?.();
 const digest = (s: string) => createHash('sha256').update(s).digest();
@@ -119,10 +179,13 @@ export async function startSocketServer(o: SocketOptions): Promise<SocketServer>
   };
 
   const open = new Set<net.Socket>();
+  const scheduler = createScheduler();
+  const perRegistration = new Map<string, number>();
   const handle = (c: net.Socket) => {
     open.add(c);
-    const push = createDecoder();
-    const pending: Envelope[] = [];
+    let reg: Registration | null = null; // set by a registration hello
+    const push = createDecoder(() => (reg ? MAX_REPORT_FRAME : MAX_FRAME));
+    const pending: { id: string | null; result: () => Promise<IntakeResult> }[] = [];
     let authed = false;
     let done = false;
     let draining = false;
@@ -150,10 +213,10 @@ export async function startSocketServer(o: SocketOptions): Promise<SocketServer>
       draining = true;
       clearTimeout(timer); // time spent in our own intake is not the client's deadline
       while (pending.length && !done) {
-        const e = pending.shift()!;
-        const r = await o.onEnvelope(e).catch((): IntakeResult => ({ status: 'rejected', code: 'intake' }));
+        const item = pending.shift()!;
+        const r = await item.result().catch((): IntakeResult => ({ status: 'rejected', code: 'intake' }));
         if (done) break;
-        if (!c.write(encodeFrame({ v: PROTOCOL_VERSION, delivery_id: e.delivery_id, status: r.status, code: r.code }))
+        if (!c.write(encodeFrame({ v: PROTOCOL_VERSION, delivery_id: item.id, status: r.status, code: r.code }))
           && !(await drained(c, deadlineMs))) reject('stalled');
       }
       draining = false;
@@ -162,25 +225,62 @@ export async function startSocketServer(o: SocketOptions): Promise<SocketServer>
     };
     arm();
     c.on('error', () => { /* a client that went away (EPIPE, reset) never takes the service down */ });
-    c.on('close', () => { stop(); open.delete(c); });
+    c.on('close', () => {
+      stop();
+      open.delete(c);
+      if (reg) { const n = perRegistration.get(reg.id)! - 1; if (n) perRegistration.set(reg.id, n); else perRegistration.delete(reg.id); }
+    });
+    /** A report frame of the bound registration, run by the scheduler; a revoked registration ends the connection. */
+    const report = (r: Registration, f: unknown) => async (): Promise<IntakeResult> => {
+      if (done) return CLOSED; // queued work of a closed connection never reaches intake
+      if (o.reports!.registry.current(r.id)?.token_sha256 !== r.token_sha256) { reject('auth'); return CLOSED; }
+      return o.reports!.intake.deliver(r, f);
+    };
     c.on('data', (chunk: Buffer) => {
       if (done) return;
       let frames: unknown[];
-      try { frames = push(chunk); } catch (e) { reject(e instanceof FrameError ? e.code : 'frame'); return; }
-      if (draining && (queuedBytes += chunk.length) > QUEUE_BYTES) { reject('busy'); return; }
+      try { frames = push(chunk); } catch (e) {
+        const code = e instanceof FrameError ? e.code : 'frame';
+        if (reg) o.reports!.intake.rejected(reg, code);
+        reject(code);
+        return;
+      }
+      if (!reg && draining && (queuedBytes += chunk.length) > QUEUE_BYTES) { reject('busy'); return; }
       for (const f of frames) {
         if (done) return;
         if (!draining) arm();
         if (!authed) {
+          const rh = o.reports ? parseRegistrationHello(f) : null;
+          if (rh) { // never falls back to the install token (review 872 #5)
+            const r = o.reports!.registry.verify(rh.registration, rh.token);
+            if (!r) { reject('auth'); return; }
+            const n = perRegistration.get(r.id) ?? 0;
+            if (n >= PER_REGISTRATION_CONNECTIONS) { reject('busy'); return; }
+            perRegistration.set(r.id, n + 1);
+            reg = r;
+            authed = true;
+            continue;
+          }
           const h = parseHello(f);
           const got = h ? digest(h.token) : null;
           if (!got || !timingSafeEqual(got, expected)) { reject('auth'); return; }
           authed = true;
           continue;
         }
+        if (reg) {
+          // a frame decoded in the hello's own chunk was read under the hook limit: re-checked here
+          const size = Buffer.byteLength(JSON.stringify(f));
+          if (size > MAX_REPORT_FRAME) { o.reports!.intake.rejected(reg, 'oversize'); reject('oversize'); return; }
+          const result = pending.length < MAX_UNACKED ? scheduler.submit(reg.id, size, report(reg, f)) : null;
+          if (!result) { reject('busy'); return; }
+          pending.push({ id: reportId(f), result: () => result });
+          void drain();
+          continue;
+        }
         const p = parseEnvelope(f);
         if (!p.ok) { reject(parseHello(f) ? 'hello' : p.code); return; }
-        pending.push(p.envelope);
+        const e = p.envelope;
+        pending.push({ id: e.delivery_id, result: () => o.onEnvelope(e) });
         void drain();
       }
     });

@@ -4,8 +4,12 @@
 // and the service socket; no `v - 1` path until a second version exists.
 export const PROTOCOL_VERSION = 1;
 export const MAX_FRAME = 1 << 20;
+/** Report v1 frames (P3-T13b, PRD §5.10): each serialized frame is at most 256 KiB. */
+export const MAX_REPORT_FRAME = 256 << 10;
 
 export interface Hello { v: 1; token: string }
+/** A report producer's hello (P3-T13b): its registration id and that registration's own token, never the install token. */
+export interface RegistrationHello { v: 1; registration: string; token: string }
 export interface Envelope {
   v: 1; delivery_id: string; agent: string; profile_key: string; event: string; session_id: string | null;
   cwd: string | null; received_ts: number; payload: Record<string, unknown> | null; truncated?: boolean; malformed?: boolean;
@@ -21,9 +25,9 @@ export class FrameError extends Error {
 }
 
 const HEADER = 4;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const AGENT = /^[a-z0-9][a-z0-9-]{0,31}$/;
-const PROFILE = /^[A-Za-z0-9._-]{1,128}$/; // may reach keys and paths downstream (security review 379 #9)
+export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export const AGENT = /^[a-z0-9][a-z0-9-]{0,31}$/;
+export const PROFILE = /^[A-Za-z0-9._-]{1,128}$/; // may reach keys and paths downstream (security review 379 #9)
 const MAX_KEY = 128;
 const MAX_SESSION = 256;
 const MAX_CWD = 4096;
@@ -42,9 +46,10 @@ export function encodeFrame(msg: Hello | Envelope | Ack | Record<string, unknown
 
 /**
  * Incremental decoder: push chunks, get whole parsed frames. Bytes are kept as received (never allocated from the
- * header), and a bad header throws before its body is buffered.
+ * header), and a bad header throws before its body is buffered. `limit` is read per frame (a report connection lowers it
+ * after its hello).
  */
-export function createDecoder(): (chunk: Buffer) => unknown[] {
+export function createDecoder(limit: () => number = () => MAX_FRAME): (chunk: Buffer) => unknown[] {
   const utf8 = new TextDecoder('utf-8', { fatal: true });
   let chunks: Buffer[] = [];
   let have = 0;
@@ -63,7 +68,7 @@ export function createDecoder(): (chunk: Buffer) => unknown[] {
         if (have < HEADER) return out;
         need = take(HEADER).readUInt32BE(0);
         if (need === 0) throw new FrameError('empty');
-        if (need > MAX_FRAME) throw new FrameError('oversize');
+        if (need > limit()) throw new FrameError('oversize');
       }
       if (have < need) return out;
       const body = take(need);
@@ -80,6 +85,12 @@ const strOrNull = (x: unknown, max: number) => x === null || str(x, max);
 export function parseHello(x: unknown): Hello | null {
   if (!isObject(x) || Object.keys(x).length !== 2 || x['v'] !== PROTOCOL_VERSION || !str(x['token'], MAX_TOKEN)) return null;
   return x as unknown as Hello;
+}
+
+/** Exactly {v, registration, token}: a hello with any other key is neither shape (security review 872 #5). */
+export function parseRegistrationHello(x: unknown): RegistrationHello | null {
+  if (!isObject(x) || Object.keys(x).length !== 3 || x['v'] !== PROTOCOL_VERSION) return null;
+  return typeof x['registration'] === 'string' && UUID.test(x['registration']) && str(x['token'], MAX_TOKEN) ? (x as unknown as RegistrationHello) : null;
 }
 
 export function parseEnvelope(x: unknown): { ok: true; envelope: Envelope } | { ok: false; code: 'version' | 'shape' } {
