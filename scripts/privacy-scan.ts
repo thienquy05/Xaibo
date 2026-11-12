@@ -39,7 +39,10 @@ function opaque(line: string): boolean {
 export const nameMatchers = (list: string[]) => list
   .filter((n) => n.length >= MIN_NAME_LEN)
   .map((n) => new RegExp(`(?<![A-Za-z0-9])${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9])`, 'i'));
-const MACHINE = nameMatchers([userInfo().username, hostname(), hostname().replace(/\.local$/, '')]);
+// On GitHub Actions the user and host are the runner's (`runner`, a common word), never the owner's; the owner's
+// names are caught on the owner's machine (pre-commit --staged, gate scans). Every other rule still runs there.
+const ON_GITHUB_ACTIONS = process.env.GITHUB_ACTIONS === 'true';
+const MACHINE = ON_GITHUB_ACTIONS ? [] : nameMatchers([userInfo().username, hostname(), hostname().replace(/\.local$/, '')]);
 
 export function scanText(label: string, text: string, names = MACHINE): string[] {
   const out: string[] = [];
@@ -95,6 +98,7 @@ function history(): string[] {
 
 function main(args: string[]): number {
   if (args.length === 0) { console.log('usage: privacy-scan.ts <paths…> | --stdin | --staged | --all | --history'); return 2; }
+  if (ON_GITHUB_ACTIONS) console.error('privacy-scan: machine-name rule is off on GitHub Actions (runner names are not the owner\'s)');
   const mode: Record<string, () => string[]> = {
     '--stdin': () => scanText('<stdin>', readFileSync(0, 'utf8')),
     '--staged': staged,

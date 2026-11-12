@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdtempSync, writeFileSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { homedir, tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 
 const SCAN = join(import.meta.dirname, '..', '..', 'scripts', 'privacy-scan.ts');
@@ -91,6 +91,20 @@ test('email exemptions cover only the co-author trailer and npm deprecation noti
   assert.equal(scanText(`      "deprecated": "Support may be purchased by contacting ${other}",\n`).status, 0);
   assert.equal(scanText(`      "deprecated": "x ${`sk-${mixed(32)}`}",\n`).status, 1, 'secrets still flagged');
   assert.equal(scanText(`  "maintainer": "${other}",\n`).status, 1);
+});
+
+test('GitHub Actions: the machine-name rule is off (runner names are not the owner\'s); other rules still apply', () => {
+  const f = join(dir, `f${n++}.txt`);
+  writeFileSync(f, `owner ${userInfo().username}\nfile ${homedir()}/x\n`);
+  const { GITHUB_ACTIONS: _, ...env } = process.env;
+  const local = spawnSync(process.execPath, [SCAN, f], { encoding: 'utf8', env });
+  assert.equal(local.status, 1);
+  assert.match(local.stdout, /:1 machine-name/);
+  const ci = spawnSync(process.execPath, [SCAN, f], { encoding: 'utf8', env: { ...env, GITHUB_ACTIONS: 'true' } });
+  assert.equal(ci.status, 1);
+  assert.doesNotMatch(ci.stdout, /machine-name/);
+  assert.match(ci.stdout, /:2 home-path/);
+  assert.match(ci.stderr, /machine-name rule is off on GitHub Actions/);
 });
 
 test('machine-name check uses the injected names', async () => {

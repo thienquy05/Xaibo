@@ -1,0 +1,38 @@
+# gate: the one required check. Fast, platform-independent checks on every PR and on push to master.
+# Electron (test:electron), E2E (test:e2e), perf and spike suites stay local for now: they need macOS and a display.
+# Actions are pinned to full commit SHAs (version in the comment). `privacy-scan:allow` keeps those SHAs,
+# which are not objects in this repo, out of privacy-scan's opaque-id rule.
+name: gate
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 privacy-scan:allow
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0 privacy-scan:allow
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1" # no check here runs Electron
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run privacy:scan -- --all
+      - run: npm run fixtures:lint
