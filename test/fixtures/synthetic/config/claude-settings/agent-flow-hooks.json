@@ -1,0 +1,20 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "/tmp/xaibo-fixture/tools/flow-hook.sh pre" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "/tmp/xaibo-fixture/tools/flow-hook.sh stop" }
+        ]
+      }
+    ]
+  },
+  "cleanupPeriodDays": 30
+}
