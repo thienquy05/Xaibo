@@ -16,6 +16,8 @@ export interface StoreOptions {
 }
 
 const MIGRATIONS_DIR = new URL('./migrations/', import.meta.url);
+/** First line of a migration that must run with foreign keys off (a table rebuild, P3-T13b2). */
+const FK_OFF = /^-- xaibo: foreign_keys off\r?\n/;
 // ponytail: fixed headroom over the DB + WAL size; size it per migration if one ever rewrites large tables.
 const SPACE_MARGIN = 64 * 1024 * 1024;
 
@@ -67,15 +69,24 @@ export async function openStore(o: StoreOptions): Promise<Store> {
     await backupTo(db, o.backupDir, current, o.onBackupProgress);
   }
   for (const m of pending) {
+    // A table rebuild (SQLite's documented procedure) runs with foreign keys off; the pragma only takes effect outside a
+    // transaction. Every reference must still resolve before the commit, and foreign keys are back on in every case.
+    const fkOff = FK_OFF.test(m.sql);
+    let failed = false;
     try {
+      if (fkOff) db.exec('PRAGMA foreign_keys = OFF');
       db.exec('BEGIN IMMEDIATE');
       db.exec(m.sql);
+      if (fkOff && db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('dangling reference');
       db.exec(`PRAGMA user_version = ${m.version}`);
       db.exec('COMMIT');
     } catch {
       if (db.isTransaction) db.exec('ROLLBACK');
-      return readOnly(db, o.file, 'migration-failed');
+      failed = true;
+    } finally {
+      if (fkOff) db.exec('PRAGMA foreign_keys = ON');
     }
+    if (failed) return readOnly(db, o.file, 'migration-failed');
   }
   return { db, readOnly: false };
 }

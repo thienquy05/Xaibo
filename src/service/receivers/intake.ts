@@ -34,7 +34,8 @@ interface Gap { agent: string | null; session: string | null; from: number; to: 
 
 export function createIntake(o: IntakeOptions): Intake {
   const now = o.now ?? Date.now;
-  const profile = o.db.prepare('SELECT 1 FROM profiles WHERE id = ? AND agent = ?');
+  // A report registration's profile belongs to that registration's token, never to the install token (P3-T13b2 review).
+  const profile = o.db.prepare("SELECT 1 FROM profiles WHERE id = ? AND agent = ? AND origin <> 'registration'");
   const stored = o.db.prepare('SELECT 1 FROM hook_delivery WHERE delivery_id = ?');
   const putGap = o.db.prepare(`INSERT INTO hook_gaps (reason, agent, native_session_id, from_ts, to_ts, count, locator, recorded_at)
     VALUES ('disk-full', ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (locator) DO NOTHING`);
@@ -99,6 +100,8 @@ export interface HooksOptions extends IntakeOptions {
   log?: Logger;
   /** P3-T13b: live projection of report deliveries (durable false before the commit, true after it). */
   publishReport?: (e: Envelope, durable: boolean) => void;
+  /** P3-T13b2: true for an agent outside the bundled catalog (its registration may create its own profile). */
+  customAgent?: (agent: string) => boolean;
 }
 export interface Hooks { intake: Intake; socket: SocketServer | null; replay: Promise<ReplayResult>; close(): Promise<void> }
 
@@ -110,7 +113,7 @@ export async function startHooks(o: HooksOptions): Promise<Hooks> {
   let reports: SocketOptions['reports'];
   try { // a chunk dir that is not ours disables report intake only; hooks still run
     reports = { registry: openRegistry(o.dataDir), intake: createReportIntake({ db: o.db, writer: o.writer, dataDir: o.dataDir,
-      ...(o.now ? { now: o.now } : {}), ...(o.publishReport ? { publish: o.publishReport } : {}) }) };
+      ...(o.now ? { now: o.now } : {}), ...(o.publishReport ? { publish: o.publishReport } : {}), ...(o.customAgent ? { customAgent: o.customAgent } : {}) }) };
   } catch (e) {
     o.log?.log('report_intake_failed', { error: errorCode(e) });
   }

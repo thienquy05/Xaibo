@@ -133,6 +133,55 @@ test('attribution: only a synced profile of the registration agent gets a sessio
   assert.equal(count(h.db, "SELECT count(*) FROM report_delivery WHERE event = 'custom.thing' AND unattributed IS NULL"), 1);
 });
 
+test('T13b2: a registered custom agent gets its own profile and an attributed session on its first delivery', async () => {
+  const seen: { e: Envelope; durable: boolean }[] = [];
+  const h = await reportStore({ customAgent: (a) => a === 'acme-agent', publish: (e, durable) => seen.push({ e, durable }) });
+  const acme = addRegistration(h.dir, { agent: 'acme-agent', profileKey: 'acme-1' }).registration;
+  assert.equal((await h.reports.deliver(acme, report({ session_id: 'acme-s1' }))).code, 'ok');
+  assert.deepEqual({ ...h.db.prepare("SELECT agent, root, origin FROM profiles WHERE id = 'acme-1'").get() },
+    { agent: 'acme-agent', root: `registration:${acme.id}`, origin: 'registration' });
+  assert.equal(count(h.db, "SELECT count(*) FROM sessions WHERE agent = 'acme-agent' AND profile_id = 'acme-1' AND native_session_id = 'acme-s1'"), 1);
+  assert.equal(count(h.db, 'SELECT count(*) FROM report_delivery WHERE unattributed IS NULL'), 1);
+  assert.deepEqual(seen.map((s) => s.durable), [false, true], 'its durable delivery reaches the engine');
+  const again = addRegistration(h.dir, { agent: 'acme-agent', profileKey: 'acme-1' }).registration;
+  assert.equal((await h.reports.deliver(again, report({ session_id: 'acme-s1' }))).code, 'ok');
+  assert.equal(count(h.db, "SELECT count(*) FROM profiles WHERE agent = 'acme-agent'"), 1, 'a second registration reuses the profile');
+  assert.equal(count(h.db, "SELECT count(*) FROM sessions WHERE agent = 'acme-agent'"), 1);
+  removeRegistration(h.dir, acme.id);
+  assert.equal(count(h.db, "SELECT count(*) FROM profiles WHERE agent = 'acme-agent'"), 1, 'revoking keeps the history');
+});
+
+test('T13b2: catalog agents never get a profile from a registration; another agent\'s profile id is never borrowed', async () => {
+  const seen: boolean[] = [];
+  const h = await reportStore({ customAgent: (a) => a !== 'claude' && a !== 'codex', publish: (_e, durable) => seen.push(durable) });
+  const codex = addRegistration(h.dir, { agent: 'codex', profileKey: 'codex-unsynced' }).registration;
+  const squatter = addRegistration(h.dir, { agent: 'acme-agent', profileKey: 'p1' }).registration; // p1 is claude's
+  assert.equal((await h.reports.deliver(codex, report())).code, 'ok');
+  assert.equal((await h.reports.deliver(squatter, report())).code, 'ok');
+  assert.equal(count(h.db, 'SELECT count(*) FROM profiles'), 1, 'only the synced claude profile');
+  assert.deepEqual({ ...h.db.prepare("SELECT agent, origin FROM profiles WHERE id = 'p1'").get() }, { agent: 'claude', origin: 'default' });
+  assert.equal(count(h.db, 'SELECT count(*) FROM sessions'), 0);
+  assert.equal(count(h.db, "SELECT count(*) FROM report_delivery WHERE unattributed = 'unknown-profile'"), 2);
+  assert.deepEqual(seen, [false, false], 'unattributed deliveries never reach the engine');
+});
+
+test('T13b2 review: a registration profile stops attributing once its agent is in the catalog', async () => {
+  const h = await reportStore({ customAgent: (a) => a === 'acme-agent' });
+  const acme = addRegistration(h.dir, { agent: 'acme-agent', profileKey: 'acme-1' }).registration;
+  assert.equal((await h.reports.deliver(acme, report({ session_id: 'acme-s1' }))).code, 'ok');
+  const later = createReportIntake({ db: h.db, writer: h.writer, dataDir: h.dir, customAgent: () => false }); // a newer catalog lists acme-agent
+  assert.equal((await later.deliver(acme, report({ session_id: 'acme-s2' }))).code, 'ok');
+  assert.equal(count(h.db, "SELECT count(*) FROM sessions WHERE native_session_id = 'acme-s2'"), 0);
+  assert.equal(count(h.db, "SELECT count(*) FROM report_delivery WHERE unattributed = 'unknown-profile'"), 1);
+});
+
+test('T13b2: without a catalog to tell custom agents apart, no profile is created', async () => {
+  const h = await reportStore();
+  const acme = addRegistration(h.dir, { agent: 'acme-agent', profileKey: 'acme-1' }).registration;
+  assert.equal((await h.reports.deliver(acme, report())).code, 'ok');
+  assert.equal(count(h.db, "SELECT count(*) FROM profiles WHERE agent = 'acme-agent'"), 0);
+});
+
 test('content stays private: never in events.raw or the published envelope; identity comes from the registration', async () => {
   const seen: { e: Envelope; durable: boolean }[] = [];
   const h = await reportStore({ publish: (e, durable) => seen.push({ e, durable }) });

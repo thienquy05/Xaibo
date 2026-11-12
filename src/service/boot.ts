@@ -179,8 +179,10 @@ export async function boot(o: BootOptions): Promise<Service> {
         if (!durable || !engine || e.session_id === null || !profiles.some((p) => p.id === e.profile_key && p.agent === e.agent)) return;
         try { engine.ingest({ source: 'hook', envelope: e }); watch(e.agent, e.profile_key, e.session_id); } catch (err) { o.log?.log('status_feed_failed', { error: errorCode(err) }); }
       },
-      publishReport: (e, durable) => { // the same rule for report deliveries: identity comes from the registration (P3-T13b)
-        if (!durable || !engine || e.session_id === null || !profiles.some((p) => p.id === e.profile_key && p.agent === e.agent)) return;
+      // Report deliveries arrive durable only when attributed to a profile of the registration's agent (P3-T13b/b2).
+      customAgent: (a) => !catalog?.agents.some((x) => x.id === a),
+      publishReport: (e, durable) => {
+        if (!durable || !engine || e.session_id === null) return;
         try { engine.ingest({ source: 'report', envelope: e }); } catch (err) { o.log?.log('status_feed_failed', { error: errorCode(err) }); }
       },
     });

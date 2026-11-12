@@ -2,8 +2,10 @@
 // frame is acked rejected with its fixed code and counted per registration and code), dedup on (registration,
 // delivery_id), publish as pending durability, write a content chunk durably, commit the delivery (and the item's state
 // or full text) in one immediate transaction, remove an assembled item's chunks, publish as durable, then ack. Identity is
-// the registration's, never the payload's; a session is attached only for a synced profile of the registration's agent,
-// otherwise the delivery row records it as unattributed. Content goes only to report_content: events.raw and the
+// the registration's, never the payload's; a session is attached only to a profile of the registration's agent: a synced
+// one, or for an agent outside the catalog the profile its first delivery creates (P3-T13b2: origin 'registration', root
+// a label); a profile id held by another agent is never borrowed. Otherwise the delivery row records it as unattributed
+// and nothing reaches the engine. Content goes only to report_content: events.raw and the
 // published envelope carry the event with its content emptied. Payload paths are stored as given, never dereferenced.
 import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
@@ -22,6 +24,8 @@ export interface ReportIntakeOptions {
   /** Live projection: durable false before the commit, true after it. */
   publish?: (e: Envelope, durable: boolean) => void;
   chunks?: ChunkLimits;
+  /** True for an agent outside the bundled catalog: its registration may create its own profile. Absent = never. */
+  customAgent?: (agent: string) => boolean;
 }
 export interface ReportIntake {
   deliver(reg: Registration, frame: unknown): Promise<IntakeResult>;
@@ -32,7 +36,7 @@ export interface ReportIntake {
 export function createReportIntake(o: ReportIntakeOptions): ReportIntake {
   const now = o.now ?? Date.now;
   const chunks = openChunks(path.join(o.dataDir, 'content-chunks'), o.chunks);
-  const profile = o.db.prepare('SELECT 1 FROM profiles WHERE id = ? AND agent = ?');
+  const profileOf = o.db.prepare('SELECT agent, origin FROM profiles WHERE id = ?');
   const stored = o.db.prepare('SELECT 1 FROM report_delivery WHERE registration_id = ? AND delivery_id = ?');
   const itemState = o.db.prepare('SELECT state FROM report_content WHERE registration_id = ? AND native_session_id = ? AND item_id = ? AND revision = ?');
   const putReject = o.db.prepare(`INSERT INTO report_rejects (registration_id, code, count, first_ts, last_ts) VALUES (?, ?, 1, ?, ?)
@@ -84,9 +88,14 @@ export function createReportIntake(o: ReportIntakeOptions): ReportIntake {
       }
     }
 
-    const attributed = !!profile.get(reg.profile_key, reg.agent);
+    const custom = o.customAgent?.(reg.agent) ?? false;
+    const owner = profileOf.get(reg.profile_key) as { agent: string; origin: string } | undefined;
+    const create = owner === undefined && custom;
+    // a registration profile counts only while its agent is outside the catalog (review: an agent the catalog later lists)
+    const attributed = create || (owner?.agent === reg.agent && (owner.origin !== 'registration' || custom));
     const batch: Batch = {
       profileId: reg.profile_key, agent: reg.agent, sessions: [], events: [],
+      ...(create ? { profile: { id: reg.profile_key, agent: reg.agent, root: `registration:${reg.id}`, origin: 'registration' as const } } : {}),
       report: { registrationId: reg.id, deliveryId: x.delivery_id, agent: reg.agent, profileKey: reg.profile_key, nativeSessionId: x.session_id,
         event: x.event, producerId: x.producer_id, producerSeq: x.producer_seq, receivedTs: at, committedTs: at,
         unattributed: attributed ? null : 'unknown-profile', ...(content ? { content } : {}) },
@@ -102,7 +111,7 @@ export function createReportIntake(o: ReportIntakeOptions): ReportIntake {
       return { status: 'rejected', code: isDiskFull(err) ? 'disk-full' : 'store' }; // the chunk stays on disk for the retry
     }
     if (key && content && content.state !== 'pending') free(key);
-    o.publish?.(e, true);
+    if (attributed) o.publish?.(e, true);
     return { status: 'accepted', code: (content?.state ?? settled) === 'incomplete' ? 'incomplete' : 'ok' };
   };
 

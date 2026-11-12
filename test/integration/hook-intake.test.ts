@@ -45,6 +45,14 @@ test('EC-09: the same delivery_id at x.999 and (x+1).001 is stored once; the rep
   assert.equal(count(h.db, 'SELECT committed_ts FROM hook_delivery'), T0 + 999);
 });
 
+test('T13b2 review: a hook envelope naming a report registration profile is unattributed (the install token is not that identity)', async () => {
+  const h = await hookStore();
+  h.db.prepare("INSERT INTO profiles (id, agent, root, origin) VALUES ('acme-1', 'acme-agent', 'registration:x', 'registration')").run();
+  assert.deepEqual(await h.intake.deliver(envelope({ agent: 'acme-agent', profile_key: 'acme-1' })), { status: 'accepted', code: 'ok' });
+  assert.equal(count(h.db, "SELECT count(*) FROM hook_delivery WHERE unattributed = 'unknown-profile'"), 1);
+  assert.equal(count(h.db, 'SELECT count(*) FROM sessions'), 0);
+});
+
 test('EC-09: two distinct deliveries with identical payloads in the same ms stay distinct', async () => {
   const h = await hookStore({ intake: { now: () => T0 } });
   await h.intake.deliver(envelope());

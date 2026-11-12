@@ -108,11 +108,11 @@ CREATE TABLE price_revisions (
 );
 CREATE TRIGGER price_revisions_immutable BEFORE UPDATE ON price_revisions
 BEGIN SELECT RAISE(ABORT, 'price_revisions is immutable'); END;
-CREATE TABLE profiles (
+CREATE TABLE "profiles" (
   id TEXT PRIMARY KEY,
   agent TEXT NOT NULL,
   root TEXT NOT NULL,
-  origin TEXT NOT NULL CHECK (origin IN ('default', 'env', 'manual')),
+  origin TEXT NOT NULL CHECK (origin IN ('default', 'env', 'manual', 'registration')),
   UNIQUE (agent, root)
 );
 CREATE TABLE quarantine (

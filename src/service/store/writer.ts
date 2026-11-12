@@ -55,6 +55,8 @@ export interface Batch {
   delivery?: HookDelivery;
   /** P3-T13b (§5.10): the report delivery this batch commits; a (registration, delivery_id) already stored commits nothing else. */
   report?: ReportDelivery;
+  /** P3-T13b2: the profile a custom agent's registration creates with this batch (never replaces an existing one). */
+  profile?: { id: string; agent: string; root: string; origin: 'registration' };
 }
 export interface ReportDelivery {
   registrationId: string; deliveryId: string; agent: string; profileKey: string; nativeSessionId: string; event: string;
@@ -123,6 +125,7 @@ function prepare(db: DatabaseSync) {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (delivery_id) DO NOTHING RETURNING delivery_id`),
     report: db.prepare(`INSERT INTO report_delivery (registration_id, delivery_id, agent, profile_key, native_session_id, event, producer_id, producer_seq,
         received_ts, committed_ts, unattributed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING delivery_id`),
+    newProfile: db.prepare('INSERT INTO profiles (id, agent, root, origin) VALUES (?, ?, ?, ?)'), // a conflict fails the commit, never skips
     reportContent: db.prepare(`INSERT INTO report_content (registration_id, native_session_id, item_id, revision, role, kind, state, chunks, bytes, content, updated_ts)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT DO UPDATE SET state = excluded.state, chunks = excluded.chunks, bytes = excluded.bytes, content = excluded.content,
@@ -265,6 +268,8 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
       const c = r.content;
       if (c) st.reportContent.run(r.registrationId, r.nativeSessionId, c.itemId, c.revision, c.role, c.kind, c.state, c.chunks, c.bytes, c.text, r.committedTs);
     }
+    const np = batch.profile;
+    if (np) st.newProfile.run(np.id, np.agent, np.root, np.origin);
     const ids = new Map<string, number | bigint>();
     for (const s of batch.sessions) {
       const row = st.upsertSession.get(batch.agent, batch.profileId, s.nativeSessionId, s.cwd ?? null, s.cwdKey ?? null, s.entrypoint ?? null,
