@@ -12,6 +12,7 @@ import { createLogger, loadInstallSecret } from '../shared/log.ts';
 import { initDataDir } from './app-paths.ts';
 import { buildBundle, readLogTail, writeBundle } from './diagnostics.ts';
 import { notificationText } from './notifications.ts';
+import { forwardPower } from './power.ts';
 import { APP_ORIGIN, devOrigin } from './policy.ts';
 import { lockDown, registerAppScheme, webPreferences } from './security.ts';
 import { Supervisor } from './service-supervisor.ts';
@@ -127,7 +128,7 @@ function start(dataDir: string) {
     win.webContents.on('did-start-loading', () => { pageReady = false; });
     win.webContents.on('did-finish-load', () => { pageReady = true; win?.webContents.send('health', supervisor.health); sendPort(); });
     void win.loadURL(dev ? `${dev}/` : `${APP_ORIGIN}/index.html`);
-    powerMonitor.on('resume', () => supervisor.send({ v: IPC_VERSION, type: 'wake' }));
+    forwardPower(powerMonitor, (c) => supervisor.send(c), Date.now); // P3-T12
     supervisor.start();
     log.log('app_ready', { packaged: app.isPackaged, trayReady: tray !== null });
   });

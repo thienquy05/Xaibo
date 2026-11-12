@@ -2,6 +2,7 @@
 // quarantine. Pure and tolerant, like the Claude parser. Record types and shapes: S9 facts for Codex 0.160.0
 // (spikes/s9/evidence/facts.json, re-extracted 2026-11-11); payload types never observed there are kept raw only.
 import { createHash } from 'node:crypto';
+import { utcMs } from '../../time.ts';
 
 export const KNOWN_TYPES = new Set(['compacted', 'event_msg', 'response_item', 'session_meta', 'token_usage_record', 'turn_context', 'world_state']);
 // event_msg item_completed User/AgentMessage items mirror a response_item message of the same role and text (S9
@@ -122,7 +123,7 @@ export function parseLine(bytes: Buffer, ctx: ParseContext): ParseResult | null 
   if (!isObj(value)) return { ok: false, reason: 'malformed' };
   const type = str(value.type) ?? '';
   const payload = isObj(value.payload) ? value.payload : {};
-  const ts = typeof value.timestamp === 'string' ? Date.parse(value.timestamp) : NaN;
+  const ts = utcMs(value.timestamp);
   const fields = KNOWN_TYPES.has(type) ? fromPayload(type, payload) : { kind: 'unknown' };
   // G2-1: account identifiers in session_meta are never stored (PRD §5.11, EC-92, D-P0-27).
   const stored = type === 'session_meta' && ACCOUNT_KEYS.some((k) => k in payload)

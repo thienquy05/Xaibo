@@ -318,7 +318,8 @@ export function createEngine(o: EngineOptions): StatusEngine {
   return {
     ingest, status,
     advance: () => {},
-    suspend: (now) => { suspendedAt = now; if (sleeps.at(-1)?.[1] !== Infinity) sleeps.push([now, Infinity]); },
+    // A second suspend while asleep is the same sleep: health and the R1/R5 exclusion keep its first start (P3-T12 review).
+    suspend: (now) => { if (sleeps.at(-1)?.[1] !== Infinity) { suspendedAt = now; sleeps.push([now, Infinity]); } },
     resume: (now) => { const last = sleeps.at(-1); if (last?.[1] === Infinity) last[1] = now; },
     close: () => {},
   };

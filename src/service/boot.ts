@@ -58,6 +58,9 @@ export interface Service {
   coverage(): Banner[];
   /** Validates and stores a manual executable path, then re-detects that agent; false if refused. */
   setPath(agent: string, file: string): Promise<boolean>;
+  /** P3-T12: the machine sleeps from `at` (main's clock); the status engine excludes the gap from R1/R5. */
+  suspend(at?: number): void;
+  /** Resumes the status engine now, then reconciles every adapter at once (FR-02, bounded scans). */
   wake(): Promise<void>;
   stop(): void;
 }
@@ -211,7 +214,8 @@ export async function boot(o: BootOptions): Promise<Service> {
       announce();
       return true;
     },
-    wake: async () => { await Promise.all(adapters.map((a) => a.wake())); },
+    suspend: (at) => engine?.suspend(at ?? clock()),
+    wake: async () => { engine?.resume(clock()); await Promise.all(adapters.map((a) => a.wake())); },
     stop: () => {
       stopped = true;
       void hooks?.close();

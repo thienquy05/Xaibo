@@ -79,7 +79,9 @@ function committed(b: Batch) {
 
 const command = accept(parseServiceCommand, (m, transferred: MessagePortMain[]) => {
   if (m.type === 'quit') { svc?.stop(); process.exit(0); }
-  else if (m.type === 'wake') void svc?.wake();
+  // Power events wait for boot, in arrival order, so a sleep during startup still reaches the engine (P3-T12 review).
+  else if (m.type === 'wake') void booted.then((s) => s.wake());
+  else if (m.type === 'suspend') { const { at } = m; void booted.then((s) => s.suspend(at)); }
   else if (m.type === 'reloadPrices') void booted.then((s) => s.reloadPrices());
   else if (m.type === 'port') transferred.forEach(connect);
   else if (m.type === 'setPath') { const { agent, path: file } = m; void booted.then((s) => s.setPath(agent, file)); }

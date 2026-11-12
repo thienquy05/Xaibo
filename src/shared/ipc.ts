@@ -12,7 +12,9 @@ export const READ_ONLY_BANNER: Record<ReadOnlyReason, string> = {
 
 /** main -> service; setPath carries a file the user picked in the native dialog (validated again by the service);
  *  reloadPrices re-reads the private price override (P2-T09; sent by Settings in P6-T11). */
-export type ServiceCommand = { v: 1; type: 'quit' | 'wake' | 'port' | 'reloadPrices' } | { v: 1; type: 'setPath'; agent: string; path: string };
+export type ServiceCommand = { v: 1; type: 'quit' | 'wake' | 'port' | 'reloadPrices' } | { v: 1; type: 'setPath'; agent: string; path: string }
+  /** P3-T12: the machine is about to sleep; `at` is main's clock at the power event (ms since epoch). */
+  | { v: 1; type: 'suspend'; at: number };
 /** service -> main; notify (P3-T11, EC-59) carries only the agent display name, the approved project label (null until
  *  one exists, FR-10) and the wait state. */
 export type NotifyState = 'waiting-for-permission' | 'needs-input';
@@ -42,6 +44,7 @@ export function parseServiceCommand(x: unknown): ServiceCommand | null {
   const m = envelope(x);
   if (!m) return null;
   if (oneOf(['quit', 'wake', 'port', 'reloadPrices'] as const, m.type)) return { v: 1, type: m.type };
+  if (m.type === 'suspend') return Number.isFinite(m.at) && (m.at as number) > 0 ? { v: 1, type: 'suspend', at: m.at as number } : null;
   if (m.type !== 'setPath' || !text(m.agent) || !AGENT_ID.test(m.agent)) return null;
   if (!text(m.path, 4096) || !m.path.startsWith('/') || m.path.includes('\0')) return null;
   return { v: 1, type: 'setPath', agent: m.agent, path: m.path };
