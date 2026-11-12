@@ -3,6 +3,7 @@
 // join on call_id = tool_use_id; token_count totals are cumulative, so they go under one key (latest wins, never summed).
 // Content is never copied.
 import type { Ev, Observation } from '../../status/engine.ts';
+import { sigField } from '../../status/rules.ts';
 
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {});
 /** A string field of at most 256 characters (ids, names); anything longer is dropped, not truncated. */
@@ -15,8 +16,9 @@ function hook(p: Record<string, unknown>, envelopeEvent: string): Ev[] {
     case 'SessionStart': return [{ k: 'session.start' }];
     case 'SessionEnd': return [{ k: 'session.end' }];
     case 'UserPromptSubmit': return [{ k: 'turn.start', typed: typeof p['prompt'] === 'string' && p['prompt'] !== '', ...(turn ? { turn } : {}) }];
-    case 'PreToolUse': return id ? [{ k: 'tool.start', id, ...(tool ? { tool } : {}) }] : [{ k: 'activity' }];
-    case 'PostToolUse': return id ? [{ k: 'tool.end', id }] : [];
+    case 'PreToolUse': return id ? [{ k: 'tool.start', id, ...(tool ? { tool } : {}), ...sigField(p['tool_input'], tool) }] : [{ k: 'activity' }];
+    // No error flag: R3 is not applied to Codex until a verified tool-error field exists (D-P3-08 e).
+    case 'PostToolUse': return id ? [{ k: 'tool.end', id, ...sigField(p['tool_response']) }] : [];
     case 'PermissionRequest': return [{ k: 'request', kind: 'permission', id }]; // unverified on 0.160.0 (D-P3-08)
     case 'Stop': return [{ k: 'turn.end' }];
     case 'Interrupt': return [{ k: 'interrupt' }];
@@ -46,8 +48,8 @@ function line(raw: string): Ev[] {
   }
   if (r['type'] !== 'response_item') return [];
   const id = str(p, 'call_id'), name = str(p, 'name');
-  if (id && type.endsWith('_call_output')) return [{ k: 'tool.end', id }];
-  if (id && type.endsWith('_call')) return [{ k: 'tool.start', id, ...(name ? { tool: name } : {}) }];
+  if (id && type.endsWith('_call_output')) return [{ k: 'tool.end', id, ...sigField(p['output']) }];
+  if (id && type.endsWith('_call')) return [{ k: 'tool.start', id, ...(name ? { tool: name } : {}), ...sigField(p['input'] ?? p['arguments'] ?? p['action'], name) }];
   return type === 'message' ? [{ k: 'activity' }] : [];
 }
 

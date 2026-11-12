@@ -5,10 +5,23 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { claudeEvidence } from '../../src/service/adapters/claude/status-map.ts';
+import type { Ev } from '../../src/service/status/engine.ts';
 import { hookObs, fileObs } from '../helpers/status.ts';
 
-const hook = (event: string, p: Record<string, unknown> = {}) => claudeEvidence(hookObs('claude', { hook_event_name: event, ...p }));
-const line = (r: Record<string, unknown>) => claudeEvidence(fileObs('claude', r));
+// R2–R4 signatures (P3-T09) are checked in their own test; the row tests compare the rest.
+const bare = (evs: Ev[]) => evs.map((e) => { const { sig: _s, ...rest } = e as Ev & { sig?: string }; return rest; });
+const hook = (event: string, p: Record<string, unknown> = {}) => bare(claudeEvidence(hookObs('claude', { hook_event_name: event, ...p })));
+const line = (r: Record<string, unknown>) => bare(claudeEvidence(fileObs('claude', r)));
+
+test('signatures (P3-T09): tool and normalized args on start, result on end; hashes, never content', () => {
+  const start = (input: unknown) => claudeEvidence(hookObs('claude', { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: input, tool_use_id: 't' }))[0] as { sig?: string };
+  assert.match(start({ a: 1, b: 'secret-canary' }).sig ?? '', /^[0-9a-f]{16}$/);
+  assert.equal(start({ a: 1, b: 2 }).sig, start({ b: 2, a: 1 }).sig, 'key order does not matter');
+  assert.notEqual(start({ a: 1 }).sig, start({ a: 2 }).sig);
+  const end = (r: unknown) => (claudeEvidence(hookObs('claude', { hook_event_name: 'PostToolUse', tool_use_id: 't', tool_response: r }))[0] as { sig?: string }).sig;
+  assert.equal(end({ stdout: 'x' }), end({ stdout: 'x' }));
+  assert.notEqual(end({ stdout: 'x' }), end({ stdout: 'y' }));
+});
 
 test('hook rows: session, turn, tools, Stop, StopFailure, SessionEnd', () => {
   assert.deepEqual(hook('SessionStart', { source: 'startup' }), [{ k: 'session.start' }]);
@@ -19,7 +32,7 @@ test('hook rows: session, turn, tools, Stop, StopFailure, SessionEnd', () => {
   assert.deepEqual(hook('PreToolUse', { tool_name: 'Bash', tool_input: { run_in_background: true }, tool_use_id: 't1' }),
     [{ k: 'tool.start', id: 't1', tool: 'Bash', background: true }]);
   assert.deepEqual(hook('PostToolUse', { tool_use_id: 't1' }), [{ k: 'tool.end', id: 't1' }]);
-  assert.deepEqual(hook('PostToolUseFailure', { tool_use_id: 't1' }), [{ k: 'tool.end', id: 't1' }]);
+  assert.deepEqual(hook('PostToolUseFailure', { tool_use_id: 't1' }), [{ k: 'tool.end', id: 't1', err: true }]);
   assert.deepEqual(hook('Stop'), [{ k: 'turn.end' }]);
   assert.deepEqual(hook('StopFailure'), [{ k: 'turn.error' }]);
   assert.deepEqual(hook('SessionEnd', { reason: 'other' }), [{ k: 'session.end' }]);
@@ -58,7 +71,7 @@ test('transcript: prompt, tool_use, tool_result, rejection, end_turn, usage; oth
     { k: 'usage', key: 'm1', usage: { input: 1, cacheWrite: 2, cacheRead: 3, output: 4 } }]);
   const result = (content: string, is_error: boolean) => line({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content, is_error }] } });
   assert.deepEqual(result('ok', false), [{ k: 'tool.end', id: 't1' }]);
-  assert.deepEqual(result('Exit code 1', true), [{ k: 'tool.end', id: 't1' }]);
+  assert.deepEqual(result('Exit code 1', true), [{ k: 'tool.end', id: 't1', err: true }]);
   assert.deepEqual(result("The user doesn't want to proceed with this tool use. The tool use was rejected.", true), [{ k: 'tool.rejected', id: 't1' }]);
   assert.deepEqual(line({ type: 'assistant', message: { id: 'm2', content: [{ type: 'text', text: 'r' }], stop_reason: 'end_turn' } }), [{ k: 'activity' }, { k: 'turn.idle' }]);
   for (const r of [{ type: 'queue-operation', operation: 'enqueue' }, { type: 'system', subtype: 'compact_boundary' }, { type: 'future-record' }]) assert.deepEqual(line(r), []);

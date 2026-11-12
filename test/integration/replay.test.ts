@@ -1,7 +1,7 @@
 // P3-T07 replay (PRD §6.6/§6.7, M8). Harness self-test (seeded interleavings are deterministic), fixture well-formedness,
 // B1/B2 FP/FN per fixture, and the status engine against the replay set: per-step lifecycle, order invariance over the 10
-// interleavings, FP/FN <= B1 and B2. RED until P3-T08 adds src/service/status/engine.ts. Findings run as todo until P3-T09
-// (rules), agy and report/v1 fixtures until P3-T13 (mappings).
+// interleavings, FP/FN <= B1 and B2. Findings per step come from the P3-T09 rules. agy and report/v1
+// fixtures run as todo until P3-T13 (mappings).
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { b1, b2, score } from './replay-baselines.ts';
@@ -186,7 +186,7 @@ test('engine (P3-T08): Claude and Codex replay set, order invariance, FP/FN <= B
   for (const fx of set(false)) await t.test(fx.id, (tt) => check(tt, factory, fx, false));
 });
 
-test('engine (P3-T09): findings per step', { todo: 'P3-T09 stuck/loop rules' }, async (t) => {
+test('engine (P3-T09): findings per step', async (t) => {
   const factory = await engine();
   assert.ok(factory, 'P3-T08 status engine absent');
   for (const fx of set(false)) await t.test(fx.id, (tt) => check(tt, factory, fx, true));

@@ -11,6 +11,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { Envelope } from '../../shared/hook-protocol.ts';
 import { claudeEvidence } from '../adapters/claude/status-map.ts';
 import { codexEvidence } from '../adapters/codex/status-map.ts';
+import { awake, freshPatterns, onCall, RULE_DEFAULTS, type Patterns, type RuleSettings } from './rules.ts';
 
 export type Lifecycle = 'idle' | 'busy' | 'waiting-for-permission' | 'needs-input' | 'error' | 'ended' | 'unknown';
 export type Confidence = 'confirmed' | 'inferred' | 'heuristic';
@@ -22,7 +23,7 @@ export interface SessionStatus {
   reason: string | null;
   /** Outcome of the last turn or request: 'interrupted', 'denied', 'declined', 'cancelled', or null. */
   outcome: string | null;
-  /** Active finding rule ids (P3-T09). */
+  /** Active §6.4 finding rule ids ('R1'–'R5'), sorted (P3-T09). */
   findings: string[];
   toolCalls: number; turns: number;
   usage: Record<string, number> | null;
@@ -43,15 +44,20 @@ export interface StatusEngine {
   status(agent: string, sessionId: string): SessionStatus | null;
   close(): void;
 }
-export interface EngineOptions { db: DatabaseSync; now: () => number; settleMs: number; log: (line: string) => void }
+export interface EngineOptions {
+  db: DatabaseSync; now: () => number; settleMs: number; log: (line: string) => void;
+  /** §6.4 thresholds; missing keys take RULE_DEFAULTS. */
+  rules?: Partial<RuleSettings>;
+}
 
 /** Normalized evidence, the output of an agent's status map. Ids are native ids; nothing here is content. */
 export type Ev =
   | { k: 'session.start' } | { k: 'session.end' }
   | { k: 'turn.start'; typed: boolean; turn?: string }
   | { k: 'activity' }
-  | { k: 'tool.start'; id: string; tool?: string; background?: true; child?: true }
-  | { k: 'tool.end'; id: string }
+  /** sig: tool and normalized args; on tool.end, the result (or error, with err). Hashes for R2–R4, never content. */
+  | { k: 'tool.start'; id: string; tool?: string; background?: true; child?: true; sig?: string }
+  | { k: 'tool.end'; id: string; sig?: string; err?: true }
   /** Claude transcript rejection of a call: a manual denial if it had a PermissionRequest, else an interrupt (S7). */
   | { k: 'tool.rejected'; id: string }
   /** id null: join to the session's latest started call (Claude PermissionRequest has no tool_use_id). */
@@ -69,6 +75,7 @@ const HEURISTIC_MS = 5000;
 /** Evidence kept per observation: bounds what one adversarial line or payload can add. */
 const MAX_EVS = 256;
 /** Evidence a file record may never produce: only a hook or report confirms these (§6.1-§6.3). */
+const TURN_ENDS = new Set<Ev['k']>(['turn.end', 'turn.idle', 'turn.error', 'interrupt', 'session.end']);
 const CONFIRMED_ONLY = new Set<Ev['k']>(['session.start', 'session.end', 'request', 'resolve', 'turn.error', 'interrupt']);
 
 interface Entry { ts: number; rank: number; seq: number; conf: 'confirmed' | 'inferred'; evs: Ev[] }
@@ -83,20 +90,25 @@ interface Fold {
   tools: Set<string>; turnIds: Set<string>; typed: { confirmed: number; inferred: number };
   usage: Map<string, Record<string, number>>;
   lastTs: number; lastFileTs: number;
+  /** Calls started by the authoritative source, waiting for their end: id -> args signature and tool (R2–R4). */
+  calls: Map<string, { sig: string | undefined; tool: string }>;
+  pat: Patterns;
 }
 const fresh = (): Fold => ({
   hooked: false, started: false, ended: false, error: false, active: false, activeConf: 'inferred', stopAt: null, stopConf: 'inferred',
   idle: null, outcome: null, requests: new Map(), inflight: new Map(), lastTool: null, reqSeq: 0, children: new Set(), bgTurn: false,
   background: false, tools: new Set(), turnIds: new Set(), typed: { confirmed: 0, inferred: 0 }, usage: new Map(), lastTs: -Infinity,
-  lastFileTs: -Infinity,
+  lastFileTs: -Infinity, calls: new Map(), pat: freshPatterns(),
 });
 
 function activate(f: Fold, conf: Confidence) {
   f.active = true; f.activeConf = conf; f.stopAt = null; f.idle = null; f.error = false;
 }
 
-/** Applies one entry. `conflict` is told when file evidence is outranked by the session's hooks. */
-function step(f: Fold, x: Entry, conflict?: (kind: string) => void) {
+/** Applies one entry. `conflict` is told when file evidence is outranked by the session's hooks. R2–R4 follow only the
+ * authoritative source (hooks once the session has any, else files), so a call seen by both counts once and signatures
+ * from different sources are never compared. */
+function step(f: Fold, x: Entry, r: RuleSettings, conflict?: (kind: string) => void) {
   const inferred = x.conf === 'inferred';
   if (!inferred) f.hooked = true;
   const ignored = inferred && f.hooked; // hooks outrank file inference (§5.5)
@@ -107,7 +119,7 @@ function step(f: Fold, x: Entry, conflict?: (kind: string) => void) {
       case 'session.end': f.ended = true; break;
       case 'turn.start':
         if (e.turn) f.turnIds.add(e.turn); else if (e.typed) f.typed[x.conf]++;
-        if (!ignored) { activate(f, x.conf); f.outcome = null; }
+        if (!ignored) { activate(f, x.conf); f.outcome = null; f.pat = freshPatterns(); f.calls.clear(); }
         break;
       case 'activity':
         if (!ignored && !f.active && f.stopAt === null && f.idle === null && !f.error) activate(f, x.conf);
@@ -118,15 +130,26 @@ function step(f: Fold, x: Entry, conflict?: (kind: string) => void) {
         if (!inferred) f.lastTool = e.id;
         if (!f.inflight.has(e.id)) f.inflight.set(e.id, { at: x.ts, agentTool: e.tool === 'Agent' || e.tool === 'Task' });
         if (e.background) f.bgTurn = true;
+        if (!ignored) f.calls.set(e.id, { sig: e.sig, tool: e.tool ?? '' });
         if (!ignored && !f.active) activate(f, x.conf);
         break;
-      case 'tool.end':
+      case 'tool.end': {
         f.tools.add(e.id); f.inflight.delete(e.id); f.requests.delete(e.id);
+        const c = f.calls.get(e.id);
+        if (c && !ignored) {
+          f.calls.delete(e.id);
+          // An unknown args or result signature matches nothing, so it breaks the pattern. An error without text
+          // compares tool and args; with text, tool and error (§6.4 "same tool/error signature").
+          const unknown = `?${e.id}`;
+          const call = c.sig && e.sig ? `${c.sig}:${e.sig}` : unknown;
+          onCall(f.pat, r, call, e.err ? (e.sig ? `${c.tool}:${e.sig}` : c.sig ?? unknown) : null);
+        }
         break;
+      }
       case 'tool.rejected':
         f.tools.add(e.id);
         if (!f.inflight.has(e.id)) break; // only a call still in flight can be denied or interrupted
-        f.inflight.delete(e.id); f.requests.delete(e.id);
+        f.inflight.delete(e.id); f.requests.delete(e.id); f.calls.delete(e.id); f.pat = freshPatterns();
         f.active = false; f.stopAt = null; f.idle = 'inferred'; f.outcome = 'interrupted';
         break;
       case 'request':
@@ -157,6 +180,7 @@ function step(f: Fold, x: Entry, conflict?: (kind: string) => void) {
         break;
       case 'usage': f.usage.set(e.key, e.usage); break;
     }
+    if (!ignored && TURN_ENDS.has(e.k)) f.pat = freshPatterns(); // R2–R4 belong to the turn that ended (review)
   }
   f.lastTs = Math.max(f.lastTs, x.ts);
   if (inferred) f.lastFileTs = Math.max(f.lastFileTs, x.ts);
@@ -202,6 +226,7 @@ export function createEngine(o: EngineOptions): StatusEngine {
   // session (O(n)). Feeders must stamp file lines with their read time (in order, as the tailer does), or a backfill behind
   // existing hook entries costs O(n²). Compact settled sessions to a snapshot and fold from the insertion point when
   // retention, session counts or a hostile local hook client make that matter.
+  const rules: RuleSettings = { ...RULE_DEFAULTS, ...o.rules };
   const sessions = new Map<string, Sess>();
   const key = (agent: string, sid: string) => `${agent}\0${sid}`;
   const get = (agent: string, sid: string) => {
@@ -218,11 +243,14 @@ export function createEngine(o: EngineOptions): StatusEngine {
       const evs: unknown = JSON.parse(r.ev);
       if (!Array.isArray(evs) || !evs.every((e) => e && typeof e === 'object' && typeof e.k === 'string')) throw new Error('shape');
       const x: Entry = { ts: r.ts, rank: r.rank, seq: r.seq, conf: r.confidence, evs: evs as Ev[] };
-      step(s.fold, x); s.entries.push(x);
+      step(s.fold, x, rules); s.entries.push(x);
     } catch { o.log('status_row_skipped'); } // one corrupt row never stops startup
     seq = Math.max(seq, r.rank === 0 ? r.seq : 0);
   }
   let suspendedAt: number | null = null;
+  // ponytail: suspended intervals live in memory, so a restart forgets earlier sleeps; persist them if R1/R5 must hold
+  // across a restart that follows a sleep inside one long call (P3-T12 owns the sleep/wake source).
+  const sleeps: [number, number][] = [];
 
   const ingest = (obs: Observation) => {
     if (obs.source === 'otel') return; // OTel never drives status (§6.6)
@@ -245,18 +273,28 @@ export function createEngine(o: EngineOptions): StatusEngine {
     let i = s.entries.length;
     while (i > 0 && after(s.entries[i - 1]!, x) > 0) i--;
     s.entries.splice(i, 0, x);
-    if (i === s.entries.length - 1) step(s.fold, x, (kind) => o.log(`status_conflict agent=${agent} kind=${kind}`));
-    else { s.fold = fresh(); for (const e of s.entries) step(s.fold, e); } // out of order: refold in causal order
+    if (i === s.entries.length - 1) step(s.fold, x, rules, (kind) => o.log(`status_conflict agent=${agent} kind=${kind}`));
+    else { s.fold = fresh(); for (const e of s.entries) step(s.fold, e, rules); } // out of order: refold in causal order
   };
 
   const status = (agent: string, sid: string): SessionStatus | null => {
     const s = sessions.get(key(agent, sid));
     if (!s) return null;
-    const f = s.fold;
+    const f = s.fold, now = o.now();
+    const l = life(f, agent, now, o.settleMs);
+    const findings = [...f.pat.found.keys()];
+    // R1: busy in a turn with no known wait (call, request, subagent, background work) and no evidence for too long.
+    if (l.lifecycle === 'busy' && l.reason === null && !f.inflight.size && !f.children.size
+      && awake(f.lastTs, now, sleeps) > rules.noProgressMs) findings.push('R1');
+    // R5: a call in flight too long, while the session works (or may be waiting, heuristically). An Agent/Task call
+    // counts: a subagent running that long shows "long-running tool". A confirmed permission or input wait is not busy,
+    // so a slow answer never reads as a long tool.
+    if ((l.lifecycle === 'busy' || l.confidence === 'heuristic')
+      && [...f.inflight.values()].some((t) => awake(t.at, now, sleeps) > rules.longToolMs)) findings.push('R5');
     return {
-      ...life(f, agent, o.now(), o.settleMs),
+      ...l,
       health: suspendedAt !== null && f.lastTs <= suspendedAt ? 'stale' : 'connected',
-      outcome: f.outcome, findings: [], toolCalls: f.tools.size, turns: f.turnIds.size + Math.max(f.typed.confirmed, f.typed.inferred),
+      outcome: f.outcome, findings: findings.sort(), toolCalls: f.tools.size, turns: f.turnIds.size + Math.max(f.typed.confirmed, f.typed.inferred),
       usage: usageOf(f), model: null, effort: null,
     };
   };
@@ -264,8 +302,8 @@ export function createEngine(o: EngineOptions): StatusEngine {
   return {
     ingest, status,
     advance: () => {},
-    suspend: (now) => { suspendedAt = now; },
-    resume: () => {},
+    suspend: (now) => { suspendedAt = now; if (sleeps.at(-1)?.[1] !== Infinity) sleeps.push([now, Infinity]); },
+    resume: (now) => { const last = sleeps.at(-1); if (last?.[1] === Infinity) last[1] = now; },
     close: () => {},
   };
 }

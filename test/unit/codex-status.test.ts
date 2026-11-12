@@ -4,10 +4,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { codexEvidence } from '../../src/service/adapters/codex/status-map.ts';
+import type { Ev } from '../../src/service/status/engine.ts';
 import { hookObs, fileObs } from '../helpers/status.ts';
 
-const hook = (event: string, p: Record<string, unknown> = {}) => codexEvidence(hookObs('codex', { hook_event_name: event, ...p }));
-const roll = (type: string, payload: Record<string, unknown>) => codexEvidence(fileObs('codex', { timestamp: '2026-01-01T00:00:00.000Z', type, payload }));
+// R2/R4 signatures (P3-T09) are hashes checked in claude-status.test.ts; the row tests compare the rest. Codex tool ends
+// never carry err (D-P3-08 e).
+const bare = (evs: Ev[]) => evs.map((e) => { const { sig: _s, ...rest } = e as Ev & { sig?: string }; return rest; });
+const hook = (event: string, p: Record<string, unknown> = {}) => bare(codexEvidence(hookObs('codex', { hook_event_name: event, ...p })));
+const roll = (type: string, payload: Record<string, unknown>) => bare(codexEvidence(fileObs('codex', { timestamp: '2026-01-01T00:00:00.000Z', type, payload })));
 
 test('hook rows: session, prompt with turn id, tools, PermissionRequest, Stop, Interrupt, subagents, SessionEnd', () => {
   assert.deepEqual(hook('SessionStart', { source: 'startup' }), [{ k: 'session.start' }]);

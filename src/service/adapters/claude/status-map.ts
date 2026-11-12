@@ -4,6 +4,7 @@
 // transcript tool_result with the rejection text is its own evidence (denial or interrupt, S7); a subagent's tool calls
 // never restart the parent turn.
 import type { Ev, Observation } from '../../status/engine.ts';
+import { sigField } from '../../status/rules.ts';
 
 // The S7 rejection text starts the result; a marker anywhere else is ordinary tool output (security review).
 const REJECTED = /^The user doesn't want to proceed with this tool use/;
@@ -27,9 +28,10 @@ function hook(p: Record<string, unknown>, envelopeEvent: string): Ev[] {
       if (!id) return [{ k: 'activity' }];
       const tool = str(p, 'tool_name');
       return [{ k: 'tool.start', id, ...(tool ? { tool } : {}), ...(obj(p['tool_input'])['run_in_background'] === true ? { background: true as const } : {}),
-        ...(str(p, 'agent_id') ? { child: true as const } : {}) }];
+        ...(str(p, 'agent_id') ? { child: true as const } : {}), ...sigField(p['tool_input'], tool) }];
     }
-    case 'PostToolUse': case 'PostToolUseFailure': return id ? [{ k: 'tool.end', id }] : [];
+    case 'PostToolUse': return id ? [{ k: 'tool.end', id, ...sigField(p['tool_response']) }] : [];
+    case 'PostToolUseFailure': return id ? [{ k: 'tool.end', id, ...sigField(p['error']), err: true }] : [];
     case 'PermissionRequest': return [{ k: 'request', kind: 'permission', id: null }];
     case 'PermissionDenied': return id ? [{ k: 'resolve', id, outcome: 'denied' }] : []; // §6.2: untested
     case 'Notification': return str(p, 'notification_type') === 'permission_prompt' ? [{ k: 'request', kind: 'permission', id: null }] : [];
@@ -60,7 +62,8 @@ function line(raw: string): Ev[] {
     return blocks.flatMap((b): Ev[] => {
       const id = str(b, 'tool_use_id');
       if (b['type'] !== 'tool_result' || !id) return [];
-      return [b['is_error'] === true && REJECTED.test(head(b['content'])) ? { k: 'tool.rejected', id } : { k: 'tool.end', id }];
+      if (b['is_error'] === true && REJECTED.test(head(b['content']))) return [{ k: 'tool.rejected', id }];
+      return [{ k: 'tool.end', id, ...sigField(b['content']), ...(b['is_error'] === true ? { err: true as const } : {}) }];
     });
   }
   if (r['type'] !== 'assistant') return [];
@@ -69,7 +72,8 @@ function line(raw: string): Ev[] {
     const id = str(b, 'id');
     if (b['type'] !== 'tool_use' || !id) continue;
     const tool = str(b, 'name');
-    out.push({ k: 'tool.start', id, ...(tool ? { tool } : {}), ...(obj(b['input'])['run_in_background'] === true ? { background: true as const } : {}) });
+    out.push({ k: 'tool.start', id, ...(tool ? { tool } : {}), ...(obj(b['input'])['run_in_background'] === true ? { background: true as const } : {}),
+      ...sigField(b['input'], tool) });
   }
   const u = obj(m['usage']), mid = str(m, 'id');
   const usage = Object.fromEntries(Object.entries(USAGE).filter(([k]) => count(u[k])).map(([k, n]) => [n, u[k] as number]));
