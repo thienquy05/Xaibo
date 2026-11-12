@@ -1,0 +1,20 @@
+#!/bin/sh
+# Stable hook shim (P3-T03, S3; EC-27, EC-64). Installed at <appdata>/integrations/bin/xaibo-hook and named in every agent
+# hook as `'<this path>' hook <agent> <profile_key>`. It never prints and always exits 0 (also when the forwarder
+# cannot run, fails or crashes). It runs only a sibling xaibo-forwarder that is a regular file of our own that nobody
+# else can modify (security review 379), using system tools by absolute path so the agent's PATH cannot vouch for it.
+# The data dir comes from this file's physical location, never from the agent's environment.
+PATH=/usr/bin:/bin
+export PATH
+exec >/dev/null 2>&1
+dir=$(cd -P -- "$(/usr/bin/dirname -- "$0")" && pwd -P) || exit 0
+fwd=$dir/xaibo-forwarder
+[ -f "$fwd" ] && [ ! -L "$fwd" ] && [ -x "$fwd" ] && [ -O "$fwd" ] && [ -O "$dir" ] || exit 0
+writable=$(/usr/bin/find "$fwd" "$dir" -prune \( -perm -0020 -o -perm -0002 \) -print) || exit 0
+[ -z "$writable" ] || exit 0
+data=$(/usr/bin/dirname -- "$(/usr/bin/dirname -- "$dir")") || exit 0
+unset NODE_OPTIONS NODE_DEBUG NODE_PATH NODE_EXTRA_CA_CERTS
+XAIBO_DATA_DIR=$data
+export XAIBO_DATA_DIR
+"$fwd" "$@"
+exit 0

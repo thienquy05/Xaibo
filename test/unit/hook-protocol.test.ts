@@ -52,7 +52,7 @@ test('hello, envelope and ack validation; unknown v rejected', () => {
   assert.deepEqual(parseEnvelope({ ...ENV, truncated: true, malformed: true, payload: null }).ok, true);
   assert.deepEqual(parseEnvelope({ ...ENV, v: 2 }), { ok: false, code: 'version' });
   const shapes: Array<Record<string, unknown>> = [
-    { delivery_id: 'not-a-uuid' }, { agent: 'Claude Code' }, { agent: 'a'.repeat(33) }, { profile_key: 'x'.repeat(129) },
+    { delivery_id: 'not-a-uuid' }, { agent: 'Claude Code' }, { agent: 'a'.repeat(33) }, { profile_key: 'x'.repeat(129) }, { profile_key: 'a b' }, { profile_key: '../x' },
     { event: '' }, { session_id: 5 }, { cwd: 'x'.repeat(4097) }, { received_ts: 'now' }, { truncated: 'yes' }, { extra: 1 },
   ];
   for (const s of shapes) assert.deepEqual(parseEnvelope({ ...ENV, ...s }), { ok: false, code: 'shape' }, JSON.stringify(s).slice(0, 40));

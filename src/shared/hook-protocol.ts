@@ -23,6 +23,7 @@ export class FrameError extends Error {
 const HEADER = 4;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const AGENT = /^[a-z0-9][a-z0-9-]{0,31}$/;
+const PROFILE = /^[A-Za-z0-9._-]{1,128}$/; // may reach keys and paths downstream (security review 379 #9)
 const MAX_KEY = 128;
 const MAX_SESSION = 256;
 const MAX_CWD = 4096;
@@ -87,7 +88,7 @@ export function parseEnvelope(x: unknown): { ok: true; envelope: Envelope } | { 
   const ok = Object.keys(x).every((k) => ENVELOPE_KEYS.has(k)) && REQUIRED.every((k) => Object.hasOwn(x, k))
     && typeof x['delivery_id'] === 'string' && UUID.test(x['delivery_id'])
     && typeof x['agent'] === 'string' && AGENT.test(x['agent'])
-    && str(x['profile_key'], MAX_KEY) && str(x['event'], MAX_KEY)
+    && typeof x['profile_key'] === 'string' && PROFILE.test(x['profile_key']) && str(x['event'], MAX_KEY)
     && strOrNull(x['session_id'], MAX_SESSION) && strOrNull(x['cwd'], MAX_CWD)
     && typeof x['received_ts'] === 'number' && Number.isFinite(x['received_ts']) && x['received_ts'] >= 0
     && (x['payload'] === null || isObject(x['payload']))

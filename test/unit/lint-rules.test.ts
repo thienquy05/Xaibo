@@ -53,6 +53,8 @@ test('allows child_process in the sanctioned spawn module', async () => {
 
 test('allows node:net (Unix socket) in the sanctioned socket module only (P3-T02)', async () => {
   assert.deepEqual(await ruleIds("import net from 'node:net';\nvoid net;\n", 'src/service/receivers/socket.ts'), []);
+  assert.deepEqual(await ruleIds("import net from 'node:net';\nvoid net;\n", 'src/forwarder/forwarder.ts'), []);
+  assert.ok((await ruleIds("import http from 'node:http';\nvoid http;\n", 'src/forwarder/forwarder.ts')).includes('no-restricted-imports'));
 });
 
 test('clean sample has no findings', async () => {
