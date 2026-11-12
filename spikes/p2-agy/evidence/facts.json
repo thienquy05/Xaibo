@@ -1,0 +1,170 @@
+{
+  "version": "1.5.6",
+  "versionStableAcrossRuns": true,
+  "dataRoot": "~/.gemini/antigravity-cli",
+  "filePatterns": [
+    "annotations",
+    "annotations/<uuid>.pbtxt",
+    "antigravity-oauth-token",
+    "bin",
+    "bin/webm_encoder",
+    "brain",
+    "brain/<uuid>",
+    "brain/<uuid>/.system_generated",
+    "brain/<uuid>/.system_generated/logs",
+    "brain/<uuid>/.system_generated/logs/chunks",
+    "brain/<uuid>/.system_generated/logs/chunks/transcript",
+    "brain/<uuid>/.system_generated/logs/chunks/transcript/<n>.jsonl",
+    "brain/<uuid>/.system_generated/logs/chunks/transcript_full",
+    "brain/<uuid>/.system_generated/logs/chunks/transcript_full/<n>.jsonl",
+    "brain/<uuid>/.system_generated/logs/transcript.jsonl",
+    "brain/<uuid>/.system_generated/logs/transcript_full.jsonl",
+    "brain/<uuid>/.system_generated/messages",
+    "brain/<uuid>/.system_generated/messages/<uuid>.json",
+    "brain/<uuid>/.system_generated/messages/read.json",
+    "brain/<uuid>/.system_generated/messages/undelivered",
+    "brain/<uuid>/.user_uploaded",
+    "brain/<uuid>/scratch",
+    "builtin",
+    "cache",
+    "cache/default_project_id.txt",
+    "cache/last_conversations.json",
+    "cache/marketplaces",
+    "cache/onboarding.json",
+    "cli.log",
+    "conversation_summaries.db",
+    "conversations",
+    "conversations/<uuid>.db",
+    "crashes",
+    "history.jsonl",
+    "implicit",
+    "implicit/<uuid>.pb",
+    "installation_id",
+    "jetbox_summaries_proto.pb",
+    "jetski_state.pbtxt",
+    "last_check.timestamp",
+    "log",
+    "log/cli-<ts>.log",
+    "presence",
+    "presence/<uuid>.lock",
+    "settings.json",
+    "updater",
+    "updater/update.lock",
+    "updater/update_status.json"
+  ],
+  "configFiles": [
+    ".migrated",
+    "config.json",
+    "hooks.json",
+    "mcp_config.json",
+    "projects",
+    "projects/default-cli-project.json"
+  ],
+  "credentialFileMode0600": true,
+  "transcript": {
+    "recordTypes": [
+      "GENERIC",
+      "PLANNER_RESPONSE",
+      "SYSTEM_MESSAGE",
+      "USER_INPUT"
+    ],
+    "sources": [
+      "MODEL",
+      "SYSTEM",
+      "USER_EXPLICIT"
+    ],
+    "statuses": [
+      "DONE"
+    ],
+    "fullHasSameRecordCount": true,
+    "chunksConcatenateToMain": true,
+    "truncatedFieldsSeen": false,
+    "conversationIdPerRecord": false,
+    "modelFieldPerRecord": false,
+    "thinkingTokensInTranscript": false,
+    "toolCallKeys": [
+      "args.Path",
+      "name"
+    ],
+    "stepIndexStrictlyIncreasing": true,
+    "plannerUsageMatchesStreamSteps": true
+  },
+  "stream": {
+    "events": [
+      "init",
+      "result",
+      "step_update"
+    ],
+    "stepTypes": [
+      "agent_response",
+      "system_message",
+      "tool",
+      "user_input"
+    ],
+    "states": [
+      "ACTIVE",
+      "DONE"
+    ],
+    "resultStatuses": [
+      "SUCCESS"
+    ],
+    "toolNames": [
+      "read_file"
+    ],
+    "resumeKeepsConversation": true,
+    "usage": {
+      "observed": true,
+      "totalEqualsInputOutputThinking": false,
+      "totalEqualsInputOutput": true,
+      "cacheReadWithinInput": true,
+      "thinkingWithinOutput": true,
+      "resultCumulativeOverConversation": true
+    }
+  },
+  "history": {
+    "observed": true,
+    "keys": [
+      "conversationId",
+      "display",
+      "timestamp",
+      "workspace"
+    ],
+    "conversationIdKeys": [
+      "conversationId"
+    ],
+    "absolutePathKeys": [
+      "workspace"
+    ],
+    "everyEntryHasConversationId": false,
+    "sameConversationSameWorkspace": true,
+    "pathEqualsEvaluationProject": true
+  },
+  "effortKeyAnywhere": false,
+  "hooks": {
+    "labelsFired": [
+      "PostInvocation-global",
+      "PostInvocation-project",
+      "PostToolUse-global",
+      "PostToolUse-project",
+      "PreInvocation-global",
+      "PreInvocation-project",
+      "PreToolUse-global",
+      "PreToolUse-project",
+      "SessionStart-global",
+      "SessionStart-project",
+      "Stop-global",
+      "Stop-project"
+    ],
+    "projectFileLoaded": true,
+    "globalConfigFileLoaded": true,
+    "emptyOutputAccepted": true,
+    "toolCallIdInToolEvents": true,
+    "modelNames": [
+      "gemini-3.8-flash-high",
+      "gemini-3.8-flash-low"
+    ],
+    "terminationReasons": [
+      "NO_TOOL_CALL"
+    ]
+  }
+}

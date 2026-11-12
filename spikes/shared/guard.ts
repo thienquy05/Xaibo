@@ -26,7 +26,7 @@ interface Snapshot {
 export interface CompareOpts { expectNew?: string; nonAgent?: Set<string> }
 type Counts = { config: number; credential: number; keychain: number; unmatched: number; expectedNew: number };
 
-const AGENT_SVCE = /laude|odex|emini/i;
+const AGENT_SVCE = /laude|odex|emini|ntigravity|jetski/i; // jetski: agy's internal name (P2-T00)
 const ENV_KEYS: EnvKey[] = ['CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'GEMINI_CLI_HOME'];
 const LOGIN_ENV_TIMEOUT_MS = 3_000;
 const DUMP_MAX_BYTES = 256 * 2 ** 20;
@@ -106,8 +106,10 @@ export function takeSnapshot(ctx: GuardCtx): Snapshot {
     add(path.join(r, 'auth.json'), 'credential', credentialFp);
   }
   for (const r of gemini) {
-    add(path.join(r, 'settings.json'), 'config', configFp);
+    // agy config (P2-T00, from the binary's strings) lives under the same ~/.gemini root.
+    for (const f of ['settings.json', 'config/config.json', 'config/hooks.json', 'antigravity-cli/settings.json']) add(path.join(r, f), 'config', configFp);
     add(path.join(r, 'oauth_creds.json'), 'credential', credentialFp);
+    add(path.join(r, 'antigravity-cli/antigravity-oauth-token'), 'credential', credentialFp); // agy file store (P2-T00)
     add(path.join(r, 'gemini-credentials.json'), 'credential', credentialFp);
   }
   const keychain = ctx.keychain().map((k) => ({ s: sha(k.svce), a: sha(k.acct), m: k.mdat, agent: AGENT_SVCE.test(k.svce) }));

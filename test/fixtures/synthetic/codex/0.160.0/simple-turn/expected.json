@@ -1,0 +1,26 @@
+{
+  "evidence": "P2-T02 parser expectations; shapes from spikes/s9/schemas/codex-0.160.0.schema.json (re-extracted 2026-11-11). approval_policy and custom tool names are synthetic values (the schema pins their type only).",
+  "files": {
+    "00000000-0000-4000-8000-0000000c0030": {
+      "records": 15,
+      "kinds": { "session": 1, "turn_context": 1, "turn_start": 1, "message": 3, "mirror": 2, "tool_call": 1, "tool_result": 1, "token_count": 1, "token_usage": 1, "world_state": 1, "settings": 1, "turn_end": 1 },
+      "unknown": 0,
+      "session": { "id": "00000000-0000-4000-8000-0000000c0030", "filenameMatchesMeta": true, "cwd": "/tmp/xaibo-fixture/alpha", "source": "cli", "originator": "codex-tui", "cliVersion": "0.160.0" },
+      "turnIds": ["00000000-0000-4000-8000-0000000c1030"],
+      "models": ["gpt-6.1-sol"],
+      "efforts": [null],
+      "approvalPolicies": ["synthetic-policy"],
+      "sandboxPolicies": ["danger-full-access"],
+      "messages": [
+        { "role": "developer", "content": "synthetic developer instructions", "injected": true },
+        { "role": "user", "content": "synthetic prompt", "injected": false },
+        { "role": "assistant", "content": "synthetic reply", "injected": false }
+      ],
+      "toolCalls": [{ "callId": "call_synthetic_1", "toolName": "synthetic_tool", "content": "synthetic_tool synthetic input" }],
+      "toolResults": [{ "callId": "call_synthetic_1", "content": "synthetic output" }],
+      "compactions": [],
+      "tokenCountEvents": 1,
+      "rateLimitEvents": 0
+    }
+  }
+}

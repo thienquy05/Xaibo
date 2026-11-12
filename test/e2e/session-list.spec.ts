@@ -25,7 +25,7 @@ test('backfill rows, health and the agent strip; a live append updates the row',
   const rows = rowsOf(page);
   await expect(rows).toHaveCount(1);
   await expect(rows.first()).toContainText('/tmp/xaibo-fixture/alpha');
-  await expect(rows.first()).toContainText('sdk-cli');
+  await expect(rows.first().getByRole('cell').nth(1)).toHaveText('CLI -p · Non-interactive'); // P2-T04 origin badge (claude -p fixture)
   await expect(rows.first()).toContainText('Untitled');
   await expect(page.getByRole('status')).toContainText('Running');
   const agents = page.getByRole('region', { name: 'Agents' });

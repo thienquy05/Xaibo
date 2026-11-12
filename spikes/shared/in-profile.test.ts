@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { AGENTS, buildEnv, checkTargets, denyProfile, layoutFor, realRoots, targetsFor } from './in-profile.ts';
 
 const ALLOWED = new Set(['PATH', 'TERM', 'LANG', 'USER', 'LOGNAME', 'SHELL', 'HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME',
-  'GEMINI_CLI_HOME', 'XAIBO_DATA_DIR', 'TMPDIR', 'XAIBO_SPIKE_RAW', 'XAIBO_RUN_TOKEN', 'DISABLE_AUTOUPDATER', 'GEMINI_FORCE_FILE_STORAGE', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC']);
+  'GEMINI_CLI_HOME', 'XAIBO_DATA_DIR', 'TMPDIR', 'XAIBO_SPIKE_RAW', 'XAIBO_RUN_TOKEN', 'DISABLE_AUTOUPDATER', 'GEMINI_FORCE_FILE_STORAGE', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', 'AGY_CLI_DISABLE_AUTO_UPDATE']);
 
 function world() {
   const home = realpathSync(mkdtempSync(join(tmpdir(), 'runner-test-')));
@@ -29,6 +29,29 @@ test('env holds only allowlisted names; isolation paths and TMPDIR live under $P
     assert.equal(env.XAIBO_RUN_TOKEN, 'tok');
     assert.ok(env.XAIBO_SPIKE_RAW.endsWith('/.cache/spike-results/s9/raw'));
   }
+  w.done();
+});
+
+test('agy (P2-T00): auto-update off for agy only; Antigravity, keychain and ~/.gemini are real roots', () => {
+  const w = world();
+  const P = join(w.repo, '.cache', 'profiles');
+  assert.ok((AGENTS as readonly string[]).includes('agy'));
+  assert.equal(buildEnv(layoutFor(w.repo, 'agy', 'a', 'default', undefined, P), 'agy', {}, 't').AGY_CLI_DISABLE_AUTO_UPDATE, '1');
+  assert.equal(buildEnv(layoutFor(w.repo, 'claude', 'a', 'default', undefined, P), 'claude', {}, 't').AGY_CLI_DISABLE_AUTO_UPDATE, undefined);
+  const roots = realRoots(w.home, {}).map((r) => r.path);
+  for (const r of ['.gemini', 'Library/Application Support/Antigravity', '.cache/antigravity', 'Library/Keychains']) assert.ok(roots.includes(join(w.home, r)), r);
+  const l = layoutFor(w.repo, 'agy', 'a', 'default', undefined, P);
+  assert.deepEqual(checkTargets(targetsFor(l, l.home), realRoots(w.home, {})), [], 'agy profile passes the target checks');
+  w.done();
+});
+
+test('agy (P2-T00): installed binaries are write-protected but stay readable (agy self-updates despite its env switch)', () => {
+  const w = world();
+  const bin = join(w.home, '.local/bin');
+  assert.ok(realRoots(w.home, {}).find((r) => r.path === bin)?.writeOnly, '~/.local/bin is a write-only root');
+  const sb = denyProfile([{ path: bin, file: false, writeOnly: true }]);
+  assert.match(sb, /^\(deny file-write\* \(subpath "[^"]*\/\.local\/bin"\)/m);
+  assert.doesNotMatch(sb, /file-read\*/);
   w.done();
 });
 

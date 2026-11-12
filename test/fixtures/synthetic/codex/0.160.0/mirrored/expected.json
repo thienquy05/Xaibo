@@ -1,0 +1,26 @@
+{
+  "evidence": "P2-T02 mirroring: spikes/s9/evidence/facts.json codex.messageMirroring (every item_completed User/AgentMessage mirrors a response_item message of the same role and text in the same file; order not fixed; some response_item user messages have no item).",
+  "files": {
+    "00000000-0000-4000-8000-0000000c0031": {
+      "records": 7,
+      "kinds": { "session": 1, "turn_context": 1, "message": 3, "mirror": 2 },
+      "unknown": 0,
+      "session": { "id": "00000000-0000-4000-8000-0000000c0031", "filenameMatchesMeta": true, "cwd": "/tmp/xaibo-fixture/beta", "source": "exec", "originator": "codex_exec", "cliVersion": "0.160.0" },
+      "turnIds": ["00000000-0000-4000-8000-0000000c1031"],
+      "models": ["gpt-6.1-sol"],
+      "efforts": [null],
+      "approvalPolicies": [],
+      "sandboxPolicies": [],
+      "messages": [
+        { "role": "user", "content": "first prompt", "injected": false },
+        { "role": "user", "content": "synthetic context without an item", "injected": false },
+        { "role": "assistant", "content": "first reply", "injected": false }
+      ],
+      "toolCalls": [],
+      "toolResults": [],
+      "compactions": [],
+      "tokenCountEvents": 0,
+      "rateLimitEvents": 0
+    }
+  }
+}

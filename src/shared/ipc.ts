@@ -10,8 +10,9 @@ export const READ_ONLY_BANNER: Record<ReadOnlyReason, string> = {
   'insufficient-space': 'Not enough disk space to migrate the database: read-only',
 };
 
-/** main -> service; setPath carries a file the user picked in the native dialog (validated again by the service). */
-export type ServiceCommand = { v: 1; type: 'quit' | 'wake' | 'port' } | { v: 1; type: 'setPath'; agent: string; path: string };
+/** main -> service; setPath carries a file the user picked in the native dialog (validated again by the service);
+ *  reloadPrices re-reads the private price override (P2-T09; sent by Settings in P6-T11). */
+export type ServiceCommand = { v: 1; type: 'quit' | 'wake' | 'port' | 'reloadPrices' } | { v: 1; type: 'setPath'; agent: string; path: string };
 /** service -> main */
 export type ServiceEvent = { v: 1; type: 'ready'; readOnly: ReadOnlyReason | null };
 export type HealthState = 'starting' | 'running' | 'restarting' | 'stopped';
@@ -29,13 +30,14 @@ export const AGENT_ID = /^[a-z][a-z0-9-]{0,31}$/;
 const MAX_TEXT = 64 * 1024; // any single transcript-derived string in a list row
 const text = (x: unknown, max = MAX_TEXT): x is string => typeof x === 'string' && x.length <= max;
 const textOrNull = (x: unknown): x is string | null => x === null || text(x);
+const boolOrNull = (x: unknown): x is boolean | null => x === null || typeof x === 'boolean';
 const count = (x: unknown): x is number => Number.isSafeInteger(x) && (x as number) >= 0;
 const timeOrNull = (x: unknown): x is number | null => x === null || Number.isFinite(x);
 
 export function parseServiceCommand(x: unknown): ServiceCommand | null {
   const m = envelope(x);
   if (!m) return null;
-  if (oneOf(['quit', 'wake', 'port'] as const, m.type)) return { v: 1, type: m.type };
+  if (oneOf(['quit', 'wake', 'port', 'reloadPrices'] as const, m.type)) return { v: 1, type: m.type };
   if (m.type !== 'setPath' || !text(m.agent) || !AGENT_ID.test(m.agent)) return null;
   if (!text(m.path, 4096) || !m.path.startsWith('/') || m.path.includes('\0')) return null;
   return { v: 1, type: 'setPath', agent: m.agent, path: m.path };
@@ -57,6 +59,10 @@ export function parseHealth(x: unknown): Health | null {
 export interface Cursor { lastActivity: number | null; id: number }
 export interface SessionRow {
   id: number; agent: string; entrypoint: string | null; cwd: string | null; title: string | null;
+  /** Catalog origin badge, null for an unknown kind; interactive null when unknown (P2-T04). */
+  origin: string | null; interactive: boolean | null;
+  /** "<display name> · <effort>", the raw id, or "Model unavailable" (P2-T08). */
+  model: string;
   lastActivity: number | null; drift: boolean; compressed: boolean; quarantined: number;
 }
 export interface Page { rows: SessionRow[]; next: Cursor | null }
@@ -78,8 +84,9 @@ function parseRow(x: unknown): SessionRow | null {
   if (typeof x !== 'object' || x === null || Array.isArray(x)) return null;
   const r = x as Msg;
   if (!count(r.id) || !text(r.agent, 64) || !textOrNull(r.entrypoint) || !textOrNull(r.cwd) || !textOrNull(r.title)) return null;
+  if (!(r.origin === null || text(r.origin, 64)) || !boolOrNull(r.interactive) || !text(r.model)) return null;
   if (!timeOrNull(r.lastActivity) || typeof r.drift !== 'boolean' || typeof r.compressed !== 'boolean' || !count(r.quarantined)) return null;
-  return { id: r.id, agent: r.agent, entrypoint: r.entrypoint, cwd: r.cwd, title: r.title, lastActivity: r.lastActivity, drift: r.drift, compressed: r.compressed, quarantined: r.quarantined };
+  return { id: r.id, agent: r.agent, entrypoint: r.entrypoint, origin: r.origin, interactive: r.interactive, model: r.model, cwd: r.cwd, title: r.title, lastActivity: r.lastActivity, drift: r.drift, compressed: r.compressed, quarantined: r.quarantined };
 }
 
 function parseRows(x: unknown): SessionRow[] | null {

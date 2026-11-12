@@ -36,6 +36,10 @@ export interface ClaudeRecord {
   raw: string;
   /** Oversized records (oversized.ts): the content key linking a head row to its chunk rows. */
   ingestId?: string;
+  /** P2-T05: `tool_use` block ids (args) and `tool_result.tool_use_id` (result); absent when the record has none. */
+  toolCalls?: { callId: string; part: 'args' | 'result'; tool?: string }[];
+  /** P2-T07: a `system` `compact_boundary` record (S9); postTokens null when not a number. */
+  compact?: { postTokens: number | null };
 }
 export type ParseResult = { ok: true; record: ClaudeRecord } | { ok: false; reason: 'malformed' };
 
@@ -67,6 +71,17 @@ function firstText(content: unknown): string {
   return isObj(first) ? str(first.text) ?? '' : '';
 }
 
+function toolCalls(content: unknown): NonNullable<ClaudeRecord['toolCalls']> {
+  if (!Array.isArray(content)) return [];
+  return content.flatMap((b): NonNullable<ClaudeRecord['toolCalls']> => {
+    if (!isObj(b)) return [];
+    const name = str(b.name);
+    if (b.type === 'tool_use' && str(b.id)) return [{ callId: str(b.id)!, part: 'args' as const, ...(name ? { tool: name } : {}) }];
+    if (b.type === 'tool_result' && str(b.tool_use_id)) return [{ callId: str(b.tool_use_id)!, part: 'result' as const }];
+    return [];
+  });
+}
+
 export function parseLine(bytes: Buffer, ctx: ParseContext): ParseResult | null {
   const raw = bytes.toString('utf8');
   if (raw.trim() === '') return null;
@@ -78,6 +93,7 @@ export function parseLine(bytes: Buffer, ctx: ParseContext): ParseResult | null 
   const msg = isObj(r.message) ? r.message : undefined;
   const role = str(msg?.role);
   const ts = typeof r.timestamp === 'string' ? Date.parse(r.timestamp) : NaN;
+  const calls = toolCalls(msg?.content);
   return {
     ok: true,
     record: {
@@ -102,6 +118,9 @@ export function parseLine(bytes: Buffer, ctx: ParseContext): ParseResult | null 
       isSidechain: r.isSidechain === true,
       subagentNativeId: ctx.subagentNativeId,
       raw,
+      ...(calls.length ? { toolCalls: calls } : {}),
+      ...(type === 'system' && r.subtype === 'compact_boundary'
+        ? { compact: { postTokens: isObj(r.compactMetadata) && typeof r.compactMetadata.postTokens === 'number' ? r.compactMetadata.postTokens : null } } : {}),
     },
   };
 }

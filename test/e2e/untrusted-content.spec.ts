@@ -30,7 +30,7 @@ test('EC-55: injected markup, markdown, ANSI and bidi render as escaped text', a
   const row = page.getByRole('table', { name: 'Sessions' }).locator('tbody tr', { hasText: 'xaibo-fixture/<img' });
   await expect(row).toHaveCount(1);
   expect(await row.getByRole('cell').nth(2).textContent()).toBe(visible(CWD));
-  expect(await row.getByRole('cell').nth(1).textContent()).toBe(visible(ENTRY));
+  expect(await row.getByRole('cell').nth(1).textContent()).toBe(`${visible(ENTRY)} (unverified)`); // unknown kind (P2-T04)
   expect(await page.locator('img').count()).toBe(0);
   expect(await page.locator('main b, main script, table b, table script').count()).toBe(0);
   expect(await page.locator('script').evaluateAll((s) => s.filter((x) => (x.textContent ?? '').includes('__xss')).length)).toBe(0);

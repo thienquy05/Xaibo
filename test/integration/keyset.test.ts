@@ -54,8 +54,8 @@ test('rows carry the list columns and coverage markers', async () => {
   db.prepare("INSERT INTO source_files (profile_id, session_id, path, kind, status) VALUES ('p1', 2, '/tmp/xaibo-fixture/z.jsonl.zst', 'transcript', 'compressed_not_imported')").run();
   const { rows } = listSessions(db, null, 10);
   assert.deepEqual(rows, [
-    { id: 2, agent: 'claude', entrypoint: null, cwd: '/tmp/xaibo-fixture/2', title: null, lastActivity: 2, drift: false, compressed: true, quarantined: 0 },
-    { id: 1, agent: 'claude', entrypoint: 'cli', cwd: '/tmp/xaibo-fixture/1', title: null, lastActivity: 1, drift: true, compressed: false, quarantined: 3 },
+    { id: 2, agent: 'claude', entrypoint: null, origin: null, interactive: null, model: 'Model unavailable', cwd: '/tmp/xaibo-fixture/2', title: null, lastActivity: 2, drift: false, compressed: true, quarantined: 0 },
+    { id: 1, agent: 'claude', entrypoint: 'cli', origin: null, interactive: null, model: 'Model unavailable', cwd: '/tmp/xaibo-fixture/1', title: null, lastActivity: 1, drift: true, compressed: false, quarantined: 3 },
   ]);
   assert.deepEqual(sessionsByKey(db, [{ agent: 'claude', profileId: 'p1', nativeSessionId: '00000000-0000-4000-8000-000000000001' }]).map((r) => r.id), [1]);
 });

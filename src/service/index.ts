@@ -22,12 +22,12 @@ const booted = new Promise<Service>((resolve) => { resolveBooted = resolve; });
 const broadcast = (m: PortMessage) => { for (const p of ports) p.postMessage(m); };
 const changed = coalesce((keys) => {
   if (!svc?.store.db.isOpen) return;
-  const rows = sessionsByKey(svc.store.db, keys.map((k) => { const [agent, profileId, nativeSessionId] = k.split('\0') as [string, string, string]; return { agent, profileId, nativeSessionId }; }));
+  const rows = sessionsByKey(svc.store.db, keys.map((k) => { const [agent, profileId, nativeSessionId] = k.split('\0') as [string, string, string]; return { agent, profileId, nativeSessionId }; }), svc.kinds(), svc.models());
   if (rows.length) broadcast({ v: IPC_VERSION, type: 'sessions', rows });
 }, DELTA_MS);
 
 const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
-  void booted.then((s) => { if (s.store.db.isOpen) port.postMessage(answer(s.store.db, req)); });
+  void booted.then((s) => { if (s.store.db.isOpen) port.postMessage(answer(s.store.db, req, s.kinds(), s.models())); });
 });
 
 function connect(port: MessagePortMain) {
@@ -41,6 +41,7 @@ function connect(port: MessagePortMain) {
 const command = accept(parseServiceCommand, (m, transferred: MessagePortMain[]) => {
   if (m.type === 'quit') { svc?.stop(); process.exit(0); }
   else if (m.type === 'wake') void svc?.wake();
+  else if (m.type === 'reloadPrices') void booted.then((s) => s.reloadPrices());
   else if (m.type === 'port') transferred.forEach(connect);
   else if (m.type === 'setPath') { const { agent, path: file } = m; void booted.then((s) => s.setPath(agent, file)); }
 });

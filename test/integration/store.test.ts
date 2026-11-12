@@ -40,6 +40,15 @@ test('fresh DB applies 001 and matches schema.sql', async () => {
   assert.equal(snap, readFileSync(SCHEMA, 'utf8'), 'schema.sql is stale: rerun with UPDATE_SCHEMA=1');
 });
 
+test('P2-T14: the latest-turn model lookup is served by the turns(session_id, started_at) index, without a sort', async () => {
+  const { db } = await fresh();
+  const plan = (db.prepare(`EXPLAIN QUERY PLAN UPDATE turns SET model_id = ?, effort = ? WHERE model_id IS NULL AND id =
+    (SELECT id FROM turns WHERE session_id = ? AND started_at <= ? ORDER BY started_at DESC, id DESC LIMIT 1)`).all('m', null, 1, 1) as { detail: string }[])
+    .map((r) => r.detail);
+  assert.ok(plan.some((d) => d.includes('turns_started')), plan.join(' | '));
+  assert.ok(!plan.some((d) => d.includes('TEMP B-TREE')), plan.join(' | '));
+});
+
 test('pragmas and 0600 files', async () => {
   const { dir, db, readOnly } = await fresh();
   assert.equal(readOnly, false);

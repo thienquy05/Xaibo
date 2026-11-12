@@ -2,8 +2,7 @@
 // first commit with a row), over cold runs (fresh data dir each) while the corpus imports in the background. Long frames
 // above 100 ms are counted (reported at Gate 1, not enforced). One extra run times the full import, for information.
 import path from 'node:path';
-import { FIRST_PAGE_MARK, LONG_FRAME } from '../../src/renderer/perf-marks.ts';
-import { close, environment, fileBytes, launch, query, sleep, stats, waitForEvent } from './app.ts';
+import { close, environment, fileBytes, firstPage, launch, query, stats, waitForEvent } from './app.ts';
 
 export async function m3FirstList(corpus: string, runs: number, timeImport = true) {
   const claude = path.join(corpus, '.claude');
@@ -15,19 +14,10 @@ export async function m3FirstList(corpus: string, runs: number, timeImport = tru
     const l = await launch(claude);
     try {
       env ??= await environment(l.app);
-      const markAt = await l.page.evaluate(async ({ name, timeout }) => {
-        const t0 = performance.now();
-        while (performance.now() - t0 < timeout) {
-          const e = performance.getEntriesByName(name)[0];
-          if (e) return performance.timeOrigin + e.startTime;
-          await new Promise((r) => setTimeout(r, 10));
-        }
-        return null;
-      }, { name: FIRST_PAGE_MARK, timeout: 30_000 });
-      if (markAt === null || Number.isNaN(l.created)) missing++;
-      else times.push(markAt - l.created);
-      await sleep(2_000); // long frames around the first page, during the import
-      longFrames.push(...await l.page.evaluate((n) => performance.getEntriesByName(n).map((e) => e.duration), LONG_FRAME));
+      const r = await firstPage(l);
+      if (r.ms === null) missing++;
+      else times.push(r.ms);
+      longFrames.push(...r.longFrames);
     } finally { await close(l); }
   }
 

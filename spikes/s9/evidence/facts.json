@@ -114,6 +114,7 @@
     ],
     "sessionIdInFilenameMatchesMeta": true,
     "recordTypes": [
+      "compacted",
       "event_msg",
       "response_item",
       "session_meta",
@@ -134,11 +135,13 @@
     ],
     "sources": [
       "cli",
-      "exec"
+      "exec",
+      "vscode"
     ],
     "originators": [
       "codex-tui",
-      "codex_exec"
+      "codex_exec",
+      "xaibo-spike"
     ],
     "sessionMetaKeys": [
       "base_instructions",
@@ -147,10 +150,14 @@
       "creator_account_id",
       "creator_user_id",
       "cwd",
+      "forked_from_id",
+      "forked_from_ordinal_exclusive",
       "git",
+      "history_base",
       "history_mode",
       "id",
       "model_provider",
+      "multi_agent_version",
       "originator",
       "runtime_workspace_roots",
       "session_id",
@@ -233,9 +240,30 @@
     ],
     "effortValues": [],
     "mirroredUserMessages": false,
+    "messageMirroring": {
+      "itemCompletedMessages": true,
+      "userItemsMirrored": true,
+      "agentItemsMirrored": true,
+      "itemAlwaysAfterResponse": false,
+      "itemIdEqualsResponseId": false,
+      "responseUserWithoutItem": true,
+      "responseAssistantWithoutItem": false
+    },
     "compaction": {
-      "recorded": false,
-      "keys": []
+      "recorded": true,
+      "keys": [
+        "compaction_response_id",
+        "first_window_id",
+        "latest_token_usage_record",
+        "message",
+        "previous_window_id",
+        "replacement_history",
+        "replacement_history_metadata",
+        "resume_metadata",
+        "retained_context",
+        "window_id",
+        "window_number"
+      ]
     },
     "sessionIndex": {
       "present": true,
@@ -265,6 +293,7 @@
     "largePayloadFields": [
       "payload.base_instructions.text",
       "payload.content[].text",
+      "payload.replacement_history[].encrypted_content",
       "payload.state.host_skills.body"
     ]
   }

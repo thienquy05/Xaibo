@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "revision": "2026-11-12.1",
+  "currency": "USD",
+  "prices_as_of": "2026-11-12",
+  "sources": [
+    { "id": "anthropic", "url": "https://platform.claude.com/docs/en/about-claude/pricing", "retrieved": "2026-11-12" },
+    { "id": "openai", "url": "https://developers.openai.com/api/docs/pricing", "retrieved": "2026-11-12" }
+  ],
+  "models": [
+    {
+      "id": "claude-fable-5-2", "display_name": "Claude Fable 5.2", "family": "claude-fable", "context_window": 1000000,
+      "source": "anthropic", "prices_verified": true, "qualifiers": { "service_tier": ["standard"], "speed": ["standard"] },
+      "rates": { "input": 8, "output": 40, "cache_read": 0.2, "cache_write": { "5m": 10, "1h": 16 } }
+    },
+    {
+      "id": "claude-opus-5-5", "display_name": "Claude Opus 5.5", "family": "claude-opus", "context_window": 1000000,
+      "source": "anthropic", "prices_verified": true, "qualifiers": { "service_tier": ["standard"], "speed": ["standard"] },
+      "rates": { "input": 4, "output": 20, "cache_read": 0.2, "cache_write": { "5m": 5, "1h": 8 } }
+    },
+    {
+      "id": "claude-sonnet-5-5", "display_name": "Claude Sonnet 5.5", "family": "claude-sonnet", "context_window": 1000000,
+      "source": "anthropic", "prices_verified": true, "qualifiers": { "service_tier": ["standard"], "speed": ["standard"] },
+      "rates": { "input": 2, "output": 10, "cache_read": 0.1, "cache_write": { "5m": 2.5, "1h": 4 } }
+    },
+    {
+      "id": "claude-haiku-5-5", "display_name": "Claude Haiku 5.5", "family": "claude-haiku", "context_window": 1000000,
+      "source": "anthropic", "prices_verified": true, "qualifiers": { "service_tier": ["standard"], "speed": ["standard"] },
+      "rates": { "input": 0.1, "output": 0.5, "cache_read": 0.01, "cache_write": { "5m": 0.125, "1h": 0.2 } },
+      "tiers": [
+        { "above_prompt_tokens": 100000, "rates": { "input": 0.5, "output": 2.5, "cache_read": 0.05, "cache_write": { "5m": 0.625, "1h": 1 } } }
+      ]
+    },
+    {
+      "id": "gpt-6.1-sol", "display_name": "GPT-6.1 Sol", "family": "gpt", "source": "openai", "prices_verified": true, "qualifiers": { "service_tier": ["default"] },
+      "rates": { "input": 2, "output": 10, "cache_read": 0.1, "cache_write": { "30m": 2.5, "12h": 5 } },
+      "tiers": [
+        { "above_prompt_tokens": 272000, "rates": { "input": 4, "output": 15, "cache_read": 0.2, "cache_write": { "30m": 5, "12h": 10 } } }
+      ]
+    }
+  ]
+}

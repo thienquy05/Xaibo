@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { accept, healthText, parseHealth, parsePortMessage, parsePortRequest, parseServiceCommand, parseServiceEvent, READ_ONLY_BANNER } from '../../src/shared/ipc.ts';
 
 test('service commands: known types pass, extra fields are stripped', () => {
-  for (const type of ['quit', 'wake', 'port'] as const) assert.deepEqual(parseServiceCommand({ v: 1, type, extra: 'x' }), { v: 1, type });
+  for (const type of ['quit', 'wake', 'port', 'reloadPrices'] as const) assert.deepEqual(parseServiceCommand({ v: 1, type, extra: 'x' }), { v: 1, type });
 });
 
 test('unknown versions, unknown types and non-objects are rejected', () => {
@@ -46,7 +46,7 @@ test('accept() hands valid messages on and counts the dropped ones', () => {
 });
 
 // P1-T12 (XAIBO-PROD-110): renderer <-> service port messages and the setPath command.
-const row = { id: 7, agent: 'claude', entrypoint: 'cli', cwd: '/tmp/xaibo-fixture/a', title: null, lastActivity: 5, drift: false, compressed: false, quarantined: 0 };
+const row = { id: 7, agent: 'claude', entrypoint: 'cli', origin: 'CLI', interactive: true, model: 'Model unavailable', cwd: '/tmp/xaibo-fixture/a', title: null, lastActivity: 5, drift: false, compressed: false, quarantined: 0 };
 
 test('setPath command: agent id and an absolute path only', () => {
   assert.deepEqual(parseServiceCommand({ v: 1, type: 'setPath', agent: 'claude', path: '/tmp/x/claude', extra: 1 }), { v: 1, type: 'setPath', agent: 'claude', path: '/tmp/x/claude' });
@@ -71,7 +71,8 @@ test('port messages: page, sessions and agents validated field by field; one bad
   const agents = { v: 1, type: 'agents', agents: [{ agent: 'claude', name: 'Claude Code', state: 'detected', version: '2.1.319' }] };
   assert.deepEqual(parsePortMessage(agents), agents);
   assert.deepEqual(parsePortMessage({ v: 1, type: 'agents', agents: null }), { v: 1, type: 'agents', agents: null });
-  for (const bad of [{ ...row, id: '7' }, { ...row, cwd: 5 }, { ...row, drift: 'no' }, { ...row, quarantined: -1 }, { ...row, lastActivity: Number.NaN }, { ...row, agent: 'x'.repeat(65) }]) {
+  for (const bad of [{ ...row, id: '7' }, { ...row, cwd: 5 }, { ...row, drift: 'no' }, { ...row, quarantined: -1 }, { ...row, lastActivity: Number.NaN }, { ...row, agent: 'x'.repeat(65) },
+    { ...row, origin: 5 }, { ...row, origin: 'x'.repeat(65) }, { ...row, origin: undefined }, { ...row, interactive: 'yes' }, { ...row, interactive: undefined }, { ...row, model: null }, { ...row, model: 5 }]) {
     assert.equal(parsePortMessage({ ...page, rows: [row, bad] }), null, JSON.stringify(bad));
   }
   assert.equal(parsePortMessage({ ...page, rows: 'all' }), null);

@@ -2,6 +2,7 @@
 // window holds `capacity` rows (a page per Load more); deltas update loaded rows and add new sessions only inside
 // that window, trimming from the bottom, so a large backfill never grows the DOM (virtualization is Phase 4).
 import type { Cursor, Page, SessionRow } from '../shared/ipc.ts';
+import { visible } from './text.ts';
 
 export const PAGE = 50;
 export interface ListState { rows: SessionRow[]; next: Cursor | null; capacity: number; loaded: boolean }
@@ -48,6 +49,13 @@ export function markers(r: SessionRow): Marker[] {
   if (r.compressed) out.push({ glyph: '◫', text: 'Compressed, not imported' });
   if (r.quarantined > 0) out.push({ glyph: '⊘', text: `${r.quarantined} quarantined line${r.quarantined === 1 ? '' : 's'}` });
   return out;
+}
+
+/** Origin cell (P2-T04, EC-05): the catalog badge, else the raw entry point (visible form) marked unverified, else a
+ *  dash; a non-interactive kind adds the "Non-interactive" tag as text. */
+export function originText(r: SessionRow): string {
+  const base = r.origin ?? (r.entrypoint ? `${visible(r.entrypoint)} (unverified)` : '—');
+  return r.interactive === false ? `${base} · Non-interactive` : base;
 }
 
 const two = (n: number) => String(n).padStart(2, '0');
