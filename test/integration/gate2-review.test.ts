@@ -173,3 +173,30 @@ test('G2-6: tool-call fields never depend on arrival order (EC-10)', async () =>
   assert.deepEqual(a, b);
   assert.equal(a.tool, 'Alpha', 'transcript outranks otel');
 });
+
+test('G2-16: a qualifier-only change (service_tier standard -> priority, same tokens) re-prices the estimate', async () => {
+  const p = await claudeProfile(['usage-basic']);
+  const run = async () => { const a = new ClaudeAdapter({ db: p.db, writer: p.writer, profileId: 'p1', root: p.root, intervalMs: 60_000 }); await a.start(); a.stop(); };
+  await run();
+  const prices = loadPrices({ db: p.db, overridePath: join(p.tmp, 'none.json') });
+  priceUsage(p.db, prices);
+  const dir = join(p.root, 'projects', '-tmp-xaibo-fixture-usage-basic');
+  const name = readdirSync(dir).find((f) => f.endsWith('.jsonl'))!;
+  const last = readFileSync(join(FIXTURES, 'usage-basic', name), 'utf8').split('\n').filter(Boolean).findLast((l) => l.includes('"msg_fixture_0002"'))!;
+  appendFileSync(join(dir, name), `${last.replace(/"uuid":"[^"]+"/, '"uuid":"00000000-0000-4000-8000-000000001940"').replace('"service_tier":"standard"', '"service_tier":"priority"')}\n`);
+  await run();
+  priceUsage(p.db, prices, { afterUsageId: Number.MAX_SAFE_INTEGER });
+  const e = estimates(p.db).find((x) => x.scope === 'usage:transcript:msg_fixture_0002')!;
+  assert.deepEqual({ amount: e.amount, reason: e.reason }, { amount: null, reason: 'unsupported-service_tier' });
+});
+
+test('G2-17: the dirty-estimate query starts from the partial index and never scans usage', async () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'xg2-plan-'));
+  const { db } = await openStore({ file: join(tmp, 'x.db'), backupDir: join(tmp, 'b') });
+  const src = readFileSync(join(import.meta.dirname, '..', '..', 'src', 'service', 'usage', 'cost.ts'), 'utf8');
+  const sql = /const dirty = db\.prepare\(`([^`]+)`\)/.exec(src)?.[1];
+  assert.ok(sql, 'dirty query found in cost.ts');
+  const plan = (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as { detail: string }[]).map((r) => r.detail);
+  assert.ok(plan[0]?.includes('cost_estimates_dirty'), plan.join(' | '));
+  assert.ok(!plan.some((d) => /^SCAN u\b/.test(d)), plan.join(' | '));
+});

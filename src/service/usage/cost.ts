@@ -103,7 +103,8 @@ export function priceUsage(db: DatabaseSync, prices: Prices, o: { afterUsageId?:
   // G2-2: estimates marked dirty (their evidence changed after pricing) are re-priced with their own revision.
   const dirty = db.prepare(`SELECT u.session_id AS sid, s.agent, u.source, u.identity, u.model_id, u.uncached_input, u.cache_read, u.cache_write,
       u.cache_write_classes, u.output, u.raw, u.completeness, u.source_ts, (ev.subagent_native_id IS NOT NULL) AS child, e.price_revision_id AS ownRev
-    FROM cost_estimates e JOIN usage u ON u.session_id = e.session_id AND u.scope = 'message' AND 'usage:' || u.source || ':' || u.identity = e.covered_scope
+    FROM cost_estimates e CROSS JOIN usage u ON u.session_id = e.session_id AND u.source = e.source AND u.scope = 'message'
+      AND 'usage:' || u.source || ':' || u.identity = e.covered_scope -- G2-17: CROSS JOIN keeps the dirty partial index as the outer loop
     JOIN sessions s ON s.id = u.session_id LEFT JOIN events ev ON ev.id = u.event_id
     WHERE e.dirty = 1`).all() as (UsageRow & { ownRev: number | null })[];
   const seen = new Set(rows.map((u) => `${u.sid}\0${u.source}\0${u.identity}`));

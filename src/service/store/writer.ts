@@ -152,7 +152,7 @@ function prepare(db: DatabaseSync) {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (session_id, native_call_id) DO UPDATE SET sources = excluded.sources, tool = excluded.tool,
         tool_source = excluded.tool_source, args_event_id = excluded.args_event_id, result_event_id = excluded.result_event_id`),
     // G2-2: priced request rows whose evidence changes are re-priced (with their own revision) by the next pricing pass.
-    pricedUsage: db.prepare(`SELECT u.model_id, u.uncached_input, u.cache_read, u.cache_write, u.cache_write_classes, u.output FROM usage u
+    pricedUsage: db.prepare(`SELECT u.model_id, u.raw FROM usage u
       JOIN cost_estimates e ON e.session_id = u.session_id AND e.covered_scope = 'usage:' || u.source || ':' || u.identity
       WHERE u.session_id = ? AND u.source = ? AND u.scope = 'message' AND u.identity = ?`),
     markDirty: db.prepare("UPDATE cost_estimates SET dirty = 1 WHERE session_id = ? AND covered_scope = ?"),
@@ -179,16 +179,15 @@ function putToolCall(st: ReturnType<typeof prepare>, sid: number | bigint, callI
  *  advance; duplicates add nothing; a missing rate_limits reading writes no snapshot; a drifted token_usage_record is a
  *  gap row (D-P2-03), never consumption. */
 function usage(st: ReturnType<typeof prepare>, batch: Batch, sid: number | bigint, eventId: number | bigint, e: EventRow, u: UsageObs) {
-  type Priced = { model_id: string | null; uncached_input: number | null; cache_read: number | null; cache_write: number | null; cache_write_classes: string | null; output: number | null };
+  type Priced = { model_id: string | null; raw: string | null };
   const put = (identity: string, scope: string, segment: number | null, n: Usage | null, raw: Obj, model?: string, gap?: Obj) => {
     const before = scope === 'message' ? st.pricedUsage.get(sid, e.source, identity) as Priced | undefined : undefined;
-    const classes = n?.cacheWriteClasses ? JSON.stringify(n.cacheWriteClasses) : null;
+    const rawText = JSON.stringify(raw);
     st.putUsage.run(sid, SCHEMA_VERSION, e.source, identity, scope, segment, eventId, model ?? null, n?.uncachedInput ?? null, n?.cacheRead ?? null,
-      n?.cacheWrite ?? null, classes, n?.output ?? null, JSON.stringify(raw), JSON.stringify(gap ?? n!.completeness), e.sourceTs ?? null);
-    if (before && (before.uncached_input !== (n?.uncachedInput ?? null) || before.cache_read !== (n?.cacheRead ?? null) || before.cache_write !== (n?.cacheWrite ?? null)
-      || before.cache_write_classes !== classes || before.output !== (n?.output ?? null) || (model !== undefined && before.model_id !== model))) {
-      st.markDirty.run(sid, `usage:${e.source}:${identity}`); // G2-2: evidence changed after pricing
-    }
+      n?.cacheWrite ?? null, n?.cacheWriteClasses ? JSON.stringify(n.cacheWriteClasses) : null, n?.output ?? null, rawText,
+      JSON.stringify(gap ?? n!.completeness), e.sourceTs ?? null);
+    // G2-2/G2-16: any change to the priced evidence (raw usage, including price qualifiers, or the model) re-prices it.
+    if (before && (before.raw !== rawText || (model !== undefined && before.model_id !== model))) st.markDirty.run(sid, `usage:${e.source}:${identity}`);
   };
   if (u.kind === 'claude') put(u.messageId, 'message', null, claudeUsage(u.raw), u.raw, u.model);
   else if (u.kind === 'agy') put(u.identity, 'message', null, agyUsage(u.raw), u.raw); // per step; a rewritten step replaces it
