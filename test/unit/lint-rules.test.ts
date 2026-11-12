@@ -37,6 +37,8 @@ const cases: Array<[string, string, string, string?]> = [
   ['child_process outside spawn module', "import { execFile } from 'node:child_process';\nvoid execFile;\n", 'no-restricted-imports'],
   ['dynamic child_process outside spawn module', "await import('child_process');\n", 'no-restricted-syntax'],
   ['network import inside spawn module', "import http from 'node:http';\nvoid http;\n", 'no-restricted-imports', 'src/service/spawn.ts'],
+  ['http inside the socket module (P3-T02)', "import http from 'node:http';\nvoid http;\n", 'no-restricted-imports', 'src/service/receivers/socket.ts'],
+  ['child_process inside the socket module', "import { execFile } from 'node:child_process';\nvoid execFile;\n", 'no-restricted-imports', 'src/service/receivers/socket.ts'],
 ];
 
 for (const [name, code, rule, file] of cases) {
@@ -47,6 +49,10 @@ for (const [name, code, rule, file] of cases) {
 
 test('allows child_process in the sanctioned spawn module', async () => {
   assert.deepEqual(await ruleIds("import { execFile } from 'node:child_process';\nvoid execFile;\n", 'src/service/spawn.ts'), []);
+});
+
+test('allows node:net (Unix socket) in the sanctioned socket module only (P3-T02)', async () => {
+  assert.deepEqual(await ruleIds("import net from 'node:net';\nvoid net;\n", 'src/service/receivers/socket.ts'), []);
 });
 
 test('clean sample has no findings', async () => {

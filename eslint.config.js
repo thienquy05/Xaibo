@@ -4,6 +4,9 @@ import { defineConfig, globalIgnores } from 'eslint/config';
 import tseslint from 'typescript-eslint';
 
 const SPAWN_MODULE = 'src/service/spawn.ts';
+// The hook socket server (P3-T02) needs node:net for a Unix socket in a private 0700 dir; nothing else in src/ may.
+// No TCP: the M6 audit still checks every run for non-loopback connections.
+const SOCKET_MODULE = 'src/service/receivers/socket.ts';
 const NET = ['http', 'https', 'http2', 'net', 'tls', 'dgram', 'dns', 'dns/promises'];
 const netMsg = 'No network modules in src/ (PRD P2: zero non-loopback connections).';
 const spawnMsg = `child_process only in ${SPAWN_MODULE}.`;
@@ -47,6 +50,12 @@ export default defineConfig([
       'no-restricted-imports': ['error', { paths: [...netPaths, ...spawnPaths], patterns: [spikePattern] }],
       'no-restricted-globals': ['error', ...['fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource'].map((name) => ({ name, message: netMsg }))],
       'no-restricted-syntax': ['error', ...syntax, ...loads(SPAWN_RE, spawnMsg)],
+    },
+  },
+  {
+    files: [SOCKET_MODULE],
+    rules: {
+      'no-restricted-imports': ['error', { paths: [...netPaths.filter((p) => p.name !== 'net' && p.name !== 'node:net'), ...spawnPaths], patterns: [spikePattern] }],
     },
   },
   {

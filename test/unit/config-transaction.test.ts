@@ -239,7 +239,7 @@ test('refusals: symlinked target, escape from root, denied root, missing parent,
 // --- dev CLI ---------------------------------------------------------------------------------------------------
 
 function cli(args: string[], env: Record<string, string>) {
-  return spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', env: { PATH: process.env.PATH ?? '', ...env }, input: '' });
+  return spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', env: { PATH: process.env.PATH ?? '', TMPDIR: tmpdir(), ...env }, input: '' });
 }
 /** A stand-in login shell: ignores its argv and prints NUL-separated env entries, like `env -0`. */
 function fakeShell(base: string, extra: Record<string, string> = {}) {
