@@ -6,7 +6,7 @@ Live status file for `docs/plans/xaibo_plan.md` (HARNESS_PROCESS §2, PRD §1.6 
 
 | Item | Value |
 |---|---|
-| Current phase | **Phase 3 in progress: P3-T00–T06 done** (P3-T05 and P3-T06 live checks pending the owner; Gate 2 approved 2026-11-12, PR #4 merged) |
+| Current phase | **Phase 3 in progress: P3-T00–T06 done** (P3-T05 and P3-T06 live checks deferred by the owner until the Phase 3 units are done, D-P3-06; Gate 2 approved 2026-11-12, PR #4 merged) |
 | Branch | `feat/phase3-live-status` |
 | Plan version | Approved v1.0 (2026-11-09) |
 | Gate state | Gate 0 approved 2026-11-10 (`docs/plans/gates/gate0.md`), merged by PR #2. Gate 1 approved 2026-11-11 on gate SHA `5defefa` (`docs/plans/gates/gate1.md`, record_decision 231), merged by PR #3. Gate 2 approved 2026-11-12 on gate SHA `9028f9b` (`docs/plans/gates/gate2.md`, record_decision 351), merged by PR #4 |
