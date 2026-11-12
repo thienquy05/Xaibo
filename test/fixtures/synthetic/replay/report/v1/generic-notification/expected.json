@@ -1,0 +1,83 @@
+{
+ "sessions": [
+  "00000000-0000-4000-8000-00000b050100"
+ ],
+ "streams": {
+  "report": {
+   "source": "report",
+   "file": "report.jsonl"
+  }
+ },
+ "needs": "P3-T13",
+ "notVerified": [
+  "synthetic report/v1 transport cases (§5.10): they test delivery robustness, never native agent semantics",
+  "an unknown event kind is preserved with a coverage warning and never implies an input wait or permission"
+ ],
+ "steps": [
+  {
+   "src": "report",
+   "line": 0,
+   "at": 0,
+   "expect": {
+    "lifecycle": "idle",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "report",
+   "line": 1,
+   "at": 1000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "report",
+   "line": 2,
+   "at": 1500,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "report",
+   "line": 3,
+   "at": 2100,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": "Finishing…"
+   }
+  },
+  {
+   "tick": true,
+   "at": 7100,
+   "expect": {
+    "lifecycle": "idle",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "report",
+   "line": 4,
+   "at": 8100,
+   "expect": {
+    "lifecycle": "ended",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  }
+ ],
+ "final": {
+  "00000000-0000-4000-8000-00000b050100": {
+   "lifecycle": "ended",
+   "toolCalls": 0
+  }
+ }
+}

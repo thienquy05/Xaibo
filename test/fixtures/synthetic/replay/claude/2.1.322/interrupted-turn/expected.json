@@ -1,0 +1,122 @@
+{
+ "sessions": [
+  "00000000-0000-4000-8000-00000d0e0000"
+ ],
+ "streams": {
+  "hooks": {
+   "source": "hook",
+   "file": "hooks.jsonl"
+  },
+  "transcript": {
+   "source": "file",
+   "file": "transcript.jsonl",
+   "session": "00000000-0000-4000-8000-00000d0e0000"
+  }
+ },
+ "notVerified": [
+  "S7 t4 interrupt (2.1.322): no hook after the interrupted call's PreToolUse; the tool_result has the same rejection text as a denial, and no PermissionRequest precedes it"
+ ],
+ "steps": [
+  {
+   "src": "hooks",
+   "line": 0,
+   "at": 0,
+   "expect": {
+    "lifecycle": "idle",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 1,
+   "at": 1000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "transcript",
+   "line": 0,
+   "at": 1100,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "transcript",
+   "line": 1,
+   "at": 2000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 2,
+   "at": 2050,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "tick": true,
+   "at": 6000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "transcript",
+   "line": 2,
+   "at": 9000,
+   "expect": {
+    "lifecycle": "idle",
+    "confidence": "inferred",
+    "reason": null,
+    "outcome": "interrupted"
+   }
+  },
+  {
+   "tick": true,
+   "at": 15000,
+   "expect": {
+    "lifecycle": "idle",
+    "confidence": "inferred",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 3,
+   "at": 20000,
+   "expect": {
+    "lifecycle": "ended",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  }
+ ],
+ "final": {
+  "00000000-0000-4000-8000-00000d0e0000": {
+   "lifecycle": "ended",
+   "toolCalls": 1
+  }
+ },
+ "hooksMissing": {
+  "00000000-0000-4000-8000-00000d0e0000": {
+   "lifecycle": "idle",
+   "confidence": "inferred"
+  }
+ }
+}

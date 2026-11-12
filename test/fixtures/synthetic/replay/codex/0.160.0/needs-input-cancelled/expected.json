@@ -1,0 +1,3 @@
+{
+ "unavailable": "Codex 0.160.0 has no input-request hook; needs-input is the app-server waitingOnUserInput row (v1-A, Q3-13), not observed for externally owned threads (S6); owner disposition (\u00a73.4)"
+}

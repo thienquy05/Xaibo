@@ -1,0 +1,3 @@
+{
+ "unavailable": "PermissionDenied never fired in S4 or S7 (S7: not emitted on a manual denial; the auto-mode attempt was invalid and rerun in default mode), so its payload and order are unverified (PRD \u00a76.2 \"untested\"); owner disposition (\u00a73.4)"
+}

@@ -1,0 +1,4 @@
+{"timestamp":"2026-01-01T00:00:01.050Z","ordinal":0,"type":"event_msg","payload":{"type":"task_started","turn_id":"00000000-0000-4000-8000-00000e0c1011","started_at":1767225601,"model_context_window":200000}}
+{"timestamp":"2026-01-01T00:00:02.000Z","ordinal":1,"type":"response_item","payload":{"type":"custom_tool_call","status":"completed","call_id":"call_replay_0012","name":"exec_command","input":"npm run build"}}
+{"timestamp":"2026-01-01T00:00:12.050Z","ordinal":2,"type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call_replay_0012","output":"synthetic build ok"}}
+{"timestamp":"2026-01-01T00:00:13.150Z","ordinal":3,"type":"event_msg","payload":{"type":"task_complete","turn_id":"00000000-0000-4000-8000-00000e0c1011","last_agent_message":"synthetic reply","completed_at":1767225613,"duration_ms":1000}}

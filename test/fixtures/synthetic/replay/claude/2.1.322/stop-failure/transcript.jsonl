@@ -1,0 +1,1 @@
+{"parentUuid":null,"isSidechain":false,"type":"user","uuid":"00000000-0000-4000-8000-00000d090012","timestamp":"2026-01-01T00:00:01.100Z","userType":"external","entrypoint":"cli","cwd":"/tmp/xaibo-fixture/replay","sessionId":"00000000-0000-4000-8000-00000d090000","version":"2.1.322","message":{"role":"user","content":"fixture prompt"}}

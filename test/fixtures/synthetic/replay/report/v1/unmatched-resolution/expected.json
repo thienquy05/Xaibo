@@ -1,0 +1,103 @@
+{
+ "sessions": [
+  "00000000-0000-4000-8000-00000b060100"
+ ],
+ "streams": {
+  "report": {
+   "source": "report",
+   "file": "report.jsonl"
+  }
+ },
+ "needs": "P3-T13",
+ "notVerified": [
+  "synthetic report/v1 transport cases (§5.10): they test delivery robustness, never native agent semantics",
+  "a resolution clears only the request with its id; an unmatched one changes nothing"
+ ],
+ "steps": [
+  {
+   "src": "report",
+   "line": 0,
+   "at": 0,
+   "expect": {
+    "lifecycle": "idle",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "report",
+   "line": 1,
+   "at": 1000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "report",
+   "line": 2,
+   "at": 1500,
+   "expect": {
+    "lifecycle": "waiting-for-permission",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "report",
+   "line": 3,
+   "at": 1800,
+   "expect": {
+    "lifecycle": "waiting-for-permission",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "report",
+   "line": 4,
+   "at": 2000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "report",
+   "line": 5,
+   "at": 2500,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": "Finishing…"
+   }
+  },
+  {
+   "tick": true,
+   "at": 7500,
+   "expect": {
+    "lifecycle": "idle",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "report",
+   "line": 6,
+   "at": 8500,
+   "expect": {
+    "lifecycle": "ended",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  }
+ ],
+ "final": {
+  "00000000-0000-4000-8000-00000b060100": {
+   "lifecycle": "ended",
+   "toolCalls": 0
+  }
+ }
+}
