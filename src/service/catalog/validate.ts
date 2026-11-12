@@ -9,6 +9,8 @@ export interface AgentEntry {
   detection: { binaries: { id: string; names: string[]; versionArgs: string[] }[]; locations?: string[] };
   profileRoots: { id: string; base: 'home'; relative: string; envOverride?: { name: string; mode: 'replaces-base' | 'replaces-root' } }[];
   existenceEvidence?: { root: string; path: string; kind: 'file' | 'directory' }[];
+  /** P2-T12 (EC-53): hook events verified for an inclusive x.y.z range. */
+  hookEvents?: { versions: { min: string; max?: string }; events: string[]; evidence: string }[];
 }
 /** P2-T04: entry point → badge, interactive flag, resume args (`{id}` placeholder) or a disabled reason. */
 export interface SessionKind {

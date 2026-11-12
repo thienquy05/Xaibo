@@ -23,7 +23,23 @@
       "profileRoots": [
         { "id": "user", "base": "home", "relative": ".codex", "envOverride": { "name": "CODEX_HOME", "mode": "replaces-root" } }
       ],
-      "existenceEvidence": [{ "root": "user", "path": "sessions", "kind": "directory" }]
+      "existenceEvidence": [{ "root": "user", "path": "sessions", "kind": "directory" }],
+      "hookEvents": [
+        { "versions": { "min": "0.160.0", "max": "0.160.0" },
+          "events": ["SessionStart", "SessionEnd", "SubagentStart", "SubagentStop", "PreToolUse", "PermissionRequest", "PostToolUse", "PreCompact",
+            "PostCompact", "UserPromptSubmit", "Stop", "Interrupt"],
+          "evidence": "S5 (Codex 0.160.0 hook set; PRD §5.3); no PreModelRequest/PostModelRequest in this version (EC-53)" }
+      ]
+    },
+    {
+      "id": "agy",
+      "displayName": "Antigravity CLI",
+      "detection": {
+        "binaries": [{ "id": "main", "names": ["agy"], "versionArgs": ["--version"] }],
+        "locations": ["~/.local/bin"]
+      },
+      "profileRoots": [{ "id": "user", "base": "home", "relative": ".gemini/antigravity-cli" }],
+      "existenceEvidence": [{ "root": "user", "path": "brain", "kind": "directory" }]
     }
   ],
   "sessionKinds": [
@@ -41,6 +57,8 @@
       "resume": { "args": ["exec", "resume", "{id}"], "promptRequired": true }, "evidence": "S6, S9, Codex 0.160.0" },
     { "agent": "codex", "id": "vscode", "match": { "entrypoint": "vscode", "originator": "codex_vscode" }, "badge": "VS Code", "interactive": true,
       "resumeDisabled": "VS Code extension resume not verified (S6)", "evidence": "owner audit (S9 T3); source vscode alone is any app-server client (S6)" },
+    { "agent": "codex", "id": "via-claude", "match": { "originator": "Claude Code" }, "badge": "via Claude Code", "interactive": false,
+      "resumeDisabled": "Started by Claude Code (Codex plugin, app-server); resume not verified", "evidence": "S6: rollout originator = app-server clientInfo.name; Codex plugin 1.0.6 source sends \"Claude Code\" (EC-74)" },
     { "agent": "codex", "id": "desktop", "match": { "originator": "codex_work_desktop" }, "badge": "Desktop", "interactive": true,
       "resumeDisabled": "Desktop app resume not verified (S6)", "evidence": "owner audit (S9 T3); source not paired in the audit" },
     { "agent": "agy", "id": "agy", "match": {},

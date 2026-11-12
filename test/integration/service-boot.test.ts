@@ -48,7 +48,7 @@ test('boot: store in the data dir, detection, the default Claude profile ingeste
   const svc = await boot({ dataDir: s.dataDir, home: s.home, catalog, intervalMs: 60_000 });
   assert.equal(svc.store.readOnly, false);
   await svc.done;
-  assert.deepEqual(svc.detections.map((d) => [d.agent, d.state]), [['claude', 'detected'], ['codex', 'not-detected']]);
+  assert.deepEqual(svc.detections.map((d) => [d.agent, d.state]), [['claude', 'detected'], ['codex', 'not-detected'], ['agy', 'not-detected']]);
   assert.equal(svc.adapters.length, 1);
   const db = svc.store.db;
   assert.equal(count(db, "SELECT count(*) FROM profiles WHERE agent = 'claude' AND origin = 'default'"), 1);

@@ -22,8 +22,8 @@ const entry = (id: string, locations: string[]): AgentEntry => ({
   profileRoots: [{ id: 'user', base: 'home', relative: `.${id}` }],
 });
 
-test('the bundled catalog is valid and has the Phase 1 agents', () => {
-  assert.deepEqual(loadCatalog().agents.map((a) => a.id), ['claude', 'codex']);
+test('the bundled catalog is valid and has the Phase 1 agents plus agy (P2-T11)', () => {
+  assert.deepEqual(loadCatalog().agents.map((a) => a.id), ['claude', 'codex', 'agy']);
 });
 
 test('the schema rejects unknown fields, shell names and parent segments', () => {
