@@ -168,6 +168,18 @@ CREATE TABLE source_files (
   head_hash TEXT,
   status TEXT NOT NULL DEFAULT 'ok' CHECK (status IN ('ok', 'compressed_not_imported', 'gone', 'oversized'))
 );
+CREATE TABLE status_evidence (
+  id INTEGER PRIMARY KEY,
+  agent TEXT NOT NULL,
+  native_session_id TEXT NOT NULL,
+  dedup TEXT NOT NULL,
+  ts INTEGER NOT NULL,
+  rank INTEGER NOT NULL,
+  seq INTEGER NOT NULL,
+  confidence TEXT NOT NULL CHECK (confidence IN ('confirmed', 'inferred')),
+  ev TEXT NOT NULL,
+  UNIQUE (agent, native_session_id, dedup)
+);
 CREATE TABLE subagents (
   id INTEGER PRIMARY KEY,
   session_id INTEGER NOT NULL REFERENCES sessions(id),

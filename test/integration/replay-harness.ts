@@ -1,52 +1,20 @@
 // Replay harness (P3-T07, PRD §6.6/§6.7, M8). Loads `test/fixtures/synthetic/replay/<agent>/<version>/<case>/` and replays
-// each fixture on a virtual clock under the canonical order plus 10 interleavings. The engine contract below is what the
-// P3-T08 status engine implements (`src/service/status/engine.ts` exports `createEngine: EngineFactory`); the B1/B2
-// baselines (replay-baselines.ts) implement it too. Observations are raw: hook/report envelopes as the intake publishes
-// them, native file lines as read, OTel records as received; mapping them is the engine's job.
+// each fixture on a virtual clock under the canonical order plus 10 interleavings. The engine contract is the P3-T08 status
+// engine's (`src/service/status/engine.ts` exports `createEngine: EngineFactory`); the B1/B2 baselines (replay-baselines.ts)
+// implement it too. Observations are raw: hook/report envelopes as the intake publishes them, native file lines as read,
+// OTel records as received; mapping them is the engine's job.
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { Envelope } from '../../src/shared/hook-protocol.ts';
 import { openStore } from '../../src/service/store/db.ts';
+import type { Confidence, EngineOptions, Health, Lifecycle, Observation, SessionStatus, StatusEngine } from '../../src/service/status/engine.ts';
 
 export const LIFECYCLES = ['idle', 'busy', 'waiting-for-permission', 'needs-input', 'error', 'ended', 'unknown'] as const;
 export const CONFIDENCES = ['confirmed', 'inferred', 'heuristic'] as const;
 export const HEALTHS = ['connected', 'stale', 'detached'] as const;
-export type Lifecycle = (typeof LIFECYCLES)[number];
-export type Confidence = (typeof CONFIDENCES)[number];
-export type Health = (typeof HEALTHS)[number];
-
-export interface SessionStatus {
-  lifecycle: Lifecycle; confidence: Confidence; health: Health;
-  /** Displayed reason on the lifecycle: 'Finishing…', 'Background work', 'Probably waiting', or null. */
-  reason: string | null;
-  /** Outcome of the last turn or request: 'interrupted', 'denied', 'declined', 'cancelled', or null. */
-  outcome: string | null;
-  /** Active finding rule ids (R1..R5), sorted. */
-  findings: string[];
-  toolCalls: number; turns: number;
-  /** Normalized usage totals (§5.5); null when the session has none. */
-  usage: Record<string, number> | null;
-  model: string | null; effort: string | null;
-}
-
-export type Observation =
-  | { source: 'hook' | 'report'; envelope: Envelope }
-  | { source: 'file'; agent: string; sessionId: string; file: string; offset: number; line: string; receivedTs: number }
-  | { source: 'otel'; agent: string; sessionId: string; record: unknown; receivedTs: number };
-
-export interface StatusEngine {
-  ingest(o: Observation): void;
-  /** Moves the virtual clock to `now` (never backwards) and fires due timers (turn settle, heuristics, rules). */
-  advance(now: number): void;
-  suspend(now: number): void;
-  resume(now: number): void;
-  status(agent: string, sessionId: string): SessionStatus | null;
-  /** Releases timers; the db stays open. A new engine on the same db must continue from what this one persisted. */
-  close(): void;
-}
-export interface EngineOptions { db: DatabaseSync; now: () => number; settleMs: number; log: (line: string) => void }
+export type { Confidence, EngineOptions, Health, Lifecycle, Observation, SessionStatus, StatusEngine };
 export type EngineFactory = (o: EngineOptions) => StatusEngine;
 
 export const SETTLE_MS = 4000;
