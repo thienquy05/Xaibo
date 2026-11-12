@@ -14,7 +14,7 @@ function fakePort() {
   };
   return { port, sent, deliver: (data: unknown) => port.onmessage?.({ data }) };
 }
-const row: SessionRow = { id: 1, agent: 'claude', entrypoint: null, cwd: null, title: null, lastActivity: null, drift: false, compressed: false, quarantined: 0 };
+const row: SessionRow = { id: 1, agent: 'claude', entrypoint: null, origin: null, interactive: null, model: 'Model unavailable', cwd: null, title: null, lastActivity: null, drift: false, compressed: false, quarantined: 0 };
 
 test('listSessions posts a versioned request and resolves with its own page only', async () => {
   const f = fakePort();

@@ -6,7 +6,7 @@ import type { Stats } from 'node:fs';
 import type { Readable } from 'node:stream';
 import type { Line } from '../../lines.ts';
 import { cwdKey } from '../../paths.ts';
-import type { Batch, EventRow, QuarantineRow, SessionUpsert, SourceFileCheckpoint } from '../../store/writer.ts';
+import { noteCwd, type Batch, type EventRow, type QuarantineRow, type SessionUpsert, type SourceFileCheckpoint } from '../../store/writer.ts';
 import { readRange, readZstd } from '../../tail.ts';
 import { TailAdapter, type OversizedSink } from '../tail-adapter.ts';
 import { discover, type CodexFile } from './discover.ts';
@@ -31,6 +31,46 @@ async function firstLine(stream: Readable, cap: number): Promise<{ identity: str
     stream.destroy();
   }
 }
+
+// P2-T05: custom_tool_call / _output join on call_id; task_started / task_complete / turn_aborted bound a turn.
+const toolCalls = (r: CodexRecord): EventRow['toolCalls'] => {
+  if (!r.callId || (r.kind !== 'tool_call' && r.kind !== 'tool_result')) return undefined;
+  return [{ callId: r.callId, part: r.kind === 'tool_call' ? 'args' : 'result', ...(r.toolName ? { tool: r.toolName } : {}) }];
+};
+const turnEdge = (r: CodexRecord): EventRow['turn'] => {
+  if (!r.turnId) return undefined;
+  if (r.kind === 'turn_start') return { id: r.turnId, edge: 'start' };
+  if (r.kind === 'turn_end') return { id: r.turnId, edge: 'end', outcome: 'completed' };
+  if (r.kind === 'turn_aborted') return { id: r.turnId, edge: 'end', outcome: 'aborted' };
+  return undefined;
+};
+
+// P2-T06: token_count carries cumulative totals, the last request and rate_limits; token_usage_record is checked for drift.
+const usageOf = (r: CodexRecord): EventRow['usage'] => {
+  const obj = (v: unknown) => (typeof v === 'object' && v !== null && !Array.isArray(v) ? v as Record<string, unknown> : undefined);
+  if (r.kind === 'token_count') {
+    const total = obj(r.tokenInfo?.total_token_usage);
+    const last = obj(r.tokenInfo?.last_token_usage);
+    return { kind: 'codex-count', ...(total ? { total } : {}), ...(last ? { last } : {}), ...(r.rateLimits ? { rateLimits: r.rateLimits } : {}) };
+  }
+  return r.kind === 'token_usage' && r.usage ? { kind: 'codex-record', payload: r.usage } : undefined;
+};
+
+// P2-T08: turn_context model + collaboration_mode reasoning_effort per turn; thread_settings_applied for the session.
+const modelOf = (r: CodexRecord): EventRow['model'] => {
+  if (!r.model || (r.kind !== 'turn_context' && r.kind !== 'settings')) return undefined;
+  return { id: r.model, ...(r.effort !== undefined ? { effort: r.effort } : {}), ...(r.kind === 'turn_context' && r.turnId ? { turn: r.turnId } : {}) };
+};
+
+// P2-T07: last request total over the reported model_context_window; the model is the session's current one at write time.
+const contextOf = (r: CodexRecord): EventRow['context'] => {
+  const at = r.sourceTs ?? null;
+  if (r.kind === 'compaction') return { kind: 'compaction', postTokens: null, at, locator: r.nativeId };
+  if (r.kind !== 'token_count' || !r.tokenInfo) return undefined;
+  const last = r.tokenInfo.last_token_usage as Record<string, unknown> | undefined;
+  const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null);
+  return { kind: 'codex', model: null, used: n(last?.total_tokens), window: n(r.tokenInfo.model_context_window), at, locator: r.nativeId };
+};
 
 export class CodexAdapter extends TailAdapter<CodexFile, CodexRecord> {
   readonly #files = new Map<string, { identity: string; sessionId: string }>(); // per path, from the first line
@@ -67,6 +107,7 @@ export class CodexAdapter extends TailAdapter<CodexFile, CodexRecord> {
     const s: SessionUpsert = { nativeSessionId: sid, nativeArchived: file.archived };
     const events: EventRow[] = records.map((r) => {
       if (r.cwd && !s.cwd) { s.cwd = r.cwd; s.cwdKey = cwdKey(r.cwd); }
+      if (r.cwd) noteCwd(s, r.cwd, r.sourceTs, 'rollout'); // session_meta and turn_context (EC-06)
       if (r.kind === 'session') {
         if (r.source && !s.entrypoint) s.entrypoint = r.source;
         if (r.originator && !s.originator) s.originator = r.originator;
@@ -81,7 +122,7 @@ export class CodexAdapter extends TailAdapter<CodexFile, CodexRecord> {
       return {
         nativeSessionId: sid, source: 'rollout', confidence: 'confirmed', nativeId: r.nativeId, kind: r.kind, role: r.role,
         byteOffset: r.sourceSeq, sourceSeq: r.sourceSeq, sourceTs: r.sourceTs, fileMtime: r.fileMtime, receivedTs: r.receivedTs,
-        injected: r.injected, content: r.content, raw: r.raw,
+        injected: r.injected, content: r.content, raw: r.raw, toolCalls: toolCalls(r), turn: turnEdge(r), usage: usageOf(r), model: modelOf(r), context: contextOf(r),
       };
     });
     if (records.length && s.lastActivity === undefined) s.lastActivity = cp.mtime; // records but none with a timestamp

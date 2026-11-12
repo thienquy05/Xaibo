@@ -22,12 +22,12 @@ const booted = new Promise<Service>((resolve) => { resolveBooted = resolve; });
 const broadcast = (m: PortMessage) => { for (const p of ports) p.postMessage(m); };
 const changed = coalesce((keys) => {
   if (!svc?.store.db.isOpen) return;
-  const rows = sessionsByKey(svc.store.db, keys.map((k) => { const [agent, profileId, nativeSessionId] = k.split('\0') as [string, string, string]; return { agent, profileId, nativeSessionId }; }));
+  const rows = sessionsByKey(svc.store.db, keys.map((k) => { const [agent, profileId, nativeSessionId] = k.split('\0') as [string, string, string]; return { agent, profileId, nativeSessionId }; }), svc.kinds(), svc.models());
   if (rows.length) broadcast({ v: IPC_VERSION, type: 'sessions', rows });
 }, DELTA_MS);
 
 const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
-  void booted.then((s) => { if (s.store.db.isOpen) port.postMessage(answer(s.store.db, req)); });
+  void booted.then((s) => { if (s.store.db.isOpen) port.postMessage(answer(s.store.db, req, s.kinds(), s.models())); });
 });
 
 function connect(port: MessagePortMain) {

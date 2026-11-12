@@ -7,7 +7,7 @@ import { applyDelta, applyPage, compareRows, emptyList, formatTime, markers, PAG
 import type { SessionRow } from '../../src/shared/ipc.ts';
 
 const r = (id: number, lastActivity: number | null, extra: Partial<SessionRow> = {}): SessionRow =>
-  ({ id, agent: 'claude', entrypoint: 'cli', cwd: `/tmp/xaibo-fixture/${id}`, title: null, lastActivity, drift: false, compressed: false, quarantined: 0, ...extra });
+  ({ id, agent: 'claude', entrypoint: 'cli', origin: 'CLI', interactive: true, model: 'Model unavailable', cwd: `/tmp/xaibo-fixture/${id}`, title: null, lastActivity, drift: false, compressed: false, quarantined: 0, ...extra });
 const ids = (s: { rows: SessionRow[] }) => s.rows.map((x) => x.id);
 
 test('order: newest first, ties by id, unknown activity last', () => {

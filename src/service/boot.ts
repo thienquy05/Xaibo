@@ -10,7 +10,8 @@ import { CodexAdapter } from './adapters/codex/index.ts';
 import type { Ingester } from './adapters/tail-adapter.ts';
 import { detectAgent, manualPath, manualRoots, profileRoots, setManualPath, syncProfiles, type Detection } from './catalog/detect.ts';
 import { readLoginEnv, type LoginEnv } from './catalog/env.ts';
-import { loadCatalog, type Catalog } from './catalog/validate.ts';
+import { loadCatalog, type Catalog, type SessionKind } from './catalog/validate.ts';
+import { loadModels, type ModelEntry } from './usage/models.ts';
 import { openStore, type Store } from './store/db.ts';
 import { Writer, type Batch } from './store/writer.ts';
 
@@ -27,6 +28,10 @@ export interface Service {
   done: Promise<void>;
   /** Agent status for the renderer; null until detection has run. */
   agents(): AgentStatus[] | null;
+  /** Catalog session kinds for list badges (P2-T04); empty if the catalog failed to load. */
+  kinds(): SessionKind[];
+  /** Bundled model list for display names (P2-T08); empty if it failed to load (names fall back to raw ids). */
+  models(): ModelEntry[];
   /** Validates and stores a manual executable path, then re-detects that agent; false if refused. */
   setPath(agent: string, file: string): Promise<boolean>;
   wake(): Promise<void>;
@@ -38,6 +43,8 @@ export async function boot(o: BootOptions): Promise<Service> {
   const { db, readOnly } = store;
   const writer = new Writer(db, o.onCommit ? { onCommit: o.onCommit } : {});
   const detections: Detection[] = [];
+  let models: ModelEntry[] = [];
+  try { models = loadModels().models; } catch { o.log?.log('models_invalid', {}); } // ponytail: override + revisions in P2-T09
   const adapters: Ingester[] = [];
   let stopped = false;
   let catalog: Catalog | undefined;
@@ -82,6 +89,8 @@ export async function boot(o: BootOptions): Promise<Service> {
   done.catch(() => undefined); // callers observe it; this only keeps an early failure from being unhandled meanwhile
   return {
     store, detections, adapters, done, agents,
+    kinds: () => catalog?.sessionKinds ?? [],
+    models: () => models,
     async setPath(agent, file) {
       await Promise.race([detection, done.catch(() => undefined)]); // detection, not the whole backfill
       const entry = catalog?.agents.find((a) => a.id === agent);

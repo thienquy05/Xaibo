@@ -29,6 +29,7 @@ export const AGENT_ID = /^[a-z][a-z0-9-]{0,31}$/;
 const MAX_TEXT = 64 * 1024; // any single transcript-derived string in a list row
 const text = (x: unknown, max = MAX_TEXT): x is string => typeof x === 'string' && x.length <= max;
 const textOrNull = (x: unknown): x is string | null => x === null || text(x);
+const boolOrNull = (x: unknown): x is boolean | null => x === null || typeof x === 'boolean';
 const count = (x: unknown): x is number => Number.isSafeInteger(x) && (x as number) >= 0;
 const timeOrNull = (x: unknown): x is number | null => x === null || Number.isFinite(x);
 
@@ -57,6 +58,10 @@ export function parseHealth(x: unknown): Health | null {
 export interface Cursor { lastActivity: number | null; id: number }
 export interface SessionRow {
   id: number; agent: string; entrypoint: string | null; cwd: string | null; title: string | null;
+  /** Catalog origin badge, null for an unknown kind; interactive null when unknown (P2-T04). */
+  origin: string | null; interactive: boolean | null;
+  /** "<display name> · <effort>", the raw id, or "Model unavailable" (P2-T08). */
+  model: string;
   lastActivity: number | null; drift: boolean; compressed: boolean; quarantined: number;
 }
 export interface Page { rows: SessionRow[]; next: Cursor | null }
@@ -78,8 +83,9 @@ function parseRow(x: unknown): SessionRow | null {
   if (typeof x !== 'object' || x === null || Array.isArray(x)) return null;
   const r = x as Msg;
   if (!count(r.id) || !text(r.agent, 64) || !textOrNull(r.entrypoint) || !textOrNull(r.cwd) || !textOrNull(r.title)) return null;
+  if (!(r.origin === null || text(r.origin, 64)) || !boolOrNull(r.interactive) || !text(r.model)) return null;
   if (!timeOrNull(r.lastActivity) || typeof r.drift !== 'boolean' || typeof r.compressed !== 'boolean' || !count(r.quarantined)) return null;
-  return { id: r.id, agent: r.agent, entrypoint: r.entrypoint, cwd: r.cwd, title: r.title, lastActivity: r.lastActivity, drift: r.drift, compressed: r.compressed, quarantined: r.quarantined };
+  return { id: r.id, agent: r.agent, entrypoint: r.entrypoint, origin: r.origin, interactive: r.interactive, model: r.model, cwd: r.cwd, title: r.title, lastActivity: r.lastActivity, drift: r.drift, compressed: r.compressed, quarantined: r.quarantined };
 }
 
 function parseRows(x: unknown): SessionRow[] | null {

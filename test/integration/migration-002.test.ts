@@ -50,7 +50,7 @@ test('001 -> 002: backup taken, every Phase 1 row kept, FTS intact, defaults set
   assert.ok((before.rows.events as unknown[]).length > 0 && before.hits > 0, 'fixture populated the v1 DB');
   const s = await openStore(before.opts);
   assert.equal(s.readOnly, false);
-  assert.equal(count(s.db, 'PRAGMA user_version'), 2);
+  assert.equal(count(s.db, 'PRAGMA user_version'), loadMigrations().at(-1)!.version, '002 and every later migration applied');
   assert.deepEqual(readdirSync(before.opts.backupDir), ['xaibo-v1.db']);
   assert.deepEqual(dump(s.db, before.cols), before.rows);
   assert.equal(count(s.db, 'SELECT count(*) FROM event_fts WHERE event_fts MATCH ?', before.word), before.hits);

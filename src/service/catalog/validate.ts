@@ -1,5 +1,5 @@
 // Bundled agent catalog (P1-T08, OQ-X6): integrations/agents.catalog.json validated against its schema with ajv
-// (Gate 0 validator, draft 2020-12, strict). Phase 1 holds only the detection subset; unknown fields are rejected.
+// (Gate 0 validator, draft 2020-12, strict). Detection subset plus session kinds (P2-T04); unknown fields are rejected.
 import { readFileSync } from 'node:fs';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 
@@ -10,7 +10,13 @@ export interface AgentEntry {
   profileRoots: { id: string; base: 'home'; relative: string; envOverride?: { name: string; mode: 'replaces-base' | 'replaces-root' } }[];
   existenceEvidence?: { root: string; path: string; kind: 'file' | 'directory' }[];
 }
-export interface Catalog { schemaVersion: 1; agents: AgentEntry[] }
+/** P2-T04: entry point → badge, interactive flag, resume args (`{id}` placeholder) or a disabled reason. */
+export interface SessionKind {
+  agent: string; id: string; match: { entrypoint?: string; originator?: string };
+  badge?: string; interactive?: boolean; evidence: string;
+  resume?: { args: string[]; promptRequired?: boolean }; resumeDisabled?: string;
+}
+export interface Catalog { schemaVersion: 1; agents: AgentEntry[]; sessionKinds: SessionKind[] }
 
 const DIR = new URL('../../../integrations/', import.meta.url); // same depth under src/ and out/
 const check = new Ajv2020({ allErrors: true, strict: true })

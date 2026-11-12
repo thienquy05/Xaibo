@@ -4,12 +4,45 @@
   "title": "Xaibo agent catalog, Phase 1 detection subset (P1-T08; S11 definitions; grows additively at v1)",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "agents"],
+  "required": ["schemaVersion", "agents", "sessionKinds"],
   "properties": {
     "schemaVersion": { "const": 1 },
-    "agents": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/agent" } }
+    "agents": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/agent" } },
+    "sessionKinds": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/sessionKind" } }
   },
   "$defs": {
+    "sessionKind": {
+      "description": "P2-T04: an agent's entry point (Claude entrypoint; Codex session_meta.source as entrypoint + originator) mapped to a badge, an interactive flag and resume args verified in a spike, or a disabled reason. The first kind whose every match field equals the session's value wins; {id} is replaced by a UUID session id. Never executed before Phase 7.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent", "id", "match", "evidence"],
+      "oneOf": [{ "properties": { "resume": true }, "required": ["resume"] }, { "properties": { "resumeDisabled": true }, "required": ["resumeDisabled"] }],
+      "properties": {
+        "agent": { "$ref": "#/$defs/refId" },
+        "id": { "$ref": "#/$defs/refId" },
+        "match": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "entrypoint": { "type": "string", "minLength": 1, "maxLength": 128 },
+            "originator": { "type": "string", "minLength": 1, "maxLength": 128 }
+          }
+        },
+        "badge": { "$ref": "#/$defs/displayText" },
+        "interactive": { "type": "boolean" },
+        "resume": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["args"],
+          "properties": {
+            "args": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "type": "string", "pattern": "^(?:[A-Za-z0-9@%+=:,./_-]|\\{id\\})+$" } },
+            "promptRequired": { "type": "boolean" }
+          }
+        },
+        "resumeDisabled": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "evidence": { "type": "string", "minLength": 1, "maxLength": 256 }
+      }
+    },
     "refId": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$" },
     "envName": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$" },
     "relPath": { "type": "string", "maxLength": 256, "pattern": "^\\.?[A-Za-z0-9_-][A-Za-z0-9._-]*(/\\.?[A-Za-z0-9_-][A-Za-z0-9._-]*)*$" },
