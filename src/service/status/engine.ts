@@ -44,10 +44,15 @@ export interface StatusEngine {
   status(agent: string, sessionId: string): SessionStatus | null;
   close(): void;
 }
+export type WaitState = 'waiting-for-permission' | 'needs-input';
 export interface EngineOptions {
   db: DatabaseSync; now: () => number; settleMs: number; log: (line: string) => void;
   /** §6.4 thresholds; missing keys take RULE_DEFAULTS. */
   rules?: Partial<RuleSettings>;
+  /** P3-T11 notify intent (Q3-11): a confirmed request newly pending after the ingest of the entry that carries it,
+   *  received within the last 60 s. Requests are confirmed-only evidence, so a heuristic wait never calls it; evidence
+   *  reloaded at start never calls it. A request that changes kind under the same id is not new (review LOW-2). */
+  onWait?: (agent: string, sessionId: string, state: WaitState) => void;
 }
 
 /** Normalized evidence, the output of an agent's status map. Ids are native ids; nothing here is content. */
@@ -72,6 +77,8 @@ export type Ev =
 // A Map, so an agent name such as `constructor` can never reach Object.prototype (security review).
 const MAPS = new Map<string, (o: Observation) => Ev[]>([['claude', claudeEvidence], ['codex', codexEvidence]]);
 const HEURISTIC_MS = 5000;
+/** P3-T11: older requests do not notify; above the service's 30 s restart backoff cap (D-P3-10). */
+const NOTIFY_MAX_AGE_MS = 60_000;
 /** Evidence kept per observation: bounds what one adversarial line or payload can add. */
 const MAX_EVS = 256;
 /** Evidence a file record may never produce: only a hook or report confirms these (§6.1-§6.3). */
@@ -270,11 +277,20 @@ export function createEngine(o: EngineOptions): StatusEngine {
       ? { ts: obs.envelope.received_ts, rank: 0, seq: ++seq, conf: 'confirmed', evs }
       : { ts: obs.receivedTs, rank: 1, seq: obs.offset, conf: 'inferred', evs };
     try { put.run(agent, sid, dedup, x.ts, x.rank, x.seq, x.conf, JSON.stringify(x.evs)); } catch { o.log('status_store_failed'); }
+    const pending = new Set(s.fold.requests.keys());
     let i = s.entries.length;
     while (i > 0 && after(s.entries[i - 1]!, x) > 0) i--;
     s.entries.splice(i, 0, x);
     if (i === s.entries.length - 1) step(s.fold, x, rules, (kind) => o.log(`status_conflict agent=${agent} kind=${kind}`));
     else { s.fold = fresh(); for (const e of s.entries) step(s.fold, e, rules); } // out of order: refold in causal order
+    // Notify intent: only an entry that carries a request, and only for a request id pending now that was not before
+    // (one prompt reported twice, a refold of earlier evidence or a late request already resolved in causal order sends
+    // nothing; request ids derived from fold order are never remembered, review M1/M2). An entry received more than
+    // NOTIFY_MAX_AGE_MS ago (a spool replayed after an outage) is stale: its resolution is likely already queued (M3).
+    if (s.fold.ended || !x.evs.some((e) => e.k === 'request') || o.now() - x.ts > NOTIFY_MAX_AGE_MS) return;
+    for (const [id, kind] of s.fold.requests) {
+      if (!pending.has(id)) o.onWait?.(agent, sid, kind === 'input' ? 'needs-input' : 'waiting-for-permission');
+    }
   };
 
   const status = (agent: string, sid: string): SessionStatus | null => {

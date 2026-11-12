@@ -17,7 +17,7 @@ class FakeChild extends EventEmitter {
   die(code = 1) { this.emit('exit', code); }
 }
 
-function harness() {
+function harness(onNotify?: (n: unknown) => void) {
   let t = 0;
   let ports = 0;
   const children: FakeChild[] = [];
@@ -34,6 +34,7 @@ function harness() {
     clearTimer: (id) => { timers.delete(id as number); },
     now: () => t,
     quitMs: 2_000,
+    ...(onNotify ? { onNotify } : {}),
   });
   const fire = () => { // runs the single pending timer, returns its delay
     assert.equal(timers.size, 1, 'exactly one pending timer');
@@ -137,6 +138,15 @@ test('connect brokers a fresh port to the current service; onSpawn fires on ever
   h.fire();
   assert.equal(h.spawns(), 2);
   assert.deepEqual(h.sup.connect(), { n: 4 });
+});
+
+test('notify events go to onNotify (P3-T11); they do not change health', () => {
+  const got: unknown[] = [];
+  const h = harness((n) => got.push(n));
+  h.sup.start();
+  h.last().emit('message', { v: 1, type: 'notify', agent: 'Codex', label: null, state: 'needs-input', cwd: '/tmp/x' });
+  assert.deepEqual(got, [{ v: 1, type: 'notify', agent: 'Codex', label: null, state: 'needs-input' }]);
+  assert.equal(h.sup.health.state, 'starting');
 });
 
 test('invalid messages from the service are dropped and counted', () => {

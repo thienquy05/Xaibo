@@ -1,7 +1,7 @@
 // Main process (P1-T04): private data dir, single instance, locked-down window, tray, the service process.
 // Close hides the window and collection continues; Quit stops the service, then exits. The service is supervised
 // (P1-T06): restarted with backoff, a fresh port brokered to the renderer after every start and every page load.
-import { app, BrowserWindow, dialog, ipcMain, Menu, MessageChannelMain, powerMonitor, utilityProcess } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, MessageChannelMain, Notification, powerMonitor, utilityProcess } from 'electron';
 import type { MessagePortMain, Tray } from 'electron';
 import { appendFileSync } from 'node:fs';
 import { release } from 'node:os';
@@ -11,6 +11,7 @@ import { AGENT_ID, IPC_VERSION } from '../shared/ipc.ts';
 import { createLogger, loadInstallSecret } from '../shared/log.ts';
 import { initDataDir } from './app-paths.ts';
 import { buildBundle, readLogTail, writeBundle } from './diagnostics.ts';
+import { notificationText } from './notifications.ts';
 import { APP_ORIGIN, devOrigin } from './policy.ts';
 import { lockDown, registerAppScheme, webPreferences } from './security.ts';
 import { Supervisor } from './service-supervisor.ts';
@@ -47,6 +48,7 @@ function start(dataDir: string) {
     const port = supervisor.connect();
     if (port) win.webContents.postMessage('port', null, [port]);
   };
+  const notifyStub = process.env.XAIBO_NOTIFY_STUB === '1' ? path.join(app.getPath('logs'), 'notify-stub.jsonl') : null;
   const supervisor = new Supervisor<MessagePortMain>({
     fork: () => utilityProcess.fork(path.join(here, '..', 'service', 'index.js'), [], {
       serviceName: 'xaibo-service', env: { ...process.env, XAIBO_DATA_DIR: dataDir },
@@ -59,6 +61,12 @@ function start(dataDir: string) {
     now: Date.now,
     quitMs: SERVICE_QUIT_MS,
     log: (event, fields) => log.log(event, fields),
+    // P3-T11 (EC-59): the text is built from agent, label and state only; test mode records it with an hrtime stamp.
+    onNotify: (n) => {
+      const title = notificationText(n.agent, n.label, n.state);
+      if (notifyStub) appendFileSync(notifyStub, `${JSON.stringify({ title, t: process.hrtime.bigint().toString() })}\n`);
+      else if (Notification.isSupported()) new Notification({ title }).show();
+    },
   });
 
   app.on('second-instance', show);

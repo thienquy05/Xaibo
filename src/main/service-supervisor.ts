@@ -3,7 +3,7 @@
 // service had been ready for 60 s), brokers a fresh port per renderer connection, reports health, and stop() quits
 // without restart. No Electron import: fork, channel, clock and timers are injected (main/index.ts passes Electron's).
 import { accept, IPC_VERSION, parseServiceEvent } from '../shared/ipc.ts';
-import type { Health, HealthState, ReadOnlyReason, ServiceCommand } from '../shared/ipc.ts';
+import type { Health, HealthState, ReadOnlyReason, ServiceCommand, ServiceEvent } from '../shared/ipc.ts';
 
 export const HEALTHY_RESET_MS = 60_000;
 export const nextDelay = (attempt: number) => Math.min(500 * 2 ** attempt, 30_000);
@@ -24,11 +24,13 @@ export interface SupervisorDeps<P> {
   now(): number;
   quitMs: number;
   log?(event: string, fields?: Record<string, number>): void;
+  /** P3-T11: a validated notify intent from the service. */
+  onNotify?(n: Extract<ServiceEvent, { type: 'notify' }>): void;
 }
 
 export class Supervisor<P> {
   readonly #d: SupervisorDeps<P>;
-  readonly #receive = accept(parseServiceEvent, (m) => this.#ready(m.readOnly));
+  readonly #receive = accept(parseServiceEvent, (m) => { if (m.type === 'ready') this.#ready(m.readOnly); else this.#d.onNotify?.(m); });
   #child: Child<P> | null = null;
   #attempt = 0;
   #readyAt: number | undefined;

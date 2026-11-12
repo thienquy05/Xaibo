@@ -91,6 +91,7 @@ async function main(dataDir: string, log: Logger) {
     dataDir, home: homedir(), shell: process.env.SHELL, log,
     onCommit: committed,
     onAgents: (agents) => broadcast({ v: IPC_VERSION, type: 'agents', agents }),
+    onNotify: (n) => parent.postMessage({ v: IPC_VERSION, type: 'notify', ...n } satisfies ServiceEvent), // P3-T11
   });
   resolveBooted(svc);
   setInterval(() => { for (const k of svc?.ticking() ?? []) changed(k); }, TICK_MS);

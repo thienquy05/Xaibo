@@ -16,7 +16,7 @@ export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export interface Launched { app: ElectronApplication; page: Page; dataDir: string; root: string; created: number }
 
 /** P2-T14: optional Codex home and agy profile root; agy has no env override, so its root is linked under the temp HOME. */
-export async function launch(claudeDir: string, more: { codex?: string; agy?: string } = {}): Promise<Launched> {
+export async function launch(claudeDir: string, more: { codex?: string; agy?: string; env?: Record<string, string> } = {}): Promise<Launched> {
   const root = mkdtempSync(path.join(tmpdir(), 'xaibo-perf-'));
   const home = path.join(root, 'home');
   const bin = path.join(home, 'bin');
@@ -30,6 +30,7 @@ export async function launch(claudeDir: string, more: { codex?: string; agy?: st
   const env = {
     HOME: home, PATH: `${bin}:/usr/bin:/bin`, SHELL: shell, TMPDIR: path.join(root, 'tmp'), LANG: 'en_US.UTF-8',
     CLAUDE_CONFIG_DIR: claudeDir, CODEX_HOME: more.codex ?? path.join(home, '.codex'), GEMINI_CLI_HOME: home, XAIBO_DATA_DIR: dataDir,
+    ...more.env,
   };
   const app = await _electron.launch({ executablePath: PACKAGED, args: [], env, timeout: 60_000 });
   const page = await app.firstWindow();

@@ -13,8 +13,12 @@ export const READ_ONLY_BANNER: Record<ReadOnlyReason, string> = {
 /** main -> service; setPath carries a file the user picked in the native dialog (validated again by the service);
  *  reloadPrices re-reads the private price override (P2-T09; sent by Settings in P6-T11). */
 export type ServiceCommand = { v: 1; type: 'quit' | 'wake' | 'port' | 'reloadPrices' } | { v: 1; type: 'setPath'; agent: string; path: string };
-/** service -> main */
-export type ServiceEvent = { v: 1; type: 'ready'; readOnly: ReadOnlyReason | null };
+/** service -> main; notify (P3-T11, EC-59) carries only the agent display name, the approved project label (null until
+ *  one exists, FR-10) and the wait state. */
+export type NotifyState = 'waiting-for-permission' | 'needs-input';
+export type ServiceEvent =
+  | { v: 1; type: 'ready'; readOnly: ReadOnlyReason | null }
+  | { v: 1; type: 'notify'; agent: string; label: string | null; state: NotifyState };
 export type HealthState = 'starting' | 'running' | 'restarting' | 'stopped';
 /** main -> renderer; attempt counts consecutive restarts (0 unless restarting). */
 export interface Health { v: 1; type: 'health'; state: HealthState; attempt: number; readOnly: ReadOnlyReason | null }
@@ -45,6 +49,10 @@ export function parseServiceCommand(x: unknown): ServiceCommand | null {
 
 export function parseServiceEvent(x: unknown): ServiceEvent | null {
   const m = envelope(x);
+  if (m?.type === 'notify') {
+    if (!text(m.agent, 64) || !m.agent || !(m.label === null || text(m.label, 128))) return null;
+    return oneOf(['waiting-for-permission', 'needs-input'] as const, m.state) ? { v: 1, type: 'notify', agent: m.agent, label: m.label, state: m.state } : null;
+  }
   return m && m.type === 'ready' && readOnlyOk(m.readOnly) ? { v: 1, type: 'ready', readOnly: m.readOnly } : null;
 }
 

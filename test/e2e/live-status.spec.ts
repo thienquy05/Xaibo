@@ -4,10 +4,8 @@
 // gap banner. With XAIBO_PERF_TRACE=1 the renderer acks painted deltas and main and service write IDs-only trace lines.
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import net from 'node:net';
 import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
-import { createDecoder, encodeFrame, type Envelope } from '../../src/shared/hook-protocol.ts';
+import { claudeProfile, deliver } from '../helpers/hook-socket.ts';
 import { expect, test } from './fixtures.ts';
 import type { Page } from '@playwright/test';
 
@@ -15,28 +13,6 @@ const HOOKED = '00000000-0000-4000-8000-0000000f1101';
 const FILE_ONLY = '00000000-0000-4000-8000-0000000f1102';
 const project = (home: string) => path.join(home, '.claude', 'projects', '-tmp-xaibo-fixture-project');
 const rowOf = (page: Page, folder: string) => page.getByRole('table', { name: 'Sessions' }).getByRole('row').filter({ hasText: folder });
-
-function claudeProfile(dataDir: string): string | null {
-  let db: DatabaseSync | undefined;
-  try {
-    db = new DatabaseSync(path.join(dataDir, 'xaibo.db'), { readOnly: true });
-    return (db.prepare("SELECT id FROM profiles WHERE agent = 'claude'").get() as { id: string } | undefined)?.id ?? null;
-  } catch { return null; } finally { db?.close(); }
-}
-
-/** One delivery on its own connection: hello, envelope, wait for the ack. */
-function deliver(dataDir: string, e: Envelope): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const sock = net.connect(path.join(dataDir, 'run', 'xaibo.sock'));
-    const decode = createDecoder();
-    sock.on('error', reject);
-    sock.on('data', (c: Buffer) => { const acks = decode(c); if (acks.length) { sock.end(); resolve(acks[0]); } });
-    sock.on('connect', () => {
-      sock.write(encodeFrame({ v: 1, token: readFileSync(path.join(dataDir, 'run', 'token'), 'utf8') }));
-      sock.write(encodeFrame(e));
-    });
-  });
-}
 
 test('busy, waiting, R2 badge, Finishing… then idle, Probably waiting, overflow banner; perf trace acks painted deltas', async ({ xaibo }) => {
   const dataDir = path.join(path.dirname(xaibo.home), 'data-live'); // inside the fixture's temp root (cleaned), short for the socket path

@@ -21,6 +21,15 @@ test('ready: readOnly is null or a known reason', () => {
   assert.equal(parseServiceEvent({ v: 1, type: 'quit' }), null);
 });
 
+test('notify (P3-T11): agent name, label or null, wait state only; extra fields are stripped', () => {
+  const ok = { v: 1, type: 'notify', agent: 'Claude Code', label: null, state: 'waiting-for-permission' } as const;
+  assert.deepEqual(parseServiceEvent({ ...ok, cwd: '/tmp/x', prompt: 'p' }), ok);
+  assert.deepEqual(parseServiceEvent({ ...ok, label: 'Alpha', state: 'needs-input' }), { ...ok, label: 'Alpha', state: 'needs-input' });
+  for (const bad of [{ state: 'error' }, { state: 'idle' }, { agent: '' }, { agent: 'x'.repeat(65) }, { agent: 1 }, { label: 'x'.repeat(129) }, { label: undefined }]) {
+    assert.equal(parseServiceEvent({ ...ok, ...bad }), null, JSON.stringify(bad));
+  }
+});
+
 test('health: state, attempt and readOnly are checked; text is plain', () => {
   const h = { v: 1, type: 'health', state: 'restarting', attempt: 2, readOnly: null } as const;
   assert.deepEqual(parseHealth(h), h);

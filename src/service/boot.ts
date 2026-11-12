@@ -4,7 +4,7 @@
 // a manual executable path ("Set path…") that re-detects that agent. P3-T04: once profiles are synced, the hook socket
 // listens and the spool replays, before the file backfill; a full disk is logged and its hook-only gap written on recovery.
 import path from 'node:path';
-import { OUTCOMES, REASONS, RULES, type AgentStatus, type Banner, type LiveStatus } from '../shared/ipc.ts';
+import { OUTCOMES, REASONS, RULES, type AgentStatus, type Banner, type LiveStatus, type NotifyState } from '../shared/ipc.ts';
 import type { Logger } from '../shared/log.ts';
 import { AgyAdapter } from './adapters/agy/index.ts';
 import { ClaudeAdapter } from './adapters/claude/index.ts';
@@ -30,6 +30,8 @@ export interface BootOptions {
   now?: () => number;
   onCommit?: (batch: Batch) => void;
   onAgents?: (agents: AgentStatus[]) => void;
+  /** P3-T11: a confirmed wait newly pending (agent display name, approved label, state). */
+  onNotify?: (n: { agent: string; label: string | null; state: NotifyState }) => void;
 }
 export interface Service {
   store: Store;
@@ -81,7 +83,10 @@ export async function boot(o: BootOptions): Promise<Service> {
   let hooks: Hooks | undefined;
   // P3-T10: the status engine (P3-T08/T09) over durable hook deliveries and live-window file records.
   const clock = o.now ?? Date.now;
-  const engine: StatusEngine | null = readOnly ? null : createEngine({ db, now: clock, settleMs: SETTLE_MS, log: (l) => o.log?.log(l.split(' ')[0]!) });
+  // P3-T11: the approved project label is always null until the Phase 5 overlay can store one (FR-10, Q3-6, D-P3-10).
+  const onWait = (agent: string, _sid: string, state: NotifyState) =>
+    o.onNotify?.({ agent: catalog?.agents.find((a) => a.id === agent)?.displayName ?? agent, label: null, state });
+  const engine: StatusEngine | null = readOnly ? null : createEngine({ db, now: clock, settleMs: SETTLE_MS, log: (l) => o.log?.log(l.split(' ')[0]!), onWait });
   const read = (agent: string, sid: string): LiveStatus | null => {
     const s = engine?.status(agent, sid);
     if (!s) return null;
