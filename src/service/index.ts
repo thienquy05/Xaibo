@@ -13,6 +13,7 @@ import { createLogger, loadInstallSecret, type Logger } from '../shared/log.ts';
 import { answer, coalesce, sessionsByKey, type LiveOf } from './api.ts';
 import { boot, type Service } from './boot.ts';
 import type { Batch } from './store/writer.ts';
+import { traceableIds } from './trace-ids.ts';
 
 // P3-T10: 50 ms keeps one push per window while leaving most of M1's 250 ms hook-to-paint budget; the tick re-reads
 // sessions whose status changes with time alone (settle within interval + 250 ms, M1), coverage is re-read slowly.
@@ -29,7 +30,6 @@ const live: LiveOf = (agent, sid, profileId) => svc?.status(agent, sid, profileI
 // Perf trace (XAIBO_PERF_TRACE=1, test only, IDs only): hrtime at commit per delivery/record id, and per pushed delta its
 // id and the ids it carries; the renderer acks a delta's paint to main, which stamps the same monotonic clock.
 let trace: string | null = null;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const pendingIds = new Map<string, string[]>();
 let deltaSeq = 0;
 const stamp = (line: object) => { if (trace) appendFileSync(trace, `${JSON.stringify({ ...line, t: process.hrtime.bigint().toString() })}\n`); };
@@ -71,8 +71,8 @@ function committed(b: Batch) {
   const keys = new Set(b.sessions.map((s) => `${b.agent}\0${b.profileId}\0${s.nativeSessionId}`));
   for (const k of keys) changed(k);
   if (!trace) return;
-  // IDs only: record ids come from untrusted files, so only UUID-shaped ones are traced (review L2)
-  const ids = (b.delivery ? [b.delivery.deliveryId] : b.events.map((e) => e.nativeId)).filter((x) => UUID.test(x));
+  // IDs only: record ids come from untrusted files, so only derived id shapes are traced (review L2; P3-T16a)
+  const ids = traceableIds(b.delivery ? [b.delivery.deliveryId] : b.events.map((e) => e.nativeId));
   stamp({ ev: 'commit', ids });
   for (const k of keys) pendingIds.set(k, [...(pendingIds.get(k) ?? []), ...ids]);
 }
