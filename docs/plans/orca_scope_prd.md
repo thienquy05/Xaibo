@@ -74,6 +74,11 @@ non-loopback connections.
 
 **Out of scope**
 
+Revised by the owner on 2026-11-13 (PRD v1.3 draft, D-32..D-35): the first four items below return in a controlled
+form as S-41 (usage broker), S-42 (orchestrator, v2), S-43 (guard hook) and S-44 (local metrics). The list keeps the
+original reasoning.
+
+
 - Calling provider usage, quota or billing APIs, or reading stored credentials: conflicts with M6 and PRD §3.2. May
   return later only as a separate opt-in proposal.
 - Orchestration (a lead agent starting workers, mailboxes, automatic pause): a new control feature; R1–R5 stay warnings.

@@ -116,6 +116,9 @@ migrations and disk-full recovery before Phase 5.
 
 ## 4. Not taking
 
+Revised by the owner on 2026-11-13 (PRD v1.3 draft): usage APIs, orchestration, blocking and telemetry return in a
+controlled form (S-41..S-44, CRED policy). Orca's look stays excluded (D-23).
+
 - Calling usage or quota APIs, telemetry, crash upload: conflicts with M6 and §3.2.
 - Blocking or rewriting tool calls from hooks: conflicts with M7/M16.
 - Orca's layout, naming and visual style: D-23.
