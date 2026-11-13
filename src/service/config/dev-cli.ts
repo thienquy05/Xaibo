@@ -11,6 +11,9 @@
 // with no override; a login environment that cannot be read refuses too. Writes need a typed `yes` on a TTY; `--yes`
 // is accepted only for profiles strictly below the temp dir or <repo>/.cache/profiles/. The printed diff shows Xaibo
 // values only (replaced foreign values as type + hash). No renderer Connect IPC until Phase 6.
+//   agy-hooks (P3-T13d): plan|apply with --profile-key <key> [--project <dir>] [--forwarder <file>] instead of --change
+//   add the Xaibo group to <dir>/.gemini/config/hooks.json; the project's .agents/hooks.json is only inspected (a Xaibo
+//   hook there refuses); revert is the generic one
 //   P3-T13b report registrations: register --agent <id> --profile-key <key> [--yes] | revoke --id <uuid> [--yes]
 //   register prints the registration id and its token once (only the token's hash is stored, <dataDir>/registrations.json);
 //   --yes is accepted only for a data dir strictly below the temp dir. Revoking cuts the producer's open connections.
@@ -19,6 +22,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { deployShim, installPlugin, MARKETPLACE, PLUGIN_REF, uninstallPlugin } from '../adapters/claude/setup.ts';
+import { checkAgyInstall, installAgyHooks } from '../adapters/agy/setup.ts';
 import { codexHookOps, codexTrustSteps, installCodexHooks, shimPath } from '../adapters/codex/setup.ts';
 import { readLoginEnv } from '../catalog/env.ts';
 import { addRegistration, RegistrationError, removeRegistration } from '../receivers/registrations.ts';
@@ -50,7 +54,7 @@ function parseArgs(argv: string[]) {
   for (let i = 0; i < rest.length; i++) {
     const k = rest[i]!;
     if (k === '--yes') flags['yes'] = true;
-    else if (['--target', '--profile', '--change', '--claude', '--profile-key', '--forwarder'].includes(k) && rest[i + 1] !== undefined) flags[k.slice(2)] = rest[++i]!;
+    else if (['--target', '--profile', '--change', '--claude', '--profile-key', '--forwarder', '--project'].includes(k) && rest[i + 1] !== undefined) flags[k.slice(2)] = rest[++i]!;
     else refuse(`unknown argument: ${k}`);
   }
   const target = flags['target'];
@@ -59,7 +63,7 @@ function parseArgs(argv: string[]) {
   const opt = (k: string) => flags[k] as string | undefined;
   return {
     cmd: cmd!, target: target as string, profile: flags['profile'] as string, change: opt('change'), yes: flags['yes'] === true,
-    claude: opt('claude'), profileKey: opt('profile-key'), forwarder: opt('forwarder'),
+    claude: opt('claude'), profileKey: opt('profile-key'), forwarder: opt('forwarder'), project: opt('project'),
   };
 }
 
@@ -158,6 +162,7 @@ async function main(argv: string[]): Promise<number> {
   }
   if (a.target === 'claude-plugin') return plugin(a, dataDir!, profile, bounds);
   if (a.target === 'codex-hooks' && a.profileKey && a.cmd !== 'revert') return codex(a, dataDir!, profile, bounds, target);
+  if (a.target === 'agy-hooks' && a.profileKey && a.cmd !== 'revert') return agy(a, dataDir!, profile, bounds, target);
 
   if (a.cmd === 'revert') {
     const entry = readManifest(dataDir!).filter((e) => e.target === target).at(-1);
@@ -201,6 +206,19 @@ async function codex(a: ReturnType<typeof parseArgs>, dataDir: string, profile: 
   return 0;
 }
 
+/** P3-T13d: the Xaibo group for --profile-key in <dir>/.gemini/config/hooks.json; revert is the generic one. */
+async function agy(a: ReturnType<typeof parseArgs>, dataDir: string, profile: string, bounds: Bounds, target: string): Promise<number> {
+  const o = { dataDir, profileKey: a.profileKey!, profileHome: profile, bounds, ...(a.project ? { project: a.project } : {}) };
+  const { file, ops } = checkAgyInstall(o); // plan refuses whatever apply would (review M2)
+  printPlan(a.target, plan(file, 'agy-hooks', ops, bounds));
+  if (a.cmd === 'plan') return 0;
+  await confirm(a.yes, profile, 'write agy-hooks');
+  deployShim(dataDir, { hook: path.join(REPO, 'src', 'forwarder', 'xaibo-hook'), forwarder: real(a.forwarder ?? path.join(REPO, '.cache', 'sea', 'xaibo-forwarder')) });
+  const entry = installAgyHooks(o);
+  console.log(`agy-hooks: applied ${entry.id}`);
+  return 0;
+}
+
 /** P3-T05: the hooks-only plugin, through `claude plugin` in the disposable profile only. */
 async function plugin(a: ReturnType<typeof parseArgs>, dataDir: string, profile: string, bounds: Bounds): Promise<number> {
   if (!a.claude || !a.profileKey) refuse('claude-plugin needs --claude <exe> and --profile-key <key>');
@@ -229,7 +247,7 @@ const MESSAGES: Partial<Record<ConfigError['code'], string>> = {
   'outside-root': 'refused: the target resolves outside the profile',
   'parent-missing': 'refused: the config directory does not exist in this profile',
   changed: 'aborted: the file changed since it was read; nothing written',
-  duplicate: 'refused: Xaibo hooks are already installed in this profile',
+  duplicate: 'refused: Xaibo hooks are already installed in this profile (or its selected project)',
   exclusive: 'refused: this profile already has the other Claude hook route (plugin and settings fallback are exclusive)',
   'not-installed': 'nothing to uninstall: no Xaibo plugin recorded for this profile',
   cli: 'failed: a `claude plugin` step did not succeed; rolled back',

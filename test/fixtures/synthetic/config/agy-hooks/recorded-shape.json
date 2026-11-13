@@ -1,0 +1,22 @@
+{
+  "recorder": {
+    "SessionStart": [
+      { "type": "command", "command": "/tmp/xaibo-fixture/tools/record.sh SessionStart", "timeout": 10 }
+    ],
+    "PreToolUse": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "/tmp/xaibo-fixture/tools/record.sh PreToolUse", "timeout": 10 }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "/tmp/xaibo-fixture/tools/record.sh PostToolUse", "timeout": 10 }] }
+    ],
+    "PreInvocation": [
+      { "type": "command", "command": "/tmp/xaibo-fixture/tools/record.sh PreInvocation", "timeout": 10 }
+    ],
+    "PostInvocation": [
+      { "type": "command", "command": "/tmp/xaibo-fixture/tools/record.sh PostInvocation", "timeout": 10 }
+    ],
+    "Stop": [
+      { "type": "command", "command": "/tmp/xaibo-fixture/tools/record.sh Stop", "timeout": 10 }
+    ]
+  }
+}
