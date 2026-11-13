@@ -4,13 +4,14 @@
 
 | Item | Value |
 |---|---|
-| Status | **Approved v1.0 (2026-11-09, owner; D-P0-09).** Content is draft v0.3: Codex challenge (4 rounds, final verdict yes with fixes, applied) and Claude second review (progress §9b, applied). |
-| Date | 2026-11-09 |
-| Source of truth | `docs/PRD.md`, Approved v1.0. Phases from PRD §10, tests from PRD §9, "done" from PRD §1.6 and §9.3. Where this plan and the PRD disagree, the PRD wins and the plan is corrected. |
+| Status | **Approved v1.0 (2026-11-09, owner; D-P0-09).** Content is draft v0.3: Codex challenge (4 rounds, final verdict yes with fixes, applied) and Claude second review (progress §9b, applied). Later changes: Phase 2 revised for `agy` (D-P2-01), Phase 3 revised (D-P3-*), documentation-audit alignment 2026-11-13 (§1a). |
+| Date | 2026-11-09 (last aligned 2026-11-13) |
+| Source of truth | `docs/PRD.md`: approved baseline **v1.1** (Gate 0, 2026-11-10); the v1.2 and v1.3 drafts bind only once the owner approves them. Phases from PRD §10, tests from PRD §9, "done" from PRD §1.6 and §9.3. **Precedence** (PRD header, owner 2026-11-13): the newest owner approval wins: the approved PRD baseline, then later owner-approved decisions (progress decision log, gate records) where newer, then this plan. Drafts never override an approval. Where this plan disagrees with a newer approval, the plan is corrected (§1a lists the corrections not yet folded into the task text). |
+| Harness spec IDs | `XAIBO-PROD-<phase><nn>` (e.g. `XAIBO-PROD-318` for P3-T14), recorded per task in the progress ledger |
 | Process | `docs/process/HARNESS_PROCESS.md` |
 | Live status | `docs/plans/xaibo_progress.md` |
 | Spike evidence | `docs/plans/phase0_spikes.md` (created by P0-T10) |
-| Branch of this plan | `feat/phase0-spikes` |
+| Branch of this plan | created on `feat/phase0-spikes`; edited on each phase branch since |
 
 **Owner decisions of 2026-11-09 (binding on this plan)**
 
@@ -28,6 +29,34 @@
 - The repo is treated as **public**: no real usernames, paths (use `~`), session IDs, ports, counts, prompts or account data anywhere in git. Fixtures are synthetic. Evidence from temp-profile runs is reduced to schemas and aggregates before it enters git.
 - Ponytail discipline: the smallest working change, stdlib and native features first, no speculative abstractions.
 - UI testing uses Playwright: `_electron` for E2E, Playwright MCP for a visual check on every UI change.
+
+### 1a. Corrections from later approvals (documentation audit, 2026-11-13)
+
+Task text below that predates these decisions is read as corrected here (precedence rule above; audit ledger `docs/plans/docs_audit.md`). A phase that still has task text listed here folds the correction into that text at its phase setup task (Px-T00).
+
+| Audit ID | Plan text affected | What holds | Source |
+|---|---|---|---|
+| A14 | Phases 4/5: T2/T3 corpora, 50 concurrent sessions, EC-57, EC-87, plan-scale M13/M14 (P4-T11/T12/T17, P5-T00, Gate 4/5 checklists) | Gates 4/5 and the MVP Gate measure the personal profile **TP** (PRD §6.6). T2/T3, plan-scale M13/M14, EC-57 and EC-87 run only in the owner-started scale-up stage after v1, not at any MVP gate | D-P0-24, D-P0-26, D-P0-36; PRD §6.6, §9.3 |
+| A16 | "`async: true` on every hook" (P3-T03 lint, P3-T05) and "async where supported" | Claude: `async: true` on every event except `Stop`, which is synchronous. Codex: the per-event S5 subset (`SessionEnd` sync). The hook lint checks that per-agent subset (as built in `src/service/adapters/claude/setup.ts`) | PRD §5.2, §5.3, §7.3; S3, S5 |
+| A18 | OQ-X3 default: keychain items "matching the agents' names" | The guard enumerates **every** generic-password item (SHA-256 of `svce`, SHA-256 of `acct`, `mdat`) as P0-T04 specifies and `spikes/shared/guard.ts` does; agent items are flagged by name, others still detected | P0-T04; review record §9b C2 |
+| A19 | `.cache/profiles/` (§3.2, P0-T05, OQ-X1, live-test layout) | Disposable profiles live outside the repo at `~/.xaibo-spike-profiles/<agent>-<slot>/` (0700) | D-P0-15 |
+| A20 | P0-T05: escape detection by an `XAIBO_RUN_TOKEN` environment scan | Process-tree tracking (pid + start time per 50 ms poll) plus an inherited marker fd and `lsof`; the token is a label only (macOS exposes no process environments) | D-P0-12 |
+| A27 | P3-T07 "required fixture set" includes cases with no verified native behaviour | Those cases are deferred per agent as recorded; unavailable is never counted as a pass | D-P3-07 (8), D-P3-08 |
+| A31 | Claude context window derived from transcripts | Transcript-only Claude sessions show window and percentage as unavailable until the statusLine tee reports the window (P3-T14/T15) | D-P2-04 |
+| A32 | P2-T12, §5: EC-74 link required at Gate 2 | Tagging and count-once shipped; the `session_links` part waits for a verified correlation key | D-P2-07 |
+| C1 | "Gemini" as the third agent in later phases (catalog, P6, v1-B S8) | The Antigravity CLI (`agy`) is the built-in third agent (PRD §5.9). Gemini CLI stays an API-key/Vertex catalog agent, unverified until S11 re-runs. Later "Gemini" tasks mean `agy` unless they are about that catalog entry | D-P0-25, D-P0-36, D-P2-01; owner 2026-11-13 |
+| C3 | P2-T00: "S11 C1–C14" | S11 defines C1–C12 | `phase0_spikes.md` § S11 |
+| C4 | "SG" / "SG procedure" (P7, v1-A, v1-B, v1-C) | SG = the §3.2 guarded live procedure: a disposable profile through the runner, owner sign-in, guard `snapshot`/`compare` = `MATCH` around the session, fixed synthetic prompts within an owner-OK'd budget | §3.2 |
+| C6, C7 | P1-T12 `test/unit/keyset.test.ts`; P2-T06/T07 usage/context test paths | Built as `test/integration/keyset.test.ts`, `test/integration/usage-ingest.test.ts`, `test/integration/context-ingest.test.ts`, `test/unit/context.test.ts`, `test/unit/tokens.test.ts` | progress ledger P1-T12, P2-T06, P2-T07 |
+| C8 | P3-T06: `integrations/codex/hooks.json` as a repo template | No repo template: `src/service/adapters/codex/setup.ts` generates the Xaibo entries into `$CODEX_HOME/hooks.json` through the FR-32 engine | progress P3-T06 |
+| C9 | P3-T13: `src/forwarder/report.ts` | The helper is the stable shim `src/forwarder/xaibo-report`, sharing the forwarder (`src/forwarder/forwarder.ts`) delivery-id and spool code | progress P3-T13c |
+| C10 | P2-T00: `node spikes/p2-agy/check.ts --self-test` | `check.ts` was never built; P2-T00 evidence is `spikes/p2-agy/facts.ts` with `facts.test.ts` | progress P2-T00 |
+| C16 | §6 consolidated defaults | Superseded: OQ-X1 (→ D-P0-15), OQ-X3 (→ A18 above), OQ-B10 (→ §3.2 retirement row), OQ-P2-* (→ D-P2-01). The progress decision log wins where newer | precedence rule |
+| D24 | Live checks run as `npm test -- test/live/…` | `npm test` globs only `test/unit` and `test/integration`. Run a live check directly: `XAIBO_LIVE_ROOT=<profile root> node --test test/live/<name>.live.test.ts` | `package.json` |
+| D25 | "Loop:" lines that chain `npm test … && …` | Run `npm test` bare and once; run every other command as a separate call (harness-os drops what follows) | AGENTS.md Code rule |
+| D26 | Listed task order vs dependencies | The **Deps** field decides order; the listed order is reading order | — |
+| D27 | P1-T02: canary check with `git commit --dry-run` | `--dry-run` runs no hooks: stage the generated canary and run `.githooks/pre-commit` directly | progress P1-T02 |
+| D31 | Profiles retired at Gate 6 | Kept until the last task that needs a live profile (§3.2 retirement row) | §3.2 |
 
 ## 2. How to use this plan
 
@@ -89,7 +118,7 @@ Each branch is cut from up-to-date `master` (`git switch master && git pull --ff
 |---|---|---|
 | 0 Spikes | `feat/phase0-spikes` (exists; cut from `master` at `e6b39ab`) | Gate 0 |
 | 1 Skeleton + Claude ingest | `feat/phase1-claude-ingest` | Gate 1 |
-| 2 Codex + normalization + Gemini ingest | `feat/phase2-codex-gemini-normalization` | Gate 2 |
+| 2 Codex + normalization + Antigravity CLI (`agy`) ingest | `feat/phase2-codex-agy-normalization` | Gate 2 |
 | 3 Live status | `feat/phase3-live-status` | Gate 3 |
 | D Design system | `docs/design-system` | Gate D |
 | 4 Session workspace UI | `feat/phase4-session-workspace` | Gate 4 |
@@ -124,14 +153,15 @@ Each branch is cut from up-to-date `master` (`git switch master && git pull --ff
 
 | Item | Rule |
 |---|---|
-| Location | `.cache/profiles/<agent>-<slot>/` (git-ignored, mode 0700); `HOME=<profile>/home`; `CLAUDE_CONFIG_DIR=$HOME/.claude`, `CODEX_HOME=$HOME/.codex`, `GEMINI_CLI_HOME=$HOME` (parent of `.gemini`). Alternative: the session scratchpad (re-sign-in each session). OQ-X1. |
+| Location | `~/.xaibo-spike-profiles/<agent>-<slot>/` (outside the repo, mode 0700; D-P0-15 replaced the original `.cache/profiles/`); `HOME=<profile>/home`; `CLAUDE_CONFIG_DIR=$HOME/.claude`, `CODEX_HOME=$HOME/.codex`, `GEMINI_CLI_HOME=$HOME` (parent of `.gemini`). Alternative: the session scratchpad (re-sign-in each session). OQ-X1. |
 | Runner | `spikes/shared/in-profile.sh <agent> <slot> -- <cmd…>`: `env -i` with an allowlist, all five isolation variables (`HOME`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CLI_HOME`, `XAIBO_DATA_DIR`) set inside the profile, a sentinel-file check that the resolved profile is under `.cache/profiles/`, refusal if any target realpath equals or lies under a real agent or Xaibo root (not merely under the real home, since the repo itself is under home), auto-update disabled, started PIDs recorded, version recorded before and after (P0-T05). Reused unchanged by Phase 3, Phase 6, and v1 live checks. |
 | Throwaway projects | `.cache/spike-projects/<spike>/` with `git init` and one synthetic `README.txt` |
 | Guard | `spikes/shared/guard.ts snapshot|compare <label>` before and after every live session, every owner sign-in and every spike block (P0-T04). It is **detection only**; prevention is the runner's env isolation plus the sandbox write-deny on real roots. It hashes real config files and stats credential files and keychain metadata; it never lists or reads real session stores (AGENTS.md). Any `DIFF` (including a removal) stops all live work; the owner is told and adjudicates (the owner's own concurrent sessions can cause a DIFF). |
 | Keychain | Metadata only (attribute enumeration with `security dump-keychain`, never `-d`/`-g`/`-w`; P0-T04). Sharing checked before the first sign-in per agent (P0-T06). If temp sign-in would share or overwrite the real credential: stop (OQ-X4). |
 | Owner sign-in | Owner runs the printed `in-profile.sh … -- <agent>` login command in their own terminal (the sandbox blocks `open` and browser OAuth). First need per profile only. |
 | Prompts | Fixed synthetic prompt set (P0-T07); budget OQ-X10. `/context`, `count_tokens`, quota and usage commands are never used (OQ-B16). |
-| Retirement | Profiles kept until Gate 6 (FR-32 disposable-profile hook work), then the owner logs out in each, and profiles plus any temp keychain item are deleted after owner confirmation (OQ-B10). |
+| Retirement | Profiles are kept until the last plan task that needs a live profile (the v1 SG spikes: S2, S8, the S10 MCP re-run, and S16/S17 if approved), then the owner logs out in each, and profiles plus any temp keychain item are deleted after owner confirmation. At Gate 6 the owner may retire them early and sign in again when a later spike needs one (OQ-B10, audit D31). |
+| SG procedure | "SG" in later tasks means this section's guarded live procedure: a disposable profile through the runner, owner sign-in if needed, guard `snapshot`/`compare` = `MATCH` around the session, fixed synthetic prompts within an owner-OK'd budget. |
 
 ### 3.3 Caches and local dirs
 
@@ -1247,7 +1277,7 @@ Third-agent FR/S disposition: S-28/FR-03 replace Gemini hooks with the verified 
 
 ### 3.2 Phase rules
 - HP for every gated unit. `security-change` for T01, T02, T03, T04, T13, T14 (agent configs, sockets/auth, foreign command execution, spool/durability); `new-feature` otherwise; `hotfix` for gate fixes. Interim diff-only Codex reviews for security-change units without an owner stop (Q3-12).
-- Test layout: `test/unit/*.test.ts`, `test/integration/*.test.ts`, `test/e2e/*.spec.ts`, `test/perf/*.ts`; live disposable-profile checks in `test/live/*.live.test.ts`, skipped unless `XAIBO_LIVE_ROOT` points at a temp-profile root under `.cache/profiles/`.
+- Test layout: `test/unit/*.test.ts`, `test/integration/*.test.ts`, `test/e2e/*.spec.ts`, `test/perf/*.ts`; live disposable-profile checks in `test/live/*.live.test.ts`, skipped unless `XAIBO_LIVE_ROOT` points at a temp-profile root under `~/.xaibo-spike-profiles/` (D-P0-15). `npm test` does not select them: run one directly with `XAIBO_LIVE_ROOT=<root> node --test test/live/<name>.live.test.ts`.
 - Live runs per §3.2 (runner, guard snapshot → run → guard compare; tiny synthetic prompts; owner signs in once; raw output reduced then deleted; only schemas and pass/fail in git).
 - Fixtures hand-written from recorded schemas only (OQ-X5).
 - Third-agent scope (D-P0-36, D-P3-02): use only P2-T00-verified `agy` equivalents; §6.8 supplies the generic mapping mechanism, not Gemini event names for `agy`. No new live `agy` run (including version/help/sign-in) without the owner's OK; agree a prompt budget before any prompt, with no automatic extension of OQ-P2-10. Reuse P2-T00 isolation runner/guard, all five isolation variables and disposable HOME/project roots. Only the owner-authorized native CLI may contact its provider; Xaibo/reporting hooks stay zero-network/zero-token, command-only, silent exit 0.
@@ -1306,7 +1336,7 @@ Third-agent FR/S disposition: S-28/FR-03 replace Gemini hooks with the verified 
 - **EC-49** Managed settings, `disableAllHooks`, `allowedHttpHookUrls` — effective config detected; "hooks blocked by policy"; files-only — **U**.
 - **Maps:** FR-30, S-05, D-2, M7, SEC4.
 - **Test first:** U — every §5.2 event fixture maps to evidence; policy fixtures give the expected coverage state. Live (skipped without `XAIBO_LIVE_ROOT`) — install, restart, one PR-OK; `SessionStart`/`UserPromptSubmit`/`Stop` received; duplicate install refused; disconnect restores the pre-hash; guard `MATCH`.
-- **Loop:** U, L, then `XAIBO_LIVE_ROOT=<temp root> npm test -- test/live/claude-plugin.live.test.ts`. **Done:** live result and reduced event-field schema in the progress file. **Deps:** T01, T03, T04, S4, S7. **Owner:** temp Claude profile sign-in if not already done.
+- **Loop:** U, L, then `XAIBO_LIVE_ROOT=<temp root> node --test test/live/claude-plugin.live.test.ts`. **Done:** live result and reduced event-field schema in the progress file. **Deps:** T01, T03, T04, S4, S7. **Owner:** temp Claude profile sign-in if not already done.
 
 #### P3-T06 — Codex hooks and guided trust flow
 - **Build:** `integrations/codex/hooks.json` with separate Xaibo entries for the 0.160.0 events (SessionStart, SessionEnd, SubagentStart, SubagentStop, PreToolUse, PermissionRequest, PostToolUse, PreCompact, PostCompact, UserPromptSubmit, Stop, Interrupt), `async` where S5 allowed (`SessionEnd` sync); Pre/PostModelRequest capability-detected only. Installed into `$CODEX_HOME/hooks.json` through T01. State `installed, awaiting trust` (guided steps as text) → `connected` only on the first event received from that hook; any change to the Xaibo entry returns it to awaiting trust. Never `--dangerously-bypass-hook-trust`; never write trust hashes or the S5 trust location; rollouts keep being observed.
@@ -1908,7 +1938,7 @@ See §6: Q-5.1..Q-5.11.
 
 **P6-T12 — Real-profile enablement and owner live check** — `security-change`. Remove the dev-CLI-only restriction so Connect may target detected real profiles (effective once the branch merges after Gate 6); the packaged app shows the same diff preview and requires explicit confirmation. Test first (U): target resolution refuses real roots with the "real-profile enabled" build flag off, allows them with a preview when on. The "real-profile enabled" flag stays off on the branch until the Gate 6 merge (FR-32). Owner touchpoint (optional, OQ-P6-1): runs after Gate 6 approval, as P7-T01's first step on the Phase 7 branch — the owner runs Connect then Disconnect on their real profiles in the packaged app; Claude records a local-only checksum manifest before/after (never committed or pasted); only pass/fail goes to the progress file. Deps: P6-T03, T10.
 
-**P6-T13 — Gate 6** — GS plus the checklist. At this gate the temp profiles are retired (§3.2; OQ-B10).
+**P6-T13 — Gate 6** — GS plus the checklist. At this gate the owner decides whether to retire the temp profiles early or keep them for the later SG spikes (§3.2; OQ-B10).
 
 ### EC rows assigned to Gate 6
 
@@ -1929,7 +1959,7 @@ See §6: Q-5.1..Q-5.11.
 - [ ] Integrations, Add agent and Settings price E2E green; visual baselines from the approved design; A11Y keyboard/focus/narrow checks pass.
 - [ ] M6 clean in every E2E run; M7 config lint: no prompt/agent hook types in any generated config.
 - [ ] Native fixture files unmodified (checksums).
-- [ ] Temp profiles retired (owner logout, deletion, temp keychain items removed after confirmation).
+- [ ] Temp profiles: owner decision recorded (retire now with logout, deletion and temp keychain items removed after confirmation, or keep for the later SG spikes, §3.2).
 - [ ] GS steps 0–6.
 
 **Metrics at Gate 6.** M15 (pass/fail per sub-check); M6 from the E2E audit; M7 config lint on generated plugin and hooks; if forwarder or service code changed, re-run T0 (M1, M16).

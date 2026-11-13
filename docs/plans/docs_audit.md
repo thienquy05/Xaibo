@@ -13,6 +13,8 @@ audit snapshot.
 
 Rebased 2026-11-13 on master's hard-rules-vs-defaults update: AGENTS.md now splits hard rules (privacy, real data, zero network, git, installs, gate order) from defaults; the fixes here keep the hard rules intact and the PRD's browser checks are tool-agnostic to match.
 
+2026-11-13, after this ledger merged: the Phase 3 branch was rebased onto it and the plan/progress items marked **after P3** were fixed there instead of waiting for the Phase 3 merge (owner: "make all the docs at the same page first"). Done-phase task text is corrected through plan §1a; text for upcoming work was edited in place.
+
 Status values: **fixed** (with commit or note), **now** (Claude fixes on this branch), **after P3** (Claude fixes in
 plan/progress after Phase 3 merges), **Codex design** (needs a design decision, then review), **owner** (owner decides),
 **phase entry** (decide when that phase starts; nothing to do now).
@@ -21,7 +23,7 @@ plan/progress after Phase 3 merges), **Codex design** (needs a design decision, 
 
 | ID | Issue (short) | Sev. | Status |
 |---|---|---|---|
-| A1 | Headers name v1.0 or pending v1.1; Gate 0 approved v1.1 | blocker | fixed (audit fix 1); after P3 (plan header) |
+| A1 | Headers name v1.0 or pending v1.1; Gate 0 approved v1.1 | blocker | fixed (audit fix 1); fixed 2026-11-13 on the Phase 3 branch (plan header) |
 | A2 | Gate 0-approved defaults still say proposed/pending | should | fixed (audit fix 1 and 2; Q15 in fix 2) |
 | A3 | D-22 tee approved via D-27 but summaries say pending | should | fixed (audit fix 1) |
 | A4 | v1.2 history says reviews done and pending at once | should | fixed (audit fix 1) |
@@ -34,25 +36,25 @@ plan/progress after Phase 3 merges), **Codex design** (needs a design decision, 
 | A11 | `delegate_task` expands the fixed MCP tool surface | blocker | deferred: owner 2026-11-13 keeps the AEGIS/local LLM draft (#9) separate until a final decision |
 | A12 | AEGIS "enforcement deferred" vs S-43 guard hook | blocker | deferred: owner 2026-11-13 keeps the AEGIS/local LLM draft (#9) separate until a final decision |
 | A13 | Local model calls vs no-model-call rules | blocker | deferred: owner 2026-11-13 keeps the AEGIS/local LLM draft (#9) separate until a final decision |
-| A14 | Plan still requires plan-scale T2/T3 at Gates 4/5 despite scale-up deferral | blocker | after P3 |
+| A14 | Plan still requires plan-scale T2/T3 at Gates 4/5 despite scale-up deferral | blocker | fixed 2026-11-13 on the Phase 3 branch (plan §1a; task text folded at P4-T00/P5-T00) |
 | A15 | Approved worker layout vs plan treating workers as optional | blocker | Codex design (plan) |
-| A16 | Blanket async-hook wording vs sync Stop and Codex per-event subset | blocker | fixed (audit fix 1 and 2: §5.2 Stop, §7.3 per-agent async) (PRD); after P3 (plan) |
+| A16 | Blanket async-hook wording vs sync Stop and Codex per-event subset | blocker | fixed (audit fix 1 and 2: §5.2 Stop, §7.3 per-agent async) (PRD); fixed 2026-11-13 on the Phase 3 branch (plan §1a) |
 | A17 | PRD allows sanitized recordings as fixtures; plan forbids | should | fixed (audit fix 1) |
-| A18 | Keychain guard spec vs OQ-X3 default | blocker | after P3 |
-| A19 | Disposable profiles still placed in repo `.cache/profiles/` (D-P0-15 moved them) | blocker | after P3 |
-| A20 | Plan still prescribes env-token escape detection (D-P0-12 replaced it) | should | after P3 |
+| A18 | Keychain guard spec vs OQ-X3 default | blocker | fixed 2026-11-13 on the Phase 3 branch (plan §1a) |
+| A19 | Disposable profiles still placed in repo `.cache/profiles/` (D-P0-15 moved them) | blocker | fixed 2026-11-13 on the Phase 3 branch (plan §3.2, live-test layout, §1a) |
+| A20 | Plan still prescribes env-token escape detection (D-P0-12 replaced it) | should | fixed 2026-11-13 on the Phase 3 branch (plan §1a) |
 | A21 | Plan ranks embedded PTY evidence above hooks vs FR-55 | blocker | Codex design |
 | A22 | Report guide promises receive-time ordering vs causal ordering | blocker | Codex design |
 | A23 | Silent/exit-0 reporting rule vs `xaibo-report` exit 2 and stderr | blocker | fixed: owner chose two modes (silent hooks; `xaibo-report` may print errors and exit non-zero); PRD Tokens and AGENTS.md |
 | A24 | Every report exit 2 called permanent, including temporary failures | should | Codex design |
 | A25 | Literal order invariance includes hooks-missing (D-P3-07 distinguishes) | blocker | Codex design |
 | A26 | Stop/subagent "Background work" vs "Finishing…" wording | blocker | Codex design |
-| A27 | Required fixtures include cases deferred per agent | blocker | after P3 (needs the progress matrix) |
+| A27 | Required fixtures include cases deferred per agent | blocker | fixed 2026-11-13 on the Phase 3 branch (plan §1a: D-P3-07/08) |
 | A28 | S-36 shorthand attributes quota peaks per model | should | fixed (audit fix 1) |
 | A29 | Clear usage history listed among settling operations | blocker | Codex design |
 | A30 | Phase 0 report says hook content never stored vs full local storage | should | fixed (audit fix 1) |
-| A31 | Transcript-only Claude context window vs D-P2-04 (unavailable until tee) | blocker | fixed (audit fix 1) (PRD); after P3 (plan) |
-| A32 | EC-74 link still required despite owner deferral | should | fixed (audit fix 1) (PRD); after P3 (plan) |
+| A31 | Transcript-only Claude context window vs D-P2-04 (unavailable until tee) | blocker | fixed (audit fix 1) (PRD); fixed 2026-11-13 on the Phase 3 branch (plan §1a) |
+| A32 | EC-74 link still required despite owner deferral | should | fixed (audit fix 1) (PRD); fixed 2026-11-13 on the Phase 3 branch (plan §1a) |
 | A33 | T1 corpus shape vs accepted gate evidence | should | Codex design |
 | A34 | Orca scope hypothesis "no manual setup" vs setup scripts left to owner | should | fixed (audit fix 1) |
 
@@ -86,29 +88,29 @@ plan/progress after Phase 3 merges), **Codex design** (needs a design decision, 
 | B24 | v1-A/B/C defaults | should | phase entry |
 | B25 | OS builds, CI, license, signing, encryption | should | phase entry (before cross-platform/public work) |
 | B26 | Gate 2 note about a real-machine count in an old commit has no recorded disposition | should | owner |
-| B27 | Unreproduced test failures tracked only as prose | should | after P3 |
+| B27 | Unreproduced test failures tracked only as prose | should | fixed 2026-11-13 on the Phase 3 branch (progress §3d) |
 | B28 | Export and command palette have no phase | should | owner |
 
 ## C. Stale or dangling
 
 | ID | Issue (short) | Sev. | Status |
 |---|---|---|---|
-| C1 | Gemini→agy replacement is only a reading instruction; requirements still say Gemini | blocker | fixed (audit fix 2): owner 2026-11-13: agy is the built-in third agent (§5.9 contract); Gemini CLI stays as an API-key/Vertex catalog agent, UNVERIFIED until S11 re-runs; after P3 (plan) |
-| C2 | Branch matrix names the Gemini Phase 2 branch | cosmetic | after P3 |
-| C3 | P2-T00 cites S11 C1–C14; only C1–C12 exist | should | after P3 |
-| C4 | "SG procedure" never defined | blocker | after P3 |
-| C5 | D-P2-09 cited but missing from the decision log | should | after P3 |
-| C6 | keyset test path stale | should | after P3 |
-| C7 | usage/context test paths stale | should | after P3 |
-| C8 | Codex hook template documented as a repo file | should | fixed (audit fix 1) (PRD); after P3 (plan) |
-| C9 | Report helper file location stale | should | after P3 |
-| C10 | P2-T00 self-test file never existed | should | after P3 |
-| C11 | EC-50, agy facts, Codex compaction still "unverified" after evidence | should | fixed (audit fix 1) (EC-50); after P3 (progress) |
-| C12 | Old ledger rows still say pending after later resolution | should | after P3 |
+| C1 | Gemini→agy replacement is only a reading instruction; requirements still say Gemini | blocker | fixed (audit fix 2): owner 2026-11-13: agy is the built-in third agent (§5.9 contract); Gemini CLI stays as an API-key/Vertex catalog agent, UNVERIFIED until S11 re-runs; fixed 2026-11-13 on the Phase 3 branch (plan §1a) |
+| C2 | Branch matrix names the Gemini Phase 2 branch | cosmetic | fixed 2026-11-13 on the Phase 3 branch (plan §2.5) |
+| C3 | P2-T00 cites S11 C1–C14; only C1–C12 exist | should | fixed 2026-11-13 on the Phase 3 branch (plan §1a) |
+| C4 | "SG procedure" never defined | blocker | fixed 2026-11-13 on the Phase 3 branch (plan §3.2 SG row) |
+| C5 | D-P2-09 cited but missing from the decision log | should | fixed 2026-11-13 on the Phase 3 branch (progress D-P2-09) |
+| C6 | keyset test path stale | should | fixed 2026-11-13 on the Phase 3 branch (plan §1a) |
+| C7 | usage/context test paths stale | should | fixed 2026-11-13 on the Phase 3 branch (plan §1a) |
+| C8 | Codex hook template documented as a repo file | should | fixed (audit fix 1) (PRD); fixed 2026-11-13 on the Phase 3 branch (plan §1a) |
+| C9 | Report helper file location stale | should | fixed 2026-11-13 on the Phase 3 branch (plan §1a) |
+| C10 | P2-T00 self-test file never existed | should | fixed 2026-11-13 on the Phase 3 branch (plan §1a) |
+| C11 | EC-50, agy facts, Codex compaction still "unverified" after evidence | should | fixed (audit fix 1) (EC-50); fixed 2026-11-13 on the Phase 3 branch (progress P2-T00, P2-T02 rows) |
+| C12 | Old ledger rows still say pending after later resolution | should | fixed 2026-11-13 on the Phase 3 branch (progress P0-G-T2, P0-T09, P1-T12, P1-T14, Gate 1 review, P2-T00, S11 rows) |
 | C13 | Orca auxiliary docs keep answered questions open | should | fixed (audit fix 1) |
-| C14 | Traceability and roadmap stop at EC-105 / v1-D | should | after P3 and after #10/#12 approval |
-| C15 | Plan metadata revision and spec-ID prefix stale | should | after P3 |
-| C16 | Consolidated defaults list superseded values | should | after P3 |
+| C14 | Traceability and roadmap stop at EC-105 / v1-D | should | after #10/#12 approval (Phase 3 part needs nothing) |
+| C15 | Plan metadata revision and spec-ID prefix stale | should | fixed 2026-11-13 on the Phase 3 branch (plan header) |
+| C16 | Consolidated defaults list superseded values | should | fixed 2026-11-13 on the Phase 3 branch (plan §1a) |
 | C17 | Hook wire protocol described in different partial forms | blocker | Codex design |
 
 ## D. Gaps
@@ -138,14 +140,14 @@ plan/progress after Phase 3 merges), **Codex design** (needs a design decision, 
 | D21 | Report helper retries without stable IDs | blocker | Codex design |
 | D22 | Report contract omits bounds and semantics | blocker | Codex design |
 | D23 | Report guide omits accepted-but-incomplete | should | Codex design |
-| D24 | Live test invoked through `npm test` that doesn't select it | blocker | after P3 |
-| D25 | Plan commands chain the test command | blocker | after P3 |
-| D26 | Listed task order vs dependencies | should | after P3 |
-| D27 | Canary test recipe uses `git commit --dry-run` | should | after P3 |
+| D24 | Live test invoked through `npm test` that doesn't select it | blocker | fixed 2026-11-13 on the Phase 3 branch (plan Phase 3 test layout, P3-T05 loop, §1a) |
+| D25 | Plan commands chain the test command | blocker | fixed 2026-11-13 on the Phase 3 branch (plan §1a) |
+| D26 | Listed task order vs dependencies | should | fixed 2026-11-13 on the Phase 3 branch (plan §1a) |
+| D27 | Canary test recipe uses `git commit --dry-run` | should | fixed 2026-11-13 on the Phase 3 branch (plan §1a) |
 | D28 | Purge vs active spool rotation and crash cleanup | blocker | Codex design |
 | D29 | Monthly accounting needs owner time zone at event time | blocker | Codex design |
 | D30 | Real-profile enablement vs frozen gate SHA | blocker | Codex design |
-| D31 | Temp profiles retired at Gate 6 but later spikes need them | should | after P3 |
+| D31 | Temp profiles retired at Gate 6 but later spikes need them | should | fixed 2026-11-13 on the Phase 3 branch (plan §3.2 retirement row, P6-T13, Gate 6 checklist) |
 | D32 | `ponytail:` vs another comment convention | should | fixed: owner delegated tool conventions to the agents (2026-11-13); the repo keeps `ponytail:` (existing code and PRD), written into AGENTS.md |
 | D33 | FTS 64 KiB cap per item vs per chunk | should | Codex design |
 | D34 | Stale/sampling identity for unknown measurement time | blocker | Codex design (T15 contract) |
