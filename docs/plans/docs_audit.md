@@ -144,7 +144,7 @@ plan/progress after Phase 3 merges), **Codex design** (needs a design decision, 
 | D29 | Monthly accounting needs owner time zone at event time | blocker | Codex design |
 | D30 | Real-profile enablement vs frozen gate SHA | blocker | Codex design |
 | D31 | Temp profiles retired at Gate 6 but later spikes need them | should | after P3 |
-| D32 | `ponytail:` vs another comment convention | should | owner: Claude's Ponytail instruction uses `ponytail:`, Codex's uses `shortcut:`; the repo uses `ponytail:` today; pick one convention for new comments |
+| D32 | `ponytail:` vs another comment convention | should | fixed: owner delegated tool conventions to the agents (2026-11-13); the repo keeps `ponytail:` (existing code and PRD), written into AGENTS.md |
 | D33 | FTS 64 KiB cap per item vs per chunk | should | Codex design |
 | D34 | Stale/sampling identity for unknown measurement time | blocker | Codex design (T15 contract) |
 | D35 | Public release plan only needs a signing decision vs CRED10 | blocker | fixed (audit fix 1) |
