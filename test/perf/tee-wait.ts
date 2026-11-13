@@ -10,6 +10,7 @@ import path from 'node:path';
 import { teeCommand } from '../../src/forwarder/statusline-tee.ts';
 import { startSocketServer } from '../../src/service/receivers/socket.ts';
 import { REPO, stats } from './app.ts';
+import { RESOURCES } from './emitter.ts';
 
 const BOUND_MS = 100;
 const ORIGINAL = "printf 'synthetic status %s' ok";
@@ -33,9 +34,10 @@ function histogram(xs: number[]): Record<string, number> {
   return Object.fromEntries(Object.entries(h).sort((a, b) => parseInt(a[0]) - parseInt(b[0])));
 }
 
-export async function teeWait(runs: number) {
-  const sea = path.join(REPO, '.cache', 'sea', 'xaibo-statusline');
-  if (!existsSync(sea)) throw new Error('tee SEA missing: npm run build && sh scripts/build-forwarder.sh');
+/** `packaged` (P3-T16b): the tee from the packaged app (npm run dist:mac) instead of the dev SEA build. */
+export async function teeWait(runs: number, packaged = false) {
+  const sea = packaged ? path.join(RESOURCES, 'xaibo-statusline') : path.join(REPO, '.cache', 'sea', 'xaibo-statusline');
+  if (!existsSync(sea)) throw new Error(packaged ? 'packaged tee missing: npm run dist:mac' : 'tee SEA missing: npm run build && sh scripts/build-forwarder.sh');
   const dir = realpathSync(mkdtempSync(path.join(tmpdir(), 'xtw-')));
   try {
     mkdirSync(path.join(dir, 'integrations', 'bin'), { recursive: true, mode: 0o700 });
@@ -56,7 +58,7 @@ export async function teeWait(runs: number) {
       modes[mode] = { ...stats(added), histogramMs: histogram(added) };
     }
     const p95s = Object.values(modes).map((m) => (m as { p95: number }).p95);
-    return { probe: 'tee-added-wait', runtime: 'SEA (dev build, not packaged)', boundMs: BOUND_MS, runs, delivered, modes, pass: p95s.every((p) => p <= BOUND_MS) };
+    return { probe: 'tee-added-wait', runtime: packaged ? 'SEA (packaged app)' : 'SEA (dev build, not packaged)', boundMs: BOUND_MS, runs, delivered, modes, pass: p95s.every((p) => p <= BOUND_MS) };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

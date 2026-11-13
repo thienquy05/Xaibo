@@ -1,6 +1,7 @@
 // Perf harness helpers (P1-T14): launch the unpacked packaged app with Playwright `_electron` on a synthetic corpus
 // (temp HOME, data dir, fake SHELL and agent binary; the corpus is read, never written), read its logs and store
 // read-only, and summarize timings. Aggregates only leave this process.
+import { execFileSync } from 'node:child_process';
 import { _electron } from '@playwright/test';
 import type { ElectronApplication, Page } from '@playwright/test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -38,9 +39,23 @@ export async function launch(claudeDir: string, more: { codex?: string; agy?: st
   return { app, page, dataDir, root, created };
 }
 
-export async function close(l: Launched): Promise<void> {
-  await Promise.race([l.app.close().catch(() => undefined), sleep(15_000)]);
+/** Quits the app; if it is still running after 15 s it is killed (P3-T16b: a hung quit left the app and the probe
+ *  running) and `timedOut` says so. */
+export async function close(l: Launched): Promise<{ timedOut: boolean }> {
+  const timedOut = await Promise.race([l.app.close().then(() => false, () => false), sleep(15_000).then(() => true)]);
+  if (timedOut) {
+    // evidence for the not-yet-reproduced quit hang: a stack sample of main and its children (local, git-ignored)
+    let children = '';
+    try { children = execFileSync('/usr/bin/pgrep', ['-P', String(l.app.process().pid)], { encoding: 'utf8' }); } catch { /* none (exit 1) */ }
+    const pids = [l.app.process().pid, ...children.split('\n').filter(Boolean).map(Number)];
+    mkdirSync(path.join(REPO, '.cache', 'perf'), { recursive: true });
+    for (const pid of pids) {
+      try { writeFileSync(path.join(REPO, '.cache', 'perf', `quit-hang-${Date.now()}-${pid}.txt`), execFileSync('/usr/bin/sample', [String(pid), '2', '-mayDie'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })); } catch { /* gone */ }
+    }
+    l.app.process().kill('SIGKILL');
+  }
   rmSync(l.root, { recursive: true, force: true });
+  return { timedOut };
 }
 
 export function serviceLog(dataDir: string): { t: string; event: string }[] {
