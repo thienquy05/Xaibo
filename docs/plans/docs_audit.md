@@ -34,7 +34,7 @@ plan/progress after Phase 3 merges), **Codex design** (needs a design decision, 
 | A13 | Local model calls vs no-model-call rules | blocker | deferred: owner 2026-11-13 keeps the AEGIS/local LLM draft (#9) separate until a final decision |
 | A14 | Plan still requires plan-scale T2/T3 at Gates 4/5 despite scale-up deferral | blocker | after P3 |
 | A15 | Approved worker layout vs plan treating workers as optional | blocker | Codex design (plan) |
-| A16 | Blanket async-hook wording vs sync Stop and Codex per-event subset | blocker | fixed (audit fix 1) (PRD); after P3 (plan) |
+| A16 | Blanket async-hook wording vs sync Stop and Codex per-event subset | blocker | fixed (audit fix 1 and 2: §5.2 Stop, §7.3 per-agent async) (PRD); after P3 (plan) |
 | A17 | PRD allows sanitized recordings as fixtures; plan forbids | should | fixed (audit fix 1) |
 | A18 | Keychain guard spec vs OQ-X3 default | blocker | after P3 |
 | A19 | Disposable profiles still placed in repo `.cache/profiles/` (D-P0-15 moved them) | blocker | after P3 |
@@ -65,7 +65,7 @@ plan/progress after Phase 3 merges), **Codex design** (needs a design decision, 
 | B5 | agy native dispatch/added wait not measured (M16) | blocker | Phase 3 (owner) |
 | B6 | VS Code/Desktop visibility, daemon attach, PTY visibility unverified | should | Codex design (capability rows) |
 | B7 | Claude cleanup age basis unverified | should | Codex design |
-| B8 | Gemini never verified; agy capability gaps | blocker | owner: agy only, drop Gemini (with C1) |
+| B8 | Gemini never verified; agy capability gaps | blocker | owner: agy built-in; Gemini for API-key users, unverified (with C1) |
 | B9 | Codex cache-write, agy reasoning/cache, prices | should | Codex design |
 | B10 | Cross-profile freshness and account epochs to validate in T15 | blocker | Phase 3 (T15) |
 | B11 | S2/S8/ACP/category pre-feature evidence | should | phase entry |
@@ -91,7 +91,7 @@ plan/progress after Phase 3 merges), **Codex design** (needs a design decision, 
 
 | ID | Issue (short) | Sev. | Status |
 |---|---|---|---|
-| C1 | Gemini→agy replacement is only a reading instruction; requirements still say Gemini | blocker | owner: agy only, drop Gemini; PRD rewrite drafted by Codex, then applied (in progress); after P3 (plan) |
+| C1 | Gemini→agy replacement is only a reading instruction; requirements still say Gemini | blocker | fixed (audit fix 2): owner 2026-11-13: agy is the built-in third agent (§5.9 contract); Gemini CLI stays as an API-key/Vertex catalog agent, UNVERIFIED until S11 re-runs; after P3 (plan) |
 | C2 | Branch matrix names the Gemini Phase 2 branch | cosmetic | after P3 |
 | C3 | P2-T00 cites S11 C1–C14; only C1–C12 exist | should | after P3 |
 | C4 | "SG procedure" never defined | blocker | after P3 |
@@ -144,7 +144,7 @@ plan/progress after Phase 3 merges), **Codex design** (needs a design decision, 
 | D29 | Monthly accounting needs owner time zone at event time | blocker | Codex design |
 | D30 | Real-profile enablement vs frozen gate SHA | blocker | Codex design |
 | D31 | Temp profiles retired at Gate 6 but later spikes need them | should | after P3 |
-| D32 | `ponytail:` vs another comment convention | should | fixed (no conflict: the active Ponytail instruction uses `ponytail:`) |
+| D32 | `ponytail:` vs another comment convention | should | owner: Claude's Ponytail instruction uses `ponytail:`, Codex's uses `shortcut:`; the repo uses `ponytail:` today; pick one convention for new comments |
 | D33 | FTS 64 KiB cap per item vs per chunk | should | Codex design |
 | D34 | Stale/sampling identity for unknown measurement time | blocker | Codex design (T15 contract) |
 | D35 | Public release plan only needs a signing decision vs CRED10 | blocker | fixed (audit fix 1) |
