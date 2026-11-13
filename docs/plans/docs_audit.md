@@ -20,7 +20,7 @@ plan/progress after Phase 3 merges), **Codex design** (needs a design decision, 
 | ID | Issue (short) | Sev. | Status |
 |---|---|---|---|
 | A1 | Headers name v1.0 or pending v1.1; Gate 0 approved v1.1 | blocker | fixed (audit fix 1); after P3 (plan header) |
-| A2 | Gate 0-approved defaults still say proposed/pending | should | fixed (audit fix 1) |
+| A2 | Gate 0-approved defaults still say proposed/pending | should | fixed (audit fix 1 and 2; Q15 in fix 2) |
 | A3 | D-22 tee approved via D-27 but summaries say pending | should | fixed (audit fix 1) |
 | A4 | v1.2 history says reviews done and pending at once | should | fixed (audit fix 1) |
 | A5 | v1.3 path omitted Claude second review | blocker | fixed (v1.3 App. G records Claude second review) |
