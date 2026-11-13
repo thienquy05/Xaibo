@@ -11,6 +11,8 @@ this ledger tracks closure.
 merges (status **after P3**). PRD and side-doc fixes land on this branch (status **now**). Line numbers refer to the
 audit snapshot.
 
+Rebased 2026-11-13 on master's hard-rules-vs-defaults update: AGENTS.md now splits hard rules (privacy, real data, zero network, git, installs, gate order) from defaults; the fixes here keep the hard rules intact and the PRD's browser checks are tool-agnostic to match.
+
 Status values: **fixed** (with commit or note), **now** (Claude fixes on this branch), **after P3** (Claude fixes in
 plan/progress after Phase 3 merges), **Codex design** (needs a design decision, then review), **owner** (owner decides),
 **phase entry** (decide when that phase starts; nothing to do now).
