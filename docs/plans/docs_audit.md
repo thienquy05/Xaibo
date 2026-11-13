@@ -62,9 +62,9 @@ plan/progress after Phase 3 merges), **Codex design** (needs a design decision, 
 
 | ID | Issue (short) | Sev. | Status |
 |---|---|---|---|
-| B1 | v1.2, v1.3, AEGIS and OpenShell ideas are proposals | blocker | owner (PR reviews #9, #10, #12) |
+| B1 | v1.2, v1.3, AEGIS and OpenShell ideas are proposals | blocker | fixed for v1.2/v1.3 (owner approved #10 and #12, D-P3-15); AEGIS/OpenShell (#9) still separate |
 | B2 | Gate 3 live checks pending (Claude plugin, Codex trust, tee) | blocker | Phase 3 (owner) |
-| B3 | Owner notification visual check; stray hook copy cleanup | should | Phase 3 (owner) |
+| B3 | Owner notification visual check; stray hook copy cleanup | should | stray hook copy deleted (owner, 2026-11-13); notification check with the Gate 3 live checks (owner) |
 | B4 | P3-T15 and packaged Gate 3 perf/helper audits unfinished | blocker | Phase 3 |
 | B5 | agy native dispatch/added wait not measured (M16) | blocker | Phase 3 (owner) |
 | B6 | VS Code/Desktop visibility, daemon attach, PTY visibility unverified | should | Codex design (capability rows) |
@@ -75,7 +75,7 @@ plan/progress after Phase 3 merges), **Codex design** (needs a design decision, 
 | B11 | S2/S8/ACP/category pre-feature evidence | should | phase entry |
 | B12 | S14, S15, clone cost evidence tasks | blocker | Codex design (after #10 approval) |
 | B13 | Broker provider/method matrix and terms reviews | blocker | owner + S16 (after #12 approval) |
-| B14 | Q31–Q34 defaults | blocker | owner (delegated to Claude 2026-11-13; confirm in #12) |
+| B14 | Q31–Q34 defaults | blocker | fixed: confirmed by the owner with v1.3 (D-P3-15) |
 | B15 | Guard deny formats, latency and rule format | blocker | owner + S17 |
 | B16 | Local model tier and fine-tune claims unvalidated | should | deferred: owner 2026-11-13 keeps the AEGIS/local LLM draft (#9) separate until a final decision |
 | B17 | AEGIS/local LLM metric targets and safe task types TBD | blocker | deferred: owner 2026-11-13 keeps the AEGIS/local LLM draft (#9) separate until a final decision |
@@ -87,7 +87,7 @@ plan/progress after Phase 3 merges), **Codex design** (needs a design decision, 
 | B23 | Phase 6/7 choices | should | phase entry |
 | B24 | v1-A/B/C defaults | should | phase entry |
 | B25 | OS builds, CI, license, signing, encryption | should | phase entry (before cross-platform/public work) |
-| B26 | Gate 2 note about a real-machine count in an old commit has no recorded disposition | should | owner |
+| B26 | Gate 2 note about a real-machine count in an old commit has no recorded disposition | should | fixed: commit kept, no history rewrite (D-P3-16) |
 | B27 | Unreproduced test failures tracked only as prose | should | fixed 2026-11-13 on the Phase 3 branch (progress §3d) |
 | B28 | Export and command palette have no phase | should | owner |
 
@@ -108,7 +108,7 @@ plan/progress after Phase 3 merges), **Codex design** (needs a design decision, 
 | C11 | EC-50, agy facts, Codex compaction still "unverified" after evidence | should | fixed (audit fix 1) (EC-50); fixed 2026-11-13 on the Phase 3 branch (progress P2-T00, P2-T02 rows) |
 | C12 | Old ledger rows still say pending after later resolution | should | fixed 2026-11-13 on the Phase 3 branch (progress P0-G-T2, P0-T09, P1-T12, P1-T14, Gate 1 review, P2-T00, S11 rows) |
 | C13 | Orca auxiliary docs keep answered questions open | should | fixed (audit fix 1) |
-| C14 | Traceability and roadmap stop at EC-105 / v1-D | should | after #10/#12 approval (Phase 3 part needs nothing) |
+| C14 | Traceability and roadmap stop at EC-105 / v1-D | should | after Gate 3: Codex drafts the plan tasks (D-P3-15) |
 | C15 | Plan metadata revision and spec-ID prefix stale | should | fixed 2026-11-13 on the Phase 3 branch (plan header) |
 | C16 | Consolidated defaults list superseded values | should | fixed 2026-11-13 on the Phase 3 branch (plan §1a) |
 | C17 | Hook wire protocol described in different partial forms | blocker | Codex design |
@@ -118,9 +118,9 @@ plan/progress after Phase 3 merges), **Codex design** (needs a design decision, 
 | ID | Issue (short) | Sev. | Status |
 |---|---|---|---|
 | D1 | No precedence rule between PRD, approved decisions in progress, plan and drafts | blocker | fixed: owner chose "newest approval wins"; PRD header and AGENTS.md |
-| D2 | S-37/S-38 have no plan tasks | blocker | after #10 approval (plan) |
-| D3 | v1-A lacks S-39/S-40 tasks | blocker | after #10 approval (plan) |
-| D4 | Broker, orchestrator, guard, metrics lack plan tasks | blocker | after #12 approval (plan) |
+| D2 | S-37/S-38 have no plan tasks | blocker | after Gate 3: Codex drafts the plan tasks (D-P3-15) |
+| D3 | v1-A lacks S-39/S-40 tasks | blocker | after Gate 3: Codex drafts the plan tasks (D-P3-15) |
+| D4 | Broker, orchestrator, guard, metrics lack plan tasks | blocker | after Gate 3: Codex drafts the plan tasks (D-P3-15) |
 | D5 | Bare-repository wording and "outside its root" undefined | blocker | fixed (audit fix 1) |
 | D6 | Worktree ignored-file enumeration, traversal, symlinks, races undefined | blocker | Codex design |
 | D7 | Sign-in evidence vs owner declaration precedence | blocker | fixed (audit fix 1) |
