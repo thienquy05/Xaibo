@@ -36,14 +36,14 @@ Some agents write their own state into the terminal stream as OSC 7501 (Program 
 Grok, pi and oh-my-pi as live-verified senders. Reports carry state, a `blocked` kind (`permission`, `question`,
 `auth`), one free-text line and child records (subagents).
 
-- **Fit:** zero tokens, no config change, and it covers sessions with no hooks installed. Whether it can count as
-  evidence at the same level as hooks stays a proposal until the spike checks below pass.
+- **Fit:** zero tokens, no config change, and it covers sessions with no hooks installed. It is always inferred,
+  never confirmed, regardless of binding (PRD delta FR-55); promoting it would need a separately approved PRD change.
 - **Limit:** only readable from a PTY Xaibo owns, so it belongs to the embedded terminal (S-20), not MVP.
 - **Identity and trust (spike requirements):** owning the PTY does not prove which session wrote a sequence; any program
   in the pane can emit one. Orca bounds message and id sizes (`src/shared/program-status/protocol.ts`) and treats some
   sources as folder-wide rather than pane-specific (`.../program-status/hook-precedence.ts`). Before accepting it, the
   spike must define bounded parsing, binding to a process and session (PRD §5.5 identity rules), a confidence mapping
-  (inferred unless bound), and reset when the program exits or the terminal resets.
+  (always inferred, per the PRD delta FR-55), and reset when the program exits or the terminal resets.
 - **Caveat Orca documents:** many agents only send after the terminal answers the `OSC 7501 ; ?` probe, and Claude stops
   painting its title status glyph once answered. Anything that reads that glyph must switch to the OSC data.
 - **Caveat for Xaibo:** OSC 7501 has no prompt, tool input, session id or model, so it can never replace hooks or files.
@@ -92,8 +92,8 @@ Details worth copying as behavior:
 - **Setup-script trust** (`src/main/workspace-hooks/created-worktree-setup-trust.ts`): when the client sends approved
   hashes, a repo's shared setup commands are compared by sha256 and a changed script asks again. It is conditional:
   no approval hash (older clients) means "run as decided", and an explicit run decision passes the folder guard without
-  a hash. Xaibo should take the idea, not the exceptions: fail closed, run only a script whose hash the owner approved
-  in Xaibo's own preview (FR-33), with no compatibility bypass.
+  a hash. Xaibo should not adopt script execution at all: a hash pins the content but does not bound what the script
+  writes, reads or connects to (M6). The PRD delta shows the script for the owner to run instead (SEC6).
 
 **Scope impact:** today S-12 launches or resumes in an external terminal and Xaibo writes no files in the user's repos.
 Creating worktrees means Xaibo runs `git worktree add` and writes into a repo, which needs its own threat review,

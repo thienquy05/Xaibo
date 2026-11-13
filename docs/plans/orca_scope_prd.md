@@ -1,6 +1,6 @@
 # Orca-informed scope: PRD amendment (DRAFT)
 
-Status: DRAFT, requirements only. Nothing here is approved or started. Amends `docs/PRD.md` once the owner approves,
+Status: DRAFT, requirements only. Nothing here is approved or started. Its requirements are written into the `docs/PRD.md` v1.2 draft (App. G, Orca-informed scope delta); the PRD wording is binding once approved. Amends `docs/PRD.md` once the owner approves,
 after Codex design and review. Implementation planning comes later through the plan step. Phase 3 (live status) is
 unaffected and finishes first. Background and sources: [docs/research/orca-lessons.md](../research/orca-lessons.md).
 Estimates are labeled `~`; unknown values stay "unavailable".
@@ -50,7 +50,7 @@ non-loopback connections.
 | Credential values read or stored by Xaibo | 0 | Static check and canary tests (M9) |
 | New non-loopback connections | 0 | Existing M6 audit |
 | Parallel launch effort | TBD, needs validation via a usability check (target: one confirm step after the preview) | Owner walkthrough |
-| Terminal status shown as confirmed without a session binding | 0 | Replay harness (M8 style) |
+| Confirmed states derived from terminal status (OSC 7501) | 0, regardless of binding | Replay harness (M8 style) |
 
 ## Scope
 
@@ -58,13 +58,14 @@ non-loopback connections.
 
 1. **Worktree grouping.** History groups sessions by repository across linked worktrees; each session keeps its own
    worktree and cwd, shown and filterable. Unresolvable layouts keep today's behavior.
-2. **Sign-in-aware usage.** Each profile's sign-in method is detected from the presence of settings, never their
-   values, and its usage view leads with what matters for that method: quota windows for a subscription, `~$`
+2. **Sign-in-aware usage.** Each profile's sign-in method is detected from agent output Xaibo already ingests or declared by the
+   owner, with no credential or configuration file read, and its usage view leads with what matters for that method: quota windows for a subscription, `~$`
    estimated cost for API-key or cloud-provider use, both where both apply. Users may use either or both.
-3. **Launch into a new worktree.** An optional launch choice creates a worktree for the new session, after a preview.
-   Ignored files the user picks are cloned or linked within a size cap. A repository's setup script runs only if its
-   hash matches one the owner approved in Xaibo's preview; anything else fails closed. Xaibo never deletes a worktree
-   without a confirmation.
+3. **Launch into a new worktree** (MVP or v1 is open, PRD Q25). An optional launch choice creates a worktree for the
+   new session after a preview of every write. Ignored files the user picks are cloned or linked within a size cap.
+   Git runs with repository hooks disabled; repositories with checkout filters are refused. Xaibo never runs a
+   repository's setup script; the preview shows it for the owner to run. Xaibo never deletes a worktree without a
+   confirmation.
 
 **Later (v1, after a spike)**
 
@@ -94,8 +95,8 @@ Milestones start after the Phase 3 gate. Ordering against the remaining MVP gate
 ## Open Questions
 
 - [ ] Milestone 1: regroup existing projects (migration) or new sessions only?
-- [ ] Milestone 2: which settings signal each sign-in method per agent, and which can be read without touching
-      credential contents? (Phase 0 guard limits real-config reads to hash, stat and keychain metadata.)
+- [ ] Milestone 2: which agent-output fields signal each sign-in method per agent (PRD spike S14)? Where none do,
+      the owner declares the method.
 - [ ] Milestone 2: how to show a profile that mixes methods, for example a subscription with API-key overflow.
 - [ ] Milestone 3: is "launch into a worktree" MVP, v1, or later? It is the first time Xaibo writes into a user's
       repository.
@@ -108,10 +109,10 @@ Milestones start after the Phase 3 gate. Ordering against the remaining MVP gate
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
 | Grouping merges unrelated repositories | Low | High | Group only on a verified common git directory; otherwise keep cwd grouping |
-| Sign-in detection reads credential contents by accident | Medium | High | Presence-only signals, static check, canary tests |
+| Sign-in detection reads credential contents by accident | Medium | High | Agent-output evidence or owner declaration only; file-access trace tests |
 | A worktree launch damages a user's repository | Low | High | Preview, confirm, never force; delete only on confirmation |
-| Setup scripts run untrusted code | Medium | High | Hash approval in Xaibo's own preview, fail closed |
-| OSC 7501 output spoofed by another program in the pane | Medium | Medium | Inferred unless bound; spike gate before shipping |
+| Setup scripts run untrusted code | Medium | High | Xaibo never runs them; git hooks disabled; checkout filters refused |
+| OSC 7501 output spoofed by another program in the pane | Medium | Medium | Always inferred, never overrides other evidence; spike gate before shipping |
 | Scope competes with the MVP schedule | High | Medium | Start after the Phase 3 gate; owner orders milestones |
 
 ---
