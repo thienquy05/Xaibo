@@ -13,7 +13,7 @@ Checked by reading the two repositories, not from memory. "To check" items need 
 | **Claude Code** | The coding agent (terminal, VS Code, web) | - | - |
 | **harness-os** ([repo](https://github.com/thienquy05/harness_os)) | A governance MCP server that runs in Docker with a Postgres database | Tools: `get_constitution`, `create_spec`, `validate_spec`, `assess_risk`, `generate_tests`, `request_review`, `run_workflow`, `workflow_status`, `record_decision`, `trace_artifact`, `impact_analysis`, `validate_coverage`, `audit_report`, `evaluate_governance`. Workflows: `new-feature` (spec → risk → tests → implement → review → finalize → trace), `hotfix`, `security-change`. Rules (the "constitution"): no gated code without a validated spec; a test must be observed failing (RED) before the code and passing (GREEN) after; config files are integrity-checked; agent boundaries. A rule-based risk rubric sets low/medium/high/critical, and critical needs a human approval at a terminal | Containers `harness_postgres` and `harness_gate_daemon` are running; the MCP server is registered in `~/.claude.json` |
 | **Everything Claude Code (ECC)** ([fork](https://github.com/WorldFlowAI/everything-claude-code)) | A Claude Code plugin of agents, slash commands, skills, rules and hooks | This fork is a January 2026 snapshot of the upstream project. It contains agents (`planner`, `tdd-guide`, `code-reviewer`, `security-reviewer`, `architect`, `e2e-runner`, `doc-updater`, `refactor-cleaner`, `build-error-resolver`) and commands (`/plan`, `/tdd`, `/verify`, `/code-review`, `/checkpoint`, `/e2e`, `/eval`, `/learn`, `/update-docs`, …) | Which version you installed: harness-os calls ECC skills (`orch-add-feature`, `orch-fix-defect`) and reviewers (`python-reviewer`, `fastapi-reviewer`, `typescript-reviewer`, `database-reviewer`) that are **not** in this fork's snapshot. Check that your installed ECC has them |
-| **Playwright MCP** | Drives a real browser so the agent sees what actually renders | - | Registered as an MCP server; used for every frontend or full-stack change |
+| **Browser tool** (Playwright MCP or the built-in browser) | Drives a real browser so the agent sees what actually renders | - | Used for every frontend or full-stack change; use whichever is connected |
 
 ## 2. File and naming convention
 
@@ -28,13 +28,15 @@ All documents live in `docs/`. A subfolder is used when several files share a pu
 
 ## 3. The process
 
-1. **Interview and PRD.** The agent asks the questions in §6, then drafts `docs/PRD.md` from the template. Remove sections that do not apply. The agent never guesses: unclear points go to the PRD's open-questions table with a default.
+Scale the process to the change. A new project or feature runs every step; a small fix runs test, fix, check, review; a docs or config edit runs check only. The security gate is never skipped at a phase end.
+
+1. **Interview and PRD.** The agent asks the questions in §6, then drafts `docs/PRD.md` from the template. Remove sections that do not apply. The agent asks when the answer changes what gets built and the repo does not answer it; otherwise it takes the conventional choice and says which. Open product questions go to the PRD's open-questions table with a default.
 2. **Privacy gate.** Before any text leaves the machine (Git, another tool, a chat), check it for real names, IDs, dates, paths and data. Use placeholders.
 3. **Review the PRD yourself.** Nothing is implemented until you have read and approved it.
 4. **Plan.** In a fresh session: read the PRD, explore the codebase, ask clarifying questions about requirements, constraints and edge cases, then write `docs/plans/<feature>_plan.md`. Phases come from PRD §10, tests from PRD §9, "done" from PRD §1.6 and §9.3.
 5. **Challenge the plan.** A second session (a different model only if the privacy gate allows) looks for holes. Revise and note what changed.
 6. **Implement in small steps with a verification loop:**
-   1. write the test or execution script first;
+   1. for new behavior or a bug fix, write the test or execution script first and see it fail;
    2. implement the step;
    3. run the loop and compare with the expected output;
    4. if it differs, debug before moving on;
@@ -66,12 +68,14 @@ Ask the owner before running it, and say plainly that it commits.
 | Project part | Loop |
 |---|---|
 | Backend / library | Linter, unit tests, an end-to-end run on synthetic data |
-| Frontend / full-stack | **Playwright MCP**: open the page, look at the rendering, check the console and the key flows. Do not infer correctness from code |
+| Frontend / full-stack | A real browser (Playwright MCP or built-in browser): open the page, look at the rendering, check the console and the key flows. Do not infer correctness from code |
 | Data / ML (add these) | Leakage tests (no row or group in two folds; scalers fit on training data only), fixed seeds, forbidden-column assertions, baselines reported next to every model, a reload-and-reproduce test for saved models |
 
 Set these loops up before the agent starts implementing, and run them after every significant change, not only at the end of a phase.
 
 ## 6. Questions the agent asks at the start of every project
+
+Ask only what the repository, existing docs and the owner's request do not already answer.
 
 **Goal and users**
 1. What problem is solved, for whom, and what is the cost of not solving it?
@@ -112,11 +116,15 @@ It is the source of truth; this prompt sets the process, not the spec.
    output matches, debug before moving on, and record progress and design decisions in
    docs/plans/[feature]_progress.md.
 3. Backend and ML: write execution scripts or tests first; run them after every significant change.
-4. Frontend: use the Playwright MCP server and look at what renders.
+4. Frontend: verify in a real browser and look at what renders.
 5. If harness-os governance is on, follow its pipeline for every unit of work and do not skip stages.
 6. Review the uncommitted changes against the plan and the PRD for correctness, performance,
    security and privacy before calling a step done.
-7. Do not commit, push or open a pull request unless I ask. Ask me when anything is unclear.
+7. Hard rules (AGENTS.md "Rules" and the security gate) are followed exactly. Process and method
+   are defaults: if you are confident another approach is better and at least as safe, use it and
+   tell me why in one line.
+8. Do not commit, push or open a pull request unless I ask. Ask me when the answer changes what
+   gets built and the repo does not answer it.
 
 Don't miss these (project-specific): [easy-to-forget requirements]
 ```
