@@ -116,11 +116,17 @@ migrations and disk-full recovery before Phase 5.
 
 ## 4. Not taking
 
+Revised by the owner on 2026-11-13 (PRD v1.3 draft): usage APIs, orchestration, blocking and telemetry return in a
+controlled form (S-41..S-44, CRED policy). Orca's look stays excluded (D-23).
+
 - Calling usage or quota APIs, telemetry, crash upload: conflicts with M6 and §3.2.
 - Blocking or rewriting tool calls from hooks: conflicts with M7/M16.
 - Orca's layout, naming and visual style: D-23.
 
 ## 5. Questions for Codex and the owner
+
+Answered by the owner on 2026-11-13 (PRD v1.2 draft): 1 → v1-A after spike S15, always inferred (Q28, FR-55);
+2 → yes, new sessions only (Q24); 3 → v1-A (Q25).
 
 1. L1: accept OSC 7501 as a v1 evidence source with S-20, pending a spike on the PRD §2.3 versions?
 2. L3: accept worktree grouping, and for new sessions only or with a migration?
