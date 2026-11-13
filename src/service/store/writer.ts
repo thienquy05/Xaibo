@@ -5,6 +5,7 @@ import { byRank, mergeToolCalls, type ToolCallObservation } from '../normalize.t
 import { cwdKey } from '../paths.ts';
 import { agyUsage, claudeUsage, codexRateLimits, codexStep, codexUsage, tokenRecordDrift, type Usage } from '../usage/tokens.ts';
 import { contextStep, type ContextObs, type Snapshot } from '../usage/context.ts';
+import { codexReadings, historyStep, scopeKey, sourceTime, type Reading, type Stored } from '../usage/snapshots.ts';
 
 export const SCHEMA_VERSION = 1;
 const FTS_MAX_BYTES = 64 * 1024;
@@ -20,6 +21,8 @@ export interface SessionUpsert {
   nativeAvailable?: boolean;
   /** Every distinct cwd the batch saw (P2-T05, EC-06): cwd_history rows, never a second session. */
   cwds?: CwdSeen[];
+  /** P3-T15: the Codex account marker (salted HMAC, never the raw id); the first one stored is kept. */
+  accountEpoch?: string;
 }
 export interface CwdSeen { cwd: string; cwdKey: string; firstSeen?: number; source: string }
 export interface EventRow {
@@ -38,6 +41,10 @@ export interface EventRow {
   /** P2-T11 (EC-80, agy): apply in source order by sourceSeq: current rows of the session with seq >= this one become
    *  superseded (same seq) or rewound (higher), and this row is current again if it was stored before. */
   revise?: boolean;
+  /** P3-T15: quota readings this record carries (Claude statusLine tee); Codex readings come from `usage`. */
+  quota?: Reading[];
+  /** P3-T15 (§5.12): the agent-reported session cost (statusLine `cost.total_cost_usd`). */
+  reportedCost?: number;
 }
 type Obj = Record<string, unknown>;
 export type UsageObs =
@@ -99,9 +106,10 @@ function prepare(db: DatabaseSync) {
   return {
     // ponytail: native_archived only rises (a rollout seen under archived_sessions/); unarchiving needs a scan-level check.
     upsertSession: db.prepare(`INSERT INTO sessions (agent, profile_id, native_session_id, cwd, cwd_key, entrypoint, interactive, title, started_at, last_activity,
-        originator, native_archived, native_available)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, coalesce(?, 1))
+        originator, native_archived, native_available, account_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, coalesce(?, 1), ?)
       ON CONFLICT (agent, profile_id, native_session_id) DO UPDATE SET
+        account_epoch = coalesce(sessions.account_epoch, excluded.account_epoch),
         cwd = coalesce(sessions.cwd, excluded.cwd), cwd_key = coalesce(sessions.cwd_key, excluded.cwd_key),
         entrypoint = coalesce(sessions.entrypoint, excluded.entrypoint), interactive = coalesce(sessions.interactive, excluded.interactive),
         originator = coalesce(sessions.originator, excluded.originator), native_archived = max(sessions.native_archived, excluded.native_archived),
@@ -183,7 +191,55 @@ function prepare(db: DatabaseSync) {
       WHERE u.session_id = ? AND u.source = ? AND u.scope = 'message' AND u.identity = ?`),
     markDirty: db.prepare("UPDATE cost_estimates SET dirty = 1 WHERE session_id = ? AND covered_scope = ?"),
     markSessionDirty: db.prepare("UPDATE cost_estimates SET dirty = 1 WHERE session_id = ? AND source = ?"),
+    sessionEpoch: db.prepare('SELECT account_epoch FROM sessions WHERE id = ?'),
+    scope: db.prepare(`INSERT INTO usage_scopes (scope_key, profile_id, agent, epoch, session_id, verified) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT (scope_key) DO UPDATE SET scope_key = excluded.scope_key RETURNING id`),
+    prevHistory: db.prepare(`SELECT used_percent, window_minutes, resets_at, plan, credits, as_of, first_observed_at, measured_at FROM usage_history
+      WHERE usage_scope_id = ? AND limit_id = ? AND measured_at <= ? ORDER BY measured_at DESC, id DESC LIMIT 1`),
+    putHistory: db.prepare(`INSERT INTO usage_history (schema_version, usage_scope_id, limit_id, kind, minute, used_percent, window_minutes, resets_at,
+        plan, credits, as_of, first_observed_at, observed_at, measured_at, source, source_locator) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (usage_scope_id, limit_id, kind, minute) DO UPDATE SET used_percent = excluded.used_percent, window_minutes = excluded.window_minutes,
+        resets_at = excluded.resets_at, plan = excluded.plan, credits = excluded.credits, as_of = excluded.as_of,
+        first_observed_at = excluded.first_observed_at, observed_at = excluded.observed_at, measured_at = excluded.measured_at,
+        source = excluded.source, source_locator = excluded.source_locator
+      WHERE excluded.measured_at >= usage_history.measured_at`),
+    nextHistory: db.prepare(`SELECT id, kind, window_minutes, resets_at, plan, measured_at FROM usage_history
+      WHERE usage_scope_id = ? AND limit_id = ? AND measured_at > ? ORDER BY measured_at, id LIMIT 1`),
+    beforeHistory: db.prepare(`SELECT window_minutes, resets_at, plan FROM usage_history
+      WHERE usage_scope_id = ? AND limit_id = ? AND measured_at < ? ORDER BY measured_at DESC, id DESC LIMIT 1`),
+    // a clash with a row of that kind in the same minute keeps the old kind (the one-per-minute cap wins)
+    setKind: db.prepare('UPDATE OR IGNORE usage_history SET kind = ? WHERE id = ?'),
+    reportedCost: db.prepare(`INSERT INTO cost_estimates (session_id, schema_version, source, covered_scope, amount_usd, basis, coverage)
+      VALUES (?, ?, ?, 'session:statusline', ?, 'agent_reported', '{"coverage":"full"}')
+      ON CONFLICT (session_id, covered_scope) DO UPDATE SET amount_usd = excluded.amount_usd`),
   };
+}
+
+type HistRow = { used_percent: number | null; window_minutes: number | null; resets_at: number | null; plan: string | null; credits: string | null;
+  as_of: number | null; first_observed_at: number; measured_at: number };
+/** P3-T15 (§5.11, EC-91, EC-92): readings of one newly stored event into its usage scope's minute history. The scope is
+ *  the Codex account marker when the session has one, else the session itself (account unverified). */
+function history(st: ReturnType<typeof prepare>, batch: Batch, sid: number | bigint, e: EventRow, readings: Reading[]) {
+  if (!readings.length) return;
+  const epoch = batch.agent === 'codex' ? (st.sessionEpoch.get(sid) as { account_epoch: string | null } | undefined)?.account_epoch ?? null : null;
+  const k = scopeKey({ profileId: batch.profileId, agent: batch.agent, epoch, nativeSessionId: e.nativeSessionId });
+  const scope = (st.scope.get(k.key, batch.profileId, batch.agent, k.epoch, k.verified ? null : sid, k.verified ? 1 : 0) as { id: number }).id;
+  for (const r of readings) {
+    const p = st.prevHistory.get(scope, r.stream, sourceTime(r, e.receivedTs) ?? e.receivedTs) as HistRow | undefined;
+    const prev: Stored | null = p ? { stream: r.stream, usedPercent: p.used_percent, windowMinutes: p.window_minutes, resetsAt: p.resets_at, plan: p.plan,
+      credits: p.credits, asOf: p.as_of, firstObservedAt: p.first_observed_at, measuredAt: p.measured_at } : null;
+    const step = historyStep(prev, r, e.receivedTs);
+    if (step.action === 'skip') continue;
+    st.putHistory.run(SCHEMA_VERSION, scope, r.stream, step.action, step.minute, r.usedPercent, r.windowMinutes, r.resetsAt, r.plan, r.credits,
+      sourceTime(r, e.receivedTs), step.firstObservedAt, e.receivedTs, step.measuredAt, e.source, e.nativeId);
+    // Review M1: a backfilled older reading can change what the next row follows; reclassify it against its predecessor.
+    type K = { window_minutes: number | null; resets_at: number | null; plan: string | null };
+    const next = st.nextHistory.get(scope, r.stream, step.measuredAt) as (K & { id: number; kind: string; measured_at: number }) | undefined;
+    if (!next) continue;
+    const before = st.beforeHistory.get(scope, r.stream, next.measured_at) as K | undefined;
+    const kind = before && (before.resets_at !== next.resets_at || before.window_minutes !== next.window_minutes || before.plan !== next.plan) ? 'transition' : 'sample';
+    if (kind !== next.kind) st.setKind.run(kind, next.id);
+  }
 }
 
 type Row = { sources: string; tool: string | null; tool_source: string | null; args_event_id: number | null; result_event_id: number | null };
@@ -231,6 +287,7 @@ function usage(st: ReturnType<typeof prepare>, batch: Batch, sid: number | bigin
       const r = codexRateLimits(u.rateLimits);
       st.snapshot.run(SCHEMA_VERSION, batch.agent, batch.profileId, sid, e.source, e.nativeId, r.limitId, r.plan,
         r.credits === null ? null : JSON.stringify(r.credits), JSON.stringify(r.windows), e.sourceTs ?? null, e.receivedTs);
+      history(st, batch, sid, e, codexReadings(u.rateLimits, e.sourceTs ?? null));
     }
   }
 }
@@ -274,7 +331,7 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
     for (const s of batch.sessions) {
       const row = st.upsertSession.get(batch.agent, batch.profileId, s.nativeSessionId, s.cwd ?? null, s.cwdKey ?? null, s.entrypoint ?? null,
         b(s.interactive), s.title ?? null, s.startedAt ?? null, s.lastActivity ?? null, s.originator ?? null, s.nativeArchived ? 1 : 0,
-        b(s.nativeAvailable), b(s.nativeAvailable)) as { id: number };
+        b(s.nativeAvailable), s.accountEpoch ?? null, b(s.nativeAvailable)) as { id: number };
       ids.set(s.nativeSessionId, row.id);
       for (const c of s.cwds ?? []) st.cwd.run(row.id, SCHEMA_VERSION, c.source, c.cwd, c.cwdKey, c.firstSeen ?? null);
     }
@@ -329,6 +386,8 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
         else if (e.sourceTs !== undefined) st.latestTurnModel.run(e.model.id, effort, sid, e.sourceTs);
       }
       if (e.context) context(st, sid, e, e.context);
+      if (e.quota) history(st, batch, sid, e, e.quota);
+      if (e.reportedCost !== undefined) st.reportedCost.run(sid, SCHEMA_VERSION, e.source, e.reportedCost);
       if (batch.agent === 'codex' && e.kind === 'settings' && codexTierIn(e.raw)) st.markSessionDirty.run(sid, e.source); // G2-2: tier evidence arrived
       if (e.kind.endsWith('-chunk')) continue; // storage of an oversized record (EC-15), not a record: keeps EC-04's ratio
       bump(sid, 0);

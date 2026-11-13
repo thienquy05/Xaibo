@@ -3,6 +3,7 @@
 // (spikes/s9/evidence/facts.json, re-extracted 2026-11-11); payload types never observed there are kept raw only.
 import { createHash } from 'node:crypto';
 import { utcMs } from '../../time.ts';
+import { accountMarker } from '../../usage/snapshots.ts';
 
 export const KNOWN_TYPES = new Set(['compacted', 'event_msg', 'response_item', 'session_meta', 'token_usage_record', 'turn_context', 'world_state']);
 // event_msg item_completed User/AgentMessage items mirror a response_item message of the same role and text (S9
@@ -10,7 +11,7 @@ export const KNOWN_TYPES = new Set(['compacted', 'event_msg', 'response_item', '
 const MIRROR_ITEMS = new Set(['UserMessage', 'AgentMessage']);
 const ROLLOUT_ID = /^rollout-.+-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl(?:\.zst)?$/;
 
-export interface ParseContext { offset: number; fileIdentity: string; fileMtime: number; receivedTs: number }
+export interface ParseContext { offset: number; fileIdentity: string; fileMtime: number; receivedTs: number; accountSalt?: Buffer | null }
 export interface CodexRecord {
   type: string;
   payloadType?: string;
@@ -18,6 +19,7 @@ export interface CodexRecord {
   //               | token_count | token_usage | settings | compaction | item | world_state | other | unknown
   nativeId: string; // `${fileIdentity}:${offset}` (OQ-P2-02: archive moves and copies keep both parts)
   sessionId?: string; // session_meta only
+  accountEpoch?: string; // session_meta only (P3-T15): salted HMAC of creator_account_id; the raw id is never kept
   turnId?: string;
   sourceSeq: number;
   sourceTs?: number;
@@ -128,6 +130,10 @@ export function parseLine(bytes: Buffer, ctx: ParseContext): ParseResult | null 
   // G2-1: account identifiers in session_meta are never stored (PRD §5.11, EC-92, D-P0-27).
   const stored = type === 'session_meta' && ACCOUNT_KEYS.some((k) => k in payload)
     ? JSON.stringify({ ...value, payload: Object.fromEntries(Object.entries(payload).filter(([k]) => !ACCOUNT_KEYS.includes(k))) }) : raw;
+  // P3-T15 (§5.11 owner-approved exception; review M3): the marker only from the top-level session_meta payload.
+  const account = type === 'session_meta' ? payload.creator_account_id : undefined;
+  const accountEpoch = ctx.accountSalt && typeof account === 'string' && account.length > 0 && account.length <= 256
+    ? accountMarker(ctx.accountSalt, account) : undefined;
   return {
     ok: true,
     record: {
@@ -141,6 +147,7 @@ export function parseLine(bytes: Buffer, ctx: ParseContext): ParseResult | null 
       injected: false,
       raw: stored,
       ...fields,
+      ...(accountEpoch ? { accountEpoch } : {}),
     },
   };
 }

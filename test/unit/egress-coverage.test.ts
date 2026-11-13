@@ -9,7 +9,7 @@ import { EGRESS } from '../../src/shared/egress.ts';
 const root = join(import.meta.dirname, '..', '..');
 
 test('the registry lists the Phase 1 egress paths', () => {
-  assert.deepEqual(EGRESS.map((e) => e.id).sort(), ['diagnostics', 'error-records', 'logs', 'test-artifacts']);
+  assert.deepEqual(EGRESS.map((e) => e.id).sort(), ['diagnostics', 'error-records', 'logs', 'test-artifacts', 'usage-account']);
 });
 
 test('each registered path has a canary test', () => {

@@ -63,16 +63,29 @@ export function codexStep(prev: CounterState | null, total: number): CounterStat
 }
 
 export interface RateWindow { kind: string; durationMinutes: number | null; usedPercent: number | null; resetsAt: number | null }
-/** token_count rate_limits (S9): primary/secondary windows, `resets_at` epoch seconds -> ms; above 100% kept. */
-export function codexRateLimits(rl: Obj): { limitId: string | null; plan: string | null; credits: unknown; windows: RateWindow[] } {
-  const str = (v: unknown) => (typeof v === 'string' ? v : null);
+const LIMIT_ID = /^[A-Za-z0-9_.-]{1,64}$/;
+const PLAN = /^[A-Za-z0-9_-]{1,32}$/;
+const BALANCE = /^-?\d{1,20}(\.\d{1,10})?$/;
+/** P3-T15 review H2: only these credit fields, re-serialized by us; anything else (free text, ids) is dropped. */
+function credits(v: unknown): Obj | null {
+  if (!isObj(v)) return null;
+  const out: Obj = {};
+  if (typeof v.has_credits === 'boolean') out.has_credits = v.has_credits;
+  if (typeof v.unlimited === 'boolean') out.unlimited = v.unlimited;
+  if ((typeof v.balance === 'string' && BALANCE.test(v.balance)) || (typeof v.balance === 'number' && Number.isFinite(v.balance))) out.balance = v.balance;
+  return Object.keys(out).length ? out : null;
+}
+/** token_count rate_limits (S9): primary/secondary windows, `resets_at` epoch seconds -> ms; above 100% kept. The limit
+ *  id and plan are kept only as short identifier-like strings and credits only through their allowlist (P3-T15 H2). */
+export function codexRateLimits(rl: Obj): { limitId: string | null; plan: string | null; credits: Obj | null; windows: RateWindow[] } {
+  const str = (v: unknown, re: RegExp) => (typeof v === 'string' && re.test(v) ? v : null);
   const windows = (['primary', 'secondary'] as const).flatMap((kind) => {
     const w = rl[kind];
     if (!isObj(w)) return [];
     const reset = num(w.resets_at);
     return [{ kind, durationMinutes: num(w.window_minutes), usedPercent: num(w.used_percent), resetsAt: reset === null ? null : reset * 1000 }];
   });
-  return { limitId: str(rl.limit_id), plan: str(rl.plan_type), credits: rl.credits ?? null, windows };
+  return { limitId: str(rl.limit_id, LIMIT_ID), plan: str(rl.plan_type, PLAN), credits: credits(rl.credits), windows };
 }
 
 // D-P2-03: the Codex 0.160.0 token_usage_record usage objects and their keys (S9 schema); anything else is drift.

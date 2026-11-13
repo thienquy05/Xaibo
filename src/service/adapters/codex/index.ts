@@ -93,7 +93,7 @@ export class CodexAdapter extends TailAdapter<CodexFile, CodexRecord> {
   protected override fileSession(file: CodexFile): string { return this.#files.get(file.path)?.sessionId ?? file.sessionId; }
 
   protected parse(line: Line, file: CodexFile, fileMtime: number, receivedTs: number) {
-    return parseLine(line.bytes, { offset: line.offset, fileIdentity: this.#files.get(file.path)!.identity, fileMtime, receivedTs });
+    return parseLine(line.bytes, { offset: line.offset, fileIdentity: this.#files.get(file.path)!.identity, fileMtime, receivedTs, accountSalt: this.o.accountSalt ?? null });
   }
 
   // ponytail: a Codex line above the parse cap is recorded as a gap without content (S9 saw no such line; the Claude
@@ -111,6 +111,7 @@ export class CodexAdapter extends TailAdapter<CodexFile, CodexRecord> {
       if (r.kind === 'session') {
         if (r.source && !s.entrypoint) s.entrypoint = r.source;
         if (r.originator && !s.originator) s.originator = r.originator;
+        if (r.accountEpoch && !s.accountEpoch) s.accountEpoch = r.accountEpoch; // P3-T15: scope marker, never the raw id
         if (r.sessionId && r.sessionId !== file.sessionId) {
           quarantine.push({ nativeSessionId: sid, byteOffset: r.sourceSeq, reason: 'session-id-mismatch', receivedTs: r.receivedTs });
         }

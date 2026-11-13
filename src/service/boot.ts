@@ -23,6 +23,7 @@ import { errorCode } from '../shared/crash.ts';
 import { openStore, type Store } from './store/db.ts';
 import { startHooks, type Hooks } from './receivers/intake.ts';
 import { Writer, type Batch } from './store/writer.ts';
+import { loadScopeSalt } from './usage/snapshots.ts';
 
 export interface BootOptions {
   dataDir: string; home: string; shell?: string | undefined; catalog?: Catalog; intervalMs?: number; log?: Logger;
@@ -188,9 +189,12 @@ export async function boot(o: BootOptions): Promise<Service> {
     });
     if (stopped) { void hooks.close(); return; }
     const Adapters: Record<string, typeof ClaudeAdapter | typeof CodexAdapter | typeof AgyAdapter> = { claude: ClaudeAdapter, codex: CodexAdapter, agy: AgyAdapter };
+    // P3-T15: the account-marker salt (created on first boot; review L1); null = no marker, Codex scopes stay unverified
+    const salt = loadScopeSalt(o.dataDir, o.log);
     for (const p of profiles.filter((x) => Adapters[x.agent])) {
       if (stopped) return;
-      const a = new Adapters[p.agent]!({ db, writer, profileId: p.id, root: p.root, ...(o.intervalMs ? { intervalMs: o.intervalMs } : {}) });
+      const a = new Adapters[p.agent]!({ db, writer, profileId: p.id, root: p.root, accountSalt: p.agent === 'codex' ? salt : null,
+        ...(o.intervalMs ? { intervalMs: o.intervalMs } : {}) });
       adapters.push(a);
       await a.start();
     }

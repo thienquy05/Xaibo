@@ -21,6 +21,8 @@ export interface TailAdapterOptions {
   writer: Writer;
   profileId: string;
   root: string;
+  /** P3-T15 (Codex only): the install's secret salt for the account marker; absent or null = no marker. */
+  accountSalt?: Buffer | null;
   zstd?: boolean;
   intervalMs?: number;
   activeMs?: number;
@@ -48,7 +50,7 @@ export abstract class TailAdapter<F extends TailFile, R extends TailRecord> {
   readonly #reads = new Map<string, number>();
 
   constructor(o: TailAdapterOptions) {
-    this.o = { zstd: zstdAvailable, intervalMs: 5000, activeMs: 10 * 60_000, eventsPerBatch: 100, bytesPerBatch: 1 << 20, chunkBytes: 1 << 20, maxLineBytes: PARSE_CAP, now: Date.now, ...o };
+    this.o = { accountSalt: null, zstd: zstdAvailable, intervalMs: 5000, activeMs: 10 * 60_000, eventsPerBatch: 100, bytesPerBatch: 1 << 20, chunkBytes: 1 << 20, maxLineBytes: PARSE_CAP, now: Date.now, ...o };
     this.#watcher = new Watcher<F>({
       list: () => this.discover(),
       onChange: (f) => void this.sync(f, true).catch(() => undefined), // a failed sync is retried on the next change or scan

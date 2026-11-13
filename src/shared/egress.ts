@@ -6,4 +6,5 @@ export const EGRESS = [
   { id: 'diagnostics', what: '"Save diagnostics…" bundle to a user-chosen file, sanitized, 0600', test: 'test/unit/diagnostics.test.ts' },
   { id: 'error-records', what: 'uncaught exceptions and rejections as error-code log entries; no crash reporter', test: 'test/unit/diagnostics.test.ts' },
   { id: 'test-artifacts', what: 'text written under test-results/, through sanitize(); no screenshots, videos or traces', test: 'test/unit/diagnostics.test.ts' },
+  { id: 'usage-account', what: 'usage, context and cost snapshots (P3-T15): no account identifiers, emails or credentials; the Codex marker is a salted HMAC', test: 'test/integration/usage-account-canary.test.ts' },
 ] as const;

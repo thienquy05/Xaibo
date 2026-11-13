@@ -186,7 +186,7 @@ CREATE TABLE sessions (
   record_count INTEGER NOT NULL DEFAULT 0,
   unknown_count INTEGER NOT NULL DEFAULT 0,
   quarantined_count INTEGER NOT NULL DEFAULT 0,
-  drift INTEGER NOT NULL DEFAULT 0, originator TEXT, source_kind TEXT, native_archived INTEGER NOT NULL DEFAULT 0, current_model TEXT, current_effort TEXT, current_model_ts INTEGER,
+  drift INTEGER NOT NULL DEFAULT 0, originator TEXT, source_kind TEXT, native_archived INTEGER NOT NULL DEFAULT 0, current_model TEXT, current_effort TEXT, current_model_ts INTEGER, account_epoch TEXT,
   UNIQUE (agent, profile_id, native_session_id)
 );
 CREATE INDEX sessions_activity ON sessions (last_activity DESC, id);
@@ -271,6 +271,36 @@ CREATE TABLE usage (
   completeness TEXT,
   source_ts INTEGER,
   UNIQUE (session_id, source, scope, identity)
+);
+CREATE TABLE usage_history (
+  id INTEGER PRIMARY KEY,
+  schema_version INTEGER NOT NULL,
+  usage_scope_id INTEGER NOT NULL REFERENCES usage_scopes(id),
+  limit_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('sample', 'transition')),
+  minute INTEGER NOT NULL,
+  used_percent REAL,
+  window_minutes INTEGER,
+  resets_at INTEGER,
+  plan TEXT,
+  credits TEXT,
+  as_of INTEGER,
+  first_observed_at INTEGER NOT NULL,
+  observed_at INTEGER NOT NULL,
+  measured_at INTEGER NOT NULL,
+  source TEXT NOT NULL,
+  source_locator TEXT NOT NULL
+);
+CREATE UNIQUE INDEX usage_history_minute ON usage_history (usage_scope_id, limit_id, kind, minute);
+CREATE INDEX usage_history_stream ON usage_history (usage_scope_id, limit_id, measured_at);
+CREATE TABLE usage_scopes (
+  id INTEGER PRIMARY KEY,
+  scope_key TEXT NOT NULL UNIQUE,
+  profile_id TEXT NOT NULL REFERENCES profiles(id),
+  agent TEXT NOT NULL,
+  epoch TEXT,
+  session_id INTEGER REFERENCES sessions(id),
+  verified INTEGER NOT NULL CHECK (verified IN (0, 1))
 );
 CREATE TABLE usage_snapshots (
   id INTEGER PRIMARY KEY,

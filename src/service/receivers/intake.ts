@@ -10,6 +10,7 @@ import { errorCode } from '../../shared/crash.ts';
 import type { Envelope } from '../../shared/hook-protocol.ts';
 import type { Logger } from '../../shared/log.ts';
 import { isStatusline, lastSnapshots, statuslineRecord } from '../adapters/claude/statusline.ts';
+import { claudeReadings, statuslineContext, statuslineCost } from '../usage/snapshots.ts';
 import { isDiskFull, type Batch, type Writer } from '../store/writer.ts';
 import { openRegistry } from './registrations.ts';
 import { createReportIntake } from './report.ts';
@@ -67,6 +68,14 @@ export function createIntake(o: IntakeOptions): Intake {
     }
   };
 
+  /** P3-T15: quota readings, the context observation and the reported session cost of a re-validated tee record. */
+  const usageOf = (record: Record<string, unknown>, locator: string) => {
+    const quota = claudeReadings(record);
+    const context = statuslineContext(record, locator);
+    const cost = statuslineCost(record);
+    return { ...(quota.length ? { quota } : {}), ...(context ? { context } : {}), ...(cost !== null ? { reportedCost: cost } : {}) };
+  };
+
   /** P3-T14: a tee snapshot (never spooled, so no delivery row and no dedup; never status evidence). */
   const statusline = (e: Envelope): IntakeResult => {
     const s = statuslineRecord(e);
@@ -77,7 +86,7 @@ export function createIntake(o: IntakeOptions): Intake {
     try {
       o.writer.commitLive({ profileId: e.profile_key, agent: e.agent, sessions: [{ nativeSessionId: s.session }],
         events: [{ nativeSessionId: s.session, source: 'statusline', confidence: 'confirmed', nativeId: e.delivery_id, kind: 'statusline',
-          sourceSeq: at, receivedTs: at, raw }] });
+          sourceSeq: at, receivedTs: at, raw, ...usageOf(s.record, e.delivery_id) }] });
     } catch (err) {
       return { status: 'rejected', code: isDiskFull(err) ? 'disk-full' : 'store' };
     }
