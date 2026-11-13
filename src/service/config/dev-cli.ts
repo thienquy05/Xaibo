@@ -14,6 +14,9 @@
 //   agy-hooks (P3-T13d): plan|apply with --profile-key <key> [--project <dir>] [--forwarder <file>] instead of --change
 //   add the Xaibo group to <dir>/.gemini/config/hooks.json; the project's .agents/hooks.json is only inspected (a Xaibo
 //   hook there refuses); revert is the generic one
+//   claude-tee (P3-T14): plan|apply with --profile-key <key> [--forwarder <file>] [--statusline <file>] instead of --change
+//   point <dir>/.claude/settings.json's statusLine at the xaibo-statusline tee (only its command; the original stays in
+//   the manifest); revert is the generic one
 //   P3-T13b report registrations: register --agent <id> --profile-key <key> [--yes] | revoke --id <uuid> [--yes]
 //   register prints the registration id and its token once (only the token's hash is stored, <dataDir>/registrations.json);
 //   --yes is accepted only for a data dir strictly below the temp dir. Revoking cuts the producer's open connections.
@@ -21,7 +24,7 @@ import { closeSync, constants, fstatSync, openSync, readSync, realpathSync } fro
 import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
-import { deployShim, installPlugin, MARKETPLACE, PLUGIN_REF, uninstallPlugin } from '../adapters/claude/setup.ts';
+import { deployShim, installPlugin, installTee, MARKETPLACE, PLUGIN_REF, teePlan, uninstallPlugin } from '../adapters/claude/setup.ts';
 import { checkAgyInstall, installAgyHooks } from '../adapters/agy/setup.ts';
 import { codexHookOps, codexTrustSteps, installCodexHooks, shimPath } from '../adapters/codex/setup.ts';
 import { readLoginEnv } from '../catalog/env.ts';
@@ -54,7 +57,7 @@ function parseArgs(argv: string[]) {
   for (let i = 0; i < rest.length; i++) {
     const k = rest[i]!;
     if (k === '--yes') flags['yes'] = true;
-    else if (['--target', '--profile', '--change', '--claude', '--profile-key', '--forwarder', '--project'].includes(k) && rest[i + 1] !== undefined) flags[k.slice(2)] = rest[++i]!;
+    else if (['--target', '--profile', '--change', '--claude', '--profile-key', '--forwarder', '--project', '--statusline'].includes(k) && rest[i + 1] !== undefined) flags[k.slice(2)] = rest[++i]!;
     else refuse(`unknown argument: ${k}`);
   }
   const target = flags['target'];
@@ -63,7 +66,7 @@ function parseArgs(argv: string[]) {
   const opt = (k: string) => flags[k] as string | undefined;
   return {
     cmd: cmd!, target: target as string, profile: flags['profile'] as string, change: opt('change'), yes: flags['yes'] === true,
-    claude: opt('claude'), profileKey: opt('profile-key'), forwarder: opt('forwarder'), project: opt('project'),
+    claude: opt('claude'), profileKey: opt('profile-key'), forwarder: opt('forwarder'), project: opt('project'), statusline: opt('statusline'),
   };
 }
 
@@ -163,6 +166,7 @@ async function main(argv: string[]): Promise<number> {
   if (a.target === 'claude-plugin') return plugin(a, dataDir!, profile, bounds);
   if (a.target === 'codex-hooks' && a.profileKey && a.cmd !== 'revert') return codex(a, dataDir!, profile, bounds, target);
   if (a.target === 'agy-hooks' && a.profileKey && a.cmd !== 'revert') return agy(a, dataDir!, profile, bounds, target);
+  if (a.target === 'claude-tee' && a.profileKey && a.cmd !== 'revert') return tee(a, dataDir!, profile, bounds);
 
   if (a.cmd === 'revert') {
     const entry = readManifest(dataDir!).filter((e) => e.target === target).at(-1);
@@ -219,6 +223,20 @@ async function agy(a: ReturnType<typeof parseArgs>, dataDir: string, profile: st
   return 0;
 }
 
+/** P3-T14: the statusLine tee for --profile-key in <dir>/.claude/settings.json (the original command stays in the
+ *  manifest); apply deploys xaibo-statusline beside the shim; revert is the generic one. */
+async function tee(a: ReturnType<typeof parseArgs>, dataDir: string, profile: string, bounds: Bounds): Promise<number> {
+  const o = { dataDir, profileKey: a.profileKey!, configDir: path.join(profile, '.claude'), bounds };
+  printPlan(a.target, teePlan(o));
+  if (a.cmd === 'plan') return 0;
+  await confirm(a.yes, profile, 'write claude-tee');
+  deployShim(dataDir, { hook: path.join(REPO, 'src', 'forwarder', 'xaibo-hook'), forwarder: real(a.forwarder ?? path.join(REPO, '.cache', 'sea', 'xaibo-forwarder')),
+    statusline: real(a.statusline ?? path.join(REPO, '.cache', 'sea', 'xaibo-statusline')) });
+  const entry = installTee(o);
+  console.log(`claude-tee: applied ${entry.id}`);
+  return 0;
+}
+
 /** P3-T05: the hooks-only plugin, through `claude plugin` in the disposable profile only. */
 async function plugin(a: ReturnType<typeof parseArgs>, dataDir: string, profile: string, bounds: Bounds): Promise<number> {
   if (!a.claude || !a.profileKey) refuse('claude-plugin needs --claude <exe> and --profile-key <key>');
@@ -252,6 +270,7 @@ const MESSAGES: Partial<Record<ConfigError['code'], string>> = {
   'not-installed': 'nothing to uninstall: no Xaibo plugin recorded for this profile',
   cli: 'failed: a `claude plugin` step did not succeed; rolled back',
   'shim-missing': 'refused: the hook shim is not deployed',
+  statusline: 'refused: the existing statusLine is not a command statusLine, so it cannot be teed',
   route: 'refused: the claude-plugin route installs and uninstalls through `claude plugin` only',
 };
 

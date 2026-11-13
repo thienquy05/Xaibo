@@ -13,8 +13,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, constants, copyFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { Logger } from '../../../shared/log.ts';
+import { STATUSLINE_BIN, teeCommand } from '../../../forwarder/statusline-tee.ts';
 import {
-  assertExclusive, ConfigError, dropEntry, privateDirs, readManifest, recordEntry, resolveTarget, within, type Bounds, type ManifestEntry,
+  apply, assertExclusive, ConfigError, dropEntry, plan, privateDirs, readFile, readManifest, recordEntry, resolveTarget, within,
+  type Bounds, type ManifestEntry, type Op, type Plan,
 } from '../../config/transaction.ts';
 import { run, succeeded } from '../../spawn.ts';
 import { CLAUDE_HOOK_EVENTS } from './hooks.ts';
@@ -83,15 +85,17 @@ export function writePlugin(dataDir: string, profileKey: string, shim: string): 
   return dir;
 }
 
-/** Copies the shim and forwarder into <dataDir>/integrations/bin (0700), each by temp file and rename (upgrade, EC-46);
- *  returns the shim path. */
-export function deployShim(dataDir: string, from: { hook: string; forwarder: string }): string {
+/** Copies the shim and forwarder (and the statusLine tee when given, P3-T14) into <dataDir>/integrations/bin (0700), each
+ *  by temp file and rename, so a running helper is never half-overwritten (upgrade, EC-46); returns the shim path. */
+export function deployShim(dataDir: string, from: { hook: string; forwarder: string; statusline?: string }): string {
   privateDirs(dataDir);
   const bin = path.join(dataDir, 'integrations', 'bin');
   privateDir(bin);
   // the report shim (P3-T13c) ships beside the hook shim
   const report = path.join(path.dirname(from.hook), 'xaibo-report');
-  for (const [name, src] of [['xaibo-forwarder', from.forwarder], ['xaibo-hook', from.hook], ['xaibo-report', report]] as const) {
+  const files: [string, string][] = [['xaibo-forwarder', from.forwarder], ['xaibo-hook', from.hook], ['xaibo-report', report]];
+  if (from.statusline) files.push([STATUSLINE_BIN, from.statusline]);
+  for (const [name, src] of files) {
     const tmp = path.join(bin, `.${name}.${randomUUID()}.tmp`);
     copyFileSync(src, tmp, constants.COPYFILE_EXCL);
     chmodSync(tmp, 0o755);
@@ -210,4 +214,42 @@ export async function uninstallPlugin(o: PluginOptions): Promise<{ preHashRestor
   dropEntry(o.dataDir, entry.id);
   rmSync(path.join(o.dataDir, 'integrations', 'claude-plugin', key(o.profileKey)), { recursive: true, force: true });
   return { preHashRestored: hashOf(target) === entry.preHash, residue };
+}
+
+// --- statusLine tee (P3-T14; S-31, FR-45, EC-28, Q3-7) -------------------------------------------------------------
+
+export interface TeeOptions {
+  dataDir: string; profileKey: string;
+  /** The profile's Claude config dir, inside `bounds`. */
+  configDir: string;
+  bounds: Bounds;
+}
+// Any Xaibo statusLine tee, whatever its data dir or quoting.
+const TEE = /xaibo-statusline['"]?(\s|$)/;
+
+/** The FR-32 plan for the claude-tee route: an existing command statusLine keeps every key but its command (padding,
+ *  refreshInterval; the replaced command is the original the tee runs, kept in the manifest), an absent one is added.
+ *  A second install, a statusLine already running a tee or one that is not a command statusLine is refused. */
+export function teePlan(o: TeeOptions): Plan {
+  const target = resolveTarget(path.join(o.configDir, 'settings.json'), o.bounds);
+  if (readManifest(o.dataDir).some((e) => e.target === target && e.route === 'claude-tee')) fail('duplicate');
+  let command = '';
+  try { command = teeCommand(o.dataDir, key(o.profileKey)); } catch (e) { if (e instanceof ConfigError) throw e; fail('ops'); } // review L6
+  const cur = readFile(target);
+  let doc: unknown = {};
+  if (cur) { try { doc = JSON.parse(cur.bytes.toString('utf8')); } catch { fail('invalid-json'); } }
+  const s = isObject(doc) && Object.hasOwn(doc, 'statusLine') ? doc['statusLine'] : undefined;
+  let ops: Op[];
+  if (s === undefined) ops = [{ op: 'set', pointer: '/statusLine', value: { type: 'command', command } }];
+  else if (isObject(s) && s['type'] === 'command' && typeof s['command'] === 'string') {
+    if (TEE.test(s['command'])) fail('duplicate');
+    ops = [{ op: 'set', pointer: '/statusLine/command', value: command }];
+  } else return fail('statusline');
+  return plan(target, 'claude-tee', ops, o.bounds);
+}
+
+/** Installs the tee (deployed first with deployShim); revert is the engine's (byte-identical, or conflicts kept). */
+export function installTee(o: TeeOptions): ManifestEntry {
+  if (!ownRegular(path.join(o.dataDir, 'integrations', 'bin', STATUSLINE_BIN))) fail('shim-missing');
+  return apply(teePlan(o), { dataDir: o.dataDir, bounds: o.bounds });
 }

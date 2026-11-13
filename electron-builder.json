@@ -7,6 +7,7 @@
   "files": ["package.json", "out/**", "dist/renderer/**", "integrations/**"],
   "extraResources": [
     { "from": ".cache/sea/xaibo-forwarder", "to": "bin/xaibo-forwarder" },
+    { "from": ".cache/sea/xaibo-statusline", "to": "bin/xaibo-statusline" },
     { "from": "src/forwarder/xaibo-hook", "to": "bin/xaibo-hook" },
     { "from": "src/forwarder/xaibo-report", "to": "bin/xaibo-report" }
   ],

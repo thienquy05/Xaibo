@@ -9,6 +9,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { errorCode } from '../../shared/crash.ts';
 import type { Envelope } from '../../shared/hook-protocol.ts';
 import type { Logger } from '../../shared/log.ts';
+import { isStatusline, lastSnapshots, statuslineRecord } from '../adapters/claude/statusline.ts';
 import { isDiskFull, type Batch, type Writer } from '../store/writer.ts';
 import { openRegistry } from './registrations.ts';
 import { createReportIntake } from './report.ts';
@@ -42,6 +43,7 @@ export function createIntake(o: IntakeOptions): Intake {
   // ponytail: held in memory until a commit succeeds; a restart while the disk is still full loses them. Bounded: past
   // the key cap every further delivery joins one gap without agent or session.
   const gaps = new Map<string, Gap>();
+  const snapshots = lastSnapshots();
   const note = (e: Envelope) => {
     let key = JSON.stringify([e.agent, e.session_id]);
     if (!gaps.has(key) && gaps.size >= MAX_GAP_KEYS) key = OVERFLOW_KEY;
@@ -65,7 +67,26 @@ export function createIntake(o: IntakeOptions): Intake {
     }
   };
 
+  /** P3-T14: a tee snapshot (never spooled, so no delivery row and no dedup; never status evidence). */
+  const statusline = (e: Envelope): IntakeResult => {
+    const s = statuslineRecord(e);
+    if (!s || !profile.get(e.profile_key, e.agent)) return { status: 'accepted', code: 'ignored' };
+    const raw = JSON.stringify(s.record);
+    if (!snapshots.differs(e.profile_key, s.session, raw)) return { status: 'accepted', code: 'unchanged' };
+    const at = now(); // the service clock, never the sender's (review L7); no source time: statusLine stdin has none (S13)
+    try {
+      o.writer.commitLive({ profileId: e.profile_key, agent: e.agent, sessions: [{ nativeSessionId: s.session }],
+        events: [{ nativeSessionId: s.session, source: 'statusline', confidence: 'confirmed', nativeId: e.delivery_id, kind: 'statusline',
+          sourceSeq: at, receivedTs: at, raw }] });
+    } catch (err) {
+      return { status: 'rejected', code: isDiskFull(err) ? 'disk-full' : 'store' };
+    }
+    snapshots.kept(e.profile_key, s.session, raw);
+    return { status: 'accepted', code: 'ok' };
+  };
+
   const deliver = async (e: Envelope): Promise<IntakeResult> => {
+    if (isStatusline(e)) return statusline(e);
     if (stored.get(e.delivery_id)) return { status: 'accepted', code: 'duplicate' };
     o.publish?.(e, false);
     const unattributed = !profile.get(e.profile_key, e.agent) ? 'unknown-profile' : e.session_id === null ? 'no-session' : null;

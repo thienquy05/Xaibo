@@ -5,6 +5,7 @@
 //   npm run perf -- --tier T1 --metric m3-full --runs 5 [--seed 1]   (P2-T14; mixed corpus from --case t1mix)
 //   npm run perf -- --case ec15 [--seed 1]
 //   npm run perf -- --tier T0 --only notify   (P3-T11; no corpus)
+//   npm run perf -- --tier T0 --only tee --runs 200   (P3-T14 dev added-wait histogram of the SEA tee; no app, no corpus)
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
@@ -13,6 +14,7 @@ import { ec15Huge } from './ec15-huge.ts';
 import { m3FirstList } from './m3-first-list.ts';
 import { m3Full } from './m3-full.ts';
 import { notifyProbe } from './t0.ts';
+import { teeWait } from './tee-wait.ts';
 
 const { values } = parseArgs({ allowNegative: true, options: {
   tier: { type: 'string', default: 'T1' }, metric: { type: 'string' }, only: { type: 'string' }, case: { type: 'string' }, runs: { type: 'string', default: '20' }, seed: { type: 'string', default: '1' },
@@ -30,7 +32,8 @@ if (values.case === 'ec15') result = await ec15Huge(corpus('ec15'));
 else if (values.tier === 'T1' && values.metric === 'm3-first-list') result = { tier: 'T1', seed: Number(values.seed), ...await m3FirstList(corpus('t1'), Number(values.runs), values.import) };
 else if (values.tier === 'T1' && values.metric === 'm3-full') result = { tier: 'T1', seed: Number(values.seed), ...await m3Full(corpus('t1mix'), Number(values.runs)) };
 else if (values.tier === 'T0' && values.only === 'notify') result = { tier: 'T0', ...await notifyProbe() };
-else throw new Error('usage: --tier T1 --metric m3-first-list|m3-full [--runs n] | --tier T0 --only notify | --case ec15');
+else if (values.tier === 'T0' && values.only === 'tee') result = { tier: 'T0', ...await teeWait(Number(values.runs)) };
+else throw new Error('usage: --tier T1 --metric m3-first-list|m3-full [--runs n] | --tier T0 --only notify|tee [--runs n] | --case ec15');
 
 const out = path.join(REPO, '.cache', 'perf');
 mkdirSync(out, { recursive: true });

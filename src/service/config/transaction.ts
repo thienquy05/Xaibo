@@ -25,7 +25,9 @@ export type Code =
   | 'parent-missing' | 'outside-root' | 'denied-root' | 'pointer' | 'ops' | 'forbidden-hook-type' | 'async-required'
   | 'changed' | 'self-check' | 'private-dir' | 'manifest' | 'backup'
   // P3-T05 (claude-plugin route, EC-09): one install per profile; plugin and settings fallback exclude each other.
-  | 'duplicate' | 'exclusive' | 'not-installed' | 'cli' | 'shim-missing' | 'route';
+  | 'duplicate' | 'exclusive' | 'not-installed' | 'cli' | 'shim-missing' | 'route'
+  // P3-T14 (claude-tee): an existing statusLine that is not a command statusLine cannot be teed.
+  | 'statusline';
 export class ConfigError extends Error {
   readonly code: Code;
   constructor(code: Code) {

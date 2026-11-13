@@ -8,6 +8,9 @@ const SPAWN_MODULE = 'src/service/spawn.ts';
 // No TCP: the M6 audit still checks every run for non-loopback connections.
 const SOCKET_MODULES = ['src/service/receivers/socket.ts', 'src/forwarder/forwarder.ts']; // + the hook forwarder (P3-T03)
 const NET = ['http', 'https', 'http2', 'net', 'tls', 'dgram', 'dns', 'dns/promises'];
+// The statusLine tee (P3-T14, Q3-7) is a single-file SEA: it runs the owner's own original command (child_process) and
+// sends its capture over the same private Unix socket (net). Nothing else in it may use either.
+const TEE_MODULE = 'src/forwarder/statusline-tee.ts';
 const netMsg = 'No network modules in src/ (PRD P2: zero non-loopback connections).';
 const spawnMsg = `child_process only in ${SPAWN_MODULE}.`;
 
@@ -56,6 +59,13 @@ export default defineConfig([
     files: SOCKET_MODULES,
     rules: {
       'no-restricted-imports': ['error', { paths: [...netPaths.filter((p) => p.name !== 'net' && p.name !== 'node:net'), ...spawnPaths], patterns: [spikePattern] }],
+    },
+  },
+  {
+    files: [TEE_MODULE],
+    rules: {
+      'no-restricted-imports': ['error', { paths: netPaths.filter((p) => p.name !== 'net' && p.name !== 'node:net'), patterns: [spikePattern] }],
+      'no-restricted-syntax': ['error', ...syntax],
     },
   },
   {
