@@ -61,7 +61,7 @@ non-loopback connections.
 2. **Sign-in-aware usage.** Each profile's sign-in method is detected from agent output Xaibo already ingests or declared by the
    owner, with no credential or configuration file read, and its usage view leads with what matters for that method: quota windows for a subscription, `~$`
    estimated cost for API-key or cloud-provider use, both where both apply. Users may use either or both.
-3. **Launch into a new worktree** (MVP or v1 is open, PRD Q25). An optional launch choice creates a worktree for the
+3. **Launch into a new worktree** (v1-A, PRD Q25 resolved by the owner). An optional launch choice creates a worktree for the
    new session after a preview of every write. Ignored files the user picks are cloned or linked within a size cap.
    Git runs with repository hooks disabled; repositories with checkout filters are refused. Xaibo never runs a
    repository's setup script; the preview shows it for the owner to run. Xaibo never deletes a worktree without a
@@ -103,6 +103,10 @@ Milestones start after the Phase 3 gate. Ordering against the remaining MVP gate
 - [ ] Milestone 3: default for ignored files: none, a per-repository list, or a preview of candidates?
 - [ ] Milestone 4: does it wait for the embedded terminal (S-20) or ship with a minimal owned terminal?
 - [ ] Compare Orca's journal recovery and versioning with Xaibo's store before Phase 5 (research L6).
+
+Owner decisions, 2026-11-13: PRD Q24–Q30 resolved with their defaults (new sessions only; S-39 and the
+terminal source in v1-A; no ignored files preselected; "Mixed" shows both, never summed; no usage APIs; checkout
+filters unavailable). The Milestone 1, 3 and 4 questions above are answered by these.
 
 ## Risks
 
