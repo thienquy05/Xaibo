@@ -175,7 +175,7 @@ test('deployShim: shim and forwarder in a private bin dir, not group/other writa
   deployShim(s.dataDir, { hook: join(REPO, 'src', 'forwarder', 'xaibo-hook'), forwarder: s.fwd });
   assert.notEqual(statSync(join(bin, 'xaibo-forwarder')).ino, ino);
   assert.match(readFileSync(join(bin, 'xaibo-forwarder'), 'utf8'), /v2/);
-  assert.deepEqual(readdirSync(bin).sort(), ['xaibo-forwarder', 'xaibo-hook'], 'no temp files left');
+  assert.deepEqual(readdirSync(bin).sort(), ['xaibo-forwarder', 'xaibo-hook', 'xaibo-report'], 'no temp files left (the report shim ships beside the hook shim, P3-T13c)');
 });
 
 test('dev CLI: claude-plugin apply deploys the shim and installs; status lists it; revert uninstalls', () => {

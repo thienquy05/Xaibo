@@ -9,15 +9,21 @@
 // crash), so a crash between commit and removal never counts twice and a re-read of a grown file updates its rows.
 // Memory is bounded in aggregate: files past the bound wait for the next replay. Only a spool/ of our own uid that is not
 // a symlink, and regular single-link files of our own, are read; nothing is followed.
+// Report records (P3-T13c, xaibo-report) are {v:1, kind:'report', registration, received_ts, frame} with exact keys, a
+// canonical-UUID registration and one object frame (else torn); they go through deliverReport, which rebuilds identity
+// from the registry. A rejection known to be permanent (revoked registration, invalid report) is dropped and counted, so
+// it never blocks the spool; any other stops the replay and keeps the record, as for hooks.
 import { randomUUID } from 'node:crypto';
 import { chmodSync, closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync, renameSync, unlinkSync, type Stats } from 'node:fs';
 import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
-import { parseEnvelope, type Envelope } from '../../shared/hook-protocol.ts';
+import { parseEnvelope, UUID, type Envelope } from '../../shared/hook-protocol.ts';
 import type { IntakeResult } from './socket.ts';
 
 export interface ReplayOptions {
   dataDir: string; db: DatabaseSync; deliver: (e: Envelope) => Promise<IntakeResult>; now?: () => number;
+  /** P3-T13c: a spooled report frame of a registration; absent = report records wait for a service that has one. */
+  deliverReport?: (registration: string, frame: Record<string, unknown>) => Promise<IntakeResult>;
   /** Wait after a rename before a taken file may be removed (default 1 s). */
   graceMs?: number;
   /** Bytes of spool files read per replay (default 64 MiB). */
@@ -26,7 +32,8 @@ export interface ReplayOptions {
   stopped?: () => boolean;
 }
 /** deferred: spool files left for the next replay by the aggregate bound. */
-export interface ReplayResult { delivered: number; torn: number; skipped: number; deferred: number; complete: boolean }
+/** dropped: report records refused for good (revoked registration, invalid report). */
+export interface ReplayResult { delivered: number; torn: number; skipped: number; deferred: number; dropped: number; complete: boolean }
 
 const PLAIN = /^(\d{4}-\d{2}-\d{2})\.jsonl$/;
 const TAKEN = /^\d{4}-\d{2}-\d{2}\.replay-[0-9a-f-]{36}\.jsonl$/;
@@ -102,6 +109,21 @@ function putGaps(db: DatabaseSync, gaps: Gap[], at: number): boolean {
 
 const unlink = (f: string) => { try { unlinkSync(f); } catch { /* already gone */ } };
 
+const REPORT_KEYS = ['v', 'kind', 'registration', 'received_ts', 'frame'];
+const PERMANENT = (code: string) => code === 'auth' || code === 'malformed' || code === 'unsupported-version' || code.startsWith('invalid-');
+interface ReportRecord { registration: string; received_ts: number; frame: Record<string, unknown> }
+/** One report record exactly as the helper writes it; else null. */
+function reportRecord(x: unknown): ReportRecord | null {
+  if (typeof x !== 'object' || x === null || Array.isArray(x)) return null;
+  const o = x as Record<string, unknown>;
+  const f = o['frame'];
+  const ok = Object.keys(o).length === REPORT_KEYS.length && REPORT_KEYS.every((k) => Object.hasOwn(o, k)) && o['v'] === 1 && o['kind'] === 'report'
+    && typeof o['registration'] === 'string' && UUID.test(o['registration'])
+    && typeof o['received_ts'] === 'number' && Number.isFinite(o['received_ts']) && o['received_ts'] >= 0
+    && typeof f === 'object' && f !== null && !Array.isArray(f);
+  return ok ? (o as unknown as ReportRecord) : null;
+}
+
 /** One overflow line, strictly: {ts, agent, session_id, event} as the forwarder writes it; else null. */
 function overflowLine(line: string): { ts: number; agent: string; session: string | null } | null {
   let x: unknown;
@@ -144,14 +166,14 @@ function overflowGaps(dir: string, db: DatabaseSync, now: number, done: Done[]) 
 }
 
 export async function replaySpool(o: ReplayOptions): Promise<ReplayResult> {
-  const r: ReplayResult = { delivered: 0, torn: 0, skipped: 0, deferred: 0, complete: true };
+  const r: ReplayResult = { delivered: 0, torn: 0, skipped: 0, deferred: 0, dropped: 0, complete: true };
   const dir = spoolDir(o.dataDir);
   if (!dir) return r;
   const now = o.now ?? Date.now;
   const maxBytes = o.maxBytes ?? TOTAL_MAX;
   const files: Done[] = [];
   const torn: Gap[] = [];
-  const records: Envelope[] = [];
+  const records: ({ ts: number; hook: Envelope } | { ts: number; report: ReportRecord })[] = [];
   let bytes = 0;
   for (const name of readdirSync(dir).sort()) {
     const plain = PLAIN.exec(name);
@@ -166,19 +188,27 @@ export async function replaySpool(o: ReplayOptions): Promise<ReplayResult> {
     let bad = 0;
     for (const line of got.buf.toString('utf8').split('\n')) {
       if (!line) continue;
-      let p: ReturnType<typeof parseEnvelope>;
-      try { p = parseEnvelope(JSON.parse(line)); } catch { p = { ok: false, code: 'shape' }; }
-      if (p.ok) records.push(p.envelope);
+      let x: unknown;
+      try { x = JSON.parse(line); } catch { bad++; continue; }
+      const p = parseEnvelope(x);
+      const rep = p.ok ? null : reportRecord(x);
+      if (p.ok) records.push({ ts: p.envelope.received_ts, hook: p.envelope });
+      else if (rep) records.push({ ts: rep.received_ts, report: rep });
       else bad++;
     }
     r.torn += bad;
     if (bad) torn.push({ reason: 'spool-torn', agent: null, session: null, from: null, to: null, count: bad, locator: `torn:${path.basename(file!)}` });
   }
-  records.sort((a, b) => a.received_ts - b.received_ts); // stable: same-ms records keep file order
-  for (const e of records) {
+  records.sort((a, b) => a.ts - b.ts); // stable: same-ms records keep file order
+  for (const rec of records) {
     if (o.stopped?.()) { r.complete = false; break; }
-    const res = await o.deliver(e);
-    if (res.status !== 'accepted') { r.complete = false; break; }
+    if ('report' in rec && !o.deliverReport) { r.complete = false; break; } // kept for a service with report intake
+    const res = 'hook' in rec ? await o.deliver(rec.hook) : await o.deliverReport!(rec.report.registration, rec.report.frame);
+    if (res.status !== 'accepted') {
+      if ('report' in rec && PERMANENT(res.code)) { r.dropped++; continue; }
+      r.complete = false;
+      break;
+    }
     if (res.code !== 'duplicate') r.delivered++;
   }
   if (o.stopped?.()) return r;

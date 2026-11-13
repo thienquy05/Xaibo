@@ -89,7 +89,9 @@ export function deployShim(dataDir: string, from: { hook: string; forwarder: str
   privateDirs(dataDir);
   const bin = path.join(dataDir, 'integrations', 'bin');
   privateDir(bin);
-  for (const [name, src] of [['xaibo-forwarder', from.forwarder], ['xaibo-hook', from.hook]] as const) {
+  // the report shim (P3-T13c) ships beside the hook shim
+  const report = path.join(path.dirname(from.hook), 'xaibo-report');
+  for (const [name, src] of [['xaibo-forwarder', from.forwarder], ['xaibo-hook', from.hook], ['xaibo-report', report]] as const) {
     const tmp = path.join(bin, `.${name}.${randomUUID()}.tmp`);
     copyFileSync(src, tmp, constants.COPYFILE_EXCL);
     chmodSync(tmp, 0o755);
