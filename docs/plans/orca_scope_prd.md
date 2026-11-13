@@ -38,7 +38,7 @@ We believe **repository-level grouping of worktree sessions, a sign-in-aware usa
 own worktree, and an optional terminal status source** will **let developers run agents in parallel without losing a
 readable history or a meaningful usage picture** for **multi-agent developers on one machine**.
 We'll know we're right when **sessions from every worktree of a repository appear under one project, each profile's
-usage view matches its sign-in method, and a parallel launch needs no manual git or setup steps**, with zero new
+usage view matches its sign-in method, and a parallel launch takes one confirmed step with no manual git commands (repository setup scripts, if any, stay with the owner)**, with zero new
 non-loopback connections.
 
 ## Success Metrics
@@ -99,14 +99,14 @@ Milestones start after the Phase 3 gate. Ordering against the remaining MVP gate
 
 ## Open Questions
 
-- [ ] Milestone 1: regroup existing projects (migration) or new sessions only?
+- [x] Milestone 1 (answered: new sessions only, PRD Q24): regroup existing projects (migration) or new sessions only?
 - [ ] Milestone 2: which agent-output fields signal each sign-in method per agent (PRD spike S14)? Where none do,
       the owner declares the method.
-- [ ] Milestone 2: how to show a profile that mixes methods, for example a subscription with API-key overflow.
-- [ ] Milestone 3: is "launch into a worktree" MVP, v1, or later? It is the first time Xaibo writes into a user's
+- [x] Milestone 2 (answered: "Mixed", PRD Q27): how to show a profile that mixes methods, for example a subscription with API-key overflow.
+- [x] Milestone 3 (answered: v1-A, PRD Q25): is "launch into a worktree" MVP, v1, or later? It is the first time Xaibo writes into a user's
       repository.
-- [ ] Milestone 3: default for ignored files: none, a per-repository list, or a preview of candidates?
-- [ ] Milestone 4: does it wait for the embedded terminal (S-20) or ship with a minimal owned terminal?
+- [x] Milestone 3 (answered: none preselected, PRD Q26): default for ignored files: none, a per-repository list, or a preview of candidates?
+- [x] Milestone 4 (answered: wait for S-20, PRD Q28): does it wait for the embedded terminal (S-20) or ship with a minimal owned terminal?
 - [ ] Compare Orca's journal recovery and versioning with Xaibo's store before Phase 5 (research L6).
 
 Owner decisions, 2026-11-13: PRD Q24–Q30 resolved with their defaults (new sessions only; S-39 and the

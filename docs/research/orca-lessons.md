@@ -125,6 +125,9 @@ controlled form (S-41..S-44, CRED policy). Orca's look stays excluded (D-23).
 
 ## 5. Questions for Codex and the owner
 
+Answered by the owner on 2026-11-13 (PRD v1.2 draft): 1 → v1-A after spike S15, always inferred (Q28, FR-55);
+2 → yes, new sessions only (Q24); 3 → v1-A (Q25).
+
 1. L1: accept OSC 7501 as a v1 evidence source with S-20, pending a spike on the PRD §2.3 versions?
 2. L3: accept worktree grouping, and for new sessions only or with a migration?
 3. L4: is "launch in a new worktree" in scope for v1, later, or never?

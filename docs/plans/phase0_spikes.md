@@ -287,7 +287,7 @@ The transcript checks are anchored to the `tool_result` of the call in question 
 
 - `PermissionRequest` carries no `tool_use_id`, so it is joined to its `PreToolUse` by order within the session, not by id.
 - `/model` inside a session writes `model` into the profile's user settings (it persisted); `/effort` did not.
-- `PostCompact` carries `compact_summary` (content: never stored, as all hook content).
+- `PostCompact` carries `compact_summary` (content: not captured by the spike harness; the product stores full content locally and masks it only at egress, PRD §4.3 P1).
 
 **2.5 Decision.** record_decision 36. §6.2: manual denial is detected from the transcript rejection of a call that had a `PermissionRequest` (the same rejection without one is an interrupt), never from `PermissionDenied`; needs-input is validated by `Elicitation`/`ElicitationResult`; `idle_prompt` is never an input request; "Finishing…" must allow `SubagentStop` and background-completion turns after `Stop`. EC-67: CLI resume works for TUI and `-p` sessions; Desktop stays view-only (untested). Q12 default stands: Desktop handoff not in MVP.
 
