@@ -6,11 +6,11 @@ Live status file for `docs/plans/xaibo_plan.md` (HARNESS_PROCESS §2, PRD §1.6 
 
 | Item | Value |
 |---|---|
-| Current phase | **Phase 4 (session workspace UI): P4-T00 setup in progress** (Gate D approved 2026-11-14 and merged by PR #16) |
+| Current phase | **Phase 4 (session workspace UI): P4-T00 done; cleanup unit (D-P3-23) next** (Gate D approved 2026-11-14 and merged by PR #16) |
 | Branch | `feat/phase4-session-workspace` (cut from `master` at `43c2e24`) |
 | Plan version | Approved v1.0 (2026-11-09); aligned 2026-11-13 with the approved PRD v1.1 baseline and later owner decisions (plan §1a, `docs_audit.md` "after P3" items). PRD v1.2/v1.3 approved by the owner 2026-11-13 (D-P3-15) |
 | Gate state | Gate 0 approved 2026-11-10 (`docs/plans/gates/gate0.md`), merged by PR #2. Gate 1 approved 2026-11-11 on gate SHA `5defefa` (`docs/plans/gates/gate1.md`, record_decision 231), merged by PR #3. Gate 2 approved 2026-11-12 on gate SHA `9028f9b` (`docs/plans/gates/gate2.md`, record_decision 351), merged by PR #4. Gate 3 approved 2026-11-14 on gate SHA `cd0a289` (`docs/plans/gates/gate3.md`), merged by PR #15. Gate D approved 2026-11-14 on `3b41fc6` (`docs/plans/gates/gateD.md`, record_decision 1157), merged by PR #16 |
-| Next step | P4-T00: install `@tanstack/react-virtual` 3.14.26 (D-P4-01), `/graphify`, `npm ci && npm test`; then the first cleanup unit (D-P3-23 ponytail items plus the `report.ts:78` comment) and P4-T01 |
+| Next step | The first cleanup unit (D-P3-23 ponytail items plus the `report.ts:78` comment) and P4-T01 |
 | Blockers | None. Owner 2026-11-11: Codex titles stay "Untitled" for now (no enrichment, OQ-P2-04); raw agy captures deleted by the owner. Unsandboxed Electron/Playwright runs approved by the owner 2026-11-11 (R-P1-01) |
 | Phase 4 base SHA | `master` at `43c2e24` (PR #16 merge) |
 
@@ -23,7 +23,7 @@ Live status file for `docs/plans/xaibo_plan.md` (HARNESS_PROCESS §2, PRD §1.6 
 | 2 Codex + normalization + Antigravity CLI ingest | `feat/phase2-codex-agy-normalization` | done | Gate 2 approved | 2026-11-12 | #4 (merged) |
 | 3 Live status | `feat/phase3-live-status` | done | Gate 3 approved | 2026-11-14 | #15 (merged) |
 | D Design system | `docs/design-system` | done | Gate D approved | 2026-11-14 | #16 (merged) |
-| 4 Session workspace UI | `feat/phase4-session-workspace` | in progress (P4-T00) | Gate 4 | — | — |
+| 4 Session workspace UI | `feat/phase4-session-workspace` | in progress (P4-T00 done) | Gate 4 | — | — |
 | 5 History and retention | `feat/phase5-history-retention` | not started | Gate 5 | — | — |
 | 6 Integrations | `feat/phase6-integrations` | not started | Gate 6 | — | — |
 | 7 Control | `feat/phase7-control` | not started | MVP Gate | — | — |
@@ -151,7 +151,7 @@ Status values: todo / doing / done / blocked / waived. "done" requires the task'
 | PD-T03 (Claude review, gate SHA `839826c`) | done: 0 blocking, 6 non-blocking | `git diff -u e7c8683 839826c -- docs/design`; checklist items 1–10 pass; contrast 54/54 pairs (27 × 2 themes) recomputed from the hex values, all match the reported ratios; findings R1-1 (D-PD-02 repository-first map), R1-2 (D-PD-03 plain section names), R1-3 Busy glyph reads as pause, R1-4 health vs ownership Detached ambiguous, R1-5 Dashboard shows ~3 live sessions at 960×640, R1-6 live session opens at the first turn → `.handoff/design-review-1.md`, sent to Codex (PD-T04 round 1) | 2026-11-14 |
 | PD-T04 (Codex revision round 1, freeze `3b41fc6`) | done: R1-1..R1-6 resolved, 0 open | Full checklist re-run by Claude on the whole document at `3b41fc6`: 0 blocking, 0 open; round 2 not needed (Q-D5). Dispositions in `docs/plans/gates/gateD.md` | 2026-11-14 |
 | PD-T05 (Gate D) | done: approved | Owner approval on `3b41fc6` incl. the dashboard-screenshot originality item (Q-D4), record_decision 1157; gate record `a8bc8ea` (`docs/plans/gates/gateD.md`); `.handoff` design files deleted; merged by PR #16 (`43c2e24`) | 2026-11-14 |
-| P4-T00 (Phase 4 setup) | doing | Branch `feat/phase4-session-workspace` from `master` at `43c2e24` (contains Gates 3 and D). Install approved (D-P4-01): `@tanstack/react-virtual` 3.14.26 exact (published 2026-11-03, MIT, peer React ^16.8–^19; one dependency `@tanstack/virtual-core` 3.19.11, MIT); Q-4.x defaults accepted (D-P4-01) | 2026-11-14 |
+| P4-T00 (Phase 4 setup) | done | Branch `feat/phase4-session-workspace` from `master` at `43c2e24` (contains Gates 3 and D). Installed (D-P4-01) `@tanstack/react-virtual` 3.14.26 exact (published 2026-11-03, MIT, peer React ^16.8–^19) with its one dependency `@tanstack/virtual-core` 3.19.11 (MIT); lockfile adds only these two. `npm ci` clean; `npm test` (harness run 201) 899/900: the one failure is the forwarder M7 timing test (own time 232.8 ms vs 100) with the machine at load average ~138; `test/unit/forwarder.test.ts` alone 14/14 (known load sensitivity, §3d). `graphify update` refreshed (git-ignored `graphify-out/`: 4,925 nodes, 10,576 edges, 271 communities; `.sql` files skipped, `tree_sitter_sql` not installed). Q-4.x defaults accepted (D-P4-01) | 2026-11-14 |
 
 ### 3a. Gate 1 EC results (pre-freeze, working tree, 2026-11-11; final results on the gate SHA go in `gates/gate1.md`)
 
