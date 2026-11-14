@@ -6,13 +6,13 @@ Live status file for `docs/plans/xaibo_plan.md` (HARNESS_PROCESS §2, PRD §1.6 
 
 | Item | Value |
 |---|---|
-| Current phase | **Phase D (design system): PD-T01, PD-T02 done 2026-11-14 (owner amendment D-PD-01 applied); PD-T03 freeze next** (Gate 3 approved and Phase 3 merged 2026-11-14, PR #15) |
-| Branch | `docs/design-system` (cut from `master` at `e7c8683`) |
+| Current phase | **Phase 4 (session workspace UI): P4-T00 setup in progress** (Gate D approved 2026-11-14 and merged by PR #16) |
+| Branch | `feat/phase4-session-workspace` (cut from `master` at `43c2e24`) |
 | Plan version | Approved v1.0 (2026-11-09); aligned 2026-11-13 with the approved PRD v1.1 baseline and later owner decisions (plan §1a, `docs_audit.md` "after P3" items). PRD v1.2/v1.3 approved by the owner 2026-11-13 (D-P3-15) |
-| Gate state | Gate 0 approved 2026-11-10 (`docs/plans/gates/gate0.md`), merged by PR #2. Gate 1 approved 2026-11-11 on gate SHA `5defefa` (`docs/plans/gates/gate1.md`, record_decision 231), merged by PR #3. Gate 2 approved 2026-11-12 on gate SHA `9028f9b` (`docs/plans/gates/gate2.md`, record_decision 351), merged by PR #4. Gate 3 approved 2026-11-14 on gate SHA `cd0a289` (`docs/plans/gates/gate3.md`), merged by PR #15 |
-| Next step | PD-T03: owner-approved branch commit (gate SHA), then Claude review against the full checklist; findings to Codex (Q-D5: 2 rounds); Gate D before Phase 4 |
+| Gate state | Gate 0 approved 2026-11-10 (`docs/plans/gates/gate0.md`), merged by PR #2. Gate 1 approved 2026-11-11 on gate SHA `5defefa` (`docs/plans/gates/gate1.md`, record_decision 231), merged by PR #3. Gate 2 approved 2026-11-12 on gate SHA `9028f9b` (`docs/plans/gates/gate2.md`, record_decision 351), merged by PR #4. Gate 3 approved 2026-11-14 on gate SHA `cd0a289` (`docs/plans/gates/gate3.md`), merged by PR #15. Gate D approved 2026-11-14 on `3b41fc6` (`docs/plans/gates/gateD.md`, record_decision 1157), merged by PR #16 |
+| Next step | P4-T00: install `@tanstack/react-virtual` 3.14.26 (D-P4-01), `/graphify`, `npm ci && npm test`; then the first cleanup unit (D-P3-23 ponytail items plus the `report.ts:78` comment) and P4-T01 |
 | Blockers | None. Owner 2026-11-11: Codex titles stay "Untitled" for now (no enrichment, OQ-P2-04); raw agy captures deleted by the owner. Unsandboxed Electron/Playwright runs approved by the owner 2026-11-11 (R-P1-01) |
-| Baseline for Gate D review | `master` at `e7c8683` (PR #15 merge) |
+| Phase 4 base SHA | `master` at `43c2e24` (PR #16 merge) |
 
 ## 2. Per-phase status
 
@@ -22,8 +22,8 @@ Live status file for `docs/plans/xaibo_plan.md` (HARNESS_PROCESS §2, PRD §1.6 
 | 1 Skeleton + Claude ingest | `feat/phase1-claude-ingest` | done | Gate 1 approved | 2026-11-11 | #3 (merged) |
 | 2 Codex + normalization + Antigravity CLI ingest | `feat/phase2-codex-agy-normalization` | done | Gate 2 approved | 2026-11-12 | #4 (merged) |
 | 3 Live status | `feat/phase3-live-status` | done | Gate 3 approved | 2026-11-14 | #15 (merged) |
-| D Design system | `docs/design-system` | in progress (PD-T01, PD-T02 done) | Gate D | — | — |
-| 4 Session workspace UI | `feat/phase4-session-workspace` | not started | Gate 4 | — | — |
+| D Design system | `docs/design-system` | done | Gate D approved | 2026-11-14 | #16 (merged) |
+| 4 Session workspace UI | `feat/phase4-session-workspace` | in progress (P4-T00) | Gate 4 | — | — |
 | 5 History and retention | `feat/phase5-history-retention` | not started | Gate 5 | — | — |
 | 6 Integrations | `feat/phase6-integrations` | not started | Gate 6 | — | — |
 | 7 Control | `feat/phase7-control` | not started | MVP Gate | — | — |
@@ -149,6 +149,9 @@ Status values: todo / doing / done / blocked / waived. "done" requires the task'
 | PD-T01 (design brief) | done | `.handoff/design-brief.md` (git-ignored): screens A1–A12, states B1–B6, fixed labels C1–C34, delegated decisions D1–D10, stack E1–E5, A11Y F1–F7 incl. OQ-X15 pair inventory, originality G1, privacy H1, PRD-ID coverage table; `privacy:scan` clean | 2026-11-14 |
 | PD-T02 (Codex authors the design) | done | Codex companion `task --fresh --write --effort high` (outside the sandbox, owner-approved; `--write` added so Codex writes the file itself, Q-D2): `docs/design/xaibo-design.md`, all 76 brief IDs in the coverage matrix, exit 0. Owner amendment 1 (D-PD-01, `.handoff/design-amendment-1.md`) via `--resume-last`: four areas applied (Dashboard, Session, Agent Map, Settings; matrix rows PD01-1..9); the run then stopped on the Codex usage limit during its final read-only checks (exit 1), after the last file change. Claude checks: only `docs/design/**` changed, `privacy:scan` clean, scratchpad contrast recompute 27/27 pairs match and pass in both themes | 2026-11-14 |
 | PD-T03 (Claude review, gate SHA `839826c`) | done: 0 blocking, 6 non-blocking | `git diff -u e7c8683 839826c -- docs/design`; checklist items 1–10 pass; contrast 54/54 pairs (27 × 2 themes) recomputed from the hex values, all match the reported ratios; findings R1-1 (D-PD-02 repository-first map), R1-2 (D-PD-03 plain section names), R1-3 Busy glyph reads as pause, R1-4 health vs ownership Detached ambiguous, R1-5 Dashboard shows ~3 live sessions at 960×640, R1-6 live session opens at the first turn → `.handoff/design-review-1.md`, sent to Codex (PD-T04 round 1) | 2026-11-14 |
+| PD-T04 (Codex revision round 1, freeze `3b41fc6`) | done: R1-1..R1-6 resolved, 0 open | Full checklist re-run by Claude on the whole document at `3b41fc6`: 0 blocking, 0 open; round 2 not needed (Q-D5). Dispositions in `docs/plans/gates/gateD.md` | 2026-11-14 |
+| PD-T05 (Gate D) | done: approved | Owner approval on `3b41fc6` incl. the dashboard-screenshot originality item (Q-D4), record_decision 1157; gate record `a8bc8ea` (`docs/plans/gates/gateD.md`); `.handoff` design files deleted; merged by PR #16 (`43c2e24`) | 2026-11-14 |
+| P4-T00 (Phase 4 setup) | doing | Branch `feat/phase4-session-workspace` from `master` at `43c2e24` (contains Gates 3 and D). Install approved (D-P4-01): `@tanstack/react-virtual` 3.14.26 exact (published 2026-11-03, MIT, peer React ^16.8–^19; one dependency `@tanstack/virtual-core` 3.19.11, MIT); Q-4.x defaults accepted (D-P4-01) | 2026-11-14 |
 
 ### 3a. Gate 1 EC results (pre-freeze, working tree, 2026-11-11; final results on the gate SHA go in `gates/gate1.md`)
 
@@ -326,6 +329,8 @@ Entry format:
 | D-PD-01 | 2026-11-14 | Xaibo has four top-level areas: **Dashboard**, **Session** (chat-style transcript; may be renamed), **Agent Map** (agents → repositories → worktrees → sessions) and **Settings**. History (session list, projects/folders, search, Trash/restore/purge, Re-import) lives inside Session; Integrations/Add agent (connect state, Connect/Disconnect/Uninstall, diff preview, Codex trust, sign-in declaration) lives inside Agent Map; the monthly usage chart and per-scope usage history live in Dashboard; the Session chat view is read-only in the MVP with room for a later input. More areas may follow by owner decision. Sent to Codex as brief amendment 1 | Owner instruction 2026-11-14 (information architecture is the owner's call; FR-49's 'no additional workspace' is read as: these four areas replace the brief's screen list, and usage/context/cost still get no area of their own) | FR-49, FR-50, S-08, S-09, S-11, S-37, US-20 | — | owner |
 | D-PD-02 | 2026-11-14 | Agent Map is repository-first: repository → worktree → sessions (agent named on each session), so agents sharing one worktree are visible together; agent integration moves to an Agents list on the same screen that opens the existing integration panel and Add agent. Sent to Codex as finding R1-1 of `.handoff/design-review-1.md` | Owner choice at PD-T03 after Claude raised that the agent-first tree hides shared worktrees | FR-53, S-37, US-21, D-PD-01 | — | owner |
 | D-PD-03 | 2026-11-14 | Session section names are plain: Conversation, Timeline, Tools, Subagents, Files, Context, Cost (not Readout, Sequence, Calls, Delegates, Footprint). Finding R1-2 | Owner choice at PD-T03 | FR-49, §6.9 | — | owner |
+| D-P4-01 | 2026-11-14 | Phase 4 install approved: `@tanstack/react-virtual` 3.14.26 exact (with `@tanstack/virtual-core` 3.19.11); plan defaults accepted for Q-4.1, Q-4.2, Q-4.4, Q-4.5, Q-4.6, Q-4.7 | Owner answers at Phase 4 start | plan P4-T00, §6.8; PRD App. C | — | owner |
+| D-P4-02 | 2026-11-14 | The Phase 3 standing OK (D-P3-03) carries over to Phase 4: commit each finished unit locally and continue; stop only for owner steps (harness approve, live runs, metric misses, gates); push and PR stay with the gate | Owner answer at Phase 4 start | D-P3-03 | — | owner |
 
 ## 5. Deviations from plan or PRD
 
@@ -403,7 +408,7 @@ Every result records hardware class, macOS version, app/agent versions, corpus s
 | Plan-revision decisions (machine, real stores, App. C errata, gate commit) | done (D-P0-03, D-P0-04, D-P0-05, D-P0-07) |
 | Confirm Phase 0 installs (P0-T01) | done (2026-11-10): electron 45.2.3, typescript 7.0.2, electron-builder 26.18.0 |
 | Sign in to temp profiles (P0-T06) | done for Claude and Codex; Gemini blocked by Google, skipped (D-P0-19) |
-| Answer or accept defaults for open questions (plan §6) | Phase 1 done (D-P1-02), Phase 2 done (D-P2-01); later phases at their phase entry |
+| Answer or accept defaults for open questions (plan §6) | Phase 1 done (D-P1-02), Phase 2 done (D-P2-01), Phase 4 done (D-P4-01); later phases at their phase entry |
 | Approve Phase 1 installs (incl. OQ-P1-02) | done (D-P1-02) |
 | Run `git config core.hooksPath .githooks` once in the repo (P1-T02; refused inside the Claude session) | done (owner, 2026-11-11; verified `core.hooksPath=.githooks`, hook executable) |
 | Allow unsandboxed Electron launches (packaged app with a temp `XAIBO_DATA_DIR`; Playwright E2E and perf), refused by auto mode in the session (R-P1-01) | done: owner approved 2026-11-11 ("as long as they're safe"); used for `npm run test:e2e` |
@@ -447,6 +452,8 @@ Post-freeze gate evidence (gate SHA, final-SHA results, Codex and Claude verdict
 | Gate 0 | `docs/plans/gates/gate0.md` | Approved 2026-11-10 on gate SHA `7deb8cb`; merged to `master` by PR #2 |
 | Gate 1 | `docs/plans/gates/gate1.md` | Approved 2026-11-11 on gate SHA `5defefa`; merged to `master` by PR #3 |
 | Gate 2 | `docs/plans/gates/gate2.md` | Approved 2026-11-12 on gate SHA `9028f9b`; merged to `master` by PR #4 |
+| Gate 3 | `docs/plans/gates/gate3.md` | Approved 2026-11-14 on gate SHA `cd0a289`; merged to `master` by PR #15 |
+| Gate D | `docs/plans/gates/gateD.md` | Approved 2026-11-14 on `3b41fc6` (record_decision 1157); merged to `master` by PR #16 |
 
 ## 9a. Plan challenge record (Codex, 2026-11-09, plan v0.1 → v0.2)
 
