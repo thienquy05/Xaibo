@@ -12,6 +12,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, constants, copyFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { isProfileKey } from '../../../shared/hook-protocol.ts';
 import type { Logger } from '../../../shared/log.ts';
 import { STATUSLINE_BIN, teeCommand } from '../../../forwarder/statusline-tee.ts';
 import {
@@ -26,7 +27,6 @@ export const PLUGIN = 'xaibo-hooks';
 export const PLUGIN_REF = `${PLUGIN}@${MARKETPLACE}`;
 const TEMPLATE = new URL('../../../../integrations/claude-plugin/', import.meta.url); // same depth under src/ and out/
 const TOOL_EVENTS = new Set(['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PermissionRequest', 'PermissionDenied']);
-const PROFILE_KEY = /^[A-Za-z0-9._-]{1,128}$/; // as the hook protocol's profile_key
 const CLI_MS = 60_000;
 const CLI_BYTES = 1 << 20;
 
@@ -46,7 +46,7 @@ const fail = (code: ConfigError['code']): never => { throw new ConfigError(code)
 const uid = process.getuid?.();
 const ownRegular = (p: string) => { try { const st = lstatSync(p); return st.isFile() && (uid === undefined || st.uid === uid); } catch { return false; } };
 const hashOf = (f: string) => { try { return createHash('sha256').update(readFileSync(f)).digest('hex'); } catch { return null; } };
-const key = (k: string) => (PROFILE_KEY.test(k) && k !== '.' && k !== '..' ? k : fail('ops'));
+const key = (k: string) => (isProfileKey(k) ? k : fail('ops'));
 
 export function pluginHooks(shim: string, profileKey: string): { hooks: Record<string, unknown[]> } {
   if (shim.includes("'")) throw new Error('plugin hooks: the shim path must not contain a single quote');

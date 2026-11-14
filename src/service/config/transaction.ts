@@ -10,11 +10,11 @@
 // every caller gets them. Errors carry fixed codes, never file content.
 import { createHash, randomUUID } from 'node:crypto';
 import {
-  chmodSync, closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, realpathSync,
-  renameSync, unlinkSync, writeSync,
+  closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync, unlinkSync,
 } from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { atomicWrite, fsyncDir, privateDir, writeExclusive } from '../fs-private.ts';
 
 export type Route = 'claude-plugin' | 'claude-settings-fallback' | 'claude-tee' | 'codex-hooks' | 'agy-hooks';
 export type Op = { op: 'set' | 'append'; pointer: string; value: unknown };
@@ -119,37 +119,6 @@ export function readFile(file: string): FileState | null {
   }
 }
 
-function writeAll(fd: number, data: Buffer | string) {
-  const buf = typeof data === 'string' ? Buffer.from(data) : data;
-  for (let n = 0; n < buf.length;) n += writeSync(fd, buf, n, buf.length - n);
-}
-
-function fsyncDir(dir: string) {
-  const fd = openSync(dir, constants.O_RDONLY);
-  try { fsyncSync(fd); } finally { closeSync(fd); }
-}
-
-/** New file only: O_EXCL + O_NOFOLLOW, fsynced. */
-function writeExclusive(file: string, data: Buffer | string, mode: number) {
-  const fd = openSync(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, NEW_FILE_MODE);
-  try { writeAll(fd, data); fchmodSync(fd, mode); fsyncSync(fd); } finally { closeSync(fd); }
-}
-
-/** Same-dir temp file with an unpredictable name, then rename. `beforeRename` runs last, so a throw leaves the file.
- * A throw from here means the target was not replaced; callers fsync the directory afterwards. */
-function atomicWrite(file: string, data: Buffer | string, mode: number, beforeRename?: () => void) {
-  const dir = path.dirname(file);
-  const tmp = path.join(dir, `.${path.basename(file)}.${randomUUID()}.tmp`);
-  try {
-    writeExclusive(tmp, data, mode);
-    beforeRename?.();
-    renameSync(tmp, file);
-  } catch (e) {
-    try { unlinkSync(tmp); } catch { /* never created */ }
-    throw e;
-  }
-}
-
 function removeFile(file: string) {
   unlinkSync(file);
   fsyncDir(path.dirname(file));
@@ -159,12 +128,7 @@ function removeFile(file: string) {
 export function privateDirs(dataDir: string) {
   const integrations = path.join(dataDir, 'integrations');
   const backups = path.join(integrations, 'backups');
-  for (const d of [integrations, backups]) {
-    try { mkdirSync(d, { mode: 0o700 }); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e; }
-    const st = lstatSync(d);
-    if (!st.isDirectory() || (uid() !== undefined && st.uid !== uid())) fail('private-dir');
-    if (st.mode & 0o077) chmodSync(d, 0o700);
-  }
+  for (const d of [integrations, backups]) privateDir(d, () => fail('private-dir'));
   return { manifest: path.join(integrations, 'manifest.json'), backups };
 }
 

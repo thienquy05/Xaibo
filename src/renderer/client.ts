@@ -16,9 +16,8 @@ export function createClient(port: PortLike, push: Pushes) {
     if (m.type === 'page') {
       pending.get(m.id)?.resolve({ rows: m.rows, next: m.next });
       pending.delete(m.id);
-    } else if (m.type === 'sessions') {
-      if (m.delta === undefined) push.sessions(m.rows); else push.sessions(m.rows, m.delta);
-    } else if (m.type === 'coverage') push.coverage?.(m.banners);
+    } else if (m.type === 'sessions') push.sessions(m.rows, m.delta);
+    else if (m.type === 'coverage') push.coverage?.(m.banners);
     else push.agents(m.agents);
   });
   port.onmessage = (e) => {

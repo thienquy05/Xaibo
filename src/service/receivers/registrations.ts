@@ -5,9 +5,10 @@
 // changes (inode, size, mtime), so a bad hello costs one open and fstat; an unknown id is compared against a dummy hash,
 // so it takes the same path and code as a bad token. Written only by the dev CLI (register/revoke).
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, mkdirSync, openSync, readSync, renameSync, writeSync, type Stats } from 'node:fs';
+import { closeSync, constants, fstatSync, mkdirSync, openSync, readSync, type Stats } from 'node:fs';
 import path from 'node:path';
-import { AGENT, PROFILE, UUID } from '../../shared/hook-protocol.ts';
+import { AGENT, isProfileKey, PROFILE, UUID } from '../../shared/hook-protocol.ts';
+import { atomicWrite, fsyncDir } from '../fs-private.ts';
 
 export interface Registration { id: string; agent: string; profile_key: string; token_sha256: string; created_at: number }
 export interface Registry {
@@ -72,12 +73,8 @@ function load(dataDir: string): { regs: Registration[] | null; stamp: string } {
 
 function save(dataDir: string, regs: Registration[]) {
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-  const tmp = path.join(dataDir, `.registrations.${randomUUID()}.tmp`);
-  const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-  try { writeSync(fd, JSON.stringify(regs)); fchmodSync(fd, 0o600); fsyncSync(fd); } finally { closeSync(fd); }
-  renameSync(tmp, path.join(dataDir, FILE));
-  const d = openSync(dataDir, constants.O_RDONLY); // the rename itself durable (review L10)
-  try { fsyncSync(d); } finally { closeSync(d); }
+  atomicWrite(path.join(dataDir, FILE), JSON.stringify(regs), 0o600);
+  fsyncDir(dataDir); // the rename itself durable (review L10)
 }
 
 function stored(dataDir: string): Registration[] {
@@ -88,7 +85,7 @@ function stored(dataDir: string): Registration[] {
 
 /** Adds a registration; the token is returned once and only its hash is kept. ponytail: one writer (the dev CLI). */
 export function addRegistration(dataDir: string, o: { agent: string; profileKey: string }, now: () => number = Date.now): { registration: Registration; token: string } {
-  if (!AGENT.test(o.agent) || !PROFILE.test(o.profileKey)) throw new RegistrationError('invalid');
+  if (!AGENT.test(o.agent) || !isProfileKey(o.profileKey)) throw new RegistrationError('invalid');
   const regs = stored(dataDir);
   if (regs.length >= MAX_REGISTRATIONS) throw new RegistrationError('full');
   const token = randomBytes(32).toString('base64url');

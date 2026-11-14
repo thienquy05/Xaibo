@@ -272,6 +272,27 @@ test('dev CLI: apply/revert/status in a temp profile with --yes; foreign entries
   assert.deepEqual(readFileSync(target), before);
 });
 
+test('dev CLI flags (XAIBO-PROD-329): a flag never becomes another flag\'s value; --flag=value works', () => {
+  const { base, root, dataDir } = sandbox();
+  const env = { HOME: join(base, 'home'), XAIBO_DATA_DIR: dataDir, SHELL: fakeShell(base) };
+  mkdirSync(env.HOME);
+  const change = join(base, 'ops.json');
+  writeFileSync(change, JSON.stringify(OPS['agy-hooks']!.ops));
+  const swallowed = cli(['apply', '--target', 'agy-hooks', '--profile', '--yes', '--change', change], env);
+  assert.equal(swallowed.status, 1);
+  assert.match(swallowed.stderr, /^usage: .*--profile/m, swallowed.stderr);
+  assert.deepEqual(readdirSync(dataDir), [], 'nothing written');
+  mkdirSync(join(root, '.gemini', 'config'), { recursive: true });
+  const eq = cli(['status', '--target', 'agy-hooks', `--profile=${root}`, '--profile-key=-lead'], env);
+  assert.equal(eq.status, 0, eq.stderr);
+  assert.match(eq.stdout, /agy-hooks: no Xaibo changes recorded/);
+  for (const bad of [['status', '--target', 'agy-hooks', '--profile', root, 'stray'], ['status', '--target', 'agy-hooks', '--profile', root, '--nope'], ['status', '--target']]) {
+    const r = cli(bad, env);
+    assert.equal(r.status, 1, bad.join(' '));
+    assert.match(r.stderr, /^usage: /m, bad.join(' '));
+  }
+});
+
 test('dev CLI refuses real roots, login-shell overrides, failed login env, escapes, unconfirmed writes and incomplete claude-plugin installs', () => {
   const { base, root, dataDir } = sandbox();
   const change = join(base, 'ops.json');

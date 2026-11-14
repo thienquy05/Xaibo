@@ -4,7 +4,7 @@
 // and Codex hooks awaiting trust with the guided steps. Each profile check is independent: one that fails is skipped.
 import type { DatabaseSync } from 'node:sqlite';
 import { AGENT_ID, GAP_REASONS, MAX_BANNERS, type Banner } from '../../shared/ipc.ts';
-import { claudeHookPolicy, CLAUDE_MANAGED_DIR } from '../adapters/claude/hooks.ts';
+import { claudeHookPolicy } from '../adapters/claude/hooks.ts';
 import { codexHookStatus } from '../adapters/codex/setup.ts';
 import { readManifest, within, type ManifestEntry } from '../config/transaction.ts';
 
@@ -19,8 +19,7 @@ export interface CoverageOptions {
  *  the disk-full, policy and trust banners come first, gap fields are narrowed to what the parser accepts, the list is
  *  capped at MAX_BANNERS. */
 export function coverageBanners(o: CoverageOptions): Banner[] {
-  const out: Banner[] = o.diskFull ? [{ kind: 'disk-full' }] : [];
-  out.push(...hookBanners(o));
+  const out: Banner[] = [...(o.diskFull ? [{ kind: 'disk-full' as const }] : []), ...hookBanners(o)];
   // count is unknown for the whole group if any member's is (a saturated spool)
   const gaps = o.db.prepare(`SELECT reason, agent, CASE WHEN count(count) = count(*) THEN sum(count) END AS n, min(from_ts) AS f, max(to_ts) AS t
     FROM hook_gaps WHERE recorded_at >= ? GROUP BY reason, agent ORDER BY min(recorded_at) DESC`).all(o.now - GAP_WINDOW_MS) as
@@ -42,7 +41,7 @@ function hookBanners(o: CoverageOptions): Banner[] {
   for (const p of o.profiles) {
     try {
       if (p.agent === 'claude' && installed(p.root, ['claude-plugin', 'claude-settings-fallback'])) {
-        const policy = claudeHookPolicy({ managedDir: o.managedDir ?? CLAUDE_MANAGED_DIR, configDir: p.root });
+        const policy = claudeHookPolicy({ managedDir: o.managedDir, configDir: p.root });
         if (policy.state !== 'ok') out.push({ kind: 'hooks-blocked', agent: 'claude', state: policy.state });
       } else if (p.agent === 'codex' && installed(p.root, ['codex-hooks'])) {
         const s = codexHookStatus({ dataDir: o.dataDir, profileKey: p.id, codexHome: p.root, bounds: { root: p.root, denied: [] }, db: o.db });

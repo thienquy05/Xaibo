@@ -1,7 +1,5 @@
-// Claude Code hooks (P3-T05; PRD §5.2, FR-51, EC-49). The subscribed event set, the payload -> evidence mapping (the
-// fields §5.2 uses, a bounded tool_input preview, model/effort only in their reported shapes; everything else kept raw
-// in `extra`, never interpreted), and the effective hook policy from managed and user settings. Paths in payloads are
-// evidence strings only, never dereferenced.
+// Claude Code hooks (P3-T05; PRD §5.2, EC-49): the subscribed event set and the effective hook policy from managed and
+// user settings. Payloads are mapped to evidence by status-map.ts.
 import { lstatSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -10,38 +8,7 @@ export const CLAUDE_HOOK_EVENTS = [
   'Notification', 'Elicitation', 'ElicitationResult', 'SubagentStart', 'SubagentStop', 'Stop', 'StopFailure', 'PreCompact',
   'PostCompact', 'CwdChanged', 'SessionEnd',
 ] as const;
-/** Code points of JSON.stringify(tool_input) kept as the preview; the full payload stays in the event's raw envelope. */
-export const TOOL_INPUT_PREVIEW = 200;
-
-export interface HookEvidence {
-  event: string; sessionId: string | null; transcriptPath: string | null; cwd: string | null; promptId: string | null;
-  permissionMode: string | null; agentId: string | null; agentType: string | null; toolName: string | null; toolUseId: string | null;
-  toolInputPreview: string | null; notificationType: string | null; model: string | null; effort: string | null;
-  /** Payload fields this mapping does not use, as received. */
-  extra: Record<string, unknown>;
-}
-
-const USED = new Set(['session_id', 'transcript_path', 'cwd', 'hook_event_name', 'prompt_id', 'permission_mode', 'agent_id', 'agent_type',
-  'tool_name', 'tool_use_id', 'tool_input', 'notification_type', 'model', 'effort']);
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
-
-/** `payload` is null for a malformed or truncated delivery; `event` is the envelope's event name. */
-export function mapClaudeHook(payload: Record<string, unknown> | null, event: string): HookEvidence {
-  const p = payload ?? {};
-  const s = (k: string) => (typeof p[k] === 'string' ? (p[k] as string) : null);
-  const m = p['model'];
-  const e = p['effort'];
-  return {
-    event: s('hook_event_name') ?? event, sessionId: s('session_id'), transcriptPath: s('transcript_path'), cwd: s('cwd'),
-    promptId: s('prompt_id'), permissionMode: s('permission_mode'), agentId: s('agent_id'), agentType: s('agent_type'),
-    toolName: s('tool_name'), toolUseId: s('tool_use_id'),
-    toolInputPreview: p['tool_input'] === undefined ? null : [...(JSON.stringify(p['tool_input']) ?? '')].slice(0, TOOL_INPUT_PREVIEW).join(''),
-    notificationType: s('notification_type'),
-    model: typeof m === 'string' ? m : isObject(m) && typeof m['id'] === 'string' ? m['id'] : null,
-    effort: typeof e === 'string' ? e : isObject(e) && typeof e['level'] === 'string' ? e['level'] : null,
-    extra: Object.fromEntries(Object.entries(p).filter(([k]) => !USED.has(k))),
-  };
-}
 
 /** macOS system managed-settings location (managed-settings.json plus managed-settings.d/*.json). */
 export const CLAUDE_MANAGED_DIR = '/Library/Application Support/ClaudeCode';

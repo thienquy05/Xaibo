@@ -14,7 +14,8 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { codexHookStatus, installCodexHooks, uninstallCodexHooks } from '../../src/service/adapters/codex/setup.ts';
+import { codexHookStatus, installCodexHooks } from '../../src/service/adapters/codex/setup.ts';
+import { readManifest, revert } from '../../src/service/config/transaction.ts';
 import { deployShim } from '../../src/service/adapters/claude/setup.ts';
 import { startHooks } from '../../src/service/receivers/intake.ts';
 import { replaySpool } from '../../src/service/receivers/spool-replay.ts';
@@ -70,7 +71,7 @@ test(`live: Codex hooks ${TRUSTED ? 'fire after the owner approved them' : 'stay
     }
     for (const ev of ['SessionStart', 'UserPromptSubmit', 'Stop']) assert.ok(events.has(ev), ev);
     assert.equal(s.state, 'connected');
-    const r = uninstallCodexHooks(o);
+    const r = revert(readManifest(o.dataDir).find((e) => e.route === 'codex-hooks')!, { dataDir: o.dataDir, bounds: o.bounds });
     t.diagnostic(`uninstall: ${r.result}, conflicts ${r.conflicts.length}`);
     assert.equal(r.conflicts.length, 0);
   } finally {

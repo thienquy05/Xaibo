@@ -344,6 +344,14 @@ test('socket: revoking a registration cuts its open connection; at most 8 connec
 
 // ---- dev-cli register / revoke ------------------------------------------------------------------------------------
 
+test('addRegistration refuses a dot path segment as profile key (XAIBO-PROD-329 review)', () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'xr-')));
+  for (const profileKey of ['.', '..']) {
+    assert.throws(() => addRegistration(dir, { agent: 'claude', profileKey }), (e: Error & { code?: string }) => e.code === 'invalid', profileKey);
+  }
+  assert.deepEqual(readdirSync(dir), [], 'nothing written');
+});
+
 function cli(args: string[], dataDir: string) {
   // ELECTRON_RUN_AS_NODE: under test:electron the exec path is Electron, which must run the CLI as Node
   return spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', env: { PATH: process.env.PATH ?? '', TMPDIR: tmpdir(), XAIBO_DATA_DIR: dataDir, ELECTRON_RUN_AS_NODE: '1' }, input: '' });

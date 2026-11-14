@@ -9,6 +9,7 @@
 // (duplicate), so agy never runs Xaibo twice. Bounds come from the caller (dev CLI: disposable profiles only).
 import { lstatSync, realpathSync } from 'node:fs';
 import path from 'node:path';
+import { isProfileKey } from '../../../shared/hook-protocol.ts';
 import { apply, ConfigError, plan, readFile, readManifest, resolveTarget, within, type Bounds, type ManifestEntry, type Op, type Plan } from '../../config/transaction.ts';
 import { shimPath } from '../codex/setup.ts';
 
@@ -26,9 +27,8 @@ export interface AgyHookOptions {
   bounds: Bounds;
 }
 
-const PROFILE_KEY = /^[A-Za-z0-9._-]{1,128}$/; // as the hook protocol's profile_key
 const fail = (code: ConfigError['code']): never => { throw new ConfigError(code); };
-const key = (k: string) => (PROFILE_KEY.test(k) && k !== '.' && k !== '..' ? k : fail('ops'));
+const key = (k: string) => (isProfileKey(k) ? k : fail('ops'));
 const uid = process.getuid?.();
 export const agyHooksFile = (profileHome: string) => path.join(profileHome, '.gemini', 'config', 'hooks.json');
 
