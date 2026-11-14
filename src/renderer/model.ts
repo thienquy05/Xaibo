@@ -66,21 +66,13 @@ export function formatTime(ms: number | null): string {
   return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
 }
 
-// Live status as placeholder text (P3-T10, Q3-5, before the Gate D design): every state is a glyph plus words, never
-// colour alone; confidence is always spelled out, so a heuristic never reads as confirmed (§6.7).
-const LIFE: Record<LiveStatus['lifecycle'], Marker> = {
-  idle: { glyph: '○', text: 'Idle' }, busy: { glyph: '●', text: 'Busy' }, 'waiting-for-permission': { glyph: '⏸', text: 'Waiting for permission' },
-  'needs-input': { glyph: '✎', text: 'Needs input' }, error: { glyph: '✕', text: 'Error' }, ended: { glyph: '■', text: 'Ended' },
-  unknown: { glyph: '◌', text: 'Unknown' },
-};
-export const lifecycleMark = (l: LiveStatus['lifecycle']): Marker => LIFE[l];
-
-export function statusText(s: LiveStatus | null): string {
-  if (!s) return 'No live status';
-  let t = `${LIFE[s.lifecycle].text}${s.reason ? ` · ${s.reason}` : ''} (${s.confidence})`;
-  if (s.health !== 'connected') t += ` · ${s.health}`;
-  if (s.outcome) t += ` · last turn ${s.outcome}`;
-  return t;
+/** Health and last-turn words beside the status badge (design §3.2; full health/ownership presentation is P4-T04). */
+export function statusExtras(s: LiveStatus): string[] {
+  const out: string[] = [];
+  if (s.health === 'stale') out.push('Stale');
+  else if (s.health === 'detached') out.push('Health: Detached');
+  if (s.outcome) out.push(`Last turn ${s.outcome}`);
+  return out;
 }
 
 /** §6.4 warning names; a badge never terminates or changes anything. */

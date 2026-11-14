@@ -3,8 +3,8 @@
 // before Phase 4). Order matches the service keyset: last activity descending (unknown last), then id.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyDelta, applyPage, bannerText, compareRows, contextText, costText, emptyList, findingBadges, formatTime, lifecycleMark, markers, PAGE,
-  statusText } from '../../src/renderer/model.ts';
+import { applyDelta, applyPage, bannerText, compareRows, contextText, costText, emptyList, findingBadges, formatTime, markers, PAGE,
+  statusExtras } from '../../src/renderer/model.ts';
 import type { LiveStatus, SessionRow } from '../../src/shared/ipc.ts';
 
 const r = (id: number, lastActivity: number | null, extra: Partial<SessionRow> = {}): SessionRow =>
@@ -65,19 +65,10 @@ test('coverage markers are text plus glyph; time is local and readable', () => {
 const L = (o: Partial<LiveStatus> = {}): LiveStatus =>
   ({ lifecycle: 'busy', confidence: 'confirmed', health: 'connected', reason: null, outcome: null, findings: [], ...o });
 
-test('status text: lifecycle, reason, confidence, health and outcome as words; no evidence is said so', () => {
-  assert.equal(statusText(null), 'No live status');
-  assert.equal(statusText(L()), 'Busy (confirmed)');
-  assert.equal(statusText(L({ reason: 'Finishing…' })), 'Busy · Finishing… (confirmed)');
-  assert.equal(statusText(L({ lifecycle: 'waiting-for-permission', confidence: 'heuristic', reason: 'Probably waiting' })),
-    'Waiting for permission · Probably waiting (heuristic)');
-  assert.equal(statusText(L({ lifecycle: 'idle', confidence: 'inferred', outcome: 'interrupted' })), 'Idle (inferred) · last turn interrupted');
-  assert.equal(statusText(L({ health: 'stale' })), 'Busy (confirmed) · stale');
-  for (const lc of ['idle', 'busy', 'waiting-for-permission', 'needs-input', 'error', 'ended', 'unknown'] as const) {
-    const m = lifecycleMark(lc);
-    assert.ok(m.glyph.length > 0 && m.text.length > 0, lc);
-  }
-  assert.equal(lifecycleMark('needs-input').text, 'Needs input');
+test('status extras (P4-T01): health and last-turn outcome as words beside the status badge (design §3.2)', () => {
+  assert.deepEqual(statusExtras(L()), []);
+  assert.deepEqual(statusExtras(L({ health: 'stale' })), ['Stale']);
+  assert.deepEqual(statusExtras(L({ health: 'detached', outcome: 'interrupted' })), ['Health: Detached', 'Last turn interrupted']);
 });
 
 test('finding badges: rule id plus the §6.4 warning name', () => {

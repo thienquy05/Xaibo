@@ -11,6 +11,7 @@ import { AgentStrip, HealthStatus } from './Health.tsx';
 import { applyDelta, applyPage, emptyList, PAGE, type ListState } from './model.ts';
 import { firstUsablePage, LONG_FRAME, watchLongFrames } from './perf-marks.ts';
 import { SessionList } from './SessionList.tsx';
+import './styles/tokens.css';
 
 declare global { interface Window { xaibo?: { setAgentPath(agent: string): void; paintAck(delta: number): void } } }
 

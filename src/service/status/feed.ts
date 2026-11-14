@@ -5,7 +5,7 @@
 import type { Observation } from './engine.ts';
 import type { Batch } from '../store/writer.ts';
 
-/** ponytail: a fixed 24 h live window; a session idle longer shows "No live status" until its next record. Make it a
+/** ponytail: a fixed 24 h live window; a session idle longer shows "Unknown · heuristic" (no eligible state evidence) until its next record. Make it a
  *  setting if long-paused sessions need their last state shown. */
 export const LIVE_WINDOW_MS = 24 * 3600_000;
 
