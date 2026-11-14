@@ -27,7 +27,7 @@ Environment: Apple Silicon, 10 cores, 16 GiB, Darwin 27.2.0, Electron 45.2.3. Th
 | Notifications (T0 notify) | **pass**: p95 ~1.3 ms, 0 extra notifications |
 | M1 / M2 / M11 (T0 live) | M1 hook → paint p95 ~115 ms (250); settled p95 ~4,118 ms (4,250); M11 hook p95 ~115 ms (300); M2 per path p95 ~65–66 ms (1,000); recovery pass. **M11 file-only p95 ~5.0 s: accepted miss (D-P3-19)** |
 | M1 / M2 during the import (T1 live probes) | **pass**: M1 p95 ~182 ms with spooled hooks counted as misses (250); 16 spooled; M2 pass |
-| M16 (T0, 200 runs per mode) | first run: one mode p95 100.6 ms vs 100 under the load above; **rerun: pass** (hung p95 ~90.8 ms, other modes ~43–44 ms) |
+| M16 (T0, 200 runs per mode) | suite run: hung p95 100.6 ms vs 100 under the load above; owner-requested reruns on the gate build, three back to back with nothing else running (the VM still ~1 core): **all pass**; added-wait p95 up / down / hung / enospc / cap = 42.8 / 42.1 / 90.6 / 41.7 / 43.0, 43.8 / 43.1 / 94.2 / 53.6 / 54.7, 58.2 / 56.5 / 97.9 / 53.9 / 53.0 ms. The hung mode (the forwarder waits ~50 ms for an ack before spooling) is the slowest by design and sits 2–9 ms under the bound on this loaded machine (P3-T16d unloaded: 91.9 ms) |
 | Tee overhead, packaged | **pass**: p95 ~39–40 ms (100) |
 | M4 (T1 imported, window closed, 5 min) | **pass**: summed footprint max ~157 MiB (250 MB), idle CPU mean ~0.10 % |
 | Packaged audit `scripts/gate-audit.ts` (M6, EC-60, EC-61) | **pass**: 0 non-loopback NetLog events; repo and fixture stores unchanged |
