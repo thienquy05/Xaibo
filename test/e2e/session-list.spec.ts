@@ -10,7 +10,7 @@ const SESSION = '00000000-0000-4000-8000-000000001000';
 const project = (home: string) => path.join(home, '.claude', 'projects', '-tmp-xaibo-fixture-project');
 const userLine = (sessionId: string, uuid: string, timestamp: string, cwd: string) =>
   JSON.stringify({ parentUuid: null, type: 'user', uuid, timestamp, cwd, sessionId, entrypoint: 'cli', message: { role: 'user', content: 'x' } }) + '\n';
-const rowsOf = (page: Page) => page.getByRole('table', { name: 'Sessions' }).locator('tbody tr');
+const rowsOf = (page: Page) => page.getByRole('list', { name: 'Sessions' }).getByRole('listitem');
 const sessionCount = (dataDir: string) => {
   let db: DatabaseSync | undefined;
   try {
@@ -25,7 +25,7 @@ test('backfill rows, health and the agent strip; a live append updates the row',
   const rows = rowsOf(page);
   await expect(rows).toHaveCount(1);
   await expect(rows.first()).toContainText('/tmp/xaibo-fixture/alpha');
-  await expect(rows.first().getByRole('cell').nth(1)).toHaveText('CLI -p · Non-interactive'); // P2-T04 origin badge (claude -p fixture)
+  await expect(rows.first().locator('[data-field="origin"]')).toHaveText('CLI -p · Non-interactive'); // P2-T04 origin badge (claude -p fixture)
   await expect(rows.first()).toContainText('Untitled');
   await expect(page.getByRole('status')).toContainText('Running');
   const agents = page.getByRole('region', { name: 'Agents' });
@@ -35,13 +35,13 @@ test('backfill rows, health and the agent strip; a live append updates the row',
 
   const ts = '2026-01-01T05:00:00.000Z';
   xaibo.touchStore(() => appendFileSync(path.join(project(xaibo.home), `${SESSION}.jsonl`), userLine(SESSION, '00000000-0000-4000-8000-0000000010e3', ts, '/tmp/xaibo-fixture/alpha')));
-  await expect(rows.first().getByRole('cell').nth(4)).toHaveText(formatTime(Date.parse(ts)), { timeout: 15_000 });
+  await expect(rows.first().locator('[data-field="activity"]')).toHaveText(formatTime(Date.parse(ts)), { timeout: 15_000 });
 });
 
 test('P4-T02: a hidden window gets no live deltas; showing it resyncs the list by cursor', async ({ xaibo }) => {
   const run = await xaibo.launch();
   const page = await xaibo.window(run);
-  const time = rowsOf(page).first().getByRole('cell').nth(4);
+  const time = rowsOf(page).first().locator('[data-field="activity"]');
   await expect(rowsOf(page)).toHaveCount(1);
   const before = await time.textContent();
   await run.app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.close()); // close hides
@@ -74,15 +74,19 @@ test('Load more pages without duplicates (keyboard)', async ({ xaibo }) => {
   const run = await xaibo.launch();
   const page = await xaibo.window(run);
   await expect.poll(() => sessionCount(run.dataDir), { timeout: 20_000 }).toBe(61);
-  const rows = rowsOf(page);
-  await expect(rows).toHaveCount(50);
+  const list = page.getByRole('list', { name: 'Sessions' });
+  await expect(list).toHaveAttribute('data-count', '50'); // loaded records (the DOM holds only the visible ones)
   const more = page.getByRole('button', { name: 'Load more' });
   await more.focus();
   await page.keyboard.press('Enter');
-  await expect(rows).toHaveCount(61);
-  const folders = await rows.evaluateAll((trs) => trs.map((tr) => tr.children[2]!.textContent));
-  expect(new Set(folders).size).toBe(61);
+  await expect(list).toHaveAttribute('data-count', '61');
   await expect(more).toHaveCount(0);
+  await expect(page.getByText('End of available records')).toBeVisible();
+  await list.getByRole('listitem').first().focus();
+  await page.keyboard.press('End'); // the last loaded record: exact ordinal and a known total once nothing more exists
+  const last = page.locator(':focus');
+  await expect(last).toHaveAttribute('aria-posinset', '61');
+  await expect(last).toHaveAttribute('aria-setsize', '61');
 });
 
 test('health shows Restarting, then Running, after a service kill; the list comes back', async ({ xaibo }) => {

@@ -22,9 +22,10 @@ const merged = (rows: SessionRow[], incoming: SessionRow[]) => {
   return [...byId.values()].sort(compareRows);
 };
 
-/** The first page replaces the list; a Load more page is merged in and widens the window. */
+/** A replacing page (the first page, or a resynced window of several) sets the window to whole pages around it; a
+ * Load more page is merged in and widens the window. */
 export function applyPage(s: ListState, page: Page, append: boolean): ListState {
-  if (!append) return { rows: [...page.rows].sort(compareRows), next: page.next, capacity: PAGE, loaded: true };
+  if (!append) return { rows: merged([], page.rows), next: page.next, capacity: Math.max(PAGE, Math.ceil(page.rows.length / PAGE) * PAGE), loaded: true };
   return { rows: merged(s.rows, page.rows), next: page.next, capacity: s.capacity + PAGE, loaded: true };
 }
 

@@ -12,7 +12,7 @@ import type { Page } from '@playwright/test';
 const HOOKED = '00000000-0000-4000-8000-0000000f1101';
 const FILE_ONLY = '00000000-0000-4000-8000-0000000f1102';
 const project = (home: string) => path.join(home, '.claude', 'projects', '-tmp-xaibo-fixture-project');
-const rowOf = (page: Page, folder: string) => page.getByRole('table', { name: 'Sessions' }).getByRole('row').filter({ hasText: folder });
+const rowOf = (page: Page, folder: string) => page.getByRole('list', { name: 'Sessions' }).getByRole('listitem').filter({ hasText: folder });
 
 test('busy, waiting, R2 badge, Finishing… then idle, Probably waiting, overflow banner; perf trace acks painted deltas', async ({ xaibo }) => {
   const dataDir = path.join(path.dirname(xaibo.home), 'data-live'); // inside the fixture's temp root (cleaned), short for the socket path
@@ -35,7 +35,7 @@ test('busy, waiting, R2 badge, Finishing… then idle, Probably waiting, overflo
       received_ts: Date.now(), payload: { hook_event_name: event, session_id: HOOKED, ...payload } });
     expect(ack).toMatchObject({ status: 'accepted' });
   };
-  const status = () => rowOf(page, '/tmp/xaibo-fixture/live').getByRole('cell').nth(7);
+  const status = () => rowOf(page, '/tmp/xaibo-fixture/live').locator('[data-field="status"]');
 
   await hook('SessionStart', { source: 'startup' });
   // P3-T16c: this event goes through the packaged forwarder, run and audited by the fixture
@@ -68,7 +68,7 @@ test('busy, waiting, R2 badge, Finishing… then idle, Probably waiting, overflo
     line({ type: 'user', uuid: '00000000-0000-4000-8000-0000000f1201', message: { role: 'user', content: 'fixture prompt' } })
     + line({ type: 'assistant', uuid: '00000000-0000-4000-8000-0000000f1202', message: { id: 'msg_fixture_live', role: 'assistant',
       content: [{ type: 'tool_use', id: 'toolu_fixture_live', name: 'Bash', input: { command: 'npm run build' } }], stop_reason: 'tool_use' } })));
-  const fileStatus = rowOf(page, '/tmp/xaibo-fixture/fileonly').getByRole('cell').nth(7);
+  const fileStatus = rowOf(page, '/tmp/xaibo-fixture/fileonly').locator('[data-field="status"]');
   await expect(fileStatus).toContainText('Busy · inferred', { timeout: 15_000 });
   await expect(fileStatus).toContainText('Probably waiting · heuristic', { timeout: 15_000 });
 

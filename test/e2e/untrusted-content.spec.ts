@@ -27,12 +27,12 @@ test('EC-55: injected markup, markdown, ANSI and bidi render as escaped text', a
     document.addEventListener('securitypolicyviolation', () => { w.violations++; });
   });
   await page.reload();
-  const row = page.getByRole('table', { name: 'Sessions' }).locator('tbody tr', { hasText: 'xaibo-fixture/<img' });
+  const row = page.getByRole('list', { name: 'Sessions' }).getByRole('listitem').filter({ hasText: 'xaibo-fixture/<img' });
   await expect(row).toHaveCount(1);
-  expect(await row.getByRole('cell').nth(2).textContent()).toBe(visible(CWD));
-  expect(await row.getByRole('cell').nth(1).textContent()).toBe(`${visible(ENTRY)} (unverified)`); // unknown kind (P2-T04)
+  expect(await row.locator('[data-field="folder"]').textContent()).toBe(visible(CWD));
+  expect(await row.locator('[data-field="origin"]').textContent()).toBe(`${visible(ENTRY)} (unverified)`); // unknown kind (P2-T04)
   expect(await page.locator('img').count()).toBe(0);
-  expect(await page.locator('main b, main script, table b, table script').count()).toBe(0);
+  expect(await page.locator('main b, main script').count()).toBe(0);
   expect(await page.locator('script').evaluateAll((s) => s.filter((x) => (x.textContent ?? '').includes('__xss')).length)).toBe(0);
   await row.hover();
   expect(await page.evaluate(() => (window as unknown as { __xss?: unknown }).__xss)).toBeUndefined();

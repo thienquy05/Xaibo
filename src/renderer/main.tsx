@@ -9,6 +9,7 @@ import { createClient, parseVisible, type Client, type PortLike } from './client
 import { Coverage } from './Coverage.tsx';
 import { AgentStrip, HealthStatus } from './Health.tsx';
 import { createCoalescer } from './data/coalesce.ts';
+import { reloadWindow } from './data/pages.ts';
 import { applyDelta, applyPage, emptyList, PAGE, type ListState } from './model.ts';
 import { firstUsablePage, LONG_FRAME, watchLongFrames } from './perf-marks.ts';
 import { SessionList } from './SessionList.tsx';
@@ -30,11 +31,15 @@ function App() {
   const [banners, setBanners] = useState<Banner[]>([]);
   const [loading, setLoading] = useState(false);
   const client = useRef<Client | null>(null);
+  const loadedRows = useRef(0); // rows the user has loaded: a resync refetches that many (P4-T03)
+  loadedRows.current = list.rows.length;
 
   useEffect(() => {
-    // The first page by cursor, replacing the list: after a (re)start, a coalescer overflow or showing the window.
+    // The loaded window again by cursor, replacing the list: after a (re)start, a coalescer overflow or showing the window.
     const reload = (c: Client | null) => {
-      c?.listSessions(null, PAGE).then((page) => { if (client.current === c) setList((s) => applyPage(s, page, false)); }, () => undefined);
+      if (!c) return;
+      reloadWindow(loadedRows.current, (cursor, limit) => c.listSessions(cursor, limit), PAGE)
+        .then((page) => { if (client.current === c) setList((s) => applyPage(s, page, false)); }, () => undefined);
     };
     // P4-T02: deltas are coalesced per session and committed once per frame. P3-T10 perf trace: delta ids arrive only
     // under XAIBO_PERF_TRACE=1 and are acked after rAF plus one frame, so the ack follows the paint that shows them.

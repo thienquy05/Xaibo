@@ -12,15 +12,15 @@ async function one(claude: string, largestLine: number, paging: boolean) {
   try {
     const samples: number[] = []; // KiB
     let pagingMs: number | null = null;
-    const rows = l.page.getByRole('table', { name: 'Sessions' }).locator('tbody tr');
+    const loaded = async () => Number(await l.page.getByRole('list', { name: 'Sessions' }).getAttribute('data-count').catch(() => '0')); // virtualized: loaded count, not DOM rows
     const tick = async () => {
       const kb = await l.app.evaluate(({ app }) => app.getAppMetrics().find((m) => m.name === 'xaibo-service')?.memory.workingSetSize ?? 0);
       if (kb) samples.push(kb);
       if (paging && pagingMs === null && await l.page.getByRole('button', { name: 'Load more' }).isVisible().catch(() => false)) {
-        const before = await rows.count();
+        const before = await loaded();
         const t0 = Date.now();
         await l.page.getByRole('button', { name: 'Load more' }).click();
-        while ((await rows.count()) <= before && Date.now() - t0 < 30_000) await sleep(10);
+        while ((await loaded()) <= before && Date.now() - t0 < 30_000) await sleep(10);
         pagingMs = Date.now() - t0;
       }
     };

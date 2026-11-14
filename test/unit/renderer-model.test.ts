@@ -27,6 +27,20 @@ test('first page replaces, Load more appends without duplicates and widens the w
   assert.equal(s.capacity, 2 * PAGE);
 });
 
+test('P4-T03: a replacing page larger than one page (a resynced window) keeps room for all its rows', () => {
+  const rows = Array.from({ length: 130 }, (_, i) => r(i + 1, 1_000 - i));
+  const s = applyPage(emptyList, { rows, next: { lastActivity: 870, id: 130 } }, false);
+  assert.equal(s.rows.length, 130);
+  assert.equal(s.capacity, 150, 'whole pages');
+  assert.equal(applyDelta(s, [r(999, 2_000)]).rows.length, 131, 'a delta inside the window does not trim it back to one page');
+  assert.equal(applyPage(emptyList, { rows: [r(1, 1)], next: null }, false).capacity, PAGE);
+});
+
+test('review L3: a replacing page never holds the same session twice (cursor drift between requests)', () => {
+  const s = applyPage(emptyList, { rows: [r(1, 30), r(2, 20), r(1, 30)], next: null }, false);
+  assert.deepEqual(s.rows.map((x) => x.id), [1, 2]);
+});
+
 test('a delta updates a loaded row and moves it up', () => {
   let s = applyPage(emptyList, { rows: [r(1, 30), r(2, 20)], next: null }, false);
   s = applyDelta(s, [r(2, 40, { drift: true })]);
