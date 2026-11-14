@@ -4,7 +4,7 @@ Final Phase 0 report for Gate 0. Structure per plan §0.16; criteria that were n
 
 | Item | Value |
 |---|---|
-| PRD version | v1.1 Gate 0 delta (pending owner approval); base Approved v1.0 (2026-11-09, errata D-P0-05) |
+| PRD version | v1.1 Gate 0 delta (approved by the owner at Gate 0, 2026-11-10); base Approved v1.0 (2026-11-09, errata D-P0-05) |
 | Date | 2026-11-10 |
 | Branch | `feat/phase0-spikes` |
 | Agent pins | codex 0.160.0 and gemini 0.46.0 verified (S9-C1, runner). claude 2.1.319 for S3, S4, S9 and S13-T1..T5; the install auto-updated to **2.1.322** before S7, so S7 and the S13-T6 leftovers are 2.1.322 (D-P0-33) |
@@ -740,7 +740,7 @@ Rule: no qualifying tee returns to the owner for a scope/implementation decision
 | Dependency list for approval (App. C delta) | PRD v1.1 App. C: electron 45.2.3, typescript 7.0.2, electron-builder 26.18.0 installed (Phase 0); `better-sqlite3` not needed (S1); `ajv` 8.20.0 proposed for Phase 1 start (S11-C12); official Node 26.10.0 tarball as a dev-time SEA build tool, product Node binary decided in Phase 3 (D-P0-21, OQ-A4); two SEA binaries (~138 MB each: forwarder, statusLine tee); 6 moderate `npm audit` advisories in the installed dev dependencies (§ Environment). **Owner approved 2026-11-10 (D-P0-34, G0-10)** | S1, S3, S11-T9, S13 |
 | Q8 watch-reconciliation default (FR-02) | 5 s at the personal profile (recovery 6 s); ≥15–30 s at ~10k files | S12 |
 | S13 tee-feasibility and account-scope decision | tee feasible as a SEA (added wait p95 33–78 ms); Claude scope unverified; Codex salted-hash epoch marker (owner approved; PRD §5.11 clarification in the Gate 0 delta) | S13 |
-| JSON Schema validator selection | `ajv` 8.20.0, owner approved 2026-11-10 (D-P0-34); installation pending Phase 1; optional runtime trial not run | S11-C12 |
+| JSON Schema validator selection | `ajv` 8.20.0, owner approved 2026-11-10 (D-P0-34); installed at Phase 1 start; optional runtime trial not run | S11-C12 |
 | Compatibility matrix | Codex 0.160.0 rows (§ S6); Claude rows on 2.1.322 (§ S7), the installed version after an auto-update from the 2.1.319 pin (D-P0-33); untested cells carry reasons; record_decision 37 | S6, S7 |
 
 ## 4. Required-scope misses returned to owner
@@ -750,7 +750,7 @@ Rule: no qualifying tee returns to the owner for a scope/implementation decision
 | S3 M16 under a 50-way simultaneous burst (both process candidates) | § S3: added wait p95 A ≈ 453 ms, B ≈ 276 ms; own max 155/177 ms; nothing lost (spooled) | (1) accept the burst miss, choose A; (2) accept, choose B; (3) add a native forwarder candidate (OQ-A3); (4) narrow M16's burst requirement | 2026-11-10: (2) accept, SEA |
 | S11 core Gemini observation (C1–C5) | § Guard: Google rejected personal sign-in for Gemini CLI 0.46.0 | (1) skip the live parts (UNVERIFIED); (2) sign in with an API key or Vertex; (3) replace Gemini CLI with the Antigravity CLI, evaluated in Phase 2 (D-P0-25, proposed) | 2026-11-10: (1) skip (D-P0-19); (3) replace with the Antigravity CLI (D-P0-36) |
 | S12 capacity at plan scale (C1–C3 narrowed): 50 sessions / 200 events/s / 10 min, ≥10 GiB / 10,000 sessions and the 200 MB session not run (M13, M14, EC-57, EC-87); M3 import rate and M13 common-term bm25 at risk | § S12 | (1) keep plan scale at Gates 4/5; (2) amend the targets to the personal profile; (3) keep the targets and measure them in a deferred scale-up stage | 2026-11-10: personal profile for the spike (D-P0-24) and (3) (D-P0-26); the stage runs when the owner starts it, likely after the first version (D-P0-36) |
-| S5-C5 foreign-hook trust: removing Xaibo's Codex hooks shifted a foreign hook onto a stale trust key, and it stopped running; the append-after-existing mitigation is untested and does not cover a foreign hook added later | § S5 | (1) adopt the append rule plus a Disconnect conflict for later foreign groups, tested in Phase 3 (Gate 3); (2) use the untested Codex plugin route instead; (3) narrow FR-34 for Codex | 2026-11-10: (1) proposed in the PRD v1.1 delta (FR-31); owner decision with the Gate 0 approval |
+| S5-C5 foreign-hook trust: removing Xaibo's Codex hooks shifted a foreign hook onto a stale trust key, and it stopped running; the append-after-existing mitigation is untested and does not cover a foreign hook added later | § S5 | (1) adopt the append rule plus a Disconnect conflict for later foreign groups, tested in Phase 3 (Gate 3); (2) use the untested Codex plugin route instead; (3) narrow FR-34 for Codex | 2026-11-10: (1), approved by the owner with Gate 0 (PRD v1.1 FR-31) |
 | Claude version drift: the install auto-updated from the pinned 2.1.319 to 2.1.322; the Claude compatibility rows and S7 facts are 2.1.322, S3/S4/S9/S13-T1..T5 are 2.1.319 (G0-5 names 2.1.319) | § S7, D-P0-33 | (1) accept 2.1.322 for the matrix and re-check the S9 facts on the installed version at Gate 1; (2) reinstall 2.1.319 and re-run S7 | 2026-11-10: (1) accept 2.1.322 (D-P0-34, record_decision 39) |
 
 ## 5. Decisions (`record_decision` references)
@@ -772,4 +772,4 @@ Rule: no qualifying tee returns to the owner for a scope/implementation decision
 
 ## 6. Gate 0 record
 
-Baseline: `master` at `e6b39ab`. Post-freeze evidence goes into `docs/plans/gates/gate0.md`, added by the gate-record commit (plan §2.4 step 6).
+Baseline: `master` at `e6b39ab`. Post-freeze evidence goes into `docs/plans/gates/gate0.md`, added by the gate-record commit (plan §2.4 step 6). Gate 0 was approved 2026-11-10 on gate SHA `7deb8cb` and merged to `master` by PR #2; Phase 0 is done.

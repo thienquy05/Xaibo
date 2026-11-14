@@ -8,7 +8,7 @@ Post-freeze evidence for Gate 0 (plan §2.4 step 6, D-P0-07). The frozen tree is
 | Baseline | `master` at `e6b39ab` (`git merge-base master HEAD`) |
 | Commits reviewed | `84af83d` (Phase 0 work), `f0ddc99` (review fixes, round 1), `7deb8cb` (round 2) |
 | Owner decision | **Approved** 2026-11-10, including PRD v1.1 and its proposed items (S12 defaults: 5 s scan interval, batch 100 rows / 50 ms / 1 MiB, per-file watcher strategy; S5 append rule); record_decision 41 |
-| Push / PR | not requested |
+| Push / PR | not requested at approval; merged to `master` later by PR #2 |
 
 ## Suite on the gate SHA (clean checkout, caches under the repo `.cache/`)
 

@@ -63,7 +63,7 @@ Status values: todo / doing / done / blocked / waived. "done" requires the task'
 | P0-S6-T1..T3, T6 (Codex interop); T4/T5 untested with reason | done | `spikes/s6/run.ts`, `spikes/s6/evidence/s6.json`; 13 launches with a prompt, 8 reached the model; resume positive control (no prompt); guard MATCH or owner-session config change, 0 credential, 0 agent keychain; one non-agent keychain change open for the owner; record_decision 35 | 2026-11-10 |
 | P0-S7-T1..T4, T7 (Claude interop); T5/T6 untested with reason | done on Claude Code 2.1.322 | `spikes/s7/run.ts`, `spikes/s7/elicit-mcp.test.ts` RED → GREEN 2/2, `spikes/s7/evidence/s7.json`; 20 prompts attempted; record_decision 36 | 2026-11-10 |
 | S13-T6 leftovers (statusLine after `/compact`, model and effort switch; Codex `/compact`) | done; window-size change and Codex `/model` not observed | `spikes/s7/evidence/s7.json` `s13`, `spikes/s6/evidence/s6.json` `compact` | 2026-11-10 |
-| P0-G-T2 (PRD delta v1.1) | done, pending owner approval | workflow: 8 region drafters + 8 adversarial checkers → 75 patches kept, 11 follow-on edits from the checkers, 3 App. D rows, history line; `privacy:scan docs/PRD.md` clean | 2026-11-10 |
+| P0-G-T2 (PRD delta v1.1) | done; approved by the owner at Gate 0 (2026-11-10) | workflow: 8 region drafters + 8 adversarial checkers → 75 patches kept, 11 follow-on edits from the checkers, 3 App. D rows, history line; `privacy:scan docs/PRD.md` clean | 2026-11-10 |
 | Gate 0 suite, pre-freeze (working tree) | typecheck, `npm test` 53/53, `dist:mac`, smoke, privacy scan green; `spike:test` 49/50 and unsandboxed 11/12 under heavy load (two timing tests), both green on rerun on a quiet machine (G7 3/3, KILL escalation 2/2) | this run; final run on the gate SHA from a clean checkout follows | 2026-11-10 |
 | P0-S11-T1..T10 (Gemini and catalog) | done for static and catalog work; live parts UNVERIFIED (owner skip, D-P0-19) | `phase0_spikes.md` § S11; `spikes/s11/`; record_decision 27 | 2026-11-10 |
 | Pre-freeze Claude review (6 lenses, 2 skeptics per finding) | done | 58 findings: 36 upheld by both, 11 split, 11 refuted; fixes applied to the report, PRD delta, progress file and spike code; S6/S7 evidence recomputed from raw local data (no prompts); S10 re-run with stricter checks | 2026-11-10 |
@@ -315,7 +315,7 @@ Every result records hardware class, macOS version, app/agent versions, corpus s
 | Gate 0: Claude version drift (report §4, D-P0-33) | done: accept 2.1.322 (D-P0-34) |
 | Gate 0: placement of the deferred scale-up stage and the Antigravity CLI proposal | done (D-P0-36) |
 | Gate 0: three non-agent keychain changes and the lost `baseline` snapshot | done (D-P0-35) |
-| Gate 0: OK for the gate commit (D-P0-07), then Codex review | done: owner OK 2026-11-10; Codex review next |
+| Gate 0: OK for the gate commit (D-P0-07), then Codex review | done: owner OK 2026-11-10; Codex review and approval followed (`gates/gate0.md`) |
 | Gate 1: confirm the 8 MiB parse cap (D-P1-13; OQ-P1-06 said 64 MiB, which missed the EC-15 bound) | done: keep 8 MiB (owner, 2026-11-11; D-P1-15) |
 | Gate 1: confirm EC-55 through cwd/entrypoint with titles "Untitled" (D-P1-11; title record shapes unverified) | done: accepted (owner, 2026-11-11; D-P1-15) |
 | Gate 1: Playwright MCP visual check of the list needs an MCP attach config change (OQ-X11) | done: approved; no config change was needed (D-P1-15); check passed |
