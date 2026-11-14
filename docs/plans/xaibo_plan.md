@@ -1212,14 +1212,15 @@ GS (§2.4 steps 0–6) on this branch (full suite, audit run as M6 regression, `
 - **M6, M9 (regression):** audit in every E2E spec = 0; canary tests stay green (no egress path added).
 
 ### Gate 2 checklist
-- [ ] All 16 EC rows accounted for: applicable scope passes; any waiver/defer/narrowing has an explicit owner decision and is not reported as a pass (EC-54 non-interference unless enrichment approved).
-- [ ] T00 contract/isolation checks complete; unverified facts explicit; EC-80/81 and dependent EC/FR dispositions approved; no fabricated fixture semantics.
-- [ ] Phase 1 EC tests still green.
-- [ ] lint, typecheck, unit, integration, E2E and perf green on a clean worktree.
-- [ ] Fixtures synthetic and lint-clean; bundled `models.json` entries have source references and `prices_as_of`, verified by the owner.
-- [ ] No network activity, no model/quota/token-count request (FR-44), no write to any native store; fixture checksums unchanged.
-- [ ] Playwright MCP check of the list changes (badges, model/effort).
-- [ ] GS: Codex review, Claude second review, owner stop.
+Checked 2026-11-14 against `gates/gate2.md` (gate SHA `9028f9b`, approved 2026-11-12, decision 351) and the progress file.
+- [x] All 16 EC rows accounted for: applicable scope passes; any waiver/defer/narrowing has an explicit owner decision and is not reported as a pass (EC-54 non-interference unless enrichment approved). *Progress §3b: 14 pass; EC-74 partial, link deferred (D-P2-07); EC-80 generic mechanism only, agy semantics unverified (D-P2-02, D-P2-09); EC-54 non-interference, no enrichment (OQ-P2-04).*
+- [x] T00 contract/isolation checks complete; unverified facts explicit; EC-80/81 and dependent EC/FR dispositions approved; no fabricated fixture semantics. *Progress P2-T00 rows (install, runner/guard, sign-in, live evaluation, static isolation; guard MATCH throughout); `spikes/p2-agy/evidence/facts.json`; D-P2-01, D-P2-02.*
+- [x] Phase 1 EC tests still green. *`npm test` 389/389 and `test:electron` 84/84 on `9028f9b` include the Phase 1 EC tests.*
+- [x] lint, typecheck, unit, integration, E2E and perf green on a clean worktree. *`gates/gate2.md` suite: clean worktree, `npm ci --offline`; E2E 18/18; M3 full pass; EC-15 pass.*
+- [x] Fixtures synthetic and lint-clean; bundled `models.json` entries have source references and `prices_as_of`, verified by the owner. *`fixtures:lint` and `privacy:scan -- --all/--history` clean; 5 entries with `source`, `prices_as_of` 2026-11-12, `prices_verified: true` (D-P2-05).*
+- [x] No network activity, no model/quota/token-count request (FR-44), no write to any native store; fixture checksums unchanged. *Packaged audit: 0 non-loopback NetLog events, repo and fixture stores unchanged (EC-61); prices load with no socket/HTTP activity (`prices.test.ts`); M6 = 0.*
+- [x] Playwright MCP check of the list changes (badges, model/effort). *Progress P2-T04 (Origin badges, Non-interactive tag) and P2-T08 (Model column); 0 console errors. Not seen in the check: the ` · <effort>` suffix and the P2-T12 "via Claude Code" badge (unit-tested only).*
+- [x] GS: Codex review, Claude second review, owner stop. *`gates/gate2.md` Reviews: Codex approve and Claude approve on `9028f9b` (decisions 350, 351).*
 
 ### Open questions (Phase 2)
 OQ-P2-01..05, 07..09 defaults accepted by the owner, with Gemini read as `agy`; OQ-P2-06 → OQ-X6. OQ-P2-10..11 resolved by the owner (§6, D-P2-01).
