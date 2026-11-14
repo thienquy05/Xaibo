@@ -148,3 +148,41 @@ test('liveSet: request carries an id only; reply rows are validated and more is 
     assert.equal(parsePortMessage({ ...reply, ...bad }), null, JSON.stringify(bad));
   }
 });
+
+// XAIBO-PROD-405 (P4-T04b1): usage scopes and observed-history pages.
+const scope = { scope: 4, agent: 'codex', profile: 'Default profile', verified: true, stream: 'codex:primary', windowMinutes: 300, usedPercent: 101.5,
+  resetsAt: 9, plan: 'pro', credits: { hasCredits: true, unlimited: null, balance: '12.50' }, asOf: 5, firstObservedAt: 5, measuredAt: 5, unavailable: null };
+const blank = { scope: null, agent: 'agy', profile: 'Default profile', verified: null, stream: null, windowMinutes: null, usedPercent: null, resetsAt: null,
+  plan: null, credits: null, asOf: null, firstObservedAt: null, measuredAt: null, unavailable: 'passive' };
+test('usage: request id only; reply scopes validated field by field and bounded', () => {
+  assert.deepEqual(parsePortRequest({ v: 1, type: 'usage', id: 2, x: 1 }), { v: 1, type: 'usage', id: 2 });
+  assert.equal(parsePortRequest({ v: 1, type: 'usage', id: -2 }), null);
+  const reply = { v: 1, type: 'usage', id: 2, scopes: [scope, blank, { ...blank, agent: 'claude', unavailable: 'no-observation' }] };
+  assert.deepEqual(parsePortMessage(reply), reply);
+  assert.deepEqual(parsePortMessage({ ...reply, scopes: [{ ...scope, extra: '<b>', credits: { ...scope.credits, junk: 1 } }] }), { ...reply, scopes: [scope] });
+  for (const bad of [{ scope: -1 }, { agent: 'Bad Agent' }, { profile: 5 }, { profile: 'x'.repeat(4098) }, { verified: 'yes' }, { stream: 'x'.repeat(81) },
+    { windowMinutes: 0.5 }, { usedPercent: -1 }, { usedPercent: Number.NaN }, { resetsAt: 'x' }, { plan: 'x'.repeat(33) }, { credits: 'lots' },
+    { credits: { hasCredits: 'y', unlimited: null, balance: null } }, { credits: { hasCredits: null, unlimited: null, balance: 'x'.repeat(33) } },
+    { asOf: Number.NaN }, { firstObservedAt: 'x' }, { measuredAt: undefined }, { unavailable: 'later' }, { unavailable: undefined }]) {
+    assert.equal(parsePortMessage({ ...reply, scopes: [bad && { ...scope, ...bad }] }), null, JSON.stringify(bad));
+  }
+  assert.equal(parsePortMessage({ ...reply, scopes: Array(257).fill(blank) }), null, 'bounded');
+});
+
+test('usageHistory: request fields checked; reply records and cursor validated', () => {
+  const req = { v: 1, type: 'usageHistory', id: 6, scope: 4, stream: 'five_hour', from: 10, to: 20, cursor: { measuredAt: 12, id: 3 }, limit: 50 };
+  assert.deepEqual(parsePortRequest({ ...req, extra: 1 }), req);
+  assert.deepEqual(parsePortRequest({ ...req, cursor: null }), { ...req, cursor: null });
+  for (const bad of [{ id: -1 }, { scope: -4 }, { scope: 1.5 }, { stream: '' }, { stream: 'x'.repeat(81) }, { from: 'x' }, { to: Number.NaN }, { from: 30 },
+    { cursor: { measuredAt: 'x', id: 3 } }, { cursor: { measuredAt: 12 } }, { limit: 0 }, { limit: 2.5 }]) {
+    assert.equal(parsePortRequest({ ...req, ...bad }), null, JSON.stringify(bad));
+  }
+  const rec = { id: 3, kind: 'transition', measuredAt: 12, usedPercent: 40, windowMinutes: 300, resetsAt: null, sourceTimeKnown: false };
+  const reply = { v: 1, type: 'usageHistory', id: 6, records: [rec], next: { measuredAt: 12, id: 3 } };
+  assert.deepEqual(parsePortMessage(reply), reply);
+  assert.deepEqual(parsePortMessage({ ...reply, next: null }), { ...reply, next: null });
+  for (const bad of [{ id: 'x' }, { kind: 'guess' }, { measuredAt: null }, { usedPercent: -1 }, { windowMinutes: -5 }, { resetsAt: 'x' }, { sourceTimeKnown: 1 }]) {
+    assert.equal(parsePortMessage({ ...reply, records: [{ ...rec, ...bad }] }), null, JSON.stringify(bad));
+  }
+  assert.equal(parsePortMessage({ ...reply, records: Array(101).fill(rec) }), null, 'bounded');
+});

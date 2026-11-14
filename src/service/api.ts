@@ -2,7 +2,8 @@
 // default 50 rows, hard cap 100; rows by session key for the coalesced deltas the service pushes after commits.
 import type { DatabaseSync } from 'node:sqlite';
 import { IPC_VERSION } from '../shared/ipc.ts';
-import type { Cursor, LiveStatus, Page, PortMessage, PortRequest, SessionRow } from '../shared/ipc.ts';
+import type { Credits, Cursor, HistoryCursor, LiveStatus, Page, PortMessage, PortRequest, SessionRow, UsageRecord, UsageScope } from '../shared/ipc.ts';
+import { MAX_RECORDS, MAX_SCOPES } from '../shared/ipc.ts';
 import type { SessionKind } from './catalog/validate.ts';
 import { sessionKind } from './resume.ts';
 import { LIVE_WINDOW_MS } from './status/feed.ts'; // D-P3-09 feed eligibility
@@ -110,6 +111,78 @@ export function answerLiveSet(db: DatabaseSync, req: PortRequest & { type: 'live
     }
   } catch { return { v: IPC_VERSION, type: 'liveSet', id: req.id, rows: [], more: false }; }
   return { v: IPC_VERSION, type: 'liveSet', id: req.id, rows, more };
+}
+
+/** P4-T04b1: a profile's label for the UI: "Default profile", else its root with the home directory as `~`. */
+export function profileLabel(origin: string, root: string, home: string): string {
+  if (origin === 'default') return 'Default profile';
+  const h = home.replace(/\/+$/, ''); // review L: os.homedir() returns $HOME as set, trailing slash included; '/' becomes '' (no rewrite)
+  const label = h && (root === h || root.startsWith(`${h}/`)) ? `~${root.slice(h.length)}` : root;
+  return display(label)!;
+}
+function credits(raw: string | null): Credits | null {
+  if (raw === null) return null;
+  try {
+    const c = JSON.parse(raw) as Record<string, unknown>;
+    const bool = (v: unknown) => (typeof v === 'boolean' ? v : null);
+    const balance = typeof c.balance === 'string' || typeof c.balance === 'number' ? String(c.balance).slice(0, 32) : null;
+    return { hasCredits: bool(c.has_credits), unlimited: bool(c.unlimited), balance };
+  } catch { return null; }
+}
+const finiteOrNull = (v: number | null) => (v !== null && Number.isFinite(v) ? v : null);
+type Latest = { scope: number; agent: string; verified: number; limit_id: string; used_percent: number | null; window_minutes: number | null; resets_at: number | null;
+  plan: string | null; credits: string | null; as_of: number | null; first_observed_at: number; measured_at: number; profile_id: string };
+/** P4-T04b1: per profile (agent, id order): agy -> one passive-unavailable row; others -> the newest measurement per
+ *  scope and stream (raw: state is derived at render time against the local clock), else one no-observation row.
+ *  ponytail: streams found by a scan of the history index, as usageStatusList; capped at MAX_SCOPES rows. */
+export function usageScopes(db: DatabaseSync, home: string): UsageScope[] {
+  const latest = db.prepare(`SELECT s.id AS scope, s.agent, s.verified, s.profile_id, h.limit_id, h.used_percent, h.window_minutes, h.resets_at, h.plan, h.credits,
+      h.as_of, h.first_observed_at, h.measured_at
+    FROM (SELECT DISTINCT usage_scope_id, limit_id FROM usage_history) k
+    JOIN usage_history h ON h.id = (SELECT id FROM usage_history x WHERE x.usage_scope_id = k.usage_scope_id AND x.limit_id = k.limit_id
+      ORDER BY x.measured_at DESC, x.id DESC LIMIT 1)
+    JOIN usage_scopes s ON s.id = h.usage_scope_id
+    ORDER BY s.id, h.limit_id`).all() as Latest[];
+  const blank = { scope: null, verified: null, stream: null, windowMinutes: null, usedPercent: null, resetsAt: null, plan: null, credits: null, asOf: null, firstObservedAt: null, measuredAt: null };
+  const out: UsageScope[] = [];
+  for (const p of db.prepare('SELECT id, agent, root, origin FROM profiles ORDER BY agent, id').all() as { id: string; agent: string; root: string; origin: string }[]) {
+    const profile = profileLabel(p.origin, p.root, home);
+    if (p.agent === 'agy') { out.push({ ...blank, agent: p.agent, profile, unavailable: 'passive' }); continue; }
+    const mine = latest.filter((r) => r.profile_id === p.id);
+    // Review M: only agents with a passive usage source get a no-observation row (a custom registration agent has none).
+    if (!mine.length) { if (p.agent === 'claude' || p.agent === 'codex') out.push({ ...blank, agent: p.agent, profile, unavailable: 'no-observation' }); continue; }
+    for (const r of mine) {
+      out.push({ scope: r.scope, agent: r.agent, profile, verified: r.verified === 1, stream: r.limit_id, windowMinutes: r.window_minutes,
+        usedPercent: finiteOrNull(r.used_percent), resetsAt: r.resets_at, plan: r.plan, credits: credits(r.credits), asOf: r.as_of,
+        firstObservedAt: r.first_observed_at, measuredAt: r.measured_at, unavailable: null });
+    }
+  }
+  return out.slice(0, MAX_SCOPES);
+}
+export function answerUsage(db: DatabaseSync, req: PortRequest & { type: 'usage' }, home: string): PortMessage & { type: 'usage' } {
+  let scopes: UsageScope[] = [];
+  try { scopes = usageScopes(db, home); } catch { /* unreadable store: no scopes */ }
+  return { v: IPC_VERSION, type: 'usage', id: req.id, scopes };
+}
+
+export const HISTORY_MAX = MAX_RECORDS;
+/** P4-T04b1: one scope+stream's stored observations with measured time in [from, to), oldest first; keyset
+ *  (measured_at, id) on the usage_history_stream index. Nothing interpolated: absent minutes are absent. */
+export function answerUsageHistory(db: DatabaseSync, req: PortRequest & { type: 'usageHistory' }): PortMessage & { type: 'usageHistory' } {
+  const n = Math.min(req.limit, HISTORY_MAX);
+  const c = req.cursor;
+  try {
+    // Review L: the cursor is the index lower bound, so later pages seek instead of rescanning the window.
+    const raw = db.prepare(`SELECT id, kind, measured_at, used_percent, window_minutes, resets_at, as_of FROM usage_history
+      WHERE usage_scope_id = ? AND limit_id = ? AND measured_at >= ? AND measured_at < ? AND (? IS NULL OR measured_at > ? OR id > ?)
+      ORDER BY measured_at, id LIMIT ?`).all(req.scope, req.stream, Math.max(req.from, c?.measuredAt ?? req.from), req.to, c?.measuredAt ?? null, c?.measuredAt ?? null, c?.id ?? null, n) as
+      { id: number; kind: UsageRecord['kind']; measured_at: number; used_percent: number | null; window_minutes: number | null; resets_at: number | null; as_of: number | null }[];
+    const records: UsageRecord[] = raw.map((r) => ({ id: r.id, kind: r.kind, measuredAt: r.measured_at, usedPercent: finiteOrNull(r.used_percent), windowMinutes: r.window_minutes,
+      resetsAt: r.resets_at, sourceTimeKnown: r.as_of !== null }));
+    const last = records.at(-1);
+    const next: HistoryCursor | null = records.length === n && last ? { measuredAt: last.measuredAt, id: last.id } : null;
+    return { v: IPC_VERSION, type: 'usageHistory', id: req.id, records, next };
+  } catch { return { v: IPC_VERSION, type: 'usageHistory', id: req.id, records: [], next: null }; }
 }
 
 /** Renderer ports (P4-T02): session deltas go only to live (visible) ports; every other push goes to all ports. */

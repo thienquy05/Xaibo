@@ -109,15 +109,37 @@ export type Banner =
 export const MAX_BANNERS = 64;
 const MAX_STEPS = 16;
 export interface Page { rows: SessionRow[]; next: Cursor | null }
+/** P4-T04b1: allowlisted credit fields (P3-T15 H2), as stored. */
+export interface Credits { hasCredits: boolean | null; unlimited: boolean | null; balance: string | null }
+/** P4-T04b1: one usage scope and stream with its newest stored measurement as raw fields (the renderer derives
+ *  stale / reset-passed at render time), or a profile row with no values: `passive` (agy: unavailable from passive
+ *  sources) or `no-observation` (no scope yet). */
+export interface UsageScope {
+  scope: number | null; agent: string; profile: string; verified: boolean | null; stream: string | null;
+  windowMinutes: number | null; usedPercent: number | null; resetsAt: number | null; plan: string | null; credits: Credits | null;
+  asOf: number | null; firstObservedAt: number | null; measuredAt: number | null; unavailable: 'passive' | 'no-observation' | null;
+}
+export interface HistoryCursor { measuredAt: number; id: number }
+export interface UsageRecord {
+  id: number; kind: 'sample' | 'transition'; measuredAt: number; usedPercent: number | null; windowMinutes: number | null; resetsAt: number | null; sourceTimeKnown: boolean;
+}
+export const MAX_SCOPES = 256;
+export const MAX_RECORDS = 100;
+const MAX_STREAM = 80; // a 64-character limit id plus ':secondary'
 export interface AgentStatus { agent: string; name: string; state: 'detected' | 'not-detected'; version: string | null }
 export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Cursor | null; limit: number }
   /** P4-T02: the window is visible (live session deltas wanted) or hidden (paused; the renderer resyncs by cursor). */
   | { v: 1; type: 'live'; on: boolean }
   /** P4-T04a: the live-session set (tracked, non-ended, active within 24 h), capped; deltas keep it current. */
-  | { v: 1; type: 'liveSet'; id: number };
+  | { v: 1; type: 'liveSet'; id: number }
+  /** P4-T04b1: usage scopes; one scope+stream's observations with measured time in [from, to), by keyset cursor. */
+  | { v: 1; type: 'usage'; id: number }
+  | { v: 1; type: 'usageHistory'; id: number; scope: number; stream: string; from: number; to: number; cursor: HistoryCursor | null; limit: number };
 export type PortMessage =
   | { v: 1; type: 'page'; id: number; rows: SessionRow[]; next: Cursor | null }
   | { v: 1; type: 'liveSet'; id: number; rows: SessionRow[]; more: boolean }
+  | { v: 1; type: 'usage'; id: number; scopes: UsageScope[] }
+  | { v: 1; type: 'usageHistory'; id: number; records: UsageRecord[]; next: HistoryCursor | null }
   // coalesced deltas: current rows of changed sessions; delta only with XAIBO_PERF_TRACE=1 (the renderer acks its paint)
   | { v: 1; type: 'sessions'; rows: SessionRow[]; delta?: number }
   | { v: 1; type: 'agents'; agents: AgentStatus[] | null } // null while detection runs
@@ -186,10 +208,53 @@ function parseAgent(x: unknown): AgentStatus | null {
   return a.version === null || text(a.version, 64) ? { agent: a.agent, name: a.name, state: a.state, version: a.version } : null;
 }
 
+const isObj = (x: unknown): x is Msg => typeof x === 'object' && x !== null && !Array.isArray(x);
+const finite = (x: unknown): x is number => Number.isFinite(x);
+const numOrNull = (x: unknown, ok: (n: number) => boolean) => x === null || (finite(x) && ok(x));
+function parseHistoryCursor(x: unknown): HistoryCursor | null | undefined { // undefined = invalid
+  if (x === null) return null;
+  return isObj(x) && finite(x.measuredAt) && count(x.id) ? { measuredAt: x.measuredAt, id: x.id } : undefined;
+}
+function parseCredits(x: unknown): Credits | null | undefined {
+  if (x === null) return null;
+  if (!isObj(x) || !boolOrNull(x.hasCredits) || !boolOrNull(x.unlimited) || !(x.balance === null || text(x.balance, 32))) return undefined;
+  return { hasCredits: x.hasCredits, unlimited: x.unlimited, balance: x.balance };
+}
+function parseScope(x: unknown): UsageScope | null {
+  if (!isObj(x) || !(x.scope === null || count(x.scope)) || !agentOk(x.agent) || !text(x.profile, 4097) || !boolOrNull(x.verified)) return null;
+  if (!(x.stream === null || text(x.stream, MAX_STREAM)) || !(x.plan === null || text(x.plan, 32))) return null;
+  if (!numOrNull(x.windowMinutes, (n) => Number.isSafeInteger(n) && n > 0) || !numOrNull(x.usedPercent, (n) => n >= 0) || !timeOrNull(x.resetsAt)) return null;
+  if (!timeOrNull(x.asOf) || !timeOrNull(x.firstObservedAt) || !timeOrNull(x.measuredAt)) return null;
+  if (!(x.unavailable === null || oneOf(['passive', 'no-observation'] as const, x.unavailable))) return null;
+  const credits = parseCredits(x.credits);
+  if (credits === undefined) return null;
+  return { scope: x.scope, agent: x.agent, profile: x.profile, verified: x.verified, stream: x.stream, windowMinutes: x.windowMinutes as number | null,
+    usedPercent: x.usedPercent as number | null, resetsAt: x.resetsAt, plan: x.plan, credits, asOf: x.asOf, firstObservedAt: x.firstObservedAt,
+    measuredAt: x.measuredAt, unavailable: x.unavailable };
+}
+function parseRecord(x: unknown): UsageRecord | null {
+  if (!isObj(x) || !count(x.id) || !oneOf(['sample', 'transition'] as const, x.kind) || !finite(x.measuredAt) || typeof x.sourceTimeKnown !== 'boolean') return null;
+  if (!numOrNull(x.usedPercent, (n) => n >= 0) || !numOrNull(x.windowMinutes, (n) => Number.isSafeInteger(n) && n > 0) || !timeOrNull(x.resetsAt)) return null;
+  return { id: x.id, kind: x.kind, measuredAt: x.measuredAt, usedPercent: x.usedPercent as number | null, windowMinutes: x.windowMinutes as number | null,
+    resetsAt: x.resetsAt, sourceTimeKnown: x.sourceTimeKnown };
+}
+const all = <T>(xs: unknown, max: number, parse: (x: unknown) => T | null): T[] | null => {
+  if (!Array.isArray(xs) || xs.length > max) return null;
+  const out = xs.map(parse);
+  return out.every((v) => v !== null) ? (out as T[]) : null;
+};
+
 export function parsePortRequest(x: unknown): PortRequest | null {
   const m = envelope(x);
   if (m?.type === 'live') return typeof m.on === 'boolean' ? { v: 1, type: 'live', on: m.on } : null;
   if (m?.type === 'liveSet') return count(m.id) ? { v: 1, type: 'liveSet', id: m.id } : null;
+  if (m?.type === 'usage') return count(m.id) ? { v: 1, type: 'usage', id: m.id } : null;
+  if (m?.type === 'usageHistory') {
+    const cursor = parseHistoryCursor(m.cursor);
+    if (!count(m.id) || !count(m.scope) || !text(m.stream, MAX_STREAM) || !m.stream || !finite(m.from) || !finite(m.to) || m.from > m.to) return null;
+    if (cursor === undefined || !Number.isSafeInteger(m.limit) || (m.limit as number) < 1) return null;
+    return { v: 1, type: 'usageHistory', id: m.id, scope: m.scope, stream: m.stream, from: m.from, to: m.to, cursor, limit: m.limit as number };
+  }
   if (!m || m.type !== 'listSessions' || !count(m.id) || !Number.isSafeInteger(m.limit) || (m.limit as number) < 1) return null;
   const cursor = parseCursor(m.cursor);
   return cursor === undefined ? null : { v: 1, type: 'listSessions', id: m.id, cursor, limit: m.limit as number };
@@ -202,6 +267,15 @@ export function parsePortMessage(x: unknown): PortMessage | null {
     const rows = parseRows(m.rows);
     const next = parseCursor(m.next);
     return count(m.id) && rows && next !== undefined ? { v: 1, type: 'page', id: m.id, rows, next } : null;
+  }
+  if (m.type === 'usage') {
+    const scopes = all(m.scopes, MAX_SCOPES, parseScope);
+    return count(m.id) && scopes ? { v: 1, type: 'usage', id: m.id, scopes } : null;
+  }
+  if (m.type === 'usageHistory') {
+    const records = all(m.records, MAX_RECORDS, parseRecord);
+    const next = parseHistoryCursor(m.next);
+    return count(m.id) && records && next !== undefined ? { v: 1, type: 'usageHistory', id: m.id, records, next } : null;
   }
   if (m.type === 'liveSet') {
     const rows = parseRows(m.rows);

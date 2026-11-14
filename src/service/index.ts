@@ -10,7 +10,7 @@ import { errorCode, installCrashPolicy } from '../shared/crash.ts';
 import { accept, IPC_VERSION, parsePortRequest, parseServiceCommand } from '../shared/ipc.ts';
 import type { Banner, PortMessage, ServiceEvent } from '../shared/ipc.ts';
 import { createLogger, loadInstallSecret, type Logger } from '../shared/log.ts';
-import { answer, answerLiveSet, coalesce, createHub, sessionsByKey, type LiveOf } from './api.ts';
+import { answer, answerLiveSet, answerUsage, answerUsageHistory, coalesce, createHub, sessionsByKey, type LiveOf } from './api.ts';
 import { boot, type Service } from './boot.ts';
 import type { Batch } from './store/writer.ts';
 import { traceableIds } from './trace-ids.ts';
@@ -57,9 +57,14 @@ const coverage = () => {
 const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
   if (req.type === 'live') { hub.setLive(port, req.on); return; }
   void booted.then((s) => {
-    // A closed store still answers (empty), so no renderer request waits forever (security review L).
-    if (req.type === 'liveSet') port.postMessage(s.store.db.isOpen ? answerLiveSet(s.store.db, req, Date.now(), s.kinds(), s.models(), live) : { v: IPC_VERSION, type: 'liveSet', id: req.id, rows: [], more: false });
-    else port.postMessage(s.store.db.isOpen ? answer(s.store.db, req, s.kinds(), s.models(), live) : { v: IPC_VERSION, type: 'page', id: req.id, rows: [], next: null });
+    // A closed store still answers (empty: each answer catches its store errors), so no renderer request waits forever.
+    const db = s.store.db;
+    switch (req.type) {
+      case 'liveSet': port.postMessage(db.isOpen ? answerLiveSet(db, req, Date.now(), s.kinds(), s.models(), live) : { v: IPC_VERSION, type: 'liveSet', id: req.id, rows: [], more: false }); break;
+      case 'usage': port.postMessage(answerUsage(db, req, homedir())); break;
+      case 'usageHistory': port.postMessage(answerUsageHistory(db, req)); break;
+      default: port.postMessage(db.isOpen ? answer(db, req, s.kinds(), s.models(), live) : { v: IPC_VERSION, type: 'page', id: req.id, rows: [], next: null });
+    }
   });
 });
 

@@ -82,3 +82,20 @@ test('liveSet resolves with its own reply, ignores a page reply with its id, and
   f.deliver({ v: 1, type: 'liveSet', id: 2, rows: [row], more: 'no' });
   await assert.rejects(b, /invalid reply/);
 });
+
+// XAIBO-PROD-405: one pending map keyed by id; a reply settles only a request of its own type.
+test('usage and usageHistory resolve their own replies; a reply of another type never settles them', async () => {
+  const f = fakePort();
+  const c = createClient(f.port, { sessions() {}, agents() {} });
+  const u = c.usage();
+  const h = c.usageHistory(4, 'five_hour', 10, 20, null, 50);
+  assert.deepEqual(f.sent, [{ v: 1, type: 'usage', id: 1 }, { v: 1, type: 'usageHistory', id: 2, scope: 4, stream: 'five_hour', from: 10, to: 20, cursor: null, limit: 50 }]);
+  f.deliver({ v: 1, type: 'liveSet', id: 1, rows: [], more: false });
+  f.deliver({ v: 1, type: 'usageHistory', id: 2, records: [], next: null });
+  f.deliver({ v: 1, type: 'usage', id: 1, scopes: [] });
+  assert.deepEqual(await u, []);
+  assert.deepEqual(await h, { records: [], next: null });
+  const bad = c.usage();
+  f.deliver({ v: 1, type: 'usage', id: 3, scopes: 'none' });
+  await assert.rejects(bad, /invalid reply/);
+});
