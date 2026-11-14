@@ -56,10 +56,10 @@ test('accept() hands valid messages on and counts the dropped ones', () => {
 
 // P1-T12 (XAIBO-PROD-110): renderer <-> service port messages and the setPath command.
 const row = { id: 7, agent: 'claude', entrypoint: 'cli', origin: 'CLI', interactive: true, model: 'Model unavailable', cwd: '/tmp/xaibo-fixture/a', title: null, lastActivity: 5, drift: false, compressed: false, quarantined: 0,
-  live: null, contextPct: null, costUsd: null, costCoverage: 'unavailable' };
+  live: null, contextPct: null, costUsd: null, costCoverage: 'unavailable', tokens: null, tokensComplete: true };
 
 // P3-T10 (XAIBO-PROD-310): live status, context and cost on rows; coverage banners; delta ids for the perf trace.
-const live = { lifecycle: 'busy', confidence: 'confirmed', health: 'connected', reason: 'Finishing…', outcome: null, findings: ['R2', 'R5'] };
+const live = { lifecycle: 'busy', confidence: 'confirmed', health: 'connected', reason: 'Finishing…', outcome: null, findings: ['R2', 'R5'], since: null };
 test('rows: live status, context and cost are validated field by field', () => {
   const full = { ...row, live, contextPct: 42.5, costUsd: 0.12, costCoverage: 'partial' };
   assert.deepEqual(parsePortMessage({ v: 1, type: 'sessions', rows: [full] }), { v: 1, type: 'sessions', rows: [full] });
@@ -127,4 +127,24 @@ test('port messages: page, sessions and agents validated field by field; one bad
   }
   assert.equal(parsePortMessage({ ...page, rows: 'all' }), null);
   assert.equal(parsePortMessage({ v: 1, type: 'agents', agents: [{ agent: 'claude', name: 'C', state: 'maybe', version: null }] }), null);
+});
+
+// XAIBO-PROD-404 (P4-T04a): state onset, session tokens and the live-set request/reply.
+test('rows: since is a finite time or null; tokens a non-negative safe integer or null; tokensComplete a boolean', () => {
+  const full = { ...row, live: { ...live, lifecycle: 'needs-input', since: 1234 }, tokens: 5000, tokensComplete: false };
+  assert.deepEqual(parsePortMessage({ v: 1, type: 'sessions', rows: [full] }), { v: 1, type: 'sessions', rows: [full] });
+  for (const bad of [{ live: { ...live, since: 'x' } }, { live: { ...live, since: Number.NaN } }, { live: { ...live, since: undefined } },
+    { tokens: -1 }, { tokens: 1.5 }, { tokens: '5' }, { tokens: undefined }, { tokensComplete: 'yes' }, { tokensComplete: undefined }]) {
+    assert.equal(parsePortMessage({ v: 1, type: 'sessions', rows: [{ ...full, ...bad }] }), null, JSON.stringify(bad));
+  }
+});
+
+test('liveSet: request carries an id only; reply rows are validated and more is a boolean', () => {
+  assert.deepEqual(parsePortRequest({ v: 1, type: 'liveSet', id: 4, extra: 1 }), { v: 1, type: 'liveSet', id: 4 });
+  for (const id of [-1, 1.5, '4', undefined]) assert.equal(parsePortRequest({ v: 1, type: 'liveSet', id }), null, String(id));
+  const reply = { v: 1, type: 'liveSet', id: 4, rows: [row], more: false };
+  assert.deepEqual(parsePortMessage(reply), reply);
+  for (const bad of [{ more: 'no' }, { more: undefined }, { id: -1 }, { rows: [{ ...row, id: 'x' }] }, { rows: 'all' }]) {
+    assert.equal(parsePortMessage({ ...reply, ...bad }), null, JSON.stringify(bad));
+  }
 });

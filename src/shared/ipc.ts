@@ -81,6 +81,9 @@ export interface SessionRow {
   contextPct: number | null;
   /** Session ~$ estimate (Phase 2); null with coverage 'unavailable'. */
   costUsd: number | null; costCoverage: CostCoverage;
+  /** P4-T04a: normalized input plus output over message-scope usage; null without usage (never 0); tokensComplete is
+   *  false when a counted component is missing (a known subtotal). */
+  tokens: number | null; tokensComplete: boolean;
 }
 export const LIFECYCLES = ['idle', 'busy', 'waiting-for-permission', 'needs-input', 'error', 'ended', 'unknown'] as const;
 export const REASONS = ['Finishing…', 'Background work', 'Probably waiting'] as const;
@@ -93,6 +96,8 @@ export type CostCoverage = typeof COSTS[number];
 export interface LiveStatus {
   lifecycle: typeof LIFECYCLES[number]; confidence: typeof CONFIDENCES[number]; health: typeof HEALTHS[number];
   reason: typeof REASONS[number] | null; outcome: typeof OUTCOMES[number] | null; findings: typeof RULES[number][];
+  /** P4-T04a: onset of the current wait or error (ms), null otherwise or when unknown. */
+  since: number | null;
 }
 export const GAP_REASONS = ['spool-overflow', 'spool-saturated', 'spool-torn', 'disk-full'] as const;
 /** Service coverage banners (P3-T10; EC-12, EC-44, EC-49, EC-25). Agents are catalog ids; the renderer names them. */
@@ -107,9 +112,12 @@ export interface Page { rows: SessionRow[]; next: Cursor | null }
 export interface AgentStatus { agent: string; name: string; state: 'detected' | 'not-detected'; version: string | null }
 export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Cursor | null; limit: number }
   /** P4-T02: the window is visible (live session deltas wanted) or hidden (paused; the renderer resyncs by cursor). */
-  | { v: 1; type: 'live'; on: boolean };
+  | { v: 1; type: 'live'; on: boolean }
+  /** P4-T04a: the live-session set (tracked, non-ended, active within 24 h), capped; deltas keep it current. */
+  | { v: 1; type: 'liveSet'; id: number };
 export type PortMessage =
   | { v: 1; type: 'page'; id: number; rows: SessionRow[]; next: Cursor | null }
+  | { v: 1; type: 'liveSet'; id: number; rows: SessionRow[]; more: boolean }
   // coalesced deltas: current rows of changed sessions; delta only with XAIBO_PERF_TRACE=1 (the renderer acks its paint)
   | { v: 1; type: 'sessions'; rows: SessionRow[]; delta?: number }
   | { v: 1; type: 'agents'; agents: AgentStatus[] | null } // null while detection runs
@@ -131,8 +139,9 @@ function parseRow(x: unknown): SessionRow | null {
   const live = r.live === null ? null : parseLive(r.live);
   if (live === undefined || !(r.contextPct === null || (Number.isFinite(r.contextPct) && (r.contextPct as number) >= 0 && (r.contextPct as number) <= 100))) return null;
   if (!(r.costUsd === null || (Number.isFinite(r.costUsd) && (r.costUsd as number) >= 0)) || !oneOf(COSTS, r.costCoverage)) return null;
+  if (!(r.tokens === null || count(r.tokens)) || typeof r.tokensComplete !== 'boolean') return null;
   return { id: r.id, agent: r.agent, entrypoint: r.entrypoint, origin: r.origin, interactive: r.interactive, model: r.model, cwd: r.cwd, title: r.title, lastActivity: r.lastActivity, drift: r.drift, compressed: r.compressed, quarantined: r.quarantined,
-    live, contextPct: r.contextPct as number | null, costUsd: r.costUsd as number | null, costCoverage: r.costCoverage };
+    live, contextPct: r.contextPct as number | null, costUsd: r.costUsd as number | null, costCoverage: r.costCoverage, tokens: r.tokens as number | null, tokensComplete: r.tokensComplete };
 }
 
 function parseLive(x: unknown): LiveStatus | undefined { // undefined = invalid
@@ -141,8 +150,8 @@ function parseLive(x: unknown): LiveStatus | undefined { // undefined = invalid
   if (!oneOf(LIFECYCLES, l.lifecycle) || !oneOf(CONFIDENCES, l.confidence) || !oneOf(HEALTHS, l.health)) return undefined;
   if (!(l.reason === null || oneOf(REASONS, l.reason)) || !(l.outcome === null || oneOf(OUTCOMES, l.outcome))) return undefined;
   const f = l.findings;
-  if (!Array.isArray(f) || !f.every((r) => oneOf(RULES, r)) || new Set(f).size !== f.length) return undefined;
-  return { lifecycle: l.lifecycle, confidence: l.confidence, health: l.health, reason: l.reason, outcome: l.outcome, findings: [...f] as LiveStatus['findings'] };
+  if (!Array.isArray(f) || !f.every((r) => oneOf(RULES, r)) || new Set(f).size !== f.length || !timeOrNull(l.since)) return undefined;
+  return { lifecycle: l.lifecycle, confidence: l.confidence, health: l.health, reason: l.reason, outcome: l.outcome, findings: [...f] as LiveStatus['findings'], since: l.since };
 }
 
 const agentOk = (x: unknown): x is string => text(x, 32) && AGENT_ID.test(x);
@@ -180,6 +189,7 @@ function parseAgent(x: unknown): AgentStatus | null {
 export function parsePortRequest(x: unknown): PortRequest | null {
   const m = envelope(x);
   if (m?.type === 'live') return typeof m.on === 'boolean' ? { v: 1, type: 'live', on: m.on } : null;
+  if (m?.type === 'liveSet') return count(m.id) ? { v: 1, type: 'liveSet', id: m.id } : null;
   if (!m || m.type !== 'listSessions' || !count(m.id) || !Number.isSafeInteger(m.limit) || (m.limit as number) < 1) return null;
   const cursor = parseCursor(m.cursor);
   return cursor === undefined ? null : { v: 1, type: 'listSessions', id: m.id, cursor, limit: m.limit as number };
@@ -192,6 +202,10 @@ export function parsePortMessage(x: unknown): PortMessage | null {
     const rows = parseRows(m.rows);
     const next = parseCursor(m.next);
     return count(m.id) && rows && next !== undefined ? { v: 1, type: 'page', id: m.id, rows, next } : null;
+  }
+  if (m.type === 'liveSet') {
+    const rows = parseRows(m.rows);
+    return count(m.id) && rows && typeof m.more === 'boolean' ? { v: 1, type: 'liveSet', id: m.id, rows, more: m.more } : null;
   }
   if (m.type === 'sessions') {
     const rows = parseRows(m.rows);

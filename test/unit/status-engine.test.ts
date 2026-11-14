@@ -307,3 +307,19 @@ test('G3f-2: a live request placed before a newer event notifies by its receipt 
   assert.equal(g.e().status('mytool', 'p1', SID)?.lifecycle, 'waiting-for-permission');
   assert.deepEqual(g.waits, [], 'a stale replayed request never notifies');
 });
+
+// XAIBO-PROD-404 (P4-T04a, design §6.2): `since` is the onset of the current wait or error, null otherwise.
+test('since: the oldest pending request, cleared on resolution; the error time; the heuristic onset; null when busy or idle', async () => {
+  const h = await harness();
+  assert.equal(h.feed(H('UserPromptSubmit', { prompt: 'p' }), 0)!.since, null, 'busy has no onset');
+  h.feed(H('PreToolUse', { tool_use_id: 'a', tool_name: 'Write' }), 10);
+  assert.equal(h.feed(H('PermissionRequest', { tool_name: 'Write' }, 20), 20)!.since, T0 + 20);
+  assert.equal(h.feed(H('Elicitation', { mcp_server_name: 's' }, 30), 30)!.since, T0 + 20, 'oldest unresolved request');
+  assert.equal(h.feed(H('PostToolUse', { tool_use_id: 'a' }, 40), 40)!.since, T0 + 30, 'the remaining request');
+  assert.equal(h.feed(H('ElicitationResult', { mcp_server_name: 's', action: 'accept' }, 50), 50)!.since, null);
+  assert.equal(h.feed(H('StopFailure', {}, 60), 60)!.since, T0 + 60, 'error onset');
+  const f = await harness();
+  f.feed(fileObs('claude', { type: 'assistant', message: { id: 't1', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }], stop_reason: 'tool_use' } }, { at: 0 }), 0);
+  f.at(9000);
+  assert.deepEqual([f.st()!.confidence, f.st()!.since], ['heuristic', T0 + 5000], 'when the 5 s rule fired');
+});

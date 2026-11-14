@@ -98,7 +98,7 @@ export async function boot(o: BootOptions): Promise<Service> {
     if (!s) return null;
     const known = <T extends string>(xs: readonly T[], x: string | null): T | null => (x !== null && (xs as readonly string[]).includes(x) ? x as T : null);
     return { lifecycle: s.lifecycle, confidence: s.confidence, health: s.health, reason: known(REASONS, s.reason), outcome: known(OUTCOMES, s.outcome),
-      findings: s.findings.filter((r): r is LiveStatus['findings'][number] => (RULES as readonly string[]).includes(r)) };
+      findings: s.findings.filter((r): r is LiveStatus['findings'][number] => (RULES as readonly string[]).includes(r)), since: s.since };
   };
   // Sessions whose status can change with time alone (busy: settle, R1/R5; heuristic waits), with the last status seen.
   // Keyed `agent\0profile\0native id`, the session identity (§5.5).

@@ -5,6 +5,7 @@ import { IPC_VERSION } from '../shared/ipc.ts';
 import type { Cursor, LiveStatus, Page, PortMessage, PortRequest, SessionRow } from '../shared/ipc.ts';
 import type { SessionKind } from './catalog/validate.ts';
 import { sessionKind } from './resume.ts';
+import { LIVE_WINDOW_MS } from './status/feed.ts'; // D-P3-09 feed eligibility
 import { sessionCost } from './usage/cost.ts';
 import { displayName, modelLabel, type ModelEntry } from './usage/models.ts';
 
@@ -19,14 +20,19 @@ export interface SessionKey { agent: string; profileId: string; nativeSessionId:
 
 const ROW = `SELECT s.id, s.agent, s.profile_id, s.native_session_id, s.entrypoint, s.originator, s.current_model, s.current_effort, s.cwd, s.title, s.last_activity, s.drift, s.quarantined_count,
   EXISTS (SELECT 1 FROM source_files f WHERE f.session_id = s.id AND f.status = 'compressed_not_imported') AS compressed,
-  (SELECT c.percentage FROM context_snapshots c WHERE c.session_id = s.id ORDER BY c.generation DESC, c.id DESC LIMIT 1) AS context_pct
+  (SELECT c.percentage FROM context_snapshots c WHERE c.session_id = s.id ORDER BY c.generation DESC, c.id DESC LIMIT 1) AS context_pct,
+  (SELECT CASE WHEN COUNT(u.uncached_input) + COUNT(u.cache_read) + COUNT(u.cache_write) + COUNT(u.output) = 0 THEN NULL
+    ELSE TOTAL(COALESCE(u.uncached_input, 0) + COALESCE(u.cache_read, 0) + COALESCE(u.cache_write, 0) + COALESCE(u.output, 0)) END
+    FROM usage u WHERE u.session_id = s.id AND u.scope = 'message') AS tokens,
+  EXISTS (SELECT 1 FROM usage u WHERE u.session_id = s.id AND u.scope = 'message' AND (u.uncached_input IS NULL OR u.cache_read IS NULL
+    OR u.output IS NULL OR (u.cache_write IS NULL AND json_extract(u.completeness, '$.cacheWrite') = 'missing'))) AS tokens_gap
   FROM sessions s`;
 // SQLite sorts NULL lowest, so DESC puts unknown activity last; the WHERE clauses continue exactly that order.
 const ORDER = 'ORDER BY s.last_activity DESC, s.id LIMIT ?';
 
 /** The status engine's view of a session by agent and native id (P3-T10); null when it has no evidence. */
 export type LiveOf = (agent: string, nativeSessionId: string, profileId: string) => LiveStatus | null;
-interface Raw { id: number; agent: string; profile_id: string; native_session_id: string; context_pct: number | null; entrypoint: string | null; originator: string | null; current_model: string | null; current_effort: string | null; cwd: string | null; title: string | null; last_activity: number | null; drift: number; quarantined_count: number; compressed: number }
+interface Raw { tokens: number | null; tokens_gap: number; id: number; agent: string; profile_id: string; native_session_id: string; context_pct: number | null; entrypoint: string | null; originator: string | null; current_model: string | null; current_effort: string | null; cwd: string | null; title: string | null; last_activity: number | null; drift: number; quarantined_count: number; compressed: number }
 const display = (s: string | null): string | null => {
   if (s === null || s.length <= DISPLAY_MAX) return s;
   const c = s.charCodeAt(DISPLAY_MAX - 1);
@@ -50,6 +56,10 @@ const toRow = (db: DatabaseSync, kinds: SessionKind[], models: ModelEntry[], liv
     contextPct: pct === null || !Number.isFinite(pct) ? null : Math.min(100, Math.max(0, pct)),
     costUsd: usable ? cost.amountUsd : null,
     costCoverage: usable ? cost.coverage : 'unavailable', // never "full" without an amount (review L6)
+    // P4-T04a: TOTAL (a REAL, never an overflow error; security review HIGH) past 2^53 is unavailable via the safe-integer check.
+    // Message-scope rows only (a session-scope cumulative reading is never added on top); Codex/agy cache write
+    // has no separate count (relation-unverified/unavailable), so only Claude's reported-missing one is a gap.
+    tokens: r.tokens !== null && Number.isSafeInteger(r.tokens) && r.tokens >= 0 ? r.tokens : null, tokensComplete: r.tokens_gap === 0,
   };
 };
 
@@ -77,6 +87,29 @@ export function answer(db: DatabaseSync, req: PortRequest & { type: 'listSession
   let page: Page;
   try { page = listSessions(db, req.cursor, req.limit, kinds, models, live); } catch { page = { rows: [], next: null }; }
   return { v: IPC_VERSION, type: 'page', id: req.id, ...page };
+}
+
+export const LIVE_SET_MAX = 100;
+/** P4-T04a: the live-session set: sessions active within 24 h whose engine status exists and is not ended, in list
+ *  order, at most LIVE_SET_MAX (`more` when capped). Rows are built only for members.
+ *  ponytail: capped at 100 live sessions (EC-57 needs 50); page the set if more ever run at once. */
+export function answerLiveSet(db: DatabaseSync, req: PortRequest & { type: 'liveSet' }, now: number, kinds: SessionKind[] = [], models: ModelEntry[] = [], live?: LiveOf): PortMessage & { type: 'liveSet' } {
+  const rows: SessionRow[] = [];
+  let more = false;
+  try {
+    const build = toRow(db, kinds, models, live);
+    const one = db.prepare(`${ROW} WHERE s.id = ?`);
+    // Review M1: membership from the bare key columns; the per-session subqueries run for members only.
+    for (const k of db.prepare('SELECT s.id, s.agent, s.profile_id, s.native_session_id FROM sessions s WHERE s.last_activity >= ? ORDER BY s.last_activity DESC, s.id')
+      .iterate(now - LIVE_WINDOW_MS) as Iterable<Pick<Raw, 'id' | 'agent' | 'profile_id' | 'native_session_id'>>) {
+      const st = live?.(k.agent, k.native_session_id, k.profile_id);
+      if (!st || st.lifecycle === 'ended') continue;
+      if (rows.length === LIVE_SET_MAX) { more = true; break; }
+      const r = one.get(k.id) as Raw | undefined;
+      if (r) rows.push(build(r));
+    }
+  } catch { return { v: IPC_VERSION, type: 'liveSet', id: req.id, rows: [], more: false }; }
+  return { v: IPC_VERSION, type: 'liveSet', id: req.id, rows, more };
 }
 
 /** Renderer ports (P4-T02): session deltas go only to live (visible) ports; every other push goes to all ports. */

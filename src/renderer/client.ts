@@ -5,6 +5,7 @@
 import { accept, IPC_VERSION, parsePortMessage } from '../shared/ipc.ts';
 import type { AgentStatus, Banner, Cursor, Page, PortRequest, SessionRow } from '../shared/ipc.ts';
 
+export interface LiveSet { rows: SessionRow[]; more: boolean }
 export interface PortLike { onmessage: ((e: { data: unknown }) => void) | null; postMessage(m: unknown): void; close(): void }
 /** delta: the perf-trace id of a sessions push (P3-T10), present only under XAIBO_PERF_TRACE=1. */
 export interface Pushes { sessions(rows: SessionRow[], delta?: number): void; agents(agents: AgentStatus[] | null): void; coverage?(banners: Banner[]): void }
@@ -19,10 +20,14 @@ export function parseVisible(x: unknown): boolean | null {
 export function createClient(port: PortLike, push: Pushes) {
   let nextId = 1;
   const pending = new Map<number, { resolve: (p: Page) => void; reject: (e: Error) => void }>();
+  const sets = new Map<number, { resolve: (s: LiveSet) => void; reject: (e: Error) => void }>();
   const receive = accept(parsePortMessage, (m) => {
     if (m.type === 'page') {
       pending.get(m.id)?.resolve({ rows: m.rows, next: m.next });
       pending.delete(m.id);
+    } else if (m.type === 'liveSet') {
+      sets.get(m.id)?.resolve({ rows: m.rows, more: m.more });
+      sets.delete(m.id);
     } else if (m.type === 'sessions') push.sessions(m.rows, m.delta);
     else if (m.type === 'coverage') push.coverage?.(m.banners);
     else push.agents(m.agents);
@@ -31,9 +36,10 @@ export function createClient(port: PortLike, push: Pushes) {
     const dropped = receive.dropped;
     receive(e.data);
     const m = e.data as { type?: unknown; id?: unknown } | null;
-    if (receive.dropped !== dropped && m?.type === 'page' && typeof m.id === 'number') {
-      pending.get(m.id)?.reject(new Error('invalid reply'));
-      pending.delete(m.id);
+    if (receive.dropped !== dropped && (m?.type === 'page' || m?.type === 'liveSet') && typeof m.id === 'number') {
+      const owed = m.type === 'page' ? pending : sets;
+      owed.get(m.id)?.reject(new Error('invalid reply'));
+      owed.delete(m.id);
     }
   };
   return {
@@ -41,10 +47,15 @@ export function createClient(port: PortLike, push: Pushes) {
       const req: PortRequest = { v: IPC_VERSION, type: 'listSessions', id: nextId++, cursor, limit };
       return new Promise((resolve, reject) => { pending.set(req.id, { resolve, reject }); port.postMessage(req); });
     },
+    /** P4-T04a: the live-session set (capped; `more` when it was). */
+    liveSet(): Promise<LiveSet> {
+      const req: PortRequest = { v: IPC_VERSION, type: 'liveSet', id: nextId++ };
+      return new Promise((resolve, reject) => { sets.set(req.id, { resolve, reject }); port.postMessage(req); });
+    },
     /** P4-T02: live session deltas while the window is visible; paused while hidden (resync by cursor on show). */
     setLive(on: boolean): void { port.postMessage({ v: IPC_VERSION, type: 'live', on } satisfies PortRequest); },
     get dropped() { return receive.dropped; },
-    close() { port.onmessage = null; pending.clear(); port.close(); },
+    close() { port.onmessage = null; pending.clear(); sets.clear(); port.close(); },
   };
 }
 export type Client = ReturnType<typeof createClient>;

@@ -9,7 +9,7 @@ import type { LiveStatus, SessionRow } from '../../src/shared/ipc.ts';
 
 const r = (id: number, lastActivity: number | null, extra: Partial<SessionRow> = {}): SessionRow =>
   ({ id, agent: 'claude', entrypoint: 'cli', origin: 'CLI', interactive: true, model: 'Model unavailable', cwd: `/tmp/xaibo-fixture/${id}`, title: null, lastActivity, drift: false, compressed: false, quarantined: 0,
-    live: null, contextPct: null, costUsd: null, costCoverage: 'unavailable', ...extra });
+    live: null, contextPct: null, costUsd: null, costCoverage: 'unavailable', tokens: null, tokensComplete: true, ...extra });
 const ids = (s: { rows: SessionRow[] }) => s.rows.map((x) => x.id);
 
 test('order: newest first, ties by id, unknown activity last', () => {
@@ -77,7 +77,7 @@ test('coverage markers are text plus glyph; time is local and readable', () => {
 // P3-T10 (XAIBO-PROD-310, Q3-5): placeholder live status text. Every state is text plus glyph, never colour alone;
 // heuristic and inferred confidence are spelled out; findings name the rule and the PRD §6.4 warning.
 const L = (o: Partial<LiveStatus> = {}): LiveStatus =>
-  ({ lifecycle: 'busy', confidence: 'confirmed', health: 'connected', reason: null, outcome: null, findings: [], ...o });
+  ({ lifecycle: 'busy', confidence: 'confirmed', health: 'connected', reason: null, outcome: null, findings: [], since: null, ...o });
 
 test('status extras (P4-T01): health and last-turn outcome as words beside the status badge (design §3.2)', () => {
   assert.deepEqual(statusExtras(L()), []);

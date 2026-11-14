@@ -29,6 +29,9 @@ export interface SessionStatus {
   settleAt: number | null;
   /** Outcome of the last turn or request: 'interrupted', 'denied', 'declined', 'cancelled', or null. */
   outcome: string | null;
+  /** P4-T04a: onset of the current wait (oldest pending request's evidence time; heuristic: when the rule fired) or
+   *  error (its evidence time), ms; null in every other state. */
+  since: number | null;
   /** Active §6.4 finding rule ids ('R1'–'R5'), sorted (P3-T09). */
   findings: string[];
   toolCalls: number; turns: number;
@@ -113,10 +116,11 @@ const CONFIRMED_ONLY = new Set<Ev['k']>(['session.start', 'session.end', 'reques
  *  (ts, rank, seq) sorts before it (G3c-3). */
 interface Entry { ts: number; rank: number; seq: number; conf: 'confirmed' | 'inferred'; evs: Ev[]; pid?: string; pseq?: number }
 interface Fold {
-  hooked: boolean; started: boolean; ended: boolean; error: boolean;
+  hooked: boolean; started: boolean; ended: boolean; error: boolean; errorAt: number | null;
   active: boolean; activeConf: Confidence; stopAt: number | null; stopConf: Confidence; idle: Confidence | null;
   outcome: string | null;
-  requests: Map<string, 'permission' | 'input'>;
+  /** Pending requests by id: kind and the first evidence time (P4-T04a onset). */
+  requests: Map<string, { kind: 'permission' | 'input'; at: number }>;
   inflight: Map<string, { at: number; agentTool: boolean }>;
   lastTool: string | null; reqSeq: number;
   children: Set<string>; bgTurn: boolean; background: boolean;
@@ -131,7 +135,7 @@ interface Fold {
   model: string | null; effort: string | null;
 }
 const fresh = (): Fold => ({
-  hooked: false, started: false, ended: false, error: false, active: false, activeConf: 'inferred', stopAt: null, stopConf: 'inferred',
+  hooked: false, started: false, ended: false, error: false, errorAt: null, active: false, activeConf: 'inferred', stopAt: null, stopConf: 'inferred',
   idle: null, outcome: null, requests: new Map(), inflight: new Map(), lastTool: null, reqSeq: 0, children: new Set(), bgTurn: false,
   background: false, tools: new Set(), turnIds: new Set(), typed: { confirmed: 0, inferred: 0 }, usage: new Map(), lastTs: -Infinity,
   lastFileTs: -Infinity, calls: new Map(), pat: freshPatterns(), done: new Set(), model: null, effort: null,
@@ -201,7 +205,7 @@ function step(f: Fold, x: Entry, r: RuleSettings, conflict?: (kind: string) => v
         f.active = false; f.stopAt = null; f.idle = 'inferred'; f.outcome = 'interrupted';
         break;
       case 'request':
-        f.requests.set(e.id ?? f.lastTool ?? `request-${++f.reqSeq}`, e.kind);
+        { const id = e.id ?? f.lastTool ?? `request-${++f.reqSeq}`; f.requests.set(id, { kind: e.kind, at: f.requests.get(id)?.at ?? x.ts }); }
         if (!f.active) activate(f, x.conf);
         break;
       case 'resolve':
@@ -217,6 +221,7 @@ function step(f: Fold, x: Entry, r: RuleSettings, conflict?: (kind: string) => v
         break;
       case 'turn.error':
         if (ignored) break;
+        if (!f.error) f.errorAt = x.ts;
         f.error = true; f.active = false; f.stopAt = null;
         break;
       case 'interrupt':
@@ -237,19 +242,24 @@ function step(f: Fold, x: Entry, r: RuleSettings, conflict?: (kind: string) => v
   if (inferred) f.lastFileTs = Math.max(f.lastFileTs, x.ts);
 }
 
-type Life = Pick<SessionStatus, 'lifecycle' | 'confidence' | 'reason'>;
+type Life = Pick<SessionStatus, 'lifecycle' | 'confidence' | 'reason' | 'since'>;
 function life(f: Fold, agent: string, now: number, settleMs: number): Life {
-  const L = (lifecycle: Lifecycle, confidence: Confidence, reason: string | null = null): Life => ({ lifecycle, confidence, reason });
+  const L = (lifecycle: Lifecycle, confidence: Confidence, reason: string | null = null, since: number | null = null): Life => ({ lifecycle, confidence, reason, since });
   if (f.ended) return L('ended', 'confirmed');
-  if (f.requests.size) return L([...f.requests.values()].at(-1) === 'input' ? 'needs-input' : 'waiting-for-permission', 'confirmed');
-  if (f.error) return L('error', 'confirmed');
+  if (f.requests.size) {
+    let since = Infinity, last: 'permission' | 'input' = 'permission';
+    for (const r of f.requests.values()) { since = Math.min(since, r.at); last = r.kind; } // no spread: any count of requests (review L)
+    return L(last === 'input' ? 'needs-input' : 'waiting-for-permission', 'confirmed', null, since);
+  }
+  if (f.error) return L('error', 'confirmed', null, f.errorAt);
   if (f.idle) return L('idle', f.idle);
   if (f.active) {
     // §6.2 no-hook row: a pending non-Agent call for > 5 s with no file writes since.
     if (agent === 'claude' && !f.hooked) {
       let oldest = Infinity;
       for (const t of f.inflight.values()) if (!t.agentTool && t.at < oldest) oldest = t.at;
-      if (oldest < Infinity && now - Math.max(oldest, f.lastFileTs) > HEURISTIC_MS) return L('waiting-for-permission', 'heuristic', 'Probably waiting');
+      const from = Math.max(oldest, f.lastFileTs);
+      if (oldest < Infinity && now - from > HEURISTIC_MS) return L('waiting-for-permission', 'heuristic', 'Probably waiting', from + HEURISTIC_MS);
     }
     return L('busy', f.activeConf);
   }
@@ -375,8 +385,8 @@ export function createEngine(o: EngineOptions): StatusEngine {
     // NOTIFY_MAX_AGE_MS ago (a spool replayed after an outage) is stale: its resolution is likely already queued (M3).
     // Age is the receipt time: a live request placed before a newer event of its producer is still new (G3f-2).
     if (s.fold.ended || !x.evs.some((e) => e.k === 'request') || o.now() - received > NOTIFY_MAX_AGE_MS) return;
-    for (const [id, kind] of s.fold.requests) {
-      if (!pending.has(id)) o.onWait?.(agent, profile, sid, kind === 'input' ? 'needs-input' : 'waiting-for-permission');
+    for (const [id, r] of s.fold.requests) {
+      if (!pending.has(id)) o.onWait?.(agent, profile, sid, r.kind === 'input' ? 'needs-input' : 'waiting-for-permission');
     }
   };
 

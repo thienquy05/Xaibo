@@ -21,7 +21,7 @@ function fakePort() {
   return { port, sent, deliver: (data: unknown) => port.onmessage?.({ data }) };
 }
 const row: SessionRow = { id: 1, agent: 'claude', entrypoint: null, origin: null, interactive: null, model: 'Model unavailable', cwd: null, title: null, lastActivity: null, drift: false, compressed: false, quarantined: 0,
-  live: null, contextPct: null, costUsd: null, costCoverage: 'unavailable' };
+  live: null, contextPct: null, costUsd: null, costCoverage: 'unavailable', tokens: null, tokensComplete: true };
 
 test('listSessions posts a versioned request and resolves with its own page only', async () => {
   const f = fakePort();
@@ -66,4 +66,19 @@ test('H3: an invalid reply to a request settles it with an error instead of leav
   f.deliver({ v: 1, type: 'page', id: 1, rows: [{ id: 'bad' }], next: null });
   await assert.rejects(p, /invalid reply/);
   assert.equal(c.dropped, 1);
+});
+
+// XAIBO-PROD-404 review M2: the live-set request has its own pending map; an invalid reply rejects it; a page reply
+// never settles it.
+test('liveSet resolves with its own reply, ignores a page reply with its id, and rejects on an invalid reply', async () => {
+  const f = fakePort();
+  const c = createClient(f.port, { sessions() {}, agents() {} });
+  const a = c.liveSet();
+  assert.deepEqual(f.sent, [{ v: 1, type: 'liveSet', id: 1 }]);
+  f.deliver({ v: 1, type: 'page', id: 1, rows: [], next: null }); // a different request kind: not this one
+  f.deliver({ v: 1, type: 'liveSet', id: 1, rows: [row], more: true });
+  assert.deepEqual(await a, { rows: [row], more: true });
+  const b = c.liveSet();
+  f.deliver({ v: 1, type: 'liveSet', id: 2, rows: [row], more: 'no' });
+  await assert.rejects(b, /invalid reply/);
 });

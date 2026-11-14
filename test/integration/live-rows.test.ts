@@ -36,7 +36,7 @@ async function store() {
   return { base, dataDir, db, id };
 }
 
-const LIVE: LiveStatus = { lifecycle: 'busy', confidence: 'confirmed', health: 'connected', reason: 'Finishing…', outcome: null, findings: ['R2'] };
+const LIVE: LiveStatus = { lifecycle: 'busy', confidence: 'confirmed', health: 'connected', reason: 'Finishing…', outcome: null, findings: ['R2'], since: null };
 const live = (agent: string, sid: string) => (agent === 'claude' && sid === SID ? LIVE : null);
 
 test('rows carry live status by native session id; a session the engine does not know has none', async () => {
