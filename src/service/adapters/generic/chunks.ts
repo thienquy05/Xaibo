@@ -1,10 +1,11 @@
 // content.upsert chunk assembly (P3-T13b; PRD §5.10, FR-08, EC-82, Q3-9; security review 872). Chunks are files under
-// <dataDir>/content-chunks/<registration>/<sha256(session, item, revision)>/<index>.c (dirs 0700, files 0600, written to an
+// <dataDir>/content-chunks/<registration>/<sha256(producer, session, item, revision)>/<index>.c (dirs 0700, files 0600, written to an
 // O_EXCL temp, fsynced, renamed, dir fsynced), so a chunk is durable before its delivery commits and survives a restart.
 // A chunk already on disk is kept as first written (idempotent retries). An item is complete only when the final chunk
 // named its count and every chunk below it is on disk; the caller stores the text and then removes the item. Quotas count
 // bytes plus a per-file overhead (64 MiB per registration, 512 MiB global), pending items (256) and chunk files (20,000)
-// per registration, recomputed from disk at open; a chunk past any of them makes the item incomplete and frees it.
+// per registration, recomputed from disk at open; a chunk past any of them makes the item incomplete, and the caller
+// frees it once that state is committed (G3d-1).
 // Names come only from a validated UUID and a hash, never from payload text. Same-uid swaps of these private dirs are the
 // same trust domain (accepted, review 872 #8). Each item dir holds its key (JSON) so the caller can free items that the
 // store already settled before a crash removed them; a write that fails removes what it wrote. ponytail: abandoned
@@ -17,7 +18,8 @@ import {
 import path from 'node:path';
 import { UUID } from '../../../shared/hook-protocol.ts';
 
-export interface ChunkKey { registration: string; session: string; item: string; revision: number }
+/** producer: two producer instances chunking one item differently never share chunks (G3d-2). */
+export interface ChunkKey { registration: string; producer: string; session: string; item: string; revision: number }
 export interface ChunkLimits { perRegistration: number; global: number; items?: number; files?: number }
 export type PutResult =
   | { state: 'pending' | 'incomplete'; chunks: number; bytes: number }
@@ -45,12 +47,12 @@ interface Account { bytes: number; files: number; items: Map<string, Item> }
 
 const uid = () => process.getuid?.();
 // JSON keeps the parts apart whatever they contain (review H1: ids may hold NUL).
-const hashOf = (k: ChunkKey) => createHash('sha256').update(JSON.stringify([k.registration, k.session, k.item, k.revision])).digest('hex');
+const hashOf = (k: ChunkKey) => createHash('sha256').update(JSON.stringify([k.registration, k.producer, k.session, k.item, k.revision])).digest('hex');
 const parseKey = (text: string): ChunkKey | null => {
   try {
     const k = JSON.parse(text) as Partial<ChunkKey>;
-    return typeof k.registration === 'string' && typeof k.session === 'string' && typeof k.item === 'string' && Number.isSafeInteger(k.revision)
-      ? { registration: k.registration, session: k.session, item: k.item, revision: k.revision! } : null;
+    return typeof k.registration === 'string' && typeof k.producer === 'string' && typeof k.session === 'string' && typeof k.item === 'string'
+      && Number.isSafeInteger(k.revision) ? { registration: k.registration, producer: k.producer, session: k.session, item: k.item, revision: k.revision! } : null;
   } catch { return null; }
 };
 
@@ -134,13 +136,12 @@ export function openChunks(root: string, limits: ChunkLimits = CHUNK_LIMITS): Ch
         const len = Buffer.byteLength(content);
         const cost = len + OVERHEAD;
         if ((!item && a.items.size >= cap.items) || a.files + 1 > cap.files || a.bytes + cost > cap.perRegistration || total + cost > cap.global) {
-          const r = { state: 'incomplete' as const, chunks: item?.chunks ?? 0, bytes: item?.bytes ?? 0 };
-          remove(key);
-          return r;
+          // kept until the caller commits the state and removes it: a failed commit must find the item on retry (G3d-1)
+          return { state: 'incomplete', chunks: item?.chunks ?? 0, bytes: item?.bytes ?? 0 };
         }
         privateDir(path.join(root, key.registration));
         privateDir(dir);
-        const own: ChunkKey = { registration: key.registration, session: key.session, item: key.item, revision: key.revision };
+        const own: ChunkKey = { registration: key.registration, producer: key.producer, session: key.session, item: key.item, revision: key.revision };
         if (!item) durable(path.join(dir, KEY), JSON.stringify(own));
         durable(file, content);
         if (!item) a.items.set(h, item = { key: own, chunks: 0, bytes: 0, final: null });

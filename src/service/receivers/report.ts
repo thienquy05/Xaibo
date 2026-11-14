@@ -75,7 +75,8 @@ export function createReportIntake(o: ReportIntakeOptions): ReportIntake {
     let content: ReportDelivery['content'];
     let settled: string | undefined;
     if (isContent) {
-      key = { registration: reg.id, session: x.session_id, item: x.item_id!, revision: p['revision'] as number };
+      // per producer (G3d-2); report_content stays per item: the first producer to complete it wins, the others are freed
+      key = { registration: reg.id, producer: x.producer_id, session: x.session_id, item: x.item_id!, revision: p['revision'] as number };
       settled = settledIn(key);
       if (settled) free(key); // a late chunk of a settled item: never reassembled
       else {

@@ -10,6 +10,7 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
+import { captureRecord } from '../../src/forwarder/statusline-tee.ts';
 import { CodexAdapter } from '../../src/service/adapters/codex/index.ts';
 import { openStore } from '../../src/service/store/db.ts';
 import { Writer } from '../../src/service/store/writer.ts';
@@ -23,7 +24,8 @@ const iso = (min: number, sec = 0) => new Date(Date.UTC(2026, 0, 1, 0, min, sec)
 const RESET = Date.UTC(2026, 0, 1, 5, 0, 0) / 1000;
 const sid = (n: number) => `00000000-0000-4000-8000-0000000c15${String(n).padStart(2, '0')}`;
 
-function rollout(id: string, account: string | null, counts: { min: number; sec?: number; used: number; reset?: number }[]): string {
+/** `used: null` writes `primary: null` (the window became unavailable). */
+function rollout(id: string, account: string | null, counts: { min: number; sec?: number; used: number | null; reset?: number }[]): string {
   const meta = { id, timestamp: iso(0), cwd: '/tmp/xaibo-fixture/alpha', originator: 'codex-tui', cli_version: '0.160.0', source: 'cli',
     ...(account ? { creator_account_id: account } : {}) };
   const lines: unknown[] = [{ timestamp: iso(0), type: 'session_meta', payload: meta }];
@@ -33,7 +35,7 @@ function rollout(id: string, account: string | null, counts: { min: number; sec?
     const u = { input_tokens: 100, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 20, reasoning_output_tokens: 0, total_tokens: total };
     lines.push({ timestamp: iso(c.min, c.sec), type: 'event_msg', payload: { type: 'token_count',
       info: { total_token_usage: u, last_token_usage: { ...u, total_tokens: 120 }, model_context_window: 200000 },
-      rate_limits: { limit_id: 'codex', plan_type: 'pro', primary: { used_percent: c.used, window_minutes: 300, resets_at: c.reset ?? RESET } } } });
+      rate_limits: { limit_id: 'codex', plan_type: 'pro', primary: c.used === null ? null : { used_percent: c.used, window_minutes: 300, resets_at: c.reset ?? RESET } } } });
   }
   return lines.map((l) => JSON.stringify(l)).join('\n') + '\n';
 }
@@ -138,6 +140,29 @@ test('Claude tee: per-session unverified scope; unchanged re-emission keeps its 
   h.db.prepare(`INSERT INTO cost_estimates (session_id, schema_version, source, covered_scope, amount_usd, basis, coverage)
     VALUES (?, 1, 'transcript', 'usage:transcript:m1', 2, 'token_table', '{"coverage":"full"}')`).run(session);
   assert.deepEqual(sessionCost(h.db, session), { amountUsd: 0.5, basis: 'agent_reported', coverage: 'full', opaqueExcluded: false }, 'replaces, never adds');
+});
+
+test('G3e-1 (EC-91): a Claude window that turns null through the tee and intake is shown unavailable, not the old value', async () => {
+  let now = Date.parse(iso(10));
+  const h = await hookStore({ intake: { now: () => now } });
+  const tee = (rl: Record<string, unknown>) => h.intake.deliver(envelope({ event: 'statusline', cwd: null,
+    payload: captureRecord({ session_id: SESSION, rate_limits: rl })! }));
+  await tee({ five_hour: { used_percentage: 40, resets_at: RESET } });
+  now += 60_000;
+  await tee({ five_hour: null });
+  const [st] = usageStatusList(h.db, now).filter((x) => x.stream === 'five_hour');
+  assert.equal(st?.status.usedPercent, null);
+  assert.equal(st?.status.measuredAt, now, 'measured at the observation of the gap');
+});
+
+test('G3e-1: a Codex window that turns null is a new all-null measurement, not the old value', async () => {
+  const s = await codexStore();
+  const p = s.profile('c1');
+  p.write(sid(9), rollout(sid(9), null, [{ min: 1, used: 40 }, { min: 2, used: null }]));
+  await s.ingest('c1', p.root);
+  const [st] = usageStatusList(s.db, Date.parse(iso(3))).filter((x) => x.stream === 'codex:primary');
+  assert.equal(st?.status.usedPercent, null);
+  assert.equal(st?.status.measuredAt, Date.parse(iso(2)));
 });
 
 test('agy: an explicit unavailable usage status per profile (FR-46)', async () => {

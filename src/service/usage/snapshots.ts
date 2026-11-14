@@ -35,7 +35,7 @@ export function claudeReadings(record: Obj): Reading[] {
   const rl = record['rate_limits'];
   if (!isObj(rl)) return [];
   return CLAUDE_WINDOWS.flatMap(([w, m]) => {
-    const x = rl[w];
+    const x = rl[w] === null ? {} : rl[w]; // an explicit null window: an all-null reading, a change from the old value (G3e-1)
     return isObj(x) ? [{ stream: w, usedPercent: percent(x['used_percentage']), windowMinutes: m, resetsAt: resetMs(x['resets_at']), plan: null, credits: null, asOf: null }] : [];
   });
 }
@@ -115,7 +115,8 @@ const SALT_FILE = 'usage-scope.salt';
 const SALT_BYTES = 32;
 function readSalt(file: string): Buffer | 'missing' | 'invalid' {
   let fd: number;
-  try { fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW); } catch (e) { return (e as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'invalid'; }
+  // O_NONBLOCK: a FIFO never blocks boot, which calls this synchronously (G3e-2); fstat below still refuses it
+  try { fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch (e) { return (e as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'invalid'; }
   try {
     const st = fstatSync(fd);
     if (!st.isFile() || st.uid !== process.getuid?.() || (st.mode & 0o077) !== 0 || st.size !== SALT_BYTES) return 'invalid';

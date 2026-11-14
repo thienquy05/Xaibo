@@ -5,6 +5,7 @@
 // gives no epoch and is never silently replaced.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -64,4 +65,14 @@ test('review M2: a bad salt file gives no epoch and is never replaced', () => {
   symlinkSync(join(link, 'real'), join(link, 'usage-scope.salt'));
   assert.equal(loadScopeSalt(link, log), null);
   assert.deepEqual(codes, ['usage_salt_invalid', 'usage_salt_invalid', 'usage_salt_invalid']);
+});
+
+test('G3e-2: a FIFO salt never blocks (boot reads it synchronously): no salt, no hang', () => {
+  const d = dir();
+  assert.equal(spawnSync('mkfifo', [join(d, 'usage-scope.salt')]).status, 0);
+  const src = join(import.meta.dirname, '..', '..', 'src', 'service', 'usage', 'snapshots.ts');
+  const code = `const { loadScopeSalt } = await import(${JSON.stringify(src)}); if (loadScopeSalt(${JSON.stringify(d)}) !== null) process.exit(3);`;
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e', code], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, timeout: 5_000 });
+  assert.equal(r.signal, null, 'killed by the timeout: the open blocked');
+  assert.equal(r.status, 0, r.stderr.toString().slice(0, 300));
 });

@@ -21,6 +21,11 @@ test('Claude readings: five_hour/seven_day, epoch-second resets to UTC ms, >100 
   ]);
   assert.deepEqual(claudeReadings({ rate_limits: { five_hour: {} } }).map((x) => x.usedPercent), [null], 'present window, missing value: null, not 0');
   assert.deepEqual(claudeReadings({}), [], 'no rate_limits: a gap, no reading');
+  assert.deepEqual(claudeReadings({ rate_limits: { five_hour: null } }), [
+    { stream: 'five_hour', usedPercent: null, windowMinutes: 300, resetsAt: null, plan: null, credits: null, asOf: null },
+  ], 'G3e-1: an explicit null window is an all-null reading, never the old value');
+  assert.deepEqual(codexReadings({ limit_id: 'codex', primary: null }, 5).map((x) => [x.stream, x.usedPercent, x.windowMinutes, x.resetsAt]),
+    [['codex:primary', null, null, null]], 'G3e-1: Codex null window likewise');
   assert.deepEqual(claudeReadings({ rate_limits: { five_hour: { resets_at: '2026-01-01T15:00:00Z' } } })[0]!.resetsAt, RESET_S * 1000);
   assert.equal(claudeReadings({ rate_limits: { five_hour: { resets_at: '2026-01-01T15:00:00' } } })[0]!.resetsAt, null, 'no offset: unknown, not local time');
 });

@@ -208,6 +208,32 @@ test('Q3-9: an item past the assembly quota is labelled incomplete and acked so 
   assert.deepEqual(readdirSync(join(h.dir, 'content-chunks', h.reg.id)), []);
 });
 
+test('G3d-1: an over-quota chunk whose commit fails keeps its item; the retry commits it incomplete', async () => {
+  const h = await reportStore({ chunks: { perRegistration: 4096, global: 1 << 20 } });
+  const commit = h.writer.commitLive.bind(h.writer);
+  let fail = false;
+  h.writer.commitLive = (b) => { if (fail) { fail = false; throw new Error('simulated commit failure'); } return commit(b); };
+  assert.equal((await h.reports.deliver(h.reg, chunk('q', 0, false, 'x'.repeat(3000)))).code, 'ok');
+  const over = chunk('q', 1, false, 'y'.repeat(3000));
+  fail = true;
+  assert.deepEqual(await h.reports.deliver(h.reg, over), { status: 'rejected', code: 'store' });
+  assert.deepEqual(await h.reports.deliver(h.reg, over), { status: 'accepted', code: 'incomplete' });
+  assert.equal(count(h.db, "SELECT count(*) FROM report_content WHERE state = 'incomplete'"), 1);
+  assert.deepEqual(readdirSync(join(h.dir, 'content-chunks', h.reg.id)), [], 'freed after the commit');
+});
+
+test('G3d-2: two producers chunking one item differently never merge; the first to complete wins', async () => {
+  const h = await reportStore();
+  assert.equal((await h.reports.deliver(h.reg, chunk('reply-1', 0, false, 'Hello wor', { producer_id: 'acme-1' }))).code, 'ok');
+  assert.equal((await h.reports.deliver(h.reg, chunk('reply-1', 0, false, 'Hel', { producer_id: 'acme-2' }))).code, 'ok');
+  assert.equal((await h.reports.deliver(h.reg, chunk('reply-1', 1, true, 'lo world', { producer_id: 'acme-2' }))).code, 'ok');
+  const rows = () => h.db.prepare('SELECT state, content FROM report_content').all().map((r) => ({ ...r }));
+  assert.deepEqual(rows(), [{ state: 'complete', content: 'Hello world' }]);
+  assert.equal((await h.reports.deliver(h.reg, chunk('reply-1', 1, true, 'ld', { producer_id: 'acme-1' }))).code, 'ok');
+  assert.deepEqual(rows(), [{ state: 'complete', content: 'Hello world' }], 'the other producer never changes the settled item');
+  assert.deepEqual(readdirSync(join(h.dir, 'content-chunks', h.reg.id)), [], "the other producer's chunks are freed");
+});
+
 test('Q3-9 round-robin: one registration backlog cannot starve another; queue caps refuse', async () => {
   const order: string[] = [];
   const s = createScheduler();

@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { openChunks, type ChunkKey } from '../../src/service/adapters/generic/chunks.ts';
 
 const REG = '00000000-0000-4000-8000-0000000c0001';
-const key = (o: Partial<ChunkKey> = {}): ChunkKey => ({ registration: REG, session: 's-1', item: 'item-1', revision: 1, ...o });
+const key = (o: Partial<ChunkKey> = {}): ChunkKey => ({ registration: REG, producer: 'prod-1', session: 's-1', item: 'item-1', revision: 1, ...o });
 const fresh = () => join(realpathSync(mkdtempSync(join(tmpdir(), 'xc-'))), 'content-chunks');
 const walk = (d: string): string[] => readdirSync(d).flatMap((n) => { const p = join(d, n); return lstatSync(p).isDirectory() ? [p, ...walk(p)] : [p]; });
 
@@ -68,12 +68,15 @@ test('remove frees the bytes; items and registrations are separate', () => {
   assert.equal(r.state === 'complete' && r.content, 'bbB', 'the other item is untouched');
 });
 
-test('Q3-9 quota: a chunk past the per-registration cap labels the item incomplete and frees its chunks', () => {
+test('Q3-9 quota: a chunk past the per-registration cap labels the item incomplete; its chunks are held until remove()', () => {
   const s = openChunks(fresh(), { perRegistration: 4096, global: 1 << 20 });
   assert.equal(s.put(key(), 0, false, 'x'.repeat(1000)).state, 'pending');
   const r = s.put(key(), 1, false, 'y'.repeat(4000));
   assert.equal(r.state, 'incomplete');
-  assert.equal(s.pending(REG), 0, 'the incomplete item no longer holds quota');
+  assert.ok(s.pending(REG) >= 1000, 'G3d-1: kept on disk until the caller commits the incomplete state (a failed commit can retry)');
+  assert.equal(s.put(key(), 1, false, 'y'.repeat(4000)).state, 'incomplete', 'the retry is incomplete again');
+  s.remove(key());
+  assert.equal(s.pending(REG), 0, 'the removed item no longer holds quota');
   assert.equal(s.put(key({ item: 'small' }), 0, true, 'ok').state, 'complete', 'the registration can still assemble within its cap');
 });
 
@@ -101,6 +104,7 @@ test('review 872: pending items and chunk files per registration are capped (inc
   assert.equal(s.put(key({ item: 'c' }), 0, false, '1').state, 'incomplete', 'a third pending item');
   assert.equal(s.put(key({ item: 'a' }), 1, false, '2').state, 'pending');
   assert.equal(s.put(key({ item: 'b' }), 1, false, '2').state, 'incomplete', 'a fourth pending chunk file');
+  s.remove(key({ item: 'b' })); // the caller frees it once the incomplete state is committed
   assert.equal(s.put(key({ item: 'a' }), 2, true, '3').state, 'complete', 'freed files and items are reusable');
 });
 
@@ -122,6 +126,14 @@ test('review M2/M4: reopen removes stray temp files and lists each pending item 
   assert.deepEqual(b.items(), [key()]);
   b.remove(key());
   assert.deepEqual(b.items(), []);
+});
+
+test('G3d-2: two producers of one item never share chunks', () => {
+  const s = openChunks(fresh());
+  assert.equal(s.put(key({ producer: 'acme-1' }), 0, false, 'Hello wor').state, 'pending');
+  assert.equal(s.put(key({ producer: 'acme-2' }), 0, false, 'Hel').state, 'pending');
+  const r = s.put(key({ producer: 'acme-2' }), 1, true, 'lo world');
+  assert.equal(r.state === 'complete' && r.content, 'Hello world');
 });
 
 test('a chunk index past the bound is refused', () => {

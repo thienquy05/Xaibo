@@ -278,10 +278,18 @@ test('captureRecord: field allowlist with range checks, not value shape (review 
     "private_payload": { "secret": 123 }, "__proto__": { "session_id": "proto" }
   }`)), { cost: { total_cost_usd: 1 }, context_window: { context_window_size: 1, current_usage: { input_tokens: 1 } }, rate_limits: { five_hour: { used_percentage: 1, resets_at: 2 } } });
   assert.deepEqual(captureRecord({ context_window: { current_usage: null } }), { context_window: { current_usage: null } }, 'null = unavailable (before the first response, after /compact)');
-  assert.deepEqual(captureRecord({ cost: { total_cost_usd: '1' }, rate_limits: { five_hour: { used_percentage: Infinity, resets_at: 'soon' } } }), {});
+  assert.deepEqual(captureRecord({ cost: { total_cost_usd: '1' }, rate_limits: { five_hour: { used_percentage: Infinity, resets_at: 'soon' } } }), { rate_limits: { five_hour: {} } }, 'G3e-1: the window stays, its values do not');
   assert.deepEqual(captureRecord({ cost: { total_cost_usd: -1 }, context_window: { total_input_tokens: -5, used_percentage: -1 } }), {}, 'negative numbers are dropped');
   assert.deepEqual(captureRecord({ session_id: 'x'.repeat(257), model: { id: 'm'.repeat(201) }, effort: { level: 'e'.repeat(33) } }), {}, 'over-long strings are dropped, not cut');
-  assert.deepEqual(captureRecord({ rate_limits: { five_hour: { resets_at: `2026-01-01T00:00:00Z${'0'.repeat(40)}` } } }), {}, 'resets_at is a bounded ISO time');
+  assert.deepEqual(captureRecord({ rate_limits: { five_hour: { resets_at: `2026-01-01T00:00:00Z${'0'.repeat(40)}` } } }), { rate_limits: { five_hour: {} } }, 'resets_at is a bounded ISO time');
+});
+
+test('G3e-1 (EC-91): a null or empty rate window is kept as unavailable evidence; other junk is still dropped', () => {
+  assert.deepEqual(captureRecord({ rate_limits: { five_hour: null } }), { rate_limits: { five_hour: null } });
+  assert.deepEqual(captureRecord({ rate_limits: { five_hour: {}, seven_day: { used_percentage: 5 } } }), { rate_limits: { five_hour: {}, seven_day: { used_percentage: 5 } } });
+  assert.deepEqual(captureRecord({ rate_limits: { five_hour: { used_percentage: 'x', note: 1 } } }), { rate_limits: { five_hour: {} } }, 'present window, no valid field');
+  assert.deepEqual(captureRecord({ rate_limits: { five_hour: 'gone', seven_day: [], weekly_note: null } }), {}, 'only object or null windows of the allowlist');
+  assert.deepEqual(captureRecord({ rate_limits: null, cost: null }), {});
 });
 
 test('teeCommand quotes the binary and data dir; refuses a quote, a control character or a bad key', () => {

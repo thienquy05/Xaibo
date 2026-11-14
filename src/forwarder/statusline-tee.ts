@@ -68,7 +68,8 @@ export function captureRecord(v: unknown): Obj | undefined {
     rate_limits: isObj(at(v, 'rate_limits'))
       ? prune(Object.fromEntries(WINDOWS.map((w) => {
         const x = at(at(v, 'rate_limits'), w);
-        return [w, isObj(x) ? prune({ used_percentage: num(at(x, 'used_percentage')), resets_at: resets(at(x, 'resets_at')) }) : undefined];
+        // a null or valueless window is kept (null / {}): it says "unavailable now", never the old value (G3e-1, EC-91)
+        return [w, x === null ? null : isObj(x) ? prune({ used_percentage: num(at(x, 'used_percentage')), resets_at: resets(at(x, 'resets_at')) }) ?? {} : undefined];
       })))
       : undefined,
   }) ?? {};

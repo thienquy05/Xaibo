@@ -125,6 +125,8 @@ and `revision`, a `chunk_index` starting at 0, and `final: true` on the last one
 - Split on character boundaries, never in the middle of a character, and keep each event under 256 KiB.
 - An item is complete only once every chunk is stored. Until then Xaibo shows it as incomplete.
 - Resending a chunk is harmless.
+- A revision's chunk boundaries must not change: a producer that re-chunks a revision must send it as a new revision.
+  Chunks are assembled per `producer_id`; when two producers send the same item, the first one to settle it (complete or incomplete) is kept.
 - If an item would exceed the storage quota, it is marked incomplete and its chunks are dropped.
 
 ```json

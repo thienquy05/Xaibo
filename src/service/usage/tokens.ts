@@ -80,7 +80,7 @@ function credits(v: unknown): Obj | null {
 export function codexRateLimits(rl: Obj): { limitId: string | null; plan: string | null; credits: Obj | null; windows: RateWindow[] } {
   const str = (v: unknown, re: RegExp) => (typeof v === 'string' && re.test(v) ? v : null);
   const windows = (['primary', 'secondary'] as const).flatMap((kind) => {
-    const w = rl[kind];
+    const w = rl[kind] === null ? {} : rl[kind]; // an explicit null window: all-null, never the old value (G3e-1, EC-91)
     if (!isObj(w)) return [];
     const reset = num(w.resets_at);
     return [{ kind, durationMinutes: num(w.window_minutes), usedPercent: num(w.used_percent), resetsAt: reset === null ? null : reset * 1000 }];
