@@ -12,7 +12,7 @@ import { lstatSync, statSync } from 'node:fs';
 import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import {
-  apply, ConfigError, plan, readFile, readManifest, recordEntry, resolveTarget, revert, type Bounds, type ManifestEntry, type Op, type RevertResult,
+  apply, ConfigError, plan, readFile, readManifest, recordEntry, resolveTarget, revert, type Bounds, type ManifestEntry, type Op, type Plan, type RevertResult,
 } from '../../config/transaction.ts';
 import { CODEX_ASYNC_EVENTS, CODEX_HOOK_EVENTS } from './hooks.ts';
 
@@ -47,14 +47,15 @@ export function codexHookOps(shim: string, profileKey: string): Op[] {
   }));
 }
 
-export function installCodexHooks(o: CodexHookOptions): ManifestEntry {
+/** `preview`: the exact plan the owner confirmed, so an edit since then aborts with `changed` (G3a-2, EC-48). */
+export function installCodexHooks(o: CodexHookOptions, preview?: Plan): ManifestEntry {
   const file = target(o);
   if (recorded(o, file)) fail('duplicate');
   const shim = shimPath(o.dataDir);
   let st;
   try { st = lstatSync(shim); } catch { return fail('shim-missing'); }
   if (!st.isFile() || (uid !== undefined && st.uid !== uid)) fail('shim-missing');
-  return apply(plan(file, 'codex-hooks', codexHookOps(shim, o.profileKey), o.bounds), { dataDir: o.dataDir, bounds: o.bounds });
+  return apply(preview ?? plan(file, 'codex-hooks', codexHookOps(shim, o.profileKey), o.bounds), { dataDir: o.dataDir, bounds: o.bounds });
 }
 
 export function uninstallCodexHooks(o: CodexHookOptions): RevertResult {

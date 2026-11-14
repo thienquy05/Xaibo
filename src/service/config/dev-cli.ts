@@ -199,12 +199,12 @@ function printPlan(name: string, p: Plan): Plan {
 /** P3-T06: the Codex hook groups for --profile-key, appended to <dir>/.codex/hooks.json; revert is the generic one.
  *  Codex runs them only after the owner approves them in Codex's own review, so apply prints the guided steps. */
 async function codex(a: ReturnType<typeof parseArgs>, dataDir: string, profile: string, bounds: Bounds, target: string): Promise<number> {
-  printPlan(a.target, plan(target, 'codex-hooks', codexHookOps(shimPath(dataDir), a.profileKey!), bounds));
+  const p = printPlan(a.target, plan(target, 'codex-hooks', codexHookOps(shimPath(dataDir), a.profileKey!), bounds));
   if (a.cmd === 'plan') return 0;
   await confirm(a.yes, profile, 'write codex-hooks');
   deployShim(dataDir, { hook: path.join(REPO, 'src', 'forwarder', 'xaibo-hook'), forwarder: real(a.forwarder ?? path.join(REPO, '.cache', 'sea', 'xaibo-forwarder')) });
   const codexHome = path.join(profile, '.codex');
-  const entry = installCodexHooks({ dataDir, codexHome, profileKey: a.profileKey!, bounds });
+  const entry = installCodexHooks({ dataDir, codexHome, profileKey: a.profileKey!, bounds }, p); // the plan shown (G3a-2)
   console.log(`codex-hooks: applied ${entry.id}; installed, awaiting trust`);
   codexTrustSteps(codexHome, shimPath(dataDir), a.profileKey!).forEach((s, i) => console.log(`${i + 1}. ${s}`));
   return 0;
@@ -214,11 +214,11 @@ async function codex(a: ReturnType<typeof parseArgs>, dataDir: string, profile: 
 async function agy(a: ReturnType<typeof parseArgs>, dataDir: string, profile: string, bounds: Bounds, target: string): Promise<number> {
   const o = { dataDir, profileKey: a.profileKey!, profileHome: profile, bounds, ...(a.project ? { project: a.project } : {}) };
   const { file, ops } = checkAgyInstall(o); // plan refuses whatever apply would (review M2)
-  printPlan(a.target, plan(file, 'agy-hooks', ops, bounds));
+  const p = printPlan(a.target, plan(file, 'agy-hooks', ops, bounds));
   if (a.cmd === 'plan') return 0;
   await confirm(a.yes, profile, 'write agy-hooks');
   deployShim(dataDir, { hook: path.join(REPO, 'src', 'forwarder', 'xaibo-hook'), forwarder: real(a.forwarder ?? path.join(REPO, '.cache', 'sea', 'xaibo-forwarder')) });
-  const entry = installAgyHooks(o);
+  const entry = installAgyHooks(o, p); // the plan shown (G3a-2)
   console.log(`agy-hooks: applied ${entry.id}`);
   return 0;
 }
@@ -227,12 +227,12 @@ async function agy(a: ReturnType<typeof parseArgs>, dataDir: string, profile: st
  *  manifest); apply deploys xaibo-statusline beside the shim; revert is the generic one. */
 async function tee(a: ReturnType<typeof parseArgs>, dataDir: string, profile: string, bounds: Bounds): Promise<number> {
   const o = { dataDir, profileKey: a.profileKey!, configDir: path.join(profile, '.claude'), bounds };
-  printPlan(a.target, teePlan(o));
+  const p = printPlan(a.target, teePlan(o));
   if (a.cmd === 'plan') return 0;
   await confirm(a.yes, profile, 'write claude-tee');
   deployShim(dataDir, { hook: path.join(REPO, 'src', 'forwarder', 'xaibo-hook'), forwarder: real(a.forwarder ?? path.join(REPO, '.cache', 'sea', 'xaibo-forwarder')),
     statusline: real(a.statusline ?? path.join(REPO, '.cache', 'sea', 'xaibo-statusline')) });
-  const entry = installTee(o);
+  const entry = installTee(o, p); // the plan shown (G3a-2)
   console.log(`claude-tee: applied ${entry.id}`);
   return 0;
 }

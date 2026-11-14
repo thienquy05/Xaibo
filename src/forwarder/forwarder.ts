@@ -29,6 +29,7 @@ const OVERFLOW_CAP = 1 << 20;
 const OVERFLOW_LINE_MAX = 128;
 const MAX_SPOOL_ENTRIES = 1000;
 const MAX_TOKEN = 256;
+const MAX_ACK = 4096; // an ack is a small JSON object
 const AGENT = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const PROFILE = /^[A-Za-z0-9._-]{1,128}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -188,8 +189,11 @@ function exchange(sock: string, hello: object, msg: object, done: (ack: Record<s
   c.on('connect', () => { c.write(Buffer.concat([frame(hello), frame(msg)])); });
   c.on('data', (chunk: Buffer) => {
     buf = Buffer.concat([buf, chunk]);
-    if (buf.length < 4 || buf.length < 4 + buf.readUInt32BE(0)) return;
-    end(parseAck(buf.subarray(4, 4 + buf.readUInt32BE(0))));
+    if (buf.length < 4) return;
+    const n = buf.readUInt32BE(0);
+    if (n === 0 || n > MAX_ACK) { end(null); return; } // SEC2: bounded framing, never buffer a hostile length (G3b-1)
+    if (buf.length < 4 + n) return;
+    end(parseAck(buf.subarray(4, 4 + n)));
   });
 }
 

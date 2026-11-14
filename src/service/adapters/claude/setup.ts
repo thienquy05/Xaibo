@@ -248,8 +248,9 @@ export function teePlan(o: TeeOptions): Plan {
   return plan(target, 'claude-tee', ops, o.bounds);
 }
 
-/** Installs the tee (deployed first with deployShim); revert is the engine's (byte-identical, or conflicts kept). */
-export function installTee(o: TeeOptions): ManifestEntry {
+/** Installs the tee (deployed first with deployShim); revert is the engine's (byte-identical, or conflicts kept).
+ *  `preview`: the exact teePlan the owner confirmed, so an edit since then aborts with `changed` (G3a-2, EC-48). */
+export function installTee(o: TeeOptions, preview?: Plan): ManifestEntry {
   if (!ownRegular(path.join(o.dataDir, 'integrations', 'bin', STATUSLINE_BIN))) fail('shim-missing');
-  return apply(teePlan(o), { dataDir: o.dataDir, bounds: o.bounds });
+  return apply(preview ?? teePlan(o), { dataDir: o.dataDir, bounds: o.bounds });
 }

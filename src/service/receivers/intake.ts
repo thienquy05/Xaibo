@@ -4,7 +4,8 @@
 // one is attached to a session only when its profile_key names a profile of the same agent and it carries a session id,
 // otherwise only the delivery row records it as unattributed. Hook paths are stored as given, never dereferenced.
 // While the store is full, deliveries are rejected 'disk-full' (the forwarder spools, or fails silently) and remembered
-// as an exact hook-only gap, written once a commit succeeds again.
+// as an exact hook-only gap, one per delivery_id, written once a commit succeeds again and dropped when that delivery is
+// later accepted (a retry or the spool replay; G3b-2).
 import type { DatabaseSync } from 'node:sqlite';
 import { errorCode } from '../../shared/crash.ts';
 import type { Envelope } from '../../shared/hook-protocol.ts';
@@ -41,17 +42,20 @@ export function createIntake(o: IntakeOptions): Intake {
   const stored = o.db.prepare('SELECT 1 FROM hook_delivery WHERE delivery_id = ?');
   const putGap = o.db.prepare(`INSERT INTO hook_gaps (reason, agent, native_session_id, from_ts, to_ts, count, locator, recorded_at)
     VALUES ('disk-full', ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (locator) DO NOTHING`);
+  const dropGap = o.db.prepare('DELETE FROM hook_gaps WHERE locator = ?');
   // ponytail: held in memory until a commit succeeds; a restart while the disk is still full loses them. Bounded: past
-  // the key cap every further delivery joins one gap without agent or session.
-  const gaps = new Map<string, Gap>();
+  // the key cap every further delivery joins one gap without agent or session, counted per attempt and never reconciled.
+  const gaps = new Map<string, Gap>(); // by delivery_id
   const snapshots = lastSnapshots();
   const note = (e: Envelope) => {
-    let key = JSON.stringify([e.agent, e.session_id]);
-    if (!gaps.has(key) && gaps.size >= MAX_GAP_KEYS) key = OVERFLOW_KEY;
-    const g = gaps.get(key);
-    if (!g) gaps.set(key, key === OVERFLOW_KEY
-      ? { agent: null, session: null, from: e.received_ts, to: e.received_ts, count: 1, first: e.delivery_id }
-      : { agent: e.agent, session: e.session_id, from: e.received_ts, to: e.received_ts, count: 1, first: e.delivery_id });
+    if (gaps.has(e.delivery_id)) return; // a retried rejection is still one missing delivery
+    if (gaps.size < MAX_GAP_KEYS) {
+      gaps.set(e.delivery_id, { agent: e.agent, session: e.session_id, from: e.received_ts, to: e.received_ts, count: 1, first: e.delivery_id });
+      return;
+    }
+    const g = gaps.get(OVERFLOW_KEY);
+    // its locator never names a delivery, so accepting that delivery later does not drop the whole bucket
+    if (!g) gaps.set(OVERFLOW_KEY, { agent: null, session: null, from: e.received_ts, to: e.received_ts, count: 1, first: `overflow:${e.delivery_id}` });
     else { g.from = Math.min(g.from, e.received_ts); g.to = Math.max(g.to, e.received_ts); g.count++; }
   };
 
@@ -117,7 +121,10 @@ export function createIntake(o: IntakeOptions): Intake {
       note(e);
       return { status: 'rejected', code: 'disk-full' };
     }
+    gaps.delete(e.delivery_id);
     recovered();
+    // ponytail: outside the delivery's transaction; a failed delete leaves this delivery counted missing
+    try { dropGap.run(`disk-full:${e.delivery_id}`); } catch { /* the gap row stays */ }
     o.publish?.(e, true);
     return { status: 'accepted', code: 'ok' };
   };

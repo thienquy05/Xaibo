@@ -341,7 +341,9 @@ export function assertExclusive(entries: ManifestEntry[], target: string, route:
 
 function writeManifest(dataDir: string, entries: ManifestEntry[]) {
   const file = privateDirs(dataDir).manifest;
-  atomicWrite(file, `${JSON.stringify({ v: MANIFEST_VERSION, entries }, null, 2)}\n`, 0o600);
+  const text = `${JSON.stringify({ v: MANIFEST_VERSION, entries }, null, 2)}\n`;
+  if (Buffer.byteLength(text) > MAX_BYTES) fail('too-large'); // readManifest refuses it, so never write it (G3a-1)
+  atomicWrite(file, text, 0o600);
   fsyncDir(path.dirname(file));
 }
 
@@ -376,7 +378,12 @@ export function apply(p: Plan, o: ApplyOptions): ManifestEntry {
     postHash: sha256(p.after), owned: p.owned, created: p.created, backup, at: new Date().toISOString(),
   };
   const others = readManifest(o.dataDir);
-  writeManifest(o.dataDir, [...others, entry]); // pending first: a crash after the rename still leaves a revertable entry
+  try {
+    writeManifest(o.dataDir, [...others, entry]); // pending first: a crash after the rename still leaves a revertable entry
+  } catch (e) {
+    if (backup) unlinkSync(path.join(dirs.backups, backup)); // target untouched
+    throw e;
+  }
   const drop = () => {
     writeManifest(o.dataDir, others);
     if (backup) unlinkSync(path.join(dirs.backups, backup));

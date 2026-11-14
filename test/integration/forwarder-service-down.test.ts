@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseEnvelope, type Envelope } from '../../src/shared/hook-protocol.ts';
 import { startSocketServer } from '../../src/service/receivers/socket.ts';
+import { addRegistration } from '../../src/service/receivers/registrations.ts';
 
 const FWD = join(import.meta.dirname, '..', '..', 'src', 'forwarder', 'forwarder.ts'); // run as Node under test:electron too (ELECTRON_RUN_AS_NODE), as the SEA would
 const PAYLOAD = { session_id: '00000000-0000-4000-8000-0000000f0101', cwd: '/tmp/xaibo-fixture/alpha', hook_event_name: 'Stop', prompt: 'payload-canary' };
@@ -126,4 +127,39 @@ test('untrusted run/ (group/other bits, symlink) -> no connect, spooled; untrust
   symlinkSync(outside, join(victim, 'spool'));
   forward(victim);
   assert.deepEqual(readdirSync(outside), [], 'nothing written through a symlinked spool/');
+});
+
+test('G3b-1 (SEC2): an ack header declaring 0xffffffff bytes ends the exchange at once; the report falls back to the spool', { skip }, async () => {
+  const dir = dataDir();
+  privateRun(dir);
+  const { registration, token } = addRegistration(dir, { agent: 'claude', profileKey: 'p1' });
+  const tokenFile = join(dir, 'producer.token');
+  writeFileSync(tokenFile, token, { mode: 0o600 });
+  let written = 0;
+  const junk = Buffer.alloc(64 * 1024, 0x61);
+  const hostile = net.createServer((c) => {
+    let open = true;
+    c.on('error', () => { open = false; });
+    c.on('close', () => { open = false; });
+    const pump = () => { if (open) c.write(junk, (err) => { if (!err) { written += junk.length; pump(); } }); };
+    c.once('data', () => { const h = Buffer.alloc(4); h.writeUInt32BE(0xffffffff); c.write(h); pump(); });
+  });
+  await new Promise<void>((r) => hostile.listen(join(dir, 'run', 'xaibo.sock'), r));
+  try {
+    // spawn, not spawnSync: the server shares this event loop
+    const child = spawn(process.execPath, [FWD, 'report', registration.id, tokenFile], { env: { ELECTRON_RUN_AS_NODE: '1', PATH: process.env.PATH ?? '', XAIBO_DATA_DIR: dir } });
+    let out = 0;
+    child.stdout.on('data', (d: Buffer) => { out += d.length; });
+    child.stderr.on('data', (d: Buffer) => { out += d.length; });
+    child.stdin.end(JSON.stringify({ v: 1, delivery_id: 'g3b1-1', session_id: PAYLOAD.session_id, event: 'turn.start', payload: {} }));
+    const kill = setTimeout(() => child.kill('SIGKILL'), 10_000);
+    const status = await new Promise((r) => child.on('close', r));
+    clearTimeout(kill);
+    assert.equal(status, 0);
+    assert.equal(out, 0);
+    const ls = lines(dir);
+    assert.equal(ls.length, 1, 'fell back to the spool');
+    assert.equal((JSON.parse(ls[0]!) as { kind: string }).kind, 'report');
+    assert.ok(written < 512 * 1024, `the forwarder kept reading ~${written} bytes of a hostile ack`);
+  } finally { await new Promise((r) => hostile.close(r)); }
 });

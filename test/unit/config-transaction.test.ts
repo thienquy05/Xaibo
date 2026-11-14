@@ -317,3 +317,15 @@ test('dev CLI refuses real roots, login-shell overrides, failed login env, escap
   assert.notEqual(plugin.status, 0);
   assert.match(plugin.stderr, /--claude <exe> and --profile-key <key>/);
 });
+
+test('G3a-1: a manifest that would cross its 4 MiB read limit is refused; target, manifest and backups untouched', () => {
+  const { root, dataDir, bounds } = sandbox();
+  const target = join(root, 'hooks.json');
+  writeFileSync(target, JSON.stringify({ hooks: {}, blob: 'x'.repeat(3_500_000) }));
+  const before = readFileSync(target);
+  const p = plan(target, 'codex-hooks', [{ op: 'set', pointer: '/blob', value: 'y'.repeat(800_000) }], bounds);
+  assert.equal(code(() => apply(p, { dataDir, bounds })), 'too-large');
+  assert.deepEqual(readFileSync(target), before, 'target bytes unchanged');
+  assert.deepEqual(readManifest(dataDir), [], 'the manifest stays readable');
+  assert.deepEqual(readdirSync(join(dataDir, 'integrations', 'backups')), [], 'no backup left behind');
+});

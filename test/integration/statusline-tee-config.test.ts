@@ -212,3 +212,15 @@ test('intake: a disk-full commit is rejected and the same snapshot is stored onc
   assert.deepEqual(await s.intake.deliver(e()), { status: 'accepted', code: 'ok' }, 'the failed snapshot was never marked stored');
   assert.deepEqual(await s.intake.deliver(e()), { status: 'accepted', code: 'unchanged' });
 });
+
+test('G3a-2: installTee applies the previewed plan, so an edit between preview and confirmation aborts (EC-48)', () => {
+  const h = sandbox();
+  const p = teePlan(h.opts);
+  const doc = json(h.file);
+  doc['statusLine']!['command'] = 'printf edited-after-preview';
+  writeFileSync(h.file, `${JSON.stringify(doc, null, 2)}\n`);
+  const edited = readFileSync(h.file);
+  assert.equal(code(() => installTee(h.opts, p)), 'changed');
+  assert.deepEqual(readFileSync(h.file), edited, 'the edit is kept');
+  assert.deepEqual(readManifest(h.dataDir), []);
+});

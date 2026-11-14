@@ -12,9 +12,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CODEX_HOOK_EVENTS } from '../../src/service/adapters/codex/hooks.ts';
 import { CodexAdapter } from '../../src/service/adapters/codex/index.ts';
-import { codexHookStatus, installCodexHooks, uninstallCodexHooks } from '../../src/service/adapters/codex/setup.ts';
+import { codexHookOps, codexHookStatus, installCodexHooks, shimPath, uninstallCodexHooks } from '../../src/service/adapters/codex/setup.ts';
 import { deployShim } from '../../src/service/adapters/claude/setup.ts';
-import { ConfigError, readManifest } from '../../src/service/config/transaction.ts';
+import { ConfigError, plan, readManifest } from '../../src/service/config/transaction.ts';
 import { createIntake } from '../../src/service/receivers/intake.ts';
 import { openStore } from '../../src/service/store/db.ts';
 import { Writer } from '../../src/service/store/writer.ts';
@@ -208,4 +208,14 @@ test('a symlinked hooks.json is not followed: unreadable, back to awaiting trust
   rmSync(join(h.codexHome, 'hooks.json'));
   symlinkSync(moved, join(h.codexHome, 'hooks.json'));
   assert.equal(codexHookStatus(h.o).state, 'awaiting-trust');
+});
+
+test('G3a-2: installCodexHooks applies the previewed plan, so an edit between preview and confirmation aborts (EC-48)', async () => {
+  const h = await sandbox();
+  const file = join(h.codexHome, 'hooks.json');
+  const p = plan(file, 'codex-hooks', codexHookOps(shimPath(h.dataDir), 'p1'), h.o.bounds);
+  writeFileSync(file, '{"hooks": {}, "edited": true}\n');
+  assert.equal(code(() => installCodexHooks(h.o, p)), 'changed');
+  assert.equal(readFileSync(file, 'utf8'), '{"hooks": {}, "edited": true}\n');
+  assert.deepEqual(readManifest(h.dataDir), []);
 });

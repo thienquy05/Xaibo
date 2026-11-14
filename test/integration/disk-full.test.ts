@@ -61,15 +61,31 @@ test('EC-44: while full, ingest holds checkpoints and hooks are rejected; on rec
     await until(() => count(p.db, "SELECT count(*) FROM events WHERE source = 'transcript'") > 0, 5_000);
     assert.equal(writer.diskFull, false);
     assert.deepEqual(seen, [true, false]);
-    const gaps = p.db.prepare("SELECT agent, native_session_id AS session, from_ts AS 'from', to_ts AS 'to', count FROM hook_gaps WHERE reason = 'disk-full' ORDER BY session")
+    const gaps = p.db.prepare("SELECT agent, native_session_id AS session, from_ts AS 'from', to_ts AS 'to', count FROM hook_gaps WHERE reason = 'disk-full' ORDER BY session, from_ts")
       .all().map((r) => ({ ...(r as object) }));
-    assert.deepEqual(gaps, [
+    assert.deepEqual(gaps, [ // one row per rejected delivery (G3b-2)
       { agent: 'claude', session: null, from: T0 + 3, to: T0 + 3, count: 1 },
-      { agent: 'claude', session: SESSION, from: T0 + 1, to: T0 + 2, count: 2 },
+      { agent: 'claude', session: SESSION, from: T0 + 1, to: T0 + 1, count: 1 },
+      { agent: 'claude', session: SESSION, from: T0 + 2, to: T0 + 2, count: 1 },
     ]);
     assert.equal((await intake.deliver(envelope())).status, 'accepted');
-    assert.equal(count(p.db, "SELECT count(*) FROM hook_gaps WHERE reason = 'disk-full'"), 2, 'recorded once');
+    assert.equal(count(p.db, "SELECT count(*) FROM hook_gaps WHERE reason = 'disk-full'"), 3, 'recorded once');
+    assert.equal(count(p.db, "SELECT sum(count) FROM hook_gaps WHERE reason = 'disk-full'"), 3, 'the banner total is unchanged');
     assert.ok(count(p.db, 'SELECT max(offset) FROM source_files') > 0, 'ingest resumed from its checkpoint');
     assert.equal(integrity(p.db), 'ok');
   } finally { adapter.stop(); }
+});
+
+test('G3b-2 (EC-44): disk-full gaps dedup by delivery_id and a later accepted delivery leaves the gap', async () => {
+  let full = true;
+  const diskFull = () => Object.assign(new Error('database or disk is full'), { code: 'ERR_SQLITE_ERROR', errcode: 13 });
+  const h = await hookStore({ writer: { commit: (db, b) => { if (full) throw diskFull(); commitBatch(db, b); } } });
+  const a = envelope({ received_ts: T0 + 1 });
+  const b = envelope({ received_ts: T0 + 2 });
+  for (const e of [a, a, b]) assert.deepEqual(await h.intake.deliver(e), { status: 'rejected', code: 'disk-full' });
+  full = false;
+  h.intake.recovered();
+  assert.equal(count(h.db, "SELECT sum(count) FROM hook_gaps WHERE reason = 'disk-full'"), 2, 'A rejected twice counts once');
+  assert.deepEqual(await h.intake.deliver(a), { status: 'accepted', code: 'ok' });
+  assert.equal(count(h.db, "SELECT sum(count) FROM hook_gaps WHERE reason = 'disk-full'"), 1, 'only B is still missing');
 });

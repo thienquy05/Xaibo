@@ -8,11 +8,11 @@ import { spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
-import { AGY_HOOK_EVENTS, agyHookOps, installAgyHooks } from '../../src/service/adapters/agy/setup.ts';
+import { AGY_HOOK_EVENTS, agyHookOps, checkAgyInstall, installAgyHooks } from '../../src/service/adapters/agy/setup.ts';
 import { deployShim } from '../../src/service/adapters/claude/setup.ts';
 import { shimPath } from '../../src/service/adapters/codex/setup.ts';
 import { lintHooks } from '../../src/service/config/hook-lint.ts';
-import { ConfigError, readManifest, revert } from '../../src/service/config/transaction.ts';
+import { ConfigError, plan, readManifest, revert } from '../../src/service/config/transaction.ts';
 
 const REPO = join(import.meta.dirname, '..', '..');
 const FIX = join(REPO, 'test', 'fixtures', 'synthetic', 'config', 'agy-hooks');
@@ -183,4 +183,16 @@ test('dev CLI: plan, apply and revert through --target agy-hooks (disposable pro
   const reverted = cli(['revert', ...common, '--yes']);
   assert.equal(reverted.status, 0, reverted.stderr);
   assert.deepEqual(readFileSync(h.file), before);
+});
+
+test('G3a-2: installAgyHooks applies the previewed plan, so an edit between preview and confirmation aborts (EC-48)', () => {
+  const h = sandbox();
+  const { file, ops } = checkAgyInstall(h.opts);
+  const p = plan(file, 'agy-hooks', ops, h.opts.bounds);
+  const doc = json(h.file);
+  writeFileSync(h.file, `${JSON.stringify({ ...doc, edited: true }, null, 2)}\n`);
+  const edited = readFileSync(h.file);
+  assert.equal(code(() => installAgyHooks(h.opts, p)), 'changed');
+  assert.deepEqual(readFileSync(h.file), edited, 'the edit is kept');
+  assert.deepEqual(readManifest(h.dataDir), []);
 });

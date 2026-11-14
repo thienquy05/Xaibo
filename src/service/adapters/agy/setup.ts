@@ -9,7 +9,7 @@
 // (duplicate), so agy never runs Xaibo twice. Bounds come from the caller (dev CLI: disposable profiles only).
 import { lstatSync, realpathSync } from 'node:fs';
 import path from 'node:path';
-import { apply, ConfigError, plan, readFile, readManifest, resolveTarget, within, type Bounds, type ManifestEntry, type Op } from '../../config/transaction.ts';
+import { apply, ConfigError, plan, readFile, readManifest, resolveTarget, within, type Bounds, type ManifestEntry, type Op, type Plan } from '../../config/transaction.ts';
 import { shimPath } from '../codex/setup.ts';
 
 export const AGY_HOOK_EVENTS = ['SessionStart', 'PreInvocation', 'PostInvocation', 'PreToolUse', 'PostToolUse', 'Stop'] as const;
@@ -81,13 +81,14 @@ export function checkAgyInstall(o: AgyHookOptions): { file: string; ops: Op[] } 
   return { file, ops };
 }
 
-export function installAgyHooks(o: AgyHookOptions): ManifestEntry {
+/** `preview`: the exact plan the owner confirmed, so an edit since then aborts with `changed` (G3a-2, EC-48). */
+export function installAgyHooks(o: AgyHookOptions, preview?: Plan): ManifestEntry {
   const { file, ops } = checkAgyInstall(o);
   const shim = shimPath(o.dataDir);
   let st;
   try { st = lstatSync(shim); } catch { return fail('shim-missing'); }
   if (!st.isFile() || (uid !== undefined && st.uid !== uid)) fail('shim-missing');
-  const p = plan(file, 'agy-hooks', ops, o.bounds);
+  const p = preview ?? plan(file, 'agy-hooks', ops, o.bounds);
   if (p.diff.some((d) => d.replaced)) fail('duplicate'); // a `xaibo` group that appeared since the check (review L4)
   return apply(p, { dataDir: o.dataDir, bounds: o.bounds });
 }
