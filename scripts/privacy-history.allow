@@ -4,3 +4,5 @@ history:f0ddc992a070 scripts/privacy-scan.ts home-path  # the scanner's own Wind
 history:84af83d4a0b4 scripts/privacy-scan.ts home-path  # same pattern line, earlier version
 history:f185deb09eb5 docs/process/HARNESS_PROCESS.md home-path  # upstream harness author's example path; reworded in the tree
 history:1027f501839c docs/process/HARNESS_PROCESS.md home-path  # the removed line of that rewording (P1-T02): same upstream example path, no owner data
+history:868ecffb1fed (message) opaque-id  # a Claude-Session: URL in a docs commit already on public master; kept by the owner, no rewrite (D-P3-21)
+history:868ecffb1fed CLAUDE.md email  # false positive: the `@AGENTS.md` import line, not an address
