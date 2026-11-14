@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type SpawnSyncOptions } from 'node:child_process';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseEnvelope } from '../../src/shared/hook-protocol.ts';
@@ -53,8 +53,9 @@ test('valid stdin: one spooled envelope, protocol-valid, fields from the payload
   const spool = join(dir, 'spool');
   const file = readdirSync(spool)[0]!;
   assert.match(file, /^\d{4}-\d{2}-\d{2}\.jsonl$/);
-  assert.equal(spawnSync('stat', ['-f', '%Lp', spool], { encoding: 'utf8' }).stdout.trim(), '700');
-  assert.equal(spawnSync('stat', ['-f', '%Lp', join(spool, file)], { encoding: 'utf8' }).stdout.trim(), '600');
+  const perm = (p: string) => (statSync(p).mode & 0o777).toString(8); // portable (BSD `stat -f` reads filesystem info on Linux CI)
+  assert.equal(perm(spool), '700');
+  assert.equal(perm(join(spool, file)), '600');
 });
 
 test('EC-63: malformed, non-object, empty and closed stdin -> malformed flag, payload null; agy camelCase fields', () => {

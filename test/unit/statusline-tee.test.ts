@@ -92,8 +92,11 @@ test('exit codes 0, 1, 3 and 255 are preserved', () => {
 });
 
 test('a signal-killed original is mirrored; an un-raisable signal exits 128 + n (OQ-B8)', () => {
-  assert.equal(direct(orig('sig.sh')).signal, 'SIGTERM', 'the fixture dies of SIGTERM');
-  golden(orig('sig.sh'));
+  // `exec`: Linux /bin/sh (dash) forks a single -c command and exits 143; exec makes the shell itself die of the signal on
+  // every platform, so the tee's signal mirroring is exercised in CI too.
+  const sig = `exec ${orig('sig.sh')}`;
+  assert.equal(direct(sig).signal, 'SIGTERM', 'the fixture dies of SIGTERM');
+  golden(sig);
   const t = viaTee(dataDir('kill -PIPE $$'));
   assert.equal(t.status, 128 + 13);
   assert.equal(t.stdout.length + t.stderr.length, 0);
