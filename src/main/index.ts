@@ -11,7 +11,7 @@ import { AGENT_ID, IPC_VERSION } from '../shared/ipc.ts';
 import { createLogger, loadInstallSecret } from '../shared/log.ts';
 import { initDataDir } from './app-paths.ts';
 import { buildBundle, readLogTail, writeBundle } from './diagnostics.ts';
-import { notificationText } from './notifications.ts';
+import { notificationText, showNotification } from './notifications.ts';
 import { forwardPower } from './power.ts';
 import { APP_ORIGIN, devOrigin } from './policy.ts';
 import { lockDown, registerAppScheme, webPreferences } from './security.ts';
@@ -66,7 +66,7 @@ function start(dataDir: string) {
     onNotify: (n) => {
       const title = notificationText(n.agent, n.label, n.state);
       if (notifyStub) appendFileSync(notifyStub, `${JSON.stringify({ title, t: process.hrtime.bigint().toString() })}\n`);
-      else if (Notification.isSupported()) new Notification({ title }).show();
+      else showNotification(Notification, title, (event, fields) => log.log(event, fields));
     },
   });
 
