@@ -452,7 +452,7 @@ Every result records hardware class, macOS version, app/agent versions, corpus s
 | Gate 3 step 0: master commit `868ecff` (another session's docs update, already on public `master`) has a `Claude-Session:` URL with a session id in its commit message. Keep (allowlist in the history scan, as D-P3-16) or rewrite history (force-push to master) | done: kept and allowlisted (owner, D-P3-21) |
 | Gate 3 step 0: `/ponytail-review` dispositions (3 kept, 11 deferred to a first Phase 4 cleanup unit; see P3-T17 step 0). Override any of them if wanted | done: stand (owner, D-P3-23) |
 | D-P4-03(b): approve, amend or reject design delta 1 (`docs/design/deltas/xaibo-design-delta-1.md`; 7 proposals, Claude review in §3 P4 ledger). On approval Codex applies the approved items to `xaibo-design.md` | done: approved in full (owner, D-P4-04) |
-| Make the modern-web-guidance telemetry opt-out permanent: add `export DISABLE_TELEMETRY=1` to your shell profile (Claude sets it on its own runs) | open |
+| Make the modern-web-guidance telemetry opt-out permanent: add `export DISABLE_TELEMETRY=1` to your shell profile (Claude sets it on its own runs) | done (owner, 2026-11-14) |
 | P3-T16b/c: M16 added wait misses under machine load (run 2: hung 128, enospc 110 ms; run 3: up 170, down 122, hung 171 ms; unloaded run 1 passed every mode, hung 97.5 ms; enospc re-measured byte-exact in run 3: 66.8 ms). Decided on T16d's unloaded figures | done: unloaded gate run passes every mode (hung 91.9 ms, P3-T16d) |
 
 ## 9. Gate records
