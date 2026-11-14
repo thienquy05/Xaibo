@@ -186,3 +186,8 @@ test('usageHistory: request fields checked; reply records and cursor validated',
   }
   assert.equal(parsePortMessage({ ...reply, records: Array(101).fill(rec) }), null, 'bounded');
 });
+
+test('review: utilization above 10,000 % (the service bound) drops the message', () => {
+  assert.equal(parsePortMessage({ v: 1, type: 'usage', id: 2, scopes: [{ ...scope, usedPercent: 10_001 }] }), null);
+  assert.equal(parsePortMessage({ v: 1, type: 'usageHistory', id: 6, records: [{ id: 3, kind: 'sample', measuredAt: 12, usedPercent: 10_001, windowMinutes: 300, resetsAt: null, sourceTimeKnown: false }], next: null }), null);
+});

@@ -1,0 +1,94 @@
+// XAIBO-PROD-406 (P4-T04b2; design §6.1 usage scopes, §7.1 countdown/freshness, §7.2 C16-C20; PRD §5.11, FR-46):
+// render-time usage labels. >100 % kept; stale after 15 min; reset passed replaces utilization and countdown; unverified
+// scopes stay separate and labelled; agy exactly "Unavailable from passive sources" with no values.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { countdownText, scopeBlocks, usageView } from '../../../src/renderer/usage/presentation.ts';
+import type { UsageScope } from '../../../src/shared/ipc.ts';
+
+const NOW = new Date(2026, 0, 2, 12, 0, 0).getTime();
+const MIN = 60_000;
+const s = (o: Partial<UsageScope> = {}): UsageScope => ({ scope: 1, agent: 'claude', profile: 'Default profile', verified: false, stream: 'five_hour', windowMinutes: 300,
+  usedPercent: 40, resetsAt: NOW + 65 * MIN + 3000, plan: null, credits: null, asOf: null, firstObservedAt: NOW - MIN, measuredAt: NOW - MIN, unavailable: null, ...o });
+
+test('current reading: window, percent, reset clock, countdown, unknown source time, unverified scope', () => {
+  const v = usageView(s(), NOW);
+  assert.equal(v.title, '5-hour window');
+  assert.equal(v.value, '40%');
+  assert.equal(v.percent, 40);
+  assert.equal(v.aboveScale, false);
+  assert.equal(v.reset, 'Resets 13:05');
+  assert.equal(v.countdown, 'in 1 h 5 min 3 s');
+  assert.equal(v.stale, null);
+  assert.equal(v.freshness, 'Source time unknown; observed 2026-01-02 11:59');
+  assert.equal(v.unverified, true);
+  const known = usageView(s({ asOf: NOW - 2 * MIN, verified: true, windowMinutes: 10_080, resetsAt: new Date(2026, 0, 5, 8, 30).getTime() }), NOW);
+  assert.equal(known.freshness, 'Measured 2026-01-02 11:58 · observed 2026-01-02 11:59');
+  assert.equal(known.title, '7-day window');
+  assert.equal(known.reset, 'Resets 2026-01-05 08:30', 'another day carries the date');
+  assert.equal(known.unverified, false);
+});
+
+test('above 100 % stays the reported number with an above-scale flag; a missing reading is unavailable, never 0', () => {
+  const over = usageView(s({ usedPercent: 101.5 }), NOW);
+  assert.deepEqual([over.value, over.percent, over.aboveScale], ['101.5%', 101.5, true]);
+  const none = usageView(s({ usedPercent: null }), NOW);
+  assert.deepEqual([none.value, none.percent], ['Utilization unavailable', null]);
+  assert.equal(usageView(s({ usedPercent: 0.04 }), NOW).value, '<0.1%');
+  assert.equal(usageView(s({ resetsAt: null }), NOW).countdown, null, 'unknown reset has no countdown');
+});
+
+test('stale after 15 min without a newer measurement; the value is kept', () => {
+  const v = usageView(s({ measuredAt: NOW - 16 * MIN, firstObservedAt: NOW - 16 * MIN }), NOW);
+  assert.equal(v.stale, 'Stale · 2026-01-02 11:44');
+  assert.equal(v.value, '40%');
+  assert.equal(usageView(s({ measuredAt: NOW - 15 * MIN }), NOW).stale, null);
+});
+
+test('reset passed replaces utilization and countdown', () => {
+  const v = usageView(s({ resetsAt: NOW - 1000 }), NOW);
+  assert.deepEqual([v.value, v.percent, v.countdown, v.reset], ['Reset passed; awaiting observation', null, null, null]);
+});
+
+test('agy: exactly "Unavailable from passive sources", no percentage, reset or countdown; Claude/Codex without a scope', () => {
+  const agy = usageView(s({ scope: null, agent: 'agy', verified: null, stream: null, windowMinutes: null, usedPercent: null, resetsAt: null, firstObservedAt: null, measuredAt: null, unavailable: 'passive' }), NOW);
+  assert.deepEqual(agy, { title: 'Quota', value: 'Unavailable from passive sources', percent: null, aboveScale: false, reset: null, countdown: null, stale: null,
+    freshness: null, unverified: false, plan: null, credits: null });
+  const blank = { scope: null, verified: null, stream: null, windowMinutes: null, usedPercent: null, resetsAt: null, firstObservedAt: null, measuredAt: null, unavailable: 'no-observation' as const };
+  assert.equal(usageView(s({ ...blank }), NOW).value, 'Unavailable — no statusLine quota observation');
+  assert.equal(usageView(s({ ...blank, agent: 'codex' }), NOW).value, 'Unavailable — no rate-limit observation');
+});
+
+test('plan and reported credits as source values', () => {
+  const v = usageView(s({ agent: 'codex', plan: 'pro', credits: { hasCredits: true, unlimited: null, balance: '12.50' } }), NOW);
+  assert.deepEqual([v.plan, v.credits], ['Plan pro', 'Reported credits 12.50']);
+  assert.equal(usageView(s({ credits: { hasCredits: null, unlimited: true, balance: null } }), NOW).credits, 'Unlimited credits');
+});
+
+test('scope blocks: one block per scope, never merged (no combined curve); unverified flagged; profile rows kept in order', () => {
+  const rows = [s({ scope: 1, stream: 'five_hour' }), s({ scope: 1, stream: 'seven_day' }), s({ scope: 2, stream: 'five_hour' }),
+    s({ scope: 3, agent: 'codex', verified: true, stream: 'codex:primary' }), s({ scope: null, agent: 'agy', verified: null, unavailable: 'passive' })];
+  const b = scopeBlocks(rows);
+  assert.deepEqual(b.map((x) => [x.agent, x.scope, x.unverified, x.rows.length]), [['claude', 1, true, 2], ['claude', 2, true, 1], ['codex', 3, false, 1], ['agy', null, false, 1]]);
+});
+
+test('countdown per §7.1: omit zero leading units, keep seconds; days drop seconds; positive under 1 s', () => {
+  const cases: [number, string][] = [[500, 'in <1 s'], [5000, 'in 5 s'], [65_000, 'in 1 min 5 s'], [3_903_000, 'in 1 h 5 min 3 s'], [3_600_000, 'in 1 h 0 min 0 s'],
+    [93_780_000, 'in 1 d 2 h 3 min']];
+  for (const [ms, t] of cases) assert.equal(countdownText(ms), t, String(ms));
+});
+
+// Security review (P4-T04b2): untrusted source strings are escaped; impossible times never print NaN; a value just
+// above 100 % never rounds to 100 %; a reading without a measurement time still ages from its first observation.
+test('review: bidi/control characters in plan, stream and balance are escaped; out-of-range times read Unknown', () => {
+  const v = usageView(s({ plan: 'pro‮', stream: 'x\u0007', windowMinutes: null, credits: { hasCredits: null, unlimited: null, balance: '1‏' } }), NOW);
+  assert.equal(v.plan, 'Plan pro\\u202E');
+  assert.equal(v.title, 'x\\x07');
+  assert.equal(v.credits, 'Reported credits 1\\u200F');
+  assert.equal(usageView(s({ resetsAt: 9e15 }), NOW).reset, 'Resets Unknown');
+});
+
+test('review: 100.04 % reads >100 % (above scale); a reading with no measured time ages from its first observation', () => {
+  assert.deepEqual([usageView(s({ usedPercent: 100.04 }), NOW).value, usageView(s({ usedPercent: 100.04 }), NOW).aboveScale], ['>100%', true]);
+  assert.equal(usageView(s({ measuredAt: null, firstObservedAt: NOW - 20 * MIN }), NOW).stale, 'Stale · 2026-01-02 11:40');
+});

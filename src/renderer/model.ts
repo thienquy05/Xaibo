@@ -64,6 +64,7 @@ const two = (n: number) => String(n).padStart(2, '0');
 export function formatTime(ms: number | null): string {
   if (ms === null) return 'Unknown';
   const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return 'Unknown'; // P4-T04b2 review: finite but outside the Date range
   return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
 }
 

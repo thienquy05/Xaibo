@@ -211,6 +211,7 @@ function parseAgent(x: unknown): AgentStatus | null {
 const isObj = (x: unknown): x is Msg => typeof x === 'object' && x !== null && !Array.isArray(x);
 const finite = (x: unknown): x is number => Number.isFinite(x);
 const numOrNull = (x: unknown, ok: (n: number) => boolean) => x === null || (finite(x) && ok(x));
+const percentOk = (n: number) => n >= 0 && n <= 10_000; // the service's stored bound (spend above 100 % is kept)
 function parseHistoryCursor(x: unknown): HistoryCursor | null | undefined { // undefined = invalid
   if (x === null) return null;
   return isObj(x) && finite(x.measuredAt) && count(x.id) ? { measuredAt: x.measuredAt, id: x.id } : undefined;
@@ -223,7 +224,7 @@ function parseCredits(x: unknown): Credits | null | undefined {
 function parseScope(x: unknown): UsageScope | null {
   if (!isObj(x) || !(x.scope === null || count(x.scope)) || !agentOk(x.agent) || !text(x.profile, 4097) || !boolOrNull(x.verified)) return null;
   if (!(x.stream === null || text(x.stream, MAX_STREAM)) || !(x.plan === null || text(x.plan, 32))) return null;
-  if (!numOrNull(x.windowMinutes, (n) => Number.isSafeInteger(n) && n > 0) || !numOrNull(x.usedPercent, (n) => n >= 0) || !timeOrNull(x.resetsAt)) return null;
+  if (!numOrNull(x.windowMinutes, (n) => Number.isSafeInteger(n) && n > 0) || !numOrNull(x.usedPercent, percentOk) || !timeOrNull(x.resetsAt)) return null;
   if (!timeOrNull(x.asOf) || !timeOrNull(x.firstObservedAt) || !timeOrNull(x.measuredAt)) return null;
   if (!(x.unavailable === null || oneOf(['passive', 'no-observation'] as const, x.unavailable))) return null;
   const credits = parseCredits(x.credits);
@@ -234,7 +235,7 @@ function parseScope(x: unknown): UsageScope | null {
 }
 function parseRecord(x: unknown): UsageRecord | null {
   if (!isObj(x) || !count(x.id) || !oneOf(['sample', 'transition'] as const, x.kind) || !finite(x.measuredAt) || typeof x.sourceTimeKnown !== 'boolean') return null;
-  if (!numOrNull(x.usedPercent, (n) => n >= 0) || !numOrNull(x.windowMinutes, (n) => Number.isSafeInteger(n) && n > 0) || !timeOrNull(x.resetsAt)) return null;
+  if (!numOrNull(x.usedPercent, percentOk) || !numOrNull(x.windowMinutes, (n) => Number.isSafeInteger(n) && n > 0) || !timeOrNull(x.resetsAt)) return null;
   return { id: x.id, kind: x.kind, measuredAt: x.measuredAt, usedPercent: x.usedPercent as number | null, windowMinutes: x.windowMinutes as number | null,
     resetsAt: x.resetsAt, sourceTimeKnown: x.sourceTimeKnown };
 }
