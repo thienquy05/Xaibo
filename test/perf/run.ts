@@ -47,6 +47,6 @@ else throw new Error('usage: --tier T1 --metric m3-first-list|m3-full [--runs n]
 
 const out = path.join(REPO, '.cache', 'perf');
 mkdirSync(out, { recursive: true });
-writeFileSync(path.join(out, `${values.case ?? values.metric ?? values.only}-${values.seed}-${Date.now()}.json`), JSON.stringify(result, null, 2));
+writeFileSync(path.join(out, `${values.case ?? values.metric ?? values.only ?? (values['with-live-probes'] ? 'live-import' : 'run')}-${values.seed}-${Date.now()}.json`), JSON.stringify(result, null, 2));
 console.log(JSON.stringify(result, null, 2));
 process.exitCode = result.pass ? 0 : 1;
