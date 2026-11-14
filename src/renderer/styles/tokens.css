@@ -202,6 +202,28 @@ body {
   white-space: nowrap;
 }
 
+/* P4-T04c shared frame (design §6.0): navigation band, collection band, one centered main region. */
+.x-skip { position: absolute; left: var(--x-space-4); top: -100px; }
+.x-skip:focus { top: var(--x-space-2); background: var(--x-surface); padding: var(--x-space-2); }
+.x-frame { background: var(--x-surface); border-bottom: var(--x-border); }
+.x-nav { display: flex; flex-wrap: wrap; align-items: center; gap: var(--x-space-4); min-height: var(--x-chrome-height); padding: 0 var(--x-space-6); }
+.x-mark { font-weight: var(--x-weight-strong); font-size: var(--x-text-section); }
+.x-nav a { display: inline-flex; align-items: center; min-height: var(--x-control-height); padding: 0 var(--x-space-2); color: var(--x-ink); text-decoration: none; border-left: 3px solid transparent; }
+.x-nav a[aria-current="page"] { background: var(--x-selected); border-left: var(--x-selected-border); }
+.x-band { margin: 0; min-height: var(--x-control-height); display: flex; align-items: center; gap: var(--x-space-1); padding: 0 var(--x-space-6); border-top: var(--x-border); }
+.x-main { max-width: 1440px; margin: 0 auto; padding: var(--x-space-6); }
+@media (max-width: 799px) { .x-main { padding: var(--x-space-4); } .x-nav, .x-band { padding: 0 var(--x-space-4); } }
+.x-main h1 { font-size: var(--x-text-title); line-height: var(--x-leading-title); margin: 0 0 var(--x-space-4); }
+.x-main section { border-top: var(--x-border); margin-top: var(--x-space-4); padding-top: var(--x-space-4); }
+.x-views { display: flex; flex-wrap: wrap; gap: var(--x-space-2); }
+.x-view[aria-pressed="true"] { background: var(--x-selected); box-shadow: inset 3px 0 0 var(--x-accent); }
+.x-queue { list-style: none; margin: 0; padding: 0; }
+.x-queue > li { min-height: 64px; }
+.x-scope-row { margin: var(--x-space-2) 0; }
+.x-scope-row p { margin: var(--x-space-1) 0; overflow-wrap: anywhere; }
+.x-history { border: var(--x-border); border-radius: var(--x-radius-panel); padding: var(--x-space-3); margin-top: var(--x-space-2); }
+.x-history-scroll { max-height: 320px; overflow-y: auto; }
+
 @media (prefers-reduced-motion: reduce) {
   :root { --x-duration-state: 0ms; --x-duration-disclosure: 0ms; }
 }

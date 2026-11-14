@@ -3,7 +3,7 @@
 // before Phase 4). Order matches the service keyset: last activity descending (unknown last), then id.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyDelta, applyPage, bannerText, compareRows, contextText, costText, emptyList, findingBadges, formatTime, markers, PAGE,
+import { applyDelta, applyLiveDelta, applyPage, collectorStep, emptyCollector, emptyLiveSet, lastKnownLabel, bannerText, compareRows, contextText, costText, emptyList, findingBadges, formatTime, markers, PAGE,
   statusExtras } from '../../src/renderer/model.ts';
 import type { LiveStatus, SessionRow } from '../../src/shared/ipc.ts';
 
@@ -116,4 +116,35 @@ test('coverage banners: gap counts, agent names and time ranges as text', () => 
   assert.equal(bannerText({ kind: 'hooks-blocked', agent: 'claude', state: 'blocked' }, names), 'Claude Code: hooks blocked by policy (files only)');
   assert.equal(bannerText({ kind: 'hooks-blocked', agent: 'claude', state: 'unknown' }, names), 'Claude Code: hook policy unknown (files only)');
   assert.equal(bannerText({ kind: 'awaiting-trust', agent: 'codex', steps: ['a'] }, names), 'codex: hooks installed, awaiting trust');
+});
+
+// XAIBO-PROD-407 (P4-T04c): the Dashboard live set kept current by session deltas: a row that ended or that the engine no
+// longer knows leaves; a live row enters or updates in list order; the set stays capped (more = true when trimmed).
+test('live set: ended or unknown rows leave; live rows enter in list order; capped with more', () => {
+  const on = (id: number, at: number, lifecycle: LiveStatus['lifecycle'] = 'busy') => r(id, at, { live: L({ lifecycle }) });
+  let s = { rows: [on(1, 30), on(2, 20)], more: false, loaded: true };
+  s = applyLiveDelta(s, [on(3, 25), r(9, 40)]); // 9 has no live status: not a member
+  assert.deepEqual(ids(s), [1, 3, 2]);
+  s = applyLiveDelta(s, [on(2, 50, 'needs-input')]);
+  assert.deepEqual(ids(s), [2, 1, 3], 'updated and moved up');
+  s = applyLiveDelta(s, [on(1, 60, 'ended'), { ...on(3, 25), live: null }]);
+  assert.deepEqual(ids(s), [2]);
+  const capped = applyLiveDelta({ rows: [on(1, 10), on(2, 9)], more: false, loaded: true }, [on(3, 11)], 2);
+  assert.deepEqual([ids(capped), capped.more], [[3, 1], true]);
+  assert.deepEqual(emptyLiveSet, { rows: [], more: false, loaded: false });
+});
+
+// P4-T04c security review: the "Last known" qualifier. Nothing is "last known" before the collector first ran; after
+// that, every non-running state carries the time it stopped running.
+test('collector: starting before any run reads Collection starting; a later loss keeps its time; running clears it', () => {
+  let c = collectorStep(emptyCollector, 'starting', 100);
+  assert.equal(lastKnownLabel(c, 'starting'), 'Collection starting');
+  c = collectorStep(c, 'running', 200);
+  assert.equal(lastKnownLabel(c, 'running'), null);
+  c = collectorStep(c, 'restarting', new Date(2026, 0, 2, 9, 5).getTime());
+  c = collectorStep(c, 'stopped', new Date(2026, 0, 2, 9, 6).getTime());
+  assert.equal(lastKnownLabel(c, 'stopped'), 'since 2026-01-02 09:05', 'first loss time kept');
+  c = collectorStep(c, 'running', 300);
+  assert.deepEqual([c.lostAt, lastKnownLabel(c, 'running')], [null, null]);
+  assert.equal(lastKnownLabel(emptyCollector, null), 'Collection starting', 'no health yet');
 });

@@ -63,6 +63,23 @@ export function usageView(s: UsageScope, now: number): UsageView {
   };
 }
 
+export const HISTORY_DAYS = 45; // fixed observed-history retention (design §6.1)
+const two = (n: number) => String(n).padStart(2, '0');
+const midnight = (ms: number) => { const d = new Date(ms); return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime(); };
+/** Local day start moved by whole days (calendar arithmetic, so DST days stay one day). */
+export function shiftDay(dayStart: number, days: number): number {
+  const d = new Date(dayStart);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() + days).getTime();
+}
+/** The local day holding `ms`: [midnight, next midnight) and its YYYY-MM-DD label. */
+export function dayRange(ms: number): { from: number; to: number; date: string } {
+  const from = midnight(ms);
+  const d = new Date(from);
+  return { from, to: shiftDay(from, 1), date: `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}` };
+}
+/** First and last day starts the Observed history pager may show: today and the 44 days before it. */
+export const historyBounds = (now: number) => ({ first: shiftDay(midnight(now), -(HISTORY_DAYS - 1)), last: midnight(now) });
+
 export interface ScopeBlock { key: string; agent: string; profile: string; scope: number | null; unverified: boolean; rows: UsageScope[] }
 /** One block per scope (or per profile row without a scope); rows are never merged across scopes, so no combined curve
  *  or inferred account total exists (§6.1). Service order kept. */

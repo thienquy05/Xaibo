@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { claudeProfile, deliver } from '../helpers/hook-socket.ts';
-import { expect, test } from './fixtures.ts';
+import { expect, test, openSessions } from './fixtures.ts';
 import type { Page } from '@playwright/test';
 
 const HOOKED = '00000000-0000-4000-8000-0000000f1101';
@@ -23,6 +23,7 @@ test('busy, waiting, R2 badge, Finishing… then idle, Probably waiting, overflo
   await expect(page.getByRole('status')).toContainText('Running');
 
   await expect(page.getByRole('region', { name: 'Coverage' })).toContainText('Hook events missing (spool overflow): 1 from Claude Code', { timeout: 15_000 });
+  await openSessions(page); // Coverage is on the Dashboard; the full list is in the Session area (P4-T04c)
 
   let profile: string | null = null;
   await expect.poll(() => (profile = claudeProfile(dataDir)), { timeout: 15_000 }).toBeTruthy();

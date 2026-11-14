@@ -2,13 +2,15 @@
 // range, a once-per-edge page fetch, and the scroll shift that keeps the record in view put when rows change above it.
 
 /** The next focused index for a navigation key, -1 for an empty list, null for any other key. */
-export function nextFocus(index: number, key: string, count: number): number | null {
-  if (key !== 'ArrowDown' && key !== 'ArrowUp' && key !== 'Home' && key !== 'End') return null;
+export function nextFocus(index: number, key: string, count: number, axis: 'vertical' | 'horizontal' = 'vertical'): number | null {
+  // P4-T04c: a horizontal group (Dashboard view buttons) uses Left/Right where a list uses Up/Down.
+  const [back, forward] = axis === 'horizontal' ? ['ArrowLeft', 'ArrowRight'] : ['ArrowUp', 'ArrowDown'];
+  if (key !== forward && key !== back && key !== 'Home' && key !== 'End') return null;
   if (count === 0) return -1;
   if (key === 'Home') return 0;
   if (key === 'End') return count - 1;
   if (index < 0) return 0;
-  return Math.min(count - 1, Math.max(0, index + (key === 'ArrowDown' ? 1 : -1)));
+  return Math.min(count - 1, Math.max(0, index + (key === forward ? 1 : -1)));
 }
 
 /** ArrowDown on the last loaded record with more available asks for the next page once per edge (End only jumps). */

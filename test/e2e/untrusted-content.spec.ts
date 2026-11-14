@@ -5,7 +5,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { visible } from '../../src/renderer/text.ts';
-import { expect, test } from './fixtures.ts';
+import { expect, test, openSessions } from './fixtures.ts';
 
 const SESSION = '00000000-0000-4000-8000-00000000e550';
 const CWD = '/tmp/xaibo-fixture/<img src=x onerror="window.__xss=1">**bold** [l](javascript:alert(1)) \u001b[31mred<script>window.__xss=2</script>';
@@ -27,6 +27,7 @@ test('EC-55: injected markup, markdown, ANSI and bidi render as escaped text', a
     document.addEventListener('securitypolicyviolation', () => { w.violations++; });
   });
   await page.reload();
+  await openSessions(page); // the app opens on the Dashboard (P4-T04c)
   const row = page.getByRole('list', { name: 'Sessions' }).getByRole('listitem').filter({ hasText: 'xaibo-fixture/<img' });
   await expect(row).toHaveCount(1);
   expect(await row.locator('[data-field="folder"]').textContent()).toBe(visible(CWD));

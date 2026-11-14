@@ -10,7 +10,7 @@ export function HealthStatus({ health }: { health: Health | null }) {
   const state = health?.state ?? 'starting';
   return (
     <>
-      <p role="status" aria-live="polite"><span aria-hidden="true">{GLYPH[state]}</span> Service: {health ? healthText(health) : 'Starting'}</p>
+      <p role="status" aria-live="polite" className="x-band"><span aria-hidden="true">{GLYPH[state]}</span> Collection: {health ? healthText(health) : 'Starting'}</p>
       {health?.readOnly ? <p role="alert">{READ_ONLY_BANNER[health.readOnly]}</p> : null}
     </>
   );

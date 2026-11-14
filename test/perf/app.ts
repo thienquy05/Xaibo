@@ -36,6 +36,9 @@ export async function launch(claudeDir: string, more: { codex?: string; agy?: st
   const app = await _electron.launch({ executablePath: PACKAGED, args: [], env, timeout: 60_000 });
   const page = await app.firstWindow();
   const created = (await app.evaluate(() => process.getCreationTime())) ?? Number.NaN;
+  // P4-T04c: the app opens on the Dashboard; the perf scripts read the full list in the Session area (the M3 mark is
+  // set by the list commit, which happens whichever area is shown).
+  await page.getByRole('navigation', { name: 'Areas' }).getByRole('link', { name: 'Session', exact: true }).click();
   return { app, page, dataDir, root, created };
 }
 

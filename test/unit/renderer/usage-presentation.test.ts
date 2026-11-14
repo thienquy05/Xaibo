@@ -3,7 +3,7 @@
 // scopes stay separate and labelled; agy exactly "Unavailable from passive sources" with no values.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { countdownText, scopeBlocks, usageView } from '../../../src/renderer/usage/presentation.ts';
+import { countdownText, dayRange, HISTORY_DAYS, historyBounds, scopeBlocks, shiftDay, usageView } from '../../../src/renderer/usage/presentation.ts';
 import type { UsageScope } from '../../../src/shared/ipc.ts';
 
 const NOW = new Date(2026, 0, 2, 12, 0, 0).getTime();
@@ -91,4 +91,14 @@ test('review: bidi/control characters in plan, stream and balance are escaped; o
 test('review: 100.04 % reads >100 % (above scale); a reading with no measured time ages from its first observation', () => {
   assert.deepEqual([usageView(s({ usedPercent: 100.04 }), NOW).value, usageView(s({ usedPercent: 100.04 }), NOW).aboveScale], ['>100%', true]);
   assert.equal(usageView(s({ measuredAt: null, firstObservedAt: NOW - 20 * MIN }), NOW).stale, 'Stale · 2026-01-02 11:40');
+});
+
+// XAIBO-PROD-407 (P4-T04c, design §6.1 Observed history): local day windows and the 45 retained days.
+test('day range: local midnight to next midnight; history bounds cover 45 elapsed days ending today', () => {
+  const at = new Date(2026, 0, 2, 15, 30).getTime();
+  assert.deepEqual(dayRange(at), { from: new Date(2026, 0, 2).getTime(), to: new Date(2026, 0, 3).getTime(), date: '2026-01-02' });
+  assert.equal(shiftDay(new Date(2026, 0, 2).getTime(), -1), new Date(2026, 0, 1).getTime());
+  assert.equal(shiftDay(new Date(2026, 0, 2).getTime(), 1), new Date(2026, 0, 3).getTime());
+  assert.deepEqual(historyBounds(at), { first: new Date(2025, 10, 19).getTime(), last: new Date(2026, 0, 2).getTime() });
+  assert.equal(HISTORY_DAYS, 45);
 });

@@ -1,16 +1,16 @@
 // Renderer entry (P1-T12): takes the brokered service port and main's health messages from the preload (window
 // messages from this window only, validated), keeps the list state (model.ts) and renders health, agents and sessions.
-import { StrictMode, useEffect, useRef, useState } from 'react';
+import { StrictMode, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { parseHealth } from '../shared/ipc.ts';
 import type { AgentStatus, Banner, Health, SessionRow } from '../shared/ipc.ts';
 import { createClient, parseVisible, type Client, type PortLike } from './client.ts';
-import { Coverage } from './Coverage.tsx';
-import { AgentStrip, HealthStatus } from './Health.tsx';
+import { HealthStatus } from './Health.tsx';
 import { createCoalescer } from './data/coalesce.ts';
 import { reloadWindow } from './data/pages.ts';
-import { applyDelta, applyPage, emptyList, PAGE, type ListState } from './model.ts';
+import { applyDelta, applyLiveDelta, applyPage, collectorStep, emptyCollector, emptyList, emptyLiveSet, lastKnownLabel, PAGE, type ListState, type LiveSetState } from './model.ts';
+import { Dashboard, type UsageApi } from './overview/Dashboard.tsx';
 import { firstUsablePage, LONG_FRAME, watchLongFrames } from './perf-marks.ts';
 import { SessionList } from './SessionList.tsx';
 import './styles/tokens.css';
@@ -30,6 +30,11 @@ function App() {
   const [list, setList] = useState<ListState>(emptyList);
   const [banners, setBanners] = useState<Banner[]>([]);
   const [loading, setLoading] = useState(false);
+  const [liveSet, setLiveSet] = useState<LiveSetState>(emptyLiveSet);
+  const [area, setArea] = useState<'dashboard' | 'session'>('dashboard');
+  const [tick, setTick] = useState(0); // session activity: the usage view refreshes on it (throttled there)
+  const [collector, setCollector] = useState(emptyCollector); // the Last known qualifier (design §6.0)
+  const [liveFailed, setLiveFailed] = useState(false); // the live set could not be loaded: Retry
   const client = useRef<Client | null>(null);
   const loadedRows = useRef(0); // rows the user has loaded: a resync refetches that many (P4-T03)
   loadedRows.current = list.rows.length;
@@ -38,6 +43,9 @@ function App() {
     // The loaded window again by cursor, replacing the list: after a (re)start, a coalescer overflow or showing the window.
     const reload = (c: Client | null) => {
       if (!c) return;
+      // P4-T04c: the Dashboard's live set is resynced with the list (start, coalescer overflow, show).
+      c.liveSet().then((set) => { if (client.current === c) { setLiveSet({ ...set, loaded: true }); setLiveFailed(false); } },
+        () => { if (client.current === c) setLiveFailed(true); });
       reloadWindow(loadedRows.current, (cursor, limit) => c.listSessions(cursor, limit), PAGE)
         .then((page) => { if (client.current === c) setList((s) => applyPage(s, page, false)); }, () => undefined);
     };
@@ -46,7 +54,7 @@ function App() {
     const deltas = createCoalescer<SessionRow>({
       max: DELTA_MAX, schedule: (cb) => requestAnimationFrame(cb), resync: () => reload(client.current),
       flush: (rows, tags) => {
-        flushSync(() => setList((s) => applyDelta(s, rows)));
+        flushSync(() => { setList((s) => applyDelta(s, rows)); setLiveSet((s) => applyLiveDelta(s, rows)); setTick((t) => t + 1); });
         if (tags.length) requestAnimationFrame(() => requestAnimationFrame(() => { for (const t of tags) window.xaibo?.paintAck(t); }));
       },
     });
@@ -77,7 +85,10 @@ function App() {
       const v = parseVisible(e.data);
       if (v !== null) { onVisible(v); return; }
       const h = parseHealth(e.data);
-      if (h) setHealth(h);
+      if (h) {
+        setHealth(h);
+        setCollector((c) => collectorStep(c, h.state, Date.now()));
+      }
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
@@ -96,16 +107,40 @@ function App() {
     }, () => { if (client.current === c) setLoading(false); }); // an invalid page: "Load more" works again
   };
 
+  const api = useMemo<UsageApi>(() => ({
+    usage: () => client.current?.usage() ?? Promise.reject(new Error('no service')),
+    history: (scope, stream, from, to, cursor) => client.current?.usageHistory(scope, stream, from, to, cursor, PAGE) ?? Promise.reject(new Error('no service')),
+  }), []);
+  // Design §6.0: no unqualified live indicator while the collector is not running (starting, restarting, stopped).
+  const lastKnown = lastKnownLabel(collector, health?.state ?? null);
+  const retryLive = () => {
+    const c = client.current;
+    if (!c) return;
+    setLiveFailed(false);
+    c.liveSet().then((set) => { if (client.current === c) setLiveSet({ ...set, loaded: true }); }, () => { if (client.current === c) setLiveFailed(true); });
+  };
+  const go = (to: 'dashboard' | 'session') => (e: MouseEvent) => {
+    e.preventDefault();
+    setArea(to);
+    requestAnimationFrame(() => document.getElementById(to === 'dashboard' ? 'dashboard-heading' : 'sessions-heading')?.focus());
+  };
   return (
     <>
-      <header>
-        <h1>Xaibo</h1>
+      <a className="x-skip" href="#main">Skip to main content</a>
+      <header className="x-frame">
+        <nav aria-label="Areas" className="x-nav">
+          <span className="x-mark">Xaibo</span>
+          {/* ponytail: Agent Map and Settings links arrive with their areas (Phases 5–6); no placeholder links now. */}
+          <a href="#dashboard" aria-current={area === 'dashboard' ? 'page' : undefined} onClick={go('dashboard')}>Dashboard</a>
+          <a href="#session" aria-current={area === 'session' ? 'page' : undefined} onClick={go('session')}>Session</a>
+        </nav>
         <HealthStatus health={health} />
-        <AgentStrip agents={agents} onSetPath={(agent) => window.xaibo?.setAgentPath(agent)} />
-        <Coverage banners={banners} agents={agents} />
       </header>
-      <main>
-        <SessionList list={list} loading={loading} onLoadMore={loadMore} />
+      <main id="main" className="x-main" tabIndex={-1}>
+        {area === 'dashboard'
+          ? <Dashboard live={liveSet} liveFailed={liveFailed} onRetryLive={retryLive} lastKnown={lastKnown} agents={agents} banners={banners} api={api} tick={tick}
+            onSetPath={(agent) => window.xaibo?.setAgentPath(agent)} />
+          : <SessionList list={list} loading={loading} onLoadMore={loadMore} lastKnown={lastKnown !== null} />}
       </main>
     </>
   );

@@ -61,3 +61,14 @@ test('review M4: pagination announcements (polite), never an invented total', ()
   assert.equal(pageAnnouncement(50, 51, false), '1 more record loaded');
   assert.equal(pageAnnouncement(50, 50, false), '');
 });
+
+// XAIBO-PROD-407 (P4-T04c, design §6.1): the Dashboard view group roves with Left/Right/Home/End; vertical arrows do not.
+test('horizontal roving: Left/Right/Home/End within bounds; Up/Down are not navigation there', () => {
+  assert.equal(nextFocus(0, 'ArrowRight', 3, 'horizontal'), 1);
+  assert.equal(nextFocus(2, 'ArrowRight', 3, 'horizontal'), 2, 'right bound');
+  assert.equal(nextFocus(1, 'ArrowLeft', 3, 'horizontal'), 0);
+  assert.equal(nextFocus(1, 'End', 3, 'horizontal'), 2);
+  assert.equal(nextFocus(2, 'Home', 3, 'horizontal'), 0);
+  assert.equal(nextFocus(1, 'ArrowDown', 3, 'horizontal'), null);
+  assert.equal(nextFocus(1, 'ArrowRight', 3), null, 'vertical lists ignore Left/Right');
+});

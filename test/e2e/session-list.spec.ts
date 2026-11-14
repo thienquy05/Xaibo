@@ -3,7 +3,7 @@ import { appendFileSync, chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { formatTime } from '../../src/renderer/model.ts';
-import { expect, servicePid, test } from './fixtures.ts';
+import { expect, servicePid, test, openSessions } from './fixtures.ts';
 import type { Page } from '@playwright/test';
 
 const SESSION = '00000000-0000-4000-8000-000000001000';
@@ -22,16 +22,17 @@ const sessionCount = (dataDir: string) => {
 test('backfill rows, health and the agent strip; a live append updates the row', async ({ xaibo }) => {
   const run = await xaibo.launch();
   const page = await xaibo.window(run);
+  const agents = page.getByRole('region', { name: 'Agents' }); // on the Dashboard (P4-T04c)
+  await expect(agents).toContainText('Claude Code');
+  await expect(agents).toContainText('2.1.319');
+  await expect(agents).toContainText('0.160.0');
+  await openSessions(page);
   const rows = rowsOf(page);
   await expect(rows).toHaveCount(1);
   await expect(rows.first()).toContainText('/tmp/xaibo-fixture/alpha');
   await expect(rows.first().locator('[data-field="origin"]')).toHaveText('CLI -p · Non-interactive'); // P2-T04 origin badge (claude -p fixture)
   await expect(rows.first()).toContainText('Untitled');
   await expect(page.getByRole('status')).toContainText('Running');
-  const agents = page.getByRole('region', { name: 'Agents' });
-  await expect(agents).toContainText('Claude Code');
-  await expect(agents).toContainText('2.1.319');
-  await expect(agents).toContainText('0.160.0');
 
   const ts = '2026-01-01T05:00:00.000Z';
   xaibo.touchStore(() => appendFileSync(path.join(project(xaibo.home), `${SESSION}.jsonl`), userLine(SESSION, '00000000-0000-4000-8000-0000000010e3', ts, '/tmp/xaibo-fixture/alpha')));
@@ -41,6 +42,7 @@ test('backfill rows, health and the agent strip; a live append updates the row',
 test('P4-T02: a hidden window gets no live deltas; showing it resyncs the list by cursor', async ({ xaibo }) => {
   const run = await xaibo.launch();
   const page = await xaibo.window(run);
+  await openSessions(page);
   const time = rowsOf(page).first().locator('[data-field="activity"]');
   await expect(rowsOf(page)).toHaveCount(1);
   const before = await time.textContent();
@@ -73,6 +75,7 @@ test('Load more pages without duplicates (keyboard)', async ({ xaibo }) => {
   });
   const run = await xaibo.launch();
   const page = await xaibo.window(run);
+  await openSessions(page);
   await expect.poll(() => sessionCount(run.dataDir), { timeout: 20_000 }).toBe(61);
   const list = page.getByRole('list', { name: 'Sessions' });
   await expect(list).toHaveAttribute('data-count', '50'); // loaded records (the DOM holds only the visible ones)
@@ -92,6 +95,7 @@ test('Load more pages without duplicates (keyboard)', async ({ xaibo }) => {
 test('health shows Restarting, then Running, after a service kill; the list comes back', async ({ xaibo }) => {
   const run = await xaibo.launch({ serviceKills: 1 });
   const page = await xaibo.window(run);
+  await openSessions(page);
   const status = page.getByRole('status');
   await expect(status).toContainText('Running');
   await expect(rowsOf(page)).toHaveCount(1);

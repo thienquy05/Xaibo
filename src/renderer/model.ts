@@ -1,7 +1,7 @@
 // Session list state (P1-T12): pages and live deltas merged by session id in the service's keyset order. The loaded
 // window holds `capacity` rows (a page per Load more); deltas update loaded rows and add new sessions only inside
 // that window, trimming from the bottom, so a large backfill never grows the DOM (virtualization is Phase 4).
-import type { Banner, CostCoverage, Cursor, LiveStatus, Page, SessionRow } from '../shared/ipc.ts';
+import type { Banner, CostCoverage, Cursor, HealthState, LiveStatus, Page, SessionRow } from '../shared/ipc.ts';
 import { visible } from './text.ts';
 
 export const PAGE = 50;
@@ -41,6 +41,37 @@ export function applyDelta(s: ListState, incoming: SessionRow[]): ListState {
     next = cursorOf(rows.at(-1)!);
   }
   return { ...s, rows, next };
+}
+
+/** P4-T04c: the Dashboard's live set (P4-T04a `liveSet`), kept current by session deltas. */
+export interface LiveSetState { rows: SessionRow[]; more: boolean; loaded: boolean }
+export const emptyLiveSet: LiveSetState = { rows: [], more: false, loaded: false };
+export const LIVE_SET_MAX = 100; // the service's cap (api.ts LIVE_SET_MAX)
+const member = (r: SessionRow) => r.live !== null && r.live.lifecycle !== 'ended';
+/** A delta row that ended or lost its engine status leaves; a live row enters or updates in list order; past `max` the
+ *  oldest are trimmed and `more` is set (a resync by `liveSet` restores the exact set). */
+export function applyLiveDelta(s: LiveSetState, incoming: SessionRow[], max = LIVE_SET_MAX): LiveSetState {
+  const byId = new Map(s.rows.map((r) => [r.id, r]));
+  for (const r of incoming) {
+    if (member(r)) byId.set(r.id, r);
+    else byId.delete(r.id);
+  }
+  const rows = [...byId.values()].sort(compareRows);
+  return rows.length > max ? { ...s, rows: rows.slice(0, max), more: true } : { ...s, rows };
+}
+
+/** P4-T04c (design §6.0): the collector's run history for the "Last known" qualifier. Nothing is last known before
+ *  the collector first ran; after a loss, the time it stopped running is kept until it runs again. */
+export interface Collector { seenRunning: boolean; lostAt: number | null }
+export const emptyCollector: Collector = { seenRunning: false, lostAt: null };
+export function collectorStep(c: Collector, state: HealthState, now: number): Collector {
+  if (state === 'running') return { seenRunning: true, lostAt: null };
+  return c.seenRunning ? { ...c, lostAt: c.lostAt ?? now } : c;
+}
+/** null while running (live labels unqualified); otherwise the qualifier text. */
+export function lastKnownLabel(c: Collector, state: HealthState | null): string | null {
+  if (state === 'running') return null;
+  return c.seenRunning && c.lostAt !== null ? `since ${formatTime(c.lostAt)}` : 'Collection starting';
 }
 
 export interface Marker { glyph: string; text: string }

@@ -10,7 +10,8 @@ import { visible } from './text.ts';
 const show = (s: string | null, fallback: string) => (s ? visible(s) : fallback);
 const keyOf = (r: SessionRow) => r.id;
 
-function Record({ row }: { row: SessionRow }) {
+/** One session record; `lastKnown` qualifies its status while the collector is not running (design §3.2, §6.0). */
+export function Record({ row, lastKnown = false }: { row: SessionRow; lastKnown?: boolean }) {
   const m = markers(row);
   return (
     <article className="x-record">
@@ -20,6 +21,7 @@ function Record({ row }: { row: SessionRow }) {
         <span className="x-record-path" data-field="folder">{show(row.cwd, 'Unknown')}</span>
       </p>
       <p className="x-record-status" data-field="status">
+        {lastKnown ? <span>Last known: </span> : null}
         <StatusBadge status={row.live} />
         {row.live ? statusExtras(row.live).map((t) => <span key={t}> · {t}</span>) : null}
         {findingBadges(row.live).map((b) => <span key={b.text}> <span aria-hidden="true">{b.glyph}</span> {b.text}</span>)}
@@ -36,15 +38,15 @@ function Record({ row }: { row: SessionRow }) {
   );
 }
 
-export function SessionList({ list, loading, onLoadMore }: { list: ListState; loading: boolean; onLoadMore: () => void }) {
+export function SessionList({ list, loading, onLoadMore, lastKnown = false }: { list: ListState; loading: boolean; onLoadMore: () => void; lastKnown?: boolean }) {
   return (
     <section aria-labelledby="sessions-heading">
-      <h2 id="sessions-heading">Sessions</h2>
+      <h1 id="sessions-heading" tabIndex={-1}>Session</h1>
       {list.loaded && list.rows.length === 0 ? <p>No sessions yet.</p> : (
         <VirtualList
           items={list.rows} getKey={keyOf} label="Sessions" estimateSize={132}
           hasMore={list.next !== null} loading={loading} onLoadMore={onLoadMore}
-          render={(row) => <Record row={row} />}
+          render={(row) => <Record row={row} lastKnown={lastKnown} />}
         />
       )}
     </section>

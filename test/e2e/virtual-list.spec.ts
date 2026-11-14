@@ -5,7 +5,7 @@
 import { appendFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { expect, test } from './fixtures.ts';
+import { expect, test, openSessions } from './fixtures.ts';
 
 const project = (home: string) => path.join(home, '.claude', 'projects', '-tmp-xaibo-fixture-project');
 const sid = (n: number) => `00000000-0000-4000-8000-0000000d${String(n).padStart(4, '0')}`;
@@ -23,6 +23,7 @@ test('virtualized records: bounded DOM, roving Arrow/Home/End, edge fetch by arr
   });
   const run = await xaibo.launch();
   const page = await xaibo.window(run);
+  await openSessions(page);
   await expect.poll(() => count(run.dataDir), { timeout: 60_000 }).toBe(301); // 300 plus the fixture session
   const list = page.getByRole('list', { name: 'Sessions' });
   await expect(list).toHaveAttribute('data-count', '50');
