@@ -2,16 +2,18 @@
 // under the S10 kill-on-attempt profile with Chromium NetLog on, in an isolated temp HOME, data dir and agent homes
 // (fake SHELL, fake agent binaries first on PATH), with cwd at the repo root. After every test: no process killed or
 // gone unexpectedly, NetLog without non-loopback hosts, `git status` unchanged, fixture agent stores byte-identical.
-// The renderer interception count (`request_blocked` in the app log) is supporting evidence only.
+// The renderer interception count (`request_blocked` in the app log) is supporting evidence only. P3-T16c: hooks sent through
+// the packaged forwarder (`hook()`) run under the same profile, and teardown audits each one.
 import { _electron, expect, test as base } from '@playwright/test';
 import type { ElectronApplication, Page } from '@playwright/test';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { deployShim } from '../../src/service/adapters/claude/setup.ts';
 import { gitStatus, parseNetLog, treeHashes, unexpectedDeaths } from './audit.ts';
 import type { Gone, NetLogResult } from './audit.ts';
 
@@ -20,6 +22,7 @@ const PACKAGED = path.join(REPO, 'release', 'mac-arm64', 'Xaibo.app', 'Contents'
 const ELECTRON = createRequire(import.meta.url)('electron') as string;
 const WRAPPER = path.join(import.meta.dirname, 'audit-launch.sh');
 const PROFILE = path.join(import.meta.dirname, 'audit.sb');
+const HELPERS = path.join(REPO, 'release', 'mac-arm64', 'Xaibo.app', 'Contents', 'Resources', 'bin');
 const FIXTURE = path.join(REPO, 'test', 'fixtures', 'synthetic', 'claude', '2.1.319', 'usage-basic');
 const STORES = ['.claude', '.codex', '.gemini'];
 const MARK = 'xaibo-audit ';
@@ -37,7 +40,9 @@ export interface LaunchOptions {
   env?: Record<string, string>;
 }
 export interface Exit { code: number | null; signal: NodeJS.Signals | null }
-export interface Run { proc: ChildProcess; app?: ElectronApplication; dataDir: string; netlog: string; gone: Gone[]; exit: Promise<Exit>; opts: LaunchOptions }
+export interface Run { proc: ChildProcess; app?: ElectronApplication; dataDir: string; netlog: string; gone: Gone[]; exit: Promise<Exit>; opts: LaunchOptions; helpers: Helper[] }
+/** One packaged helper run (P3-T16c): its exit and output bytes, audited in teardown. */
+export interface Helper { exit: Exit; bytes: number }
 export interface Audit { exit: Exit; deaths: number; netlog: NetLogResult }
 export interface Xaibo {
   home: string;
@@ -47,6 +52,9 @@ export interface Xaibo {
   window(run: Run): Promise<Page>;
   quit(run: Run): Promise<Exit>;
   audit(run: Run): Promise<Audit>;
+  /** P3-T16c: dispatches one hook through the packaged forwarder, installed into the run's data dir as Connect does,
+   *  under the same kill-on-attempt profile; teardown fails on a killed or non-zero helper or any output. */
+  hook(run: Run, profileKey: string, payload: object): Promise<Helper>;
   /** The test's own write to a fixture agent store (e.g. a transcript append): the stores must be unchanged before
    *  it, and the post-write state becomes the expected one. */
   touchStore(write: () => void): void;
@@ -105,8 +113,8 @@ export const test = base.extend<{ xaibo: Xaibo }>({
       };
       return { dataDir, netlog, env, args: [...(o.unpackaged ? [REPO] : []), `--log-net-log=${netlog}`] };
     };
-    const track = (proc: ChildProcess, run: Omit<Run, 'proc' | 'gone' | 'exit'>): Run => {
-      const r: Run = { ...run, proc, gone: [], exit: closed(proc) };
+    const track = (proc: ChildProcess, run: Omit<Run, 'proc' | 'gone' | 'exit' | 'helpers'>): Run => {
+      const r: Run = { ...run, proc, gone: [], exit: closed(proc), helpers: [] };
       let buf = '';
       proc.stdout?.on('data', (d: Buffer) => {
         buf += d;
@@ -157,6 +165,23 @@ export const test = base.extend<{ xaibo: Xaibo }>({
         try { netlog = parseNetLog(readFileSync(run.netlog, 'utf8')); } catch { netlog = { parsed: false, events: 0, nonLocal: 0, types: [] }; }
         return { exit, deaths: unexpectedDeaths(run.gone, { serviceKills: run.opts.serviceKills ?? 0 }), netlog };
       },
+      async hook(run, profileKey, payload) {
+        // The installed forwarder is run directly, as the shim would with XAIBO_DATA_DIR: the shim does not exec it and
+        // always exits 0, so a kill of the forwarder would be invisible through it (review H1; the shim itself is
+        // covered by scripts/helper-audit.ts).
+        const forwarder = path.join(run.dataDir, 'integrations', 'bin', 'xaibo-forwarder');
+        if (!existsSync(forwarder)) deployShim(run.dataDir, { hook: path.join(HELPERS, 'xaibo-hook'), forwarder: path.join(HELPERS, 'xaibo-forwarder') });
+        const c = spawn('/usr/bin/sandbox-exec', ['-f', run.opts.logOnly ? logOnlyProfile : PROFILE, forwarder, 'hook', 'claude', profileKey],
+          { env: { PATH: '/usr/bin:/bin', XAIBO_DATA_DIR: run.dataDir }, stdio: ['pipe', 'pipe', 'pipe'] });
+        let bytes = 0;
+        c.stdout.on('data', (d: Buffer) => { bytes += d.length; });
+        c.stderr.on('data', (d: Buffer) => { bytes += d.length; });
+        c.stdin.on('error', () => {});
+        c.stdin.end(JSON.stringify(payload));
+        const h: Helper = { exit: await closed(c), bytes };
+        run.helpers.push(h);
+        return h;
+      },
       touchStore(write) {
         if (storesOf() !== storesBefore) problems.push('fixture agent stores changed before the test wrote to them');
         write();
@@ -175,6 +200,9 @@ export const test = base.extend<{ xaibo: Xaibo }>({
       if (a.deaths) problems.push(`run ${i}: ${a.deaths} unexpected process deaths ${JSON.stringify(r.gone)}`);
       if (r.app && !a.netlog.parsed) problems.push(`run ${i}: NetLog unreadable`);
       if (a.netlog.nonLocal) problems.push(`run ${i}: ${a.netlog.nonLocal} non-loopback NetLog events (${a.netlog.types.join(', ')})`);
+      for (const [j, h] of r.helpers.entries()) {
+        if (h.exit.signal || h.exit.code !== 0 || h.bytes) problems.push(`run ${i} helper ${j}: exit ${h.exit.code} signal ${h.exit.signal}, ${h.bytes} output bytes`);
+      }
     }
     if (gitStatus(REPO) !== gitBefore) problems.push('repo working tree changed during the test');
     if (storesOf() !== storesBefore) problems.push('fixture agent stores changed during the test');

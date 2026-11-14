@@ -40,43 +40,53 @@ function run(file: string, args: string[], env: NodeJS.ProcessEnv): Promise<Run>
 }
 const sh = (command: string) => run('/bin/sh', ['-c', command], { PATH: '/usr/bin:/bin' });
 
-const spoolLines = (dataDir: string) => {
+export const spoolLines = (dataDir: string) => {
   const dir = path.join(dataDir, 'spool');
   if (!existsSync(dir)) return 0;
   return readdirSync(dir).filter((f) => f.endsWith('.jsonl')).reduce((n, f) => n + readFileSync(path.join(dir, f), 'utf8').split('\n').filter((l) => l.endsWith('}')).length, 0);
 };
-const overflowLines = (dataDir: string) => {
+export const overflowLines = (dataDir: string) => {
   const f = path.join(dataDir, 'spool', 'overflow.log');
   return existsSync(f) ? readFileSync(f, 'utf8').split('\n').filter(Boolean).length : 0;
 };
 
-/** Writes `fill.bin` (not *.jsonl, so the cap check does not count it) until ENOSPC; true when the volume is full. */
-function full(dir: string): boolean {
+/** Appends to `fill.bin` (not *.jsonl, so the cap check does not count it) in shrinking chunks down to 1 byte until each
+ *  hits ENOSPC (P3-T16c: 64 KiB chunks alone left room for a small spool record); true when the volume is full. */
+export function full(dir: string): boolean {
   const fd = openSync(path.join(dir, 'fill.bin'), 'a');
-  try { const b = Buffer.alloc(64 * 1024); for (;;) writeSync(fd, b); } catch (e) { return (e as NodeJS.ErrnoException).code === 'ENOSPC'; } finally { closeSync(fd); }
+  try {
+    for (const size of [64 * 1024, 4096, 512, 1]) {
+      const b = Buffer.alloc(size);
+      try { for (;;) writeSync(fd, b); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOSPC') return false; }
+    }
+    return true;
+  } finally { closeSync(fd); }
 }
 
 /** The forwarder's spool trust test (forwarder.ts spoolDir): a directory of our own; it fixes the mode itself. */
-const ownSpool = (dataDir: string) => { const st = lstatSync(path.join(dataDir, 'spool')); return st.isDirectory() && st.uid === process.getuid?.(); };
+export const ownSpool = (dataDir: string) => { const st = lstatSync(path.join(dataDir, 'spool')); return st.isDirectory() && st.uid === process.getuid?.(); };
 
 /** A data dir with the packaged helpers installed and the fault of `mode` in place; returns the undo. */
-async function fault(mode: Exclude<Mode, 'up'>, dataDir: string): Promise<() => Promise<void>> {
+/** The undo; for hung, `connections` counts the connections the never-acking socket accepted (P3-T16c evidence). */
+export type Undo = (() => Promise<void>) & { connections?: () => number };
+export async function fault(mode: Exclude<Mode, 'up'>, dataDir: string): Promise<Undo> {
   const spool = path.join(dataDir, 'spool');
   if (mode === 'hung') {
     const runDir = path.join(dataDir, 'run');
     mkdirSync(runDir, { mode: 0o700 });
     writeFileSync(path.join(runDir, 'token'), 'synthetic-token', { mode: 0o600 });
     const held = new Set<net.Socket>();
-    const server = net.createServer((s) => { held.add(s); s.on('data', () => undefined); s.on('error', () => undefined); s.on('close', () => held.delete(s)); });
+    let accepted = 0;
+    const server = net.createServer((s) => { accepted++; held.add(s); s.on('data', () => undefined); s.on('error', () => undefined); s.on('close', () => held.delete(s)); });
     await new Promise<void>((r) => server.listen(path.join(runDir, 'xaibo.sock'), r));
-    return async () => { for (const s of held) s.destroy(); await new Promise((r) => server.close(r)); };
+    return Object.assign(async () => { for (const s of held) s.destroy(); await new Promise((r) => server.close(r)); }, { connections: () => accepted });
   }
   if (mode === 'enospc') {
-    const img = path.join(path.dirname(dataDir), 'full.dmg');
+    const img = `${dataDir}-full.dmg`; // beside the data dir, unique per data dir; removed by the undo
     execFileSync('/usr/bin/hdiutil', ['create', '-size', '1m', '-fs', 'HFS+', '-volname', 'xaibo-full', img], { stdio: 'ignore' });
     mkdirSync(spool, { mode: 0o700 });
     execFileSync('/usr/bin/hdiutil', ['attach', '-nobrowse', '-mountpoint', spool, img], { stdio: 'ignore' });
-    const detach = async () => { execFileSync('/usr/bin/hdiutil', ['detach', spool, '-force'], { stdio: 'ignore' }); };
+    const detach = async () => { try { execFileSync('/usr/bin/hdiutil', ['detach', spool, '-force'], { stdio: 'ignore' }); } finally { rmSync(img, { force: true }); } };
     try {
       if (!full(spool)) throw new Error('could not fill the volume');
     } catch (e) { await detach(); throw e; }
@@ -114,7 +124,7 @@ export async function m16Probe(runs: number) {
       const shim = installHelpers(dataDir);
       const forwarder = path.join(path.dirname(shim), 'xaibo-forwarder');
       if (mode !== 'up') undo = await fault(mode, dataDir);
-      const before = { spooled: mode === 'enospc' ? 0 : spoolLines(dataDir), overflow: overflowLines(dataDir) };
+      const before = { spooled: spoolLines(dataDir), overflow: overflowLines(dataDir) };
       const base: Run[] = []; // review: a per-mode baseline, interleaved, under the same load as the mode
       const dispatch: Run[] = [];
       const direct: Run[] = [];
@@ -127,9 +137,9 @@ export async function m16Probe(runs: number) {
       const baseline = stats(base.map((r) => r.ms));
       const wait = stats(dispatch.map((r) => r.ms));
       const own = stats(direct.map((r) => r.ms));
-      const spooled = mode === 'enospc' ? null : spoolLines(dataDir) - before.spooled;
+      const spooled = spoolLines(dataDir) - before.spooled;
       const overflow = overflowLines(dataDir) - before.overflow;
-      // review: proof the fault path ran, not an early exit: up = every run ingested; enospc = the spool was ours and stayed full
+      // review: proof the fault path ran, not an early exit: up = every run ingested; enospc = the spool was ours, stayed full, took nothing
       const ingested = l ? Number(query<number>(dataDir, 'SELECT count(*) FROM hook_delivery')) : null;
       const stillFull = mode === 'enospc' ? ownSpool(dataDir) && full(path.join(dataDir, 'spool')) : null;
       const fails = [
@@ -137,9 +147,10 @@ export async function m16Probe(runs: number) {
         all.some((r) => r.code !== 0) && 'non-zero exit',
         wait.p95 - baseline.p95 > BOUND_MS && 'added wait p95',
         own.p95 > BOUND_MS && 'forwarder own time p95 (upper bound)',
-        mode === 'up' && (spooled !== 0 || ingested !== all.length) && 'not every run ingested with the service up',
+        // a deadline miss under load spools instead of acking (EC-11): every run must be ingested or spooled, most ingested
+        mode === 'up' && (ingested === null || ingested + spooled !== all.length || ingested < all.length / 2) && 'a run lost, or the ack path not used, with the service up',
         (mode === 'down' || mode === 'hung') && spooled !== all.length && 'not every run spooled',
-        mode === 'enospc' && !stillFull && 'spool not ours or volume not full',
+        mode === 'enospc' && (!stillFull || spooled !== 0) && 'spool not ours, volume not full, or a record was spooled',
         mode === 'cap' && (spooled !== 0 || overflow === 0) && 'spool grew past its cap or no overflow line',
       ].filter(Boolean);
       ok &&= fails.length === 0;
@@ -155,7 +166,7 @@ export async function m16Probe(runs: number) {
   return { metric: 'm16', boundMs: BOUND_MS, runs, modes,
     notes: 'Added wait = p95(shim via /bin/sh -c) - p95(true via /bin/sh -c), interleaved per mode, serial; the 50-way burst miss is accepted (D-P0-22). '
       + 'Forwarder own time is the direct-spawn wall (exec + SEA startup + run), an upper bound; the in-process deadline is 60 ms after entry. '
-      + 'enospc spools nothing countable (the volume is full). Tee overhead: --only tee --packaged.',
+      + 'enospc: the spool volume is filled to the byte, and nothing may be spooled. Tee overhead: --only tee --packaged.',
     pass: ok, env };
 }
 

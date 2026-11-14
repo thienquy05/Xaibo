@@ -1,6 +1,6 @@
 // XAIBO-PROD-310 (P3-T10; US-1, US-4, FR-09, A11Y, EC-12): live status in the packaged app's list, driven by a synthetic
 // emitter on the hook socket (one connection per delivery: the server closes idle connections) and a transcript append
-// for the no-hook heuristic. Assertions are on accessible text. A spool overflow line seeded before launch becomes the
+// for the no-hook heuristic; one event goes through the packaged forwarder under the audit profile (P3-T16c). Assertions are on accessible text. A spool overflow line seeded before launch becomes the
 // gap banner. With XAIBO_PERF_TRACE=1 the renderer acks painted deltas and main and service write IDs-only trace lines.
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -38,7 +38,9 @@ test('busy, waiting, R2 badge, Finishing… then idle, Probably waiting, overflo
   const status = () => rowOf(page, '/tmp/xaibo-fixture/live').getByRole('cell').nth(7);
 
   await hook('SessionStart', { source: 'startup' });
-  await hook('UserPromptSubmit', { prompt: 'fixture prompt' });
+  // P3-T16c: this event goes through the packaged forwarder, run and audited by the fixture
+  const sent = await xaibo.hook(run, profile!, { hook_event_name: 'UserPromptSubmit', session_id: HOOKED, cwd: '/tmp/xaibo-fixture/live', prompt: 'fixture prompt' });
+  expect(sent).toEqual({ exit: { code: 0, signal: null }, bytes: 0 });
   await expect(status()).toContainText('Busy (confirmed)');
 
   await hook('PreToolUse', { tool_name: 'Write', tool_input: { file_path: '/tmp/xaibo-fixture/live/a' }, tool_use_id: 'w1' });
