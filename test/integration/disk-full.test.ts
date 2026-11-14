@@ -111,3 +111,18 @@ test('G3b-2 residual: a delivery that is already stored clears its disk-full gap
   assert.equal(count(h.db, `SELECT count(*) FROM hook_gaps WHERE locator = 'disk-full:${c.delivery_id}'`), 0, 'a held gap is dropped');
   assert.equal(count(h.db, "SELECT sum(count) FROM hook_gaps WHERE reason = 'disk-full'"), 1, 'only B stays counted');
 });
+
+test('G3b-2 (fix re-review 2): a stored delivery\'s leftover disk-full gap is reconciled when an intake starts', async () => {
+  const h = await hookStore();
+  const a = envelope({ received_ts: T0 + 1 });
+  assert.deepEqual(await h.intake.deliver(a), { status: 'accepted', code: 'ok' });
+  // Both deletes failed earlier (on accept and on a duplicate retry): the stored delivery is still counted missing.
+  const put = h.db.prepare(`INSERT INTO hook_gaps (reason, agent, native_session_id, from_ts, to_ts, count, locator, recorded_at)
+    VALUES ('disk-full', 'claude', ?, ?, ?, 1, ?, ?)`);
+  put.run(SESSION, T0 + 1, T0 + 1, `disk-full:${a.delivery_id}`, T0 + 5);
+  put.run(SESSION, T0 + 2, T0 + 2, 'disk-full:00000000-0000-4000-8000-00000000b002', T0 + 5); // never stored
+  put.run(SESSION, T0 + 3, T0 + 3, 'disk-full:overflow:00000000-0000-4000-8000-00000000b003', T0 + 5);
+  createIntake({ db: h.db, writer: h.writer });
+  assert.equal(count(h.db, `SELECT count(*) FROM hook_gaps WHERE locator = 'disk-full:${a.delivery_id}'`), 0, 'the stored delivery is no longer missing');
+  assert.equal(count(h.db, "SELECT sum(count) FROM hook_gaps WHERE reason = 'disk-full'"), 2, 'an unstored delivery and the overflow bucket stay');
+});

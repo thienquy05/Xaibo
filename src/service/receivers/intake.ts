@@ -43,6 +43,11 @@ export function createIntake(o: IntakeOptions): Intake {
   const putGap = o.db.prepare(`INSERT INTO hook_gaps (reason, agent, native_session_id, from_ts, to_ts, count, locator, recorded_at)
     VALUES ('disk-full', ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (locator) DO NOTHING`);
   const dropGap = o.db.prepare('DELETE FROM hook_gaps WHERE locator = ?');
+  // A per-delivery gap whose delete failed twice (on accept and on a duplicate) is reconciled at start; overflow bucket
+  // locators (disk-full:overflow:<id>) never equal a stored delivery UUID (G3b-2, fix re-review 2).
+  try {
+    o.db.exec("DELETE FROM hook_gaps WHERE reason = 'disk-full' AND substr(locator, 11) IN (SELECT delivery_id FROM hook_delivery)");
+  } catch { /* best effort: the next start retries */ }
   // ponytail: held in memory until a commit succeeds; a restart while the disk is still full loses them. Bounded: past
   // the key cap every further delivery joins one gap without agent or session, counted per attempt and never reconciled.
   const gaps = new Map<string, Gap>(); // by delivery_id
