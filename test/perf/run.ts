@@ -7,6 +7,7 @@
 //   npm run perf -- --tier T0 --only notify   (P3-T11; no corpus)
 //   npm run perf -- --tier T0 --only live     (P3-T16a: M1, M11, M2 per path and missed-watch recovery; no corpus)
 //   npm run perf -- --tier T0 --only tee --runs 200 [--packaged]   (P3-T14 dev / P3-T16b packaged tee added wait; no app, no corpus)
+//   npm run perf -- --tier T1 --with-live-probes [--seed 1]   (P3-T16d: M1 and M2 per path while the t1mix corpus imports)
 //   npm run perf -- --tier T0 --only m16 --runs 200   (P3-T16b: shim added wait and forwarder own time per fault mode)
 //   npm run perf -- --tier T0 --only m4 [--seconds 300] [--seed 1]   (P3-T16b: idle footprint, window closed, on the T1 corpus)
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -17,13 +18,13 @@ import { ec15Huge } from './ec15-huge.ts';
 import { m3FirstList } from './m3-first-list.ts';
 import { m3Full } from './m3-full.ts';
 import { m16Probe, m4Probe } from './m16.ts';
-import { liveProbe, notifyProbe } from './t0.ts';
+import { importProbe, liveProbe, notifyProbe } from './t0.ts';
 import { teeWait } from './tee-wait.ts';
 
 const { values } = parseArgs({ allowNegative: true, options: {
   tier: { type: 'string', default: 'T1' }, metric: { type: 'string' }, only: { type: 'string' }, case: { type: 'string' }, runs: { type: 'string', default: '20' }, seed: { type: 'string', default: '1' },
   import: { type: 'boolean', default: true }, // --no-import skips the full-import timing run
-  packaged: { type: 'boolean', default: false }, seconds: { type: 'string', default: '300' },
+  packaged: { type: 'boolean', default: false }, seconds: { type: 'string', default: '300' }, 'with-live-probes': { type: 'boolean', default: false },
 } });
 const corpusRoot = path.join(REPO, '.cache', 'perf-corpus');
 const corpus = (name: string) => {
@@ -35,6 +36,7 @@ const corpus = (name: string) => {
 let result: { pass: boolean } & Record<string, unknown>;
 if (values.case === 'ec15') result = await ec15Huge(corpus('ec15'));
 else if (values.tier === 'T1' && values.metric === 'm3-first-list') result = { tier: 'T1', seed: Number(values.seed), ...await m3FirstList(corpus('t1'), Number(values.runs), values.import) };
+else if (values.tier === 'T1' && values['with-live-probes']) result = { tier: 'T1', seed: Number(values.seed), ...await importProbe(corpus('t1mix')) };
 else if (values.tier === 'T1' && values.metric === 'm3-full') result = { tier: 'T1', seed: Number(values.seed), ...await m3Full(corpus('t1mix'), Number(values.runs)) };
 else if (values.tier === 'T0' && values.only === 'notify') result = { tier: 'T0', ...await notifyProbe() };
 else if (values.tier === 'T0' && values.only === 'live') result = { tier: 'T0', ...await liveProbe() };

@@ -2,7 +2,7 @@
 // XAIBO_PERF_TRACE=1 lines (service commit and delta, main paint ack) on one monotonic clock: process.hrtime here,
 // in the service and in main. IDs and timings only.
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readSync } from 'node:fs';
 import path from 'node:path';
 import { deployShim } from '../../src/service/adapters/claude/setup.ts';
 import { REPO, sleep } from './app.ts';
@@ -28,15 +28,38 @@ export function emit(shim: string, agent: string, profile: string, payload: obje
 }
 
 type Line = { ev: string; ids?: string[]; delta?: number; t: string };
-const lines = (f: string): Line[] => (existsSync(f) ? readFileSync(f, 'utf8').split('\n').filter((l) => l.endsWith('}')).map((l) => JSON.parse(l) as Line) : []);
+
+/** Lines of an append-only JSONL file, read incrementally (P3-T16d review: re-reading a large trace every poll competed
+ *  with the app under test). */
+class Tail {
+  readonly #file: string;
+  #offset = 0;
+  #rest = '';
+  readonly lines: Line[] = [];
+  constructor(file: string) { this.#file = file; }
+  read(): Line[] {
+    if (!existsSync(this.#file)) return this.lines;
+    const fd = openSync(this.#file, 'r');
+    try {
+      const buf = Buffer.alloc(1 << 20);
+      for (let n; (n = readSync(fd, buf, 0, buf.length, this.#offset)) > 0;) {
+        this.#offset += n;
+        const parts = (this.#rest + buf.subarray(0, n).toString('utf8')).split('\n');
+        this.#rest = parts.pop()!;
+        for (const l of parts) if (l.endsWith('}')) this.lines.push(JSON.parse(l) as Line);
+      }
+    } finally { closeSync(fd); }
+    return this.lines;
+  }
+}
 
 /** The service and main trace files of one data dir. */
 export class Trace {
-  readonly #service: string;
-  readonly #main: string;
+  readonly #service: Tail;
+  readonly #main: Tail;
   constructor(dataDir: string) {
-    this.#service = path.join(dataDir, 'logs', 'perf-trace-service.jsonl');
-    this.#main = path.join(dataDir, 'logs', 'perf-trace-main.jsonl');
+    this.#service = new Tail(path.join(dataDir, 'logs', 'perf-trace-service.jsonl'));
+    this.#main = new Tail(path.join(dataDir, 'logs', 'perf-trace-main.jsonl'));
   }
 
   /** Waits for the commit carrying `id` (or, with id null, the first commit carrying an id) stamped at or after
@@ -45,12 +68,12 @@ export class Trace {
   async join(id: string | null, timeoutMs: number, notBefore: bigint): Promise<{ id: string; commit: bigint; delta: bigint; paint: bigint }> {
     const end = Date.now() + timeoutMs;
     for (;;) {
-      const service = lines(this.#service);
+      const service = this.#service.read();
       const commits = service.filter((l) => l.ev === 'commit' && BigInt(l.t) >= notBefore);
       const c = id === null ? commits.find((x) => x.ids?.length) : commits.find((x) => x.ids?.includes(id));
       const cid = id ?? c?.ids?.[0];
       const d = cid ? service.find((l) => l.ev === 'delta' && l.ids?.includes(cid)) : undefined;
-      const p = d ? lines(this.#main).find((l) => l.ev === 'paint' && l.delta === d.delta) : undefined;
+      const p = d ? this.#main.read().find((l) => l.ev === 'paint' && l.delta === d.delta) : undefined;
       if (c && d && p) return { id: cid!, commit: BigInt(c.t), delta: BigInt(d.t), paint: BigInt(p.t) };
       if (Date.now() > end) throw new Error(`trace join timed out (${c ? (d ? 'paint' : 'delta') : 'commit'})`);
       await sleep(5);
