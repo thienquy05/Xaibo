@@ -31,7 +31,7 @@ function base(on: (o: Observation, s: (id: string) => S, now: number) => void, n
     suspend: () => {}, resume: () => {},
     status: (_agent, id): SessionStatus | null => {
       const s = sessions.get(id);
-      return s ? { lifecycle: s.lifecycle, confidence: s.confidence, health: 'connected', reason: null, outcome: null, findings: [],
+      return s ? { lifecycle: s.lifecycle, confidence: s.confidence, health: 'connected', reason: null, settleAt: null, outcome: null, findings: [],
         toolCalls: 0, turns: 0, usage: null, model: null, effort: null } : null;
     },
     close: () => {},

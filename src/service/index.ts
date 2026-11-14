@@ -94,6 +94,7 @@ async function main(dataDir: string, log: Logger) {
     onCommit: committed,
     onAgents: (agents) => broadcast({ v: IPC_VERSION, type: 'agents', agents }),
     onNotify: (n) => parent.postMessage({ v: IPC_VERSION, type: 'notify', ...n } satisfies ServiceEvent), // P3-T11
+    onTick: (keys) => { for (const k of keys) changed(k); }, // P3-T16e: a settle at its deadline, not the next tick
   });
   resolveBooted(svc);
   setInterval(() => { for (const k of svc?.ticking() ?? []) changed(k); }, TICK_MS);

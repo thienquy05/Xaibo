@@ -25,6 +25,8 @@ export interface SessionStatus {
   lifecycle: Lifecycle; confidence: Confidence; health: Health;
   /** 'Finishing…', 'Background work', 'Probably waiting', or null. */
   reason: string | null;
+  /** P3-T16e: while Finishing… with no subagent running, when it settles (stop time + settle interval, ms); else null. */
+  settleAt: number | null;
   /** Outcome of the last turn or request: 'interrupted', 'denied', 'declined', 'cancelled', or null. */
   outcome: string | null;
   /** Active §6.4 finding rule ids ('R1'–'R5'), sorted (P3-T09). */
@@ -344,6 +346,7 @@ export function createEngine(o: EngineOptions): StatusEngine {
       && [...f.inflight.values()].some((t) => awake(t.at, now, sleeps) > rules.longToolMs)) findings.push('R5');
     return {
       ...l,
+      settleAt: l.reason === 'Finishing…' && !f.children.size && f.stopAt !== null ? f.stopAt + o.settleMs : null,
       health: suspendedAt !== null && f.lastTs <= suspendedAt ? 'stale' : 'connected',
       outcome: f.outcome, findings: findings.sort(), toolCalls: f.tools.size, turns: f.turnIds.size + Math.max(f.typed.confirmed, f.typed.inferred),
       usage: usageOf(f), model: f.model, effort: f.effort,

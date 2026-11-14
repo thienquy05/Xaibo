@@ -36,7 +36,7 @@ export interface TailAdapterOptions {
 
 type Stored = Checkpoint & { status: SourceFileCheckpoint['status'] };
 /** What boot holds of any adapter: its public lifecycle. */
-export type Ingester = Pick<TailAdapter<TailFile, TailRecord>, 'start' | 'stop' | 'wake' | 'reads'>;
+export type Ingester = Pick<TailAdapter<TailFile, TailRecord>, 'start' | 'watch' | 'backfill' | 'stop' | 'wake' | 'reads'>;
 
 // In-memory parse cap (D-P1-13, OQ-P1-06 measured): an in-memory line costs about 7x its size in the service (bytes,
 // raw and parsed strings, SQLite binds and record build), so 64 MiB could not meet the EC-15 RSS bound; longer lines
@@ -50,7 +50,10 @@ export abstract class TailAdapter<F extends TailFile, R extends TailRecord> {
   readonly #reads = new Map<string, number>();
 
   constructor(o: TailAdapterOptions) {
-    this.o = { accountSalt: null, zstd: zstdAvailable, intervalMs: 5000, activeMs: 10 * 60_000, eventsPerBatch: 100, bytesPerBatch: 1 << 20, chunkBytes: 1 << 20, maxLineBytes: PARSE_CAP, now: Date.now, ...o };
+    // P3-T16e: small batches and read chunks bound how long one commit holds the event loop (measured on the t1mix
+    // import: 25 rows / 128 KiB keep a 5 ms timer's lateness at p95 ~20 ms, import ~51 s; 100 rows / 1 MiB let it run
+    // ~700 ms late, so socket acks missed the forwarder deadline).
+    this.o = { accountSalt: null, zstd: zstdAvailable, intervalMs: 5000, activeMs: 10 * 60_000, eventsPerBatch: 25, bytesPerBatch: 128 * 1024, chunkBytes: 128 * 1024, maxLineBytes: PARSE_CAP, now: Date.now, ...o };
     this.#watcher = new Watcher<F>({
       list: () => this.discover(),
       onChange: (f) => void this.sync(f, true).catch(() => undefined), // a failed sync is retried on the next change or scan
@@ -72,7 +75,16 @@ export abstract class TailAdapter<F extends TailFile, R extends TailRecord> {
   reads(path: string): number { return this.#reads.get(path) ?? 0; }
 
   async start(): Promise<void> {
-    await this.#watcher.start(); // snapshot first, so changes during backfill are seen by the next scan
+    await this.watch();
+    await this.backfill();
+  }
+
+  /** Snapshot and start watching (P3-T16e: boot starts every adapter's watcher before any backfill), so changes
+   *  during any backfill are seen by a watch or the next scan. */
+  watch(): Promise<void> { return this.#watcher.start(); }
+
+  /** One file at a time, live files first, newest first. */
+  async backfill(): Promise<void> {
     const files = await this.discover();
     const withTime = await Promise.all(files.map(async (f) => ({ f, mtime: (await stat(f.path).catch(() => undefined))?.mtimeMs ?? 0 })));
     withTime.sort((a, b) => b.mtime - a.mtime); // newest first
@@ -144,8 +156,11 @@ export abstract class TailAdapter<F extends TailFile, R extends TailRecord> {
       records = [];
       quarantine = [];
       bytes = 0;
-      if (final) this.o.writer.flush(); // each batch is its own transaction; no reason to wait for the timer
+      this.o.writer.flush(); // a full (or final) batch is its own transaction; no reason to wait for the coalescing timer
       await committed;
+      // P3-T16e: a macrotask turn after each commit; the parse-commit loop over one read chunk is otherwise a chain of
+      // microtasks that keeps socket acks and watch callbacks waiting for the whole chunk.
+      await new Promise<void>((resolve) => setImmediate(resolve));
     };
     const take = (line: Line) => {
       const r = this.parse(line, file, base.mtime, receivedTs);

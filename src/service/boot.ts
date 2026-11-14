@@ -33,6 +33,8 @@ export interface BootOptions {
   onAgents?: (agents: AgentStatus[]) => void;
   /** P3-T11: a confirmed wait newly pending (agent display name, approved label, state). */
   onNotify?: (n: { agent: string; label: string | null; state: NotifyState }) => void;
+  /** P3-T16e: watched sessions whose status changed at a settle deadline (the service also re-reads on its tick). */
+  onTick?: (keys: string[]) => void;
 }
 export interface Service {
   store: Store;
@@ -102,6 +104,31 @@ export async function boot(o: BootOptions): Promise<Service> {
   const watched = new Map<string, { key: string; agent: string; sid: string; last: string }>();
   const watch = (agent: string, profileId: string, sid: string) => {
     watched.set(`${agent}\0${sid}`, { key: `${agent}\0${profileId}\0${sid}`, agent, sid, last: JSON.stringify(read(agent, sid)) });
+    arm({ agent, sid });
+  };
+  // P3-T16e: one timer at the earliest settle deadline among watched sessions, so a settle lands at its deadline and
+  // not up to one status tick (250 ms) later; the tick still covers the other time-based changes. A newly watched
+  // session only moves the timer earlier (review M1: a rescan per watch was O(n²), 5,000 rows ~2-4 s); the tick and the
+  // timer itself rescan, so a deadline that moved later is dropped there.
+  let due: { at: number; timer: NodeJS.Timeout } | undefined;
+  const arm = (only?: { agent: string; sid: string }) => {
+    if (!o.onTick || stopped) return;
+    let next = Infinity;
+    if (only) {
+      next = engine?.status(only.agent, only.sid)?.settleAt ?? Infinity;
+      if (next >= (due?.at ?? Infinity)) return;
+    } else for (const w of watched.values()) next = Math.min(next, engine?.status(w.agent, w.sid)?.settleAt ?? Infinity);
+    if (due?.at === next) return;
+    if (due) clearTimeout(due.timer);
+    due = undefined;
+    if (next === Infinity) return;
+    const timer = setTimeout(() => {
+      due = undefined;
+      const keys = ticking();
+      if (keys.length) o.onTick?.(keys);
+    }, Math.max(0, next - clock() + 1));
+    timer.unref();
+    due = { at: next, timer };
   };
   const timeBound = (s: LiveStatus | null) => !!s && (s.lifecycle === 'busy' || s.confidence === 'heuristic');
   // Rows are read through here: a time-bound session not yet watched is watched now, so one reloaded from the store at
@@ -110,6 +137,7 @@ export async function boot(o: BootOptions): Promise<Service> {
     const s = read(agent, sid);
     if (profileId !== undefined && timeBound(s) && !watched.has(`${agent}\0${sid}`)) {
       watched.set(`${agent}\0${sid}`, { key: `${agent}\0${profileId}\0${sid}`, agent, sid, last: JSON.stringify(s) });
+      arm({ agent, sid });
     }
     return s;
   };
@@ -121,6 +149,7 @@ export async function boot(o: BootOptions): Promise<Service> {
       if (now !== w.last) { w.last = now; out.push(w.key); }
       if (!timeBound(s)) watched.delete(k); // new evidence or a row read re-adds it
     }
+    arm();
     return out;
   };
   const feed = (b: Batch) => {
@@ -191,12 +220,18 @@ export async function boot(o: BootOptions): Promise<Service> {
     const Adapters: Record<string, typeof ClaudeAdapter | typeof CodexAdapter | typeof AgyAdapter> = { claude: ClaudeAdapter, codex: CodexAdapter, agy: AgyAdapter };
     // P3-T15: the account-marker salt (created on first boot; review L1); null = no marker, Codex scopes stay unverified
     const salt = loadScopeSalt(o.dataDir, o.log);
+    // P3-T16e: every adapter watches before any backfills, so appends to one agent's files are seen while another
+    // agent's backfill runs; backfills stay one at a time.
     for (const p of profiles.filter((x) => Adapters[x.agent])) {
       if (stopped) return;
       const a = new Adapters[p.agent]!({ db, writer, profileId: p.id, root: p.root, accountSalt: p.agent === 'codex' ? salt : null,
         ...(o.intervalMs ? { intervalMs: o.intervalMs } : {}) });
       adapters.push(a);
-      await a.start();
+      await a.watch();
+    }
+    for (const a of adapters) {
+      if (stopped) return;
+      await a.backfill();
     }
     o.log?.log('backfill_done', { profiles: profiles.length });
   };
@@ -228,6 +263,7 @@ export async function boot(o: BootOptions): Promise<Service> {
     wake: async () => { engine?.resume(clock()); await Promise.all(adapters.map((a) => a.wake())); },
     stop: () => {
       stopped = true;
+      if (due) clearTimeout(due.timer);
       void hooks?.close();
       for (const a of adapters) a.stop();
       engine?.close();

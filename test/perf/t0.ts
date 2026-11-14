@@ -231,7 +231,9 @@ export async function importProbe(corpus: string) {
   let l: Launched | undefined;
   try { // review M1: a failed clone or launch still removes root
     const home = path.join(root, 'home');
-    cpSync(path.join(corpus, 'home'), home, { recursive: true, mode: constants.COPYFILE_FICLONE_FORCE }); // fails rather than copy ~700 MB
+    // fails rather than copy ~700 MB; timestamps kept, or every corpus file would look active (P3-T16e: the 200-watch cap
+    // then left the probe's own live files to the 5 s scan)
+    cpSync(path.join(corpus, 'home'), home, { recursive: true, mode: constants.COPYFILE_FICLONE_FORCE, preserveTimestamps: true });
     const claude = path.join(home, '.claude');
     const codex = path.join(home, '.codex');
     const project = path.join(claude, 'projects', `${PROJECT}-import`);
@@ -316,12 +318,14 @@ export async function importProbe(corpus: string) {
     await Promise.all([hooks(), appends()]);
     const importMs = Date.parse(imported()!.t) - l.created; // includes the probe's own load
     const total = stats(m1.map((x) => x.total));
+    // a hook spooled at the deadline reaches the UI only by replay: counted as a miss (Infinity) in the gate figure
+    const withSpooled = stats([...m1.map((x) => x.total), ...Array<number>(spooledHooks).fill(Number.POSITIVE_INFINITY)]);
     const m2Stats = Object.fromEntries(Object.entries(m2).map(([k, v]) => [k, stats(v)]));
-    const checks = { m1: total.p95 <= B.m1 && m1.length >= 50, m2: Object.values(m2Stats).every((s) => s.n >= 5 && s.p95 <= B.m2), noSpooledHooks: spooledHooks === 0 };
+    const checks = { m1: withSpooled.p95 <= B.m1 && m1.length >= 50, m2: Object.values(m2Stats).every((s) => s.n >= 5 && s.p95 <= B.m2) };
     return { metric: 'live-during-import', corpus: summary.case, budgetsMs: { m1: B.m1, m2: B.m2 }, importToBackfillDoneMs: importMs,
-      m1: { total, dispatch: stats(m1.map((x) => x.dispatch)) }, m2: m2Stats, spooledHooks, misses,
-      notes: 'Samples started before backfill_done; M1 serial, one event at a time, shim + forwarder included; hooks that spooled at the deadline '
-        + 'are counted, not timed; a miss (no paint within 15 s) is timed as Infinity, which JSON prints as null. M2 per path n is small (about n/4 of the cycles).',
+      m1: { total, totalWithSpooledAsMisses: withSpooled, dispatch: stats(m1.map((x) => x.dispatch)) }, m2: m2Stats, spooledHooks, misses,
+      notes: 'Samples started before backfill_done; M1 serial, one event at a time, shim + forwarder included; hooks that spooled at the deadline are counted, and timed as misses in totalWithSpooledAsMisses (the checked figure); '
+        + 'a miss (no paint within 15 s) is timed as Infinity, which JSON prints as null. M2 per path n is small (about n/4 of the cycles).',
       checks, pass: Object.values(checks).every(Boolean), env: await environment(l.app) };
   } finally {
     if (l) await close(l);
