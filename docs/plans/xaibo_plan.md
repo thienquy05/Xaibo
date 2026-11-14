@@ -1484,20 +1484,21 @@ Third-agent coverage: no EC row is deleted. EC-02 replaces Gemini with Phase 2 `
 Metric scope: M8 loses Gemini fixtures and gains only T07's verified `agy` subset; missing cases are unavailable, never zero/pass. M1/M7/M16 replace Gemini hooks with synthetic `agy` mapped-event/config/forwarder paths; these measure Xaibo, not native dispatch, async support or trust. Native `agy` dispatch/added-wait evidence stays unavailable until separately owner-authorized and measured; M16 needs owner disposition if still unavailable. M2/M11 use Phase 2 `agy` transcript fixtures and synthetic `SessionStart`, with no live launch/resume claim; usage-window/context/cost paths stay unavailable per D-P2-02. M3 includes the Phase 2 `agy` corpus; M4 remains the shared packaged-process measurement. Claude/Codex and tee targets are unchanged.
 
 ### 3.6 Gate 3 checklist
-- [ ] All 24 EC rows pass with their PRD test types, or each unavailable required branch has explicit owner waive/defer/narrow disposition (§3.4); no blanket `agy` pass. EC-25 cites S5 evidence.
-- [ ] §6.7 thresholds met (M8) on declared fixture scope; B1/B2 per fixture; Gemini rows replaced as in §3.5, unavailable `agy` cases and owner dispositions listed.
-- [ ] M1, M2, M3 (with M1/M2 during import), M4, M7, M11 (ingestion), M16 (incl. tee overhead) measured on the packaged app on the reference Mac; misses accepted by the owner.
-- [ ] Gate 1/2 EC regression green; audit 0 in every E2E run; repo unchanged after runs.
-- [ ] Helpers (forwarder/shim/tee/`xaibo-report`) audited in every P3-T16 mode: 0 attempts.
-- [ ] EC-47 regression (P3-T02): dev and prod data dirs give distinct, coexisting sockets.
-- [ ] No agent-config write outside disposable profiles; dev CLI refuses real roots; no renderer Connect IPC.
-- [ ] Guard `MATCH` for every live session (local only); every new `agy` run has owner OK/budget; skipped/blocked live checks and missing native dispatch/async/trust evidence have explicit dispositions, never synthetic/live equivalence.
-- [ ] Only reduced schemas and numberless facts/pass-fail from native live runs in git; no real-machine counts, IDs, paths, prompts or transcript content; `privacy:scan` and `fixtures:lint` green.
-- [ ] harness-os: every unit's workflow complete (RED and GREEN observed); decisions recorded.
-- [ ] Playwright MCP visual check for T10/T11 UI; console clean; status as text plus icon.
-- [ ] `/ponytail-review` clean or resolved; no dependency added without approval.
-- [ ] `docs/integrations/report-v1.md` and the progress file updated.
-- [ ] GS: Codex review (all chunks), Claude second review, `.handoff/` deleted, owner stop, PR.
+Status 2026-11-14 (gate SHA `cd0a289`): 13 of 14 met, evidence per item in `docs/plans/gates/gate3.md` (section "Plan §3.6 Gate 3 checklist"); item 3 with the M11 file-only miss accepted (D-P3-19) and M16 passing on rerun.
+- [x] All 24 EC rows pass with their PRD test types, or each unavailable required branch has explicit owner waive/defer/narrow disposition (§3.4); no blanket `agy` pass. EC-25 cites S5 evidence.
+- [x] §6.7 thresholds met (M8) on declared fixture scope; B1/B2 per fixture; Gemini rows replaced as in §3.5, unavailable `agy` cases and owner dispositions listed.
+- [x] M1, M2, M3 (with M1/M2 during import), M4, M7, M11 (ingestion), M16 (incl. tee overhead) measured on the packaged app on the reference Mac; misses accepted by the owner.
+- [x] Gate 1/2 EC regression green; audit 0 in every E2E run; repo unchanged after runs.
+- [x] Helpers (forwarder/shim/tee/`xaibo-report`) audited in every P3-T16 mode: 0 attempts.
+- [x] EC-47 regression (P3-T02): dev and prod data dirs give distinct, coexisting sockets.
+- [x] No agent-config write outside disposable profiles; dev CLI refuses real roots; no renderer Connect IPC.
+- [x] Guard `MATCH` for every live session (local only); every new `agy` run has owner OK/budget; skipped/blocked live checks and missing native dispatch/async/trust evidence have explicit dispositions, never synthetic/live equivalence.
+- [x] Only reduced schemas and numberless facts/pass-fail from native live runs in git; no real-machine counts, IDs, paths, prompts or transcript content; `privacy:scan` and `fixtures:lint` green.
+- [x] harness-os: every unit's workflow complete (RED and GREEN observed); decisions recorded.
+- [x] Playwright MCP visual check for T10/T11 UI; console clean; status as text plus icon.
+- [x] `/ponytail-review` clean or resolved; no dependency added without approval.
+- [x] `docs/integrations/report-v1.md` and the progress file updated.
+- [ ] GS: Codex review (all chunks), Claude second review, `.handoff/` deleted, owner stop, PR. — **Open:** reviews done; waits for the `.handoff/` deletion (owner), the owner's Gate 3 approval and the PR #15 merge.
 
 ### 3.7 Risks (Phase 3)
 
