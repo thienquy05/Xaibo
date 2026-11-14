@@ -2,7 +2,7 @@
 
 ## 1. Summary
 
-- **Status: proposed, 2026-11-14.** D-P4-03(b); Claude review, then owner approval, are required before adoption.
+- **Status: approved and applied (D-P4-04).** Owner approval 2026-11-14; D-P4-03(b) proposals applied to [xaibo-design.md](../xaibo-design.md).
 - The locked system is [xaibo-design.md](../xaibo-design.md), approved at Gate D; its older draft/pending wording does not supersede the owner's approval.
 - Modern-web-guidance supports the existing native controls, bounded rendering, plain-text content, focus, reflow and reduced-motion choices.
 - Hallmark's permitted floor/reflex/lint lens supports the ruled ledger; its marketing-page defaults must yield to the brief.
