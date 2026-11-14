@@ -100,7 +100,10 @@ export function createIntake(o: IntakeOptions): Intake {
 
   const deliver = async (e: Envelope): Promise<IntakeResult> => {
     if (isStatusline(e)) return statusline(e);
-    if (stored.get(e.delivery_id)) return { status: 'accepted', code: 'duplicate' };
+    if (stored.get(e.delivery_id)) { // stored, so never missing: a commit that landed but reported disk full (G3b-2)
+      if (!gaps.delete(e.delivery_id)) try { dropGap.run(`disk-full:${e.delivery_id}`); } catch { /* the gap row stays */ }
+      return { status: 'accepted', code: 'duplicate' };
+    }
     o.publish?.(e, false);
     const unattributed = !profile.get(e.profile_key, e.agent) ? 'unknown-profile' : e.session_id === null ? 'no-session' : null;
     const batch: Batch = {

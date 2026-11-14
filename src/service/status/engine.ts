@@ -267,8 +267,13 @@ function usageOf(f: Fold): Record<string, number> | null {
   return out;
 }
 
-/** top: the highest producer_seq seen per producer key, so an in-order report skips the successor search (review L1). */
-interface Sess { agent: string; entries: Entry[]; dedup: Set<string>; fold: Fold; top: Map<string, number> }
+/** top: per producer key the highest producer_seq and the latest ordering time, so a report newest in both skips the
+ *  neighbour search (review L1). */
+interface Sess { agent: string; entries: Entry[]; dedup: Set<string>; fold: Fold; top: Map<string, { seq: number; ts: number }> }
+const raise = (s: Sess, x: Entry) => {
+  const t = s.top.get(x.pid!);
+  s.top.set(x.pid!, { seq: Math.max(t?.seq ?? -Infinity, x.pseq!), ts: Math.max(t?.ts ?? -Infinity, x.ts) });
+};
 const after = (a: Entry, b: Entry) => a.ts - b.ts || a.rank - b.rank || a.seq - b.seq || (a.pseq ?? 0) - (b.pseq ?? 0);
 
 export function createEngine(o: EngineOptions): StatusEngine {
@@ -300,7 +305,7 @@ export function createEngine(o: EngineOptions): StatusEngine {
       if (!Array.isArray(evs) || !evs.every((e) => e && typeof e === 'object' && typeof e.k === 'string')) throw new Error('shape');
       const x: Entry = { ts: r.ts, rank: r.rank, seq: r.seq, conf: r.confidence, evs: evs as Ev[], ...(r.pid !== null && r.pseq !== null ? { pid: r.pid, pseq: r.pseq } : {}) };
       step(s.fold, x, rules); s.entries.push(x);
-      if (x.pid !== undefined) s.top.set(x.pid, Math.max(s.top.get(x.pid) ?? -Infinity, x.pseq!));
+      if (x.pid !== undefined) raise(s, x);
     } catch { o.log('status_row_skipped'); } // one corrupt row never stops startup
     seq = Math.max(seq, r.rank === 0 ? r.seq : 0);
   }
@@ -333,23 +338,30 @@ export function createEngine(o: EngineOptions): StatusEngine {
       ? { ts: obs.envelope.received_ts, rank: 0, seq: ++seq, conf: 'confirmed', evs }
       : { ts: obs.receivedTs, rank: 1, seq: obs.offset, conf: 'inferred', evs };
     if (obs.source === 'report') {
-      // Report intake stamps arrival time, so producer_seq is the causal order within one producer (§5.10: timestamps do
-      // not override it). A late event sorting after a higher-seq event of its producer takes the earliest such
-      // successor's place, and its lower producer_seq puts it first. A producer is scoped to its registration (the
+      // Report intake stamps arrival time (a replay, the helper's), so producer_seq is the causal order within one producer
+      // (§5.10: timestamps do not override it). Every report sits between its producer's neighbours: one sorting before
+      // its latest lower-seq entry takes that entry's place, one sorting after its earliest higher-seq entry takes that
+      // one's, and producer_seq, the last sort key, settles the tie (G3f-1). A producer is scoped to its registration (the
       // intake's delivery id is `<registration>:<id>`), so one registration never reorders another's events (review L2).
       const p = obs.envelope.payload ?? {}, id = p['producer_id'], pseq = p['producer_seq'];
       if (typeof id === 'string' && Number.isSafeInteger(pseq)) {
         const d = obs.envelope.delivery_id, pid = `${d.includes(':') ? d.slice(0, d.indexOf(':')) : ''}:${id}`;
         x.pid = pid; x.pseq = pseq as number;
-        const top = s.top.get(pid) ?? -Infinity;
-        if (x.pseq < top) { // a late event: only then can a successor exist
-          let next: Entry | undefined;
-          for (const e of s.entries) if (e.pid === pid && e.pseq! > x.pseq && (!next || after(e, next) < 0)) next = e;
-          if (next && after(x, next) > 0) { x.ts = next.ts; x.seq = next.seq; }
+        const top = s.top.get(pid);
+        if (top && (x.pseq <= top.seq || x.ts < top.ts)) { // not newest in both seq and time: find its neighbours
+          let prev: Entry | undefined, next: Entry | undefined;
+          for (const e of s.entries) {
+            if (e.pid !== pid) continue;
+            if (e.pseq! < x.pseq && (!prev || after(e, prev) > 0)) prev = e;
+            if (e.pseq! > x.pseq && (!next || after(e, next) < 0)) next = e;
+          }
+          if (prev && after(x, prev) < 0) { x.ts = prev.ts; x.seq = prev.seq; }
+          else if (next && after(x, next) > 0) { x.ts = next.ts; x.seq = next.seq; }
         }
-        s.top.set(pid, Math.max(top, x.pseq));
+        raise(s, x);
       }
     }
+    const received = hookish ? obs.envelope.received_ts : x.ts; // the receipt time, before any reordering (G3f-2)
     try { put.run(agent, profile, sid, dedup, x.ts, x.rank, x.seq, x.conf, JSON.stringify(x.evs), x.pid ?? null, x.pseq ?? null); } catch { o.log('status_store_failed'); }
     const pending = new Set(s.fold.requests.keys());
     let i = s.entries.length;
@@ -361,7 +373,8 @@ export function createEngine(o: EngineOptions): StatusEngine {
     // (one prompt reported twice, a refold of earlier evidence or a late request already resolved in causal order sends
     // nothing; request ids derived from fold order are never remembered, review M1/M2). An entry received more than
     // NOTIFY_MAX_AGE_MS ago (a spool replayed after an outage) is stale: its resolution is likely already queued (M3).
-    if (s.fold.ended || !x.evs.some((e) => e.k === 'request') || o.now() - x.ts > NOTIFY_MAX_AGE_MS) return;
+    // Age is the receipt time: a live request placed before a newer event of its producer is still new (G3f-2).
+    if (s.fold.ended || !x.evs.some((e) => e.k === 'request') || o.now() - received > NOTIFY_MAX_AGE_MS) return;
     for (const [id, kind] of s.fold.requests) {
       if (!pending.has(id)) o.onWait?.(agent, profile, sid, kind === 'input' ? 'needs-input' : 'waiting-for-permission');
     }

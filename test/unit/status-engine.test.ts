@@ -282,3 +282,28 @@ test('L4: SubagentStart after a turn error keeps the error', async () => {
   assert.equal(h.feed(H('StopFailure', {}, 100), 100)!.lifecycle, 'error');
   assert.equal(h.feed(H('SubagentStart', { agent_id: 'c1' }, 200), 200)!.lifecycle, 'error');
 });
+
+// Codex fix re-review (XAIBO-PROD-326): every report entry sits between its producer's predecessor and successor; the
+// notification age is the receipt time, never the ordering time.
+test('G3f-1: a replayed later-seq report with an older receipt time sorts after its predecessor, so the turn settles', async () => {
+  const h = await harness();
+  h.at(100); h.e().ingest(R('mytool', 'p1', SID, 'turn.start', 1, 100, { turn_id: 't' }));
+  h.at(200); h.e().ingest(R('mytool', 'p1', SID, 'turn.end', 2, 10)); // spooled by the helper at T+10, replayed now
+  h.at(20_000);
+  assert.deepEqual([h.e().status('mytool', 'p1', SID)?.lifecycle, h.e().status('mytool', 'p1', SID)?.reason], ['idle', null]);
+  h.restart();
+  assert.equal(h.e().status('mytool', 'p1', SID)?.lifecycle, 'idle', 'the same order after a reload');
+});
+
+test('G3f-2: a live request placed before a newer event notifies by its receipt time; a replayed old request does not', async () => {
+  const h = await harness();
+  h.at(0); h.e().ingest(R('mytool', 'p1', SID, 'usage.snapshot', 3, 0));
+  h.at(120_000); h.e().ingest(R('mytool', 'p1', SID, 'permission.request', 2, 120_000, { request_id: 'q1' }));
+  assert.equal(h.e().status('mytool', 'p1', SID)?.lifecycle, 'waiting-for-permission');
+  assert.equal(h.waits.length, 1, 'received just now: notifies once');
+  const g = await harness();
+  g.at(0); g.e().ingest(R('mytool', 'p1', SID, 'session.start', 1, 0));
+  g.at(3_600_000); g.e().ingest(R('mytool', 'p1', SID, 'permission.request', 2, 1000, { request_id: 'q2' })); // replayed an hour late
+  assert.equal(g.e().status('mytool', 'p1', SID)?.lifecycle, 'waiting-for-permission');
+  assert.deepEqual(g.waits, [], 'a stale replayed request never notifies');
+});

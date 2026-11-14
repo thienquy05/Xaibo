@@ -89,3 +89,25 @@ test('G3b-2 (EC-44): disk-full gaps dedup by delivery_id and a later accepted de
   assert.deepEqual(await h.intake.deliver(a), { status: 'accepted', code: 'ok' });
   assert.equal(count(h.db, "SELECT sum(count) FROM hook_gaps WHERE reason = 'disk-full'"), 1, 'only B is still missing');
 });
+
+test('G3b-2 residual: a delivery that is already stored clears its disk-full gap on the duplicate path', async () => {
+  // The commit lands but reports SQLITE_FULL (e.g. full at the checkpoint): the delivery is stored and also counted missing.
+  let failAfterCommit = true;
+  const diskFull = () => Object.assign(new Error('database or disk is full'), { code: 'ERR_SQLITE_ERROR', errcode: 13 });
+  const h = await hookStore({ writer: { commit: (db, b) => { commitBatch(db, b); if (failAfterCommit) throw diskFull(); } } });
+  const a = envelope({ received_ts: T0 + 1 });
+  const b = envelope({ received_ts: T0 + 2 });
+  for (const e of [a, b]) assert.deepEqual(await h.intake.deliver(e), { status: 'rejected', code: 'disk-full' });
+  failAfterCommit = false;
+  h.intake.recovered(); // both gaps written
+  assert.deepEqual(await h.intake.deliver(a), { status: 'accepted', code: 'duplicate' });
+  assert.equal(count(h.db, `SELECT count(*) FROM hook_gaps WHERE locator = 'disk-full:${a.delivery_id}'`), 0, 'a written gap is dropped');
+  const c = envelope({ received_ts: T0 + 3 });
+  failAfterCommit = true;
+  assert.deepEqual(await h.intake.deliver(c), { status: 'rejected', code: 'disk-full' });
+  failAfterCommit = false;
+  assert.deepEqual(await h.intake.deliver(c), { status: 'accepted', code: 'duplicate' });
+  h.intake.recovered();
+  assert.equal(count(h.db, `SELECT count(*) FROM hook_gaps WHERE locator = 'disk-full:${c.delivery_id}'`), 0, 'a held gap is dropped');
+  assert.equal(count(h.db, "SELECT sum(count) FROM hook_gaps WHERE reason = 'disk-full'"), 1, 'only B stays counted');
+});
