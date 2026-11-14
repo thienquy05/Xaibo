@@ -788,22 +788,24 @@ Every result records hardware class, macOS, app/agent versions, seed and actual 
 
 ### 0.20 Gate 0 checklist
 
-- [ ] **G0-1** `phase0_spikes.md` has one decision per spike (S1, S3, S4, S5, S6, S7, S9, S10, S11, S12, S13) against its pass/fail evidence; no criterion UNVERIFIED without a stated consequence.
-- [ ] **G0-2** Environment: exact pins for electron, typescript, electron-builder in `package.json`/`package-lock.json`/`.npmrc`; caches verified in `.cache/`; nothing new under `~/Library/Caches`. `npm run spike:test`, `npm test`, `npm run typecheck`, `npm run dist:mac` green on a clean checkout; spike app smoke passes with no orphans.
-- [ ] **G0-3** S1 engine decision with all probe and kill/restart invariants (200/200, 20/20); App. C `better-sqlite3` row resolved.
-- [ ] **G0-4** S3 candidate matrix covers every PRD criterion; Q7 and Q17 answered; ack point decided; App. E #19 resolved, #18 updated; HTTP gaps documented.
-- [ ] **G0-5** S4 (D-2) decided with a verified command sequence; S5 FR-31 route and trust steps decided; compatibility matrix complete for Claude 2.1.319 and Codex 0.160.0 (untested cells carry a reason).
-- [ ] **G0-6** S12 minimum architecture, batch bounds, watcher strategy and FR-02/Q8 interval default derived from measurements; Q19 status; unresolved risks mapped to gates.
-- [ ] **G0-7** S10 positive control detected; zero attempted non-loopback connections in every scenario across main, renderer/Chromium, service and both forwarder candidates.
-- [ ] **G0-8** **S13 report with the explicit tee-feasibility and account-scope decision.** If the tee is not feasible, the owner has made the scope decision; no silent account-cache fallback.
-- [ ] **G0-9** S9 and S11 decisions; required-scope misses (S11-C1–C5, S3/S12 speed/capacity) presented to the owner with options and the decision recorded in report §4; negative optional results listed as narrowing edits.
-- [ ] **G0-10** Dependency list approved by the owner (App. C delta incl. validator selection and install phase). Nothing outside App. C installed.
-- [ ] **G0-11** PRD delta collected into one revision with a history line (P0-G-T2).
-- [ ] **G0-12** Privacy: `npm run privacy:scan` green over `docs/plans`, `spikes`, `test/fixtures/synthetic`, `docs/PRD.md` and the complete gate diff (P0-T08); no raw recording committed; schemas contain only whitelisted strings; fixtures pass the synthetic-pattern checks.
-- [ ] **G0-13** Real profiles untouched: guard `MATCH` for every live session and the final `baseline` compare; keychain result per agent (shared/not shared; temp item added yes/no); no real store or config written; no workspace-scope retention file remains.
-- [ ] **G0-14** Hygiene: `grep -rn "spikes/" src/` empty (Phase 0 adds no `src/`); `git status --porcelain` lists only intended files; `.cache/` ignored.
-- [ ] **G0-15** All P0-G-T3 `record_decision` entries exist; progress file current.
-- [ ] **G0-16** Codex diff review → Claude second review → owner stop; `.handoff/` deleted.
+Gate 0 approved 2026-11-10 on gate SHA `7deb8cb` (`docs/plans/gates/gate0.md`). Boxes ticked 2026-11-14 against that record and `phase0_spikes.md`; *Via* marks an item met through an owner-accepted substitute.
+
+- [x] **G0-1** `phase0_spikes.md` has one decision per spike (S1, S3, S4, S5, S6, S7, S9, S10, S11, S12, S13) against its pass/fail evidence; no criterion UNVERIFIED without a stated consequence. *Evidence:* report §1, one 2.5 decision per spike in §2; Gemini live UNVERIFIED carried to report §4.
+- [x] **G0-2** Environment: exact pins for electron, typescript, electron-builder in `package.json`/`package-lock.json`/`.npmrc`; caches verified in `.cache/`; nothing new under `~/Library/Caches`. `npm run spike:test`, `npm test`, `npm run typecheck`, `npm run dist:mac` green on a clean checkout; spike app smoke passes with no orphans. *Evidence:* report § Environment; gate0.md suite on `7deb8cb`.
+- [x] **G0-3** S1 engine decision with all probe and kill/restart invariants (200/200, 20/20); App. C `better-sqlite3` row resolved. *Evidence:* S1-C5 (200/200, 20/20), `node:sqlite` chosen, `better-sqlite3` not needed (record_decision 16).
+- [x] **G0-4** S3 candidate matrix covers every PRD criterion; Q7 and Q17 answered; ack point decided; App. E #19 resolved, #18 updated; HTTP gaps documented. *Evidence:* S3-C1–C13, S3 2.5/2.6 (SEA over a private socket, ack after commit; record_decision 23).
+- [x] **G0-5** S4 (D-2) decided with a verified command sequence; S5 FR-31 route and trust steps decided; compatibility matrix complete for Claude 2.1.319 and Codex 0.160.0 (untested cells carry a reason). *Evidence:* S4, S5 2.5 (record_decision 24, 25); matrix in report §3. *Via:* Claude rows are on 2.1.322 after an auto-update; owner accepted (D-P0-34).
+- [x] **G0-6** S12 minimum architecture, batch bounds, watcher strategy and FR-02/Q8 interval default derived from measurements; Q19 status; unresolved risks mapped to gates. *Evidence:* S12 2.5/2.6 and its Q19 table (record_decision 28). *Via:* personal profile with a deferred scale-up stage (D-P0-24, D-P0-26, D-P0-36).
+- [x] **G0-7** S10 positive control detected; zero attempted non-loopback connections in every scenario across main, renderer/Chromium, service and both forwarder candidates. *Evidence:* S10-C1–C6; gate0.md: 11/11 controls, 0 attempts in 10 scenarios (record_decision 34).
+- [x] **G0-8** **S13 report with the explicit tee-feasibility and account-scope decision.** If the tee is not feasible, the owner has made the scope decision; no silent account-cache fallback. *Evidence:* S13 2.5: tee feasible as a SEA; Claude scope unverified; Codex salted hash (record_decision 33).
+- [x] **G0-9** S9 and S11 decisions; required-scope misses (S11-C1–C5, S3/S12 speed/capacity) presented to the owner with options and the decision recorded in report §4; negative optional results listed as narrowing edits. *Evidence:* S9, S11 2.5 (record_decision 26, 27); report §4 rows with owner decisions dated 2026-11-10.
+- [x] **G0-10** Dependency list approved by the owner (App. C delta incl. validator selection and install phase). Nothing outside App. C installed. *Evidence:* report §3; D-P0-34 (`ajv` 8.20.0 at Phase 1 start).
+- [x] **G0-11** PRD delta collected into one revision with a history line (P0-G-T2). *Evidence:* PRD v1.1 status line at `7deb8cb`, approved with Gate 0.
+- [x] **G0-12** Privacy: `npm run privacy:scan` green over `docs/plans`, `spikes`, `test/fixtures/synthetic`, `docs/PRD.md` and the complete gate diff (P0-T08); no raw recording committed; schemas contain only whitelisted strings; fixtures pass the synthetic-pattern checks. *Evidence:* gate0.md suite, privacy row clean.
+- [x] **G0-13** Real profiles untouched: guard `MATCH` for every live session and the final `baseline` compare; keychain result per agent (shared/not shared; temp item added yes/no); no real store or config written; no workspace-scope retention file remains. *Evidence:* report § Guard (per-block results, keychain table: no temp item added); no `.gemini/settings.json` under `.cache/spike-projects` (checked 2026-11-14). *Via:* the `baseline` snapshot was lost, so per-block snapshots from S10 on replace the final compare (D-P0-35).
+- [x] **G0-14** Hygiene: `grep -rn "spikes/" src/` empty (Phase 0 adds no `src/`); `git status --porcelain` lists only intended files; `.cache/` ignored. *Evidence:* gate0.md suite.
+- [x] **G0-15** All P0-G-T3 `record_decision` entries exist; progress file current. *Evidence:* report §5 (16, 23–28, 32–39); Gate 0 approval is record_decision 41.
+- [x] **G0-16** Codex diff review → Claude second review → owner stop; `.handoff/` deleted. *Evidence:* gate0.md Reviews (Codex approve on `7deb8cb`, Claude second review approve, owner approved 2026-11-10); no Gate 0 handoff files remain.
 
 ### 0.21 Risks (Phase 0)
 
