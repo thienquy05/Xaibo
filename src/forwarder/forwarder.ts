@@ -39,10 +39,13 @@ const PERMANENT = new Set(['auth', 'malformed', 'unsupported-version', 'oversize
 
 let finished = false;
 let unsettled: (() => void) | null = null; // spools the delivery if the deadline hits before an ack or spool
+let onDeadline: (() => void) | null = null; // hook mode: arms `unsettled` from the stdin read so far (truncated)
 let exitCode = 0;
 const finish = () => {
   if (finished) return;
   finished = true;
+  // stdin not ended yet: a missed hook still leaves a spooled envelope (EC-46); a throw here must not stop the exit
+  if (!unsettled) try { onDeadline?.(); } catch { /* exit anyway */ }
   if (unsettled) { const s = unsettled; unsettled = null; s(); }
   process.exit(exitCode);
 };
@@ -54,7 +57,13 @@ const fail = (code: string) => {
   try { writeSync(2, `xaibo-report: ${code}\n`); } catch { /* stderr closed */ }
   finish();
 };
-setTimeout(finish, DEADLINE_MS);
+// Every timer runs `fn` two loop turns late: after a stall a timer can be due before poll reads stdin already in the pipe
+// (EC-46), and libuv ends a pipe read on a short read, so the data comes in one poll and its EOF in the next. ponytail:
+// a payload larger than the pipe buffer can need more turns; under a stall the hook then spools it truncated via
+// onDeadline (evidence, not lost) and a report fails 'stdin' (exit 2, never silent).
+const late = (fn: () => void) => () => setImmediate(() => setImmediate(fn));
+// Report mode: a deadline before the event is armed is reported (exit 2), never a silent 0 with nothing sent (G3i-1).
+setTimeout(late(() => (REPORT && !unsettled ? fail('stdin') : finish())), DEADLINE_MS);
 // Report mode: an error before the event is ready to spool is reported (exit 2), never a silent 0 (review M1).
 const crash = () => (REPORT && !unsettled ? fail('internal') : finish());
 process.on('uncaughtException', crash);
@@ -285,7 +294,7 @@ function main() {
     const parts: Buffer[] = [];
     let size = 0;
     let read = false; // set at end: a deferred stdin timeout then never cuts a send in flight
-    const timer = setTimeout(() => setImmediate(() => { if (!read) fail('stdin'); }), STDIN_MS); // pending data and end run first
+    const timer = setTimeout(late(() => { if (!read) fail('stdin'); }), STDIN_MS); // pending data and end run first
     process.stdin.on('data', (b: Buffer) => {
       size += b.length;
       if (size > STDIN_CAP) { clearTimeout(timer); process.stdin.destroy(); fail('oversize'); return; }
@@ -310,10 +319,10 @@ function main() {
     process.stdin.destroy();
     const e = envelope(agent, profile, id, Buffer.concat(chunks, kept), total, ended);
     unsettled = () => spool(e, e);
-    send(e);
+    if (!finished) send(e); // from finish: spool only, never a send that could hold the exit
   };
-  // setImmediate: a slow start can make this timer due before stdin's data is read; poll runs first (review, EC-46 flake)
-  const readTimer = setTimeout(() => setImmediate(() => complete(false)), STDIN_MS);
+  // late: a slow start can make this timer due before stdin's data and EOF are read; poll runs first (EC-46)
+  const readTimer = setTimeout(late(() => complete(false)), STDIN_MS);
   process.stdin.on('data', (b: Buffer) => {
     total += b.length;
     if (kept < STDIN_CAP) { const part = b.subarray(0, STDIN_CAP - kept); chunks.push(part); kept += part.length; }
@@ -321,6 +330,7 @@ function main() {
   });
   process.stdin.on('end', () => complete(true));
   process.stdin.on('error', () => complete(false));
+  onDeadline = () => complete(false);
 }
 
 main();
