@@ -17,6 +17,7 @@ import { APP_ORIGIN, devOrigin } from './policy.ts';
 import { lockDown, registerAppScheme, webPreferences } from './security.ts';
 import { Supervisor } from './service-supervisor.ts';
 import { createTray } from './tray.ts';
+import { hideWindow, showWindow } from './window.ts';
 
 const SERVICE_QUIT_MS = 2_000;
 const here = import.meta.dirname;
@@ -42,7 +43,7 @@ function start(dataDir: string) {
   let stopped = false;
   let blocked = 0;
 
-  const show = () => { win?.show(); win?.focus(); };
+  const show = () => showWindow(win);
   let pageReady = false; // a port sent to a loading page is lost; did-finish-load sends one
   const sendPort = () => {
     if (!win || !pageReady) return;
@@ -124,7 +125,7 @@ function start(dataDir: string) {
     ]));
     win = new BrowserWindow({ width: 960, height: 640, show: false, title: 'Xaibo', webPreferences: webPreferences(path.join(here, 'preload.cjs')) });
     win.once('ready-to-show', show);
-    win.on('close', (e) => { if (!quitting) { e.preventDefault(); win?.hide(); } });
+    win.on('close', (e) => { if (!quitting) { e.preventDefault(); hideWindow(win); } });
     win.webContents.on('did-start-loading', () => { pageReady = false; });
     win.webContents.on('did-finish-load', () => { pageReady = true; win?.webContents.send('health', supervisor.health); sendPort(); });
     void win.loadURL(dev ? `${dev}/` : `${APP_ORIGIN}/index.html`);

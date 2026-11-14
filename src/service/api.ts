@@ -73,10 +73,23 @@ export function sessionsByKey(db: DatabaseSync, keys: SessionKey[], kinds: Sessi
 }
 
 /** The reply to a renderer request; a store that cannot answer (e.g. read-only without tables) gives an empty page. */
-export function answer(db: DatabaseSync, req: PortRequest, kinds: SessionKind[] = [], models: ModelEntry[] = [], live?: LiveOf): PortMessage & { type: 'page' } {
+export function answer(db: DatabaseSync, req: PortRequest & { type: 'listSessions' }, kinds: SessionKind[] = [], models: ModelEntry[] = [], live?: LiveOf): PortMessage & { type: 'page' } {
   let page: Page;
   try { page = listSessions(db, req.cursor, req.limit, kinds, models, live); } catch { page = { rows: [], next: null }; }
   return { v: IPC_VERSION, type: 'page', id: req.id, ...page };
+}
+
+/** Renderer ports (P4-T02): session deltas go only to live (visible) ports; every other push goes to all ports. */
+export function createHub<P extends { postMessage(m: PortMessage): void }>() {
+  const ports = new Map<P, boolean>();
+  return {
+    add(p: P): void { ports.set(p, true); },
+    remove(p: P): void { ports.delete(p); },
+    setLive(p: P, on: boolean): void { if (ports.has(p)) ports.set(p, on); },
+    anyLive(): boolean { return [...ports.values()].some(Boolean); },
+    sessions(m: PortMessage & { type: 'sessions' }): void { for (const [p, live] of ports) if (live) p.postMessage(m); },
+    broadcast(m: PortMessage): void { for (const p of ports.keys()) p.postMessage(m); },
+  };
 }
 
 /** Collects keys and flushes each distinct key once per window of `ms`. */

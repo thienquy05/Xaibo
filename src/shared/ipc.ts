@@ -105,7 +105,9 @@ export const MAX_BANNERS = 64;
 const MAX_STEPS = 16;
 export interface Page { rows: SessionRow[]; next: Cursor | null }
 export interface AgentStatus { agent: string; name: string; state: 'detected' | 'not-detected'; version: string | null }
-export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Cursor | null; limit: number };
+export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Cursor | null; limit: number }
+  /** P4-T02: the window is visible (live session deltas wanted) or hidden (paused; the renderer resyncs by cursor). */
+  | { v: 1; type: 'live'; on: boolean };
 export type PortMessage =
   | { v: 1; type: 'page'; id: number; rows: SessionRow[]; next: Cursor | null }
   // coalesced deltas: current rows of changed sessions; delta only with XAIBO_PERF_TRACE=1 (the renderer acks its paint)
@@ -177,6 +179,7 @@ function parseAgent(x: unknown): AgentStatus | null {
 
 export function parsePortRequest(x: unknown): PortRequest | null {
   const m = envelope(x);
+  if (m?.type === 'live') return typeof m.on === 'boolean' ? { v: 1, type: 'live', on: m.on } : null;
   if (!m || m.type !== 'listSessions' || !count(m.id) || !Number.isSafeInteger(m.limit) || (m.limit as number) < 1) return null;
   const cursor = parseCursor(m.cursor);
   return cursor === undefined ? null : { v: 1, type: 'listSessions', id: m.id, cursor, limit: m.limit as number };

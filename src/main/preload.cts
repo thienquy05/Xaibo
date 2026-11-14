@@ -5,6 +5,8 @@ const { contextBridge, ipcRenderer } = require('electron') as typeof import('ele
 
 ipcRenderer.on('port', (e) => window.postMessage('xaibo-port', '*', e.ports));
 ipcRenderer.on('health', (_e, health: unknown) => window.postMessage(health, '*'));
+// P4-T02: main's window hide/show (src/main/window.ts; page visibility does not follow hide() on macOS).
+ipcRenderer.on('visible', (_e, on: unknown) => window.postMessage({ xaiboVisible: on === true }, '*'));
 // P3-T10: `paintAck(delta)` reports a painted delta id; main records it only under XAIBO_PERF_TRACE=1.
 contextBridge.exposeInMainWorld('xaibo', {
   setAgentPath: (agent: string) => ipcRenderer.send('set-agent-path', String(agent)),

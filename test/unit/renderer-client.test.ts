@@ -2,7 +2,13 @@
 // request; pushes go to their handlers; every message is validated and invalid ones are counted.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createClient, type PortLike } from '../../src/renderer/client.ts';
+import { createClient, parseVisible, type PortLike } from '../../src/renderer/client.ts';
+
+test('P4-T02: main\'s window visibility message (via the preload) is a strict boolean; anything else is ignored', () => {
+  assert.equal(parseVisible({ xaiboVisible: true }), true);
+  assert.equal(parseVisible({ xaiboVisible: false }), false);
+  for (const x of [null, 'xaibo-port', { xaiboVisible: 'true' }, { xaiboVisible: 1 }, { visible: true }, [true]]) assert.equal(parseVisible(x), null);
+});
 import type { AgentStatus, SessionRow } from '../../src/shared/ipc.ts';
 
 function fakePort() {

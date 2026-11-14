@@ -38,6 +38,31 @@ test('backfill rows, health and the agent strip; a live append updates the row',
   await expect(rows.first().getByRole('cell').nth(4)).toHaveText(formatTime(Date.parse(ts)), { timeout: 15_000 });
 });
 
+test('P4-T02: a hidden window gets no live deltas; showing it resyncs the list by cursor', async ({ xaibo }) => {
+  const run = await xaibo.launch();
+  const page = await xaibo.window(run);
+  const time = rowsOf(page).first().getByRole('cell').nth(4);
+  await expect(rowsOf(page)).toHaveCount(1);
+  const before = await time.textContent();
+  await run.app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.close()); // close hides
+  // page visibility does not follow hide() on macOS (that is why main reports hide/show); check the window itself
+  await expect.poll(() => run.app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.isVisible())).toBe(false);
+  const ts = '2026-01-02T06:00:00.000Z';
+  xaibo.touchStore(() => appendFileSync(path.join(project(xaibo.home), `${SESSION}.jsonl`), userLine(SESSION, '00000000-0000-4000-8000-0000000010e4', ts, '/tmp/xaibo-fixture/alpha')));
+  const lastActivity = () => {
+    let db: DatabaseSync | undefined;
+    try {
+      db = new DatabaseSync(path.join(run.dataDir, 'xaibo.db'), { readOnly: true });
+      return Number(Object.values(db.prepare('SELECT max(last_activity) FROM sessions').get() ?? {})[0]);
+    } catch { return -1; } finally { db?.close(); }
+  };
+  await expect.poll(lastActivity, { timeout: 15_000 }).toBe(Date.parse(ts)); // committed while hidden
+  await page.waitForTimeout(500); // longer than the service delta window plus a frame
+  expect(await time.textContent()).toBe(before); // paused: no delta reached the hidden window
+  await run.app!.evaluate(({ app }) => { app.emit('activate'); }); // the app's own show path (dock click)
+  await expect(time).toHaveText(formatTime(Date.parse(ts)), { timeout: 5_000 }); // the resync on show
+});
+
 test('Load more pages without duplicates (keyboard)', async ({ xaibo }) => {
   xaibo.touchStore(() => {
     for (let i = 1; i <= 60; i++) {

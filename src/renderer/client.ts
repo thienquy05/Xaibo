@@ -9,6 +9,13 @@ export interface PortLike { onmessage: ((e: { data: unknown }) => void) | null; 
 /** delta: the perf-trace id of a sessions push (P3-T10), present only under XAIBO_PERF_TRACE=1. */
 export interface Pushes { sessions(rows: SessionRow[], delta?: number): void; agents(agents: AgentStatus[] | null): void; coverage?(banners: Banner[]): void }
 
+/** P4-T02: main's window hide/show, forwarded by the preload as `{ xaiboVisible: boolean }`; anything else is null. */
+export function parseVisible(x: unknown): boolean | null {
+  if (typeof x !== 'object' || x === null || Array.isArray(x)) return null;
+  const v = (x as { xaiboVisible?: unknown }).xaiboVisible;
+  return typeof v === 'boolean' ? v : null;
+}
+
 export function createClient(port: PortLike, push: Pushes) {
   let nextId = 1;
   const pending = new Map<number, { resolve: (p: Page) => void; reject: (e: Error) => void }>();
@@ -34,6 +41,8 @@ export function createClient(port: PortLike, push: Pushes) {
       const req: PortRequest = { v: IPC_VERSION, type: 'listSessions', id: nextId++, cursor, limit };
       return new Promise((resolve, reject) => { pending.set(req.id, { resolve, reject }); port.postMessage(req); });
     },
+    /** P4-T02: live session deltas while the window is visible; paused while hidden (resync by cursor on show). */
+    setLive(on: boolean): void { port.postMessage({ v: IPC_VERSION, type: 'live', on } satisfies PortRequest); },
     get dropped() { return receive.dropped; },
     close() { port.onmessage = null; pending.clear(); port.close(); },
   };

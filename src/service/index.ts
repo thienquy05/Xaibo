@@ -10,7 +10,7 @@ import { errorCode, installCrashPolicy } from '../shared/crash.ts';
 import { accept, IPC_VERSION, parsePortRequest, parseServiceCommand } from '../shared/ipc.ts';
 import type { Banner, PortMessage, ServiceEvent } from '../shared/ipc.ts';
 import { createLogger, loadInstallSecret, type Logger } from '../shared/log.ts';
-import { answer, coalesce, sessionsByKey, type LiveOf } from './api.ts';
+import { answer, coalesce, createHub, sessionsByKey, type LiveOf } from './api.ts';
 import { boot, type Service } from './boot.ts';
 import type { Batch } from './store/writer.ts';
 import { traceableIds } from './trace-ids.ts';
@@ -21,7 +21,7 @@ const DELTA_MS = 50;
 const TICK_MS = 250;
 const COVERAGE_MS = 5000;
 const parent = process.parentPort;
-const ports = new Set<MessagePortMain>();
+const hub = createHub<MessagePortMain>();
 let svc: Service | undefined;
 let resolveBooted: (s: Service) => void = () => {};
 const booted = new Promise<Service>((resolve) => { resolveBooted = resolve; });
@@ -34,16 +34,16 @@ const pendingIds = new Map<string, string[]>();
 let deltaSeq = 0;
 const stamp = (line: object) => { if (trace) appendFileSync(trace, `${JSON.stringify({ ...line, t: process.hrtime.bigint().toString() })}\n`); };
 
-const broadcast = (m: PortMessage) => { for (const p of ports) p.postMessage(m); };
+const broadcast = (m: PortMessage) => hub.broadcast(m);
 const changed = coalesce((keys) => {
   const ids = trace ? keys.flatMap((k) => { const x = pendingIds.get(k) ?? []; pendingIds.delete(k); return x; }) : []; // cleared on every flush (review L2)
-  if (!svc?.store.db.isOpen) return;
+  if (!svc?.store.db.isOpen || !hub.anyLive()) return; // hidden windows resync by cursor when shown (P4-T02)
   const rows = sessionsByKey(svc.store.db, keys.map((k) => { const [agent, profileId, nativeSessionId] = k.split('\0') as [string, string, string]; return { agent, profileId, nativeSessionId }; }), svc.kinds(), svc.models(), live);
   if (!rows.length) return;
-  if (!trace) { broadcast({ v: IPC_VERSION, type: 'sessions', rows }); return; }
+  if (!trace) { hub.sessions({ v: IPC_VERSION, type: 'sessions', rows }); return; }
   const delta = ++deltaSeq;
   stamp({ ev: 'delta', delta, ids });
-  broadcast({ v: IPC_VERSION, type: 'sessions', rows, delta });
+  hub.sessions({ v: IPC_VERSION, type: 'sessions', rows, delta });
 }, DELTA_MS);
 
 let banners: Banner[] = [];
@@ -55,13 +55,14 @@ const coverage = () => {
 };
 
 const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
+  if (req.type === 'live') { hub.setLive(port, req.on); return; }
   void booted.then((s) => { if (s.store.db.isOpen) port.postMessage(answer(s.store.db, req, s.kinds(), s.models(), live)); });
 });
 
 function connect(port: MessagePortMain) {
-  ports.add(port);
+  hub.add(port);
   port.on('message', (e) => request(e.data, port));
-  port.on('close', () => ports.delete(port));
+  port.on('close', () => hub.remove(port));
   port.start();
   port.postMessage({ v: IPC_VERSION, type: 'agents', agents: svc?.agents() ?? null } satisfies PortMessage);
   port.postMessage({ v: IPC_VERSION, type: 'coverage', banners } satisfies PortMessage);
