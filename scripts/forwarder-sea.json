@@ -1,0 +1,7 @@
+{
+  "main": "out/forwarder/forwarder.js",
+  "mainFormat": "module",
+  "output": ".cache/sea/xaibo-forwarder",
+  "useCodeCache": false,
+  "disableExperimentalSEAWarning": true
+}

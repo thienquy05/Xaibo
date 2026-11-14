@@ -1,0 +1,203 @@
+{
+ "sessions": [
+  "00000000-0000-4000-8000-00000d0b0000"
+ ],
+ "streams": {
+  "hooks": {
+   "source": "hook",
+   "file": "hooks.jsonl"
+  },
+  "transcript": {
+   "source": "file",
+   "file": "transcript.jsonl",
+   "session": "00000000-0000-4000-8000-00000d0b0000"
+  }
+ },
+ "notVerified": [
+  "S7 t4 background (2.1.322): Stop while sleep 30 runs, then ~30 s later UserPromptSubmit and Stop with a queue-operation record",
+  "the completion turn's UserPromptSubmit prompt field and its order relative to the queue-operation record were not recorded; this fixture omits prompt and delivers the hook first",
+  "known background work = a PreToolUse with run_in_background: true; after the settle the session is busy \"Background work\" until a later turn ends (Stop + settle); the completion turn itself is an ordinary busy turn, since a missing prompt alone is not validated evidence (Codex review of D-P3-07)",
+  "Claude Stop keys mirror SubagentStop without the agent fields (S4 lost the async Stop; S7 recorded event names only)"
+ ],
+ "steps": [
+  {
+   "src": "hooks",
+   "line": 0,
+   "at": 0,
+   "expect": {
+    "lifecycle": "idle",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 1,
+   "at": 1000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "transcript",
+   "line": 0,
+   "at": 1100,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "transcript",
+   "line": 1,
+   "at": 2000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 2,
+   "at": 2050,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 3,
+   "at": 2300,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "transcript",
+   "line": 2,
+   "at": 2350,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "transcript",
+   "line": 3,
+   "at": 3000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 4,
+   "at": 3100,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": "Finishing…"
+   }
+  },
+  {
+   "tick": true,
+   "at": 8100,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": "Background work"
+   }
+  },
+  {
+   "tick": true,
+   "at": 20000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": "Background work"
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 5,
+   "at": 32800,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "transcript",
+   "line": 4,
+   "at": 32850,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "transcript",
+   "line": 5,
+   "at": 33500,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 6,
+   "at": 33600,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": "Finishing…"
+   }
+  },
+  {
+   "tick": true,
+   "at": 38600,
+   "expect": {
+    "lifecycle": "idle",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 7,
+   "at": 40000,
+   "expect": {
+    "lifecycle": "ended",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  }
+ ],
+ "final": {
+  "00000000-0000-4000-8000-00000d0b0000": {
+   "lifecycle": "ended",
+   "toolCalls": 1
+  }
+ },
+ "hooksMissing": {
+  "00000000-0000-4000-8000-00000d0b0000": {
+   "lifecycle": "idle",
+   "confidence": "inferred"
+  }
+ }
+}

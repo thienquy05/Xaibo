@@ -1,0 +1,8 @@
+{
+    "statusLine": {
+        "type": "command",
+        "command": "/tmp/xaibo-fixture/tools/status.sh",
+        "padding": 0
+    },
+    "model": "claude-sonnet-5-5"
+}

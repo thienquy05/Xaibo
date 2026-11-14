@@ -27,6 +27,14 @@ test('synthetic ids, allowed paths, example emails and plain text pass', () => {
   assert.equal(r.status, 0, r.stdout);
 });
 
+test('a line-1 shebang with a standard interpreter passes; a private interpreter path does not', () => {
+  for (const sb of ['#!/bin/sh', '#!/usr/bin/env node']) assert.equal(lint([sb, 'exit 0']).status, 0, sb);
+  const r = lint([`#!/opt/${hex(6)}/bin/sh`, 'exit 0']);
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /claude\/f\.jsonl:1 fixture-path$/m);
+  assert.match(lint(['exit 0', '#!/bin/sh']).stdout, /claude\/f\.jsonl:2 fixture-path$/m, 'only line 1 is a shebang');
+});
+
 const bad: Array<[string, string, string]> = [
   ['non-synthetic UUID', JSON.stringify({ sessionId: randomUUID() }), 'uuid'],
   ['absolute path outside the fixture root', JSON.stringify({ cwd: `/opt/${hex(6)}/project` }), 'fixture-path'],

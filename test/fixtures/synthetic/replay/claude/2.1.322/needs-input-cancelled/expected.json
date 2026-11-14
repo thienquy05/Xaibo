@@ -1,0 +1,234 @@
+{
+ "sessions": [
+  "00000000-0000-4000-8000-00000d070000"
+ ],
+ "streams": {
+  "hooks": {
+   "source": "hook",
+   "file": "hooks.jsonl"
+  },
+  "transcript": {
+   "source": "file",
+   "file": "transcript.jsonl",
+   "session": "00000000-0000-4000-8000-00000d070000"
+  }
+ },
+ "notVerified": [
+  "S7 t3 cancel order (2.1.322); Elicitation/ElicitationResult keys are the S7 records, values synthetic",
+  "a PreToolUse while the input request is unresolved keeps needs-input (the §6.2 \"unless an unresolved request exists\" rule, applied to input requests)",
+  "Claude Stop keys mirror SubagentStop without the agent fields (S4 lost the async Stop; S7 recorded event names only)"
+ ],
+ "steps": [
+  {
+   "src": "hooks",
+   "line": 0,
+   "at": 0,
+   "expect": {
+    "lifecycle": "idle",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 1,
+   "at": 1000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "transcript",
+   "line": 0,
+   "at": 1100,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "transcript",
+   "line": 1,
+   "at": 1500,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 2,
+   "at": 1550,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 3,
+   "at": 1800,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "transcript",
+   "line": 2,
+   "at": 1850,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "transcript",
+   "line": 3,
+   "at": 2500,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 4,
+   "at": 2550,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 5,
+   "at": 2600,
+   "expect": {
+    "lifecycle": "needs-input",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "tick": true,
+   "at": 8000,
+   "expect": {
+    "lifecycle": "needs-input",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 6,
+   "at": 9000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null,
+    "outcome": "cancelled"
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 7,
+   "at": 9050,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 8,
+   "at": 9100,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "transcript",
+   "line": 4,
+   "at": 9150,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "transcript",
+   "line": 5,
+   "at": 10000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 9,
+   "at": 10100,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": "Finishing…"
+   }
+  },
+  {
+   "tick": true,
+   "at": 15100,
+   "expect": {
+    "lifecycle": "idle",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 10,
+   "at": 70100,
+   "expect": {
+    "lifecycle": "idle",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 11,
+   "at": 80000,
+   "expect": {
+    "lifecycle": "ended",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  }
+ ],
+ "final": {
+  "00000000-0000-4000-8000-00000d070000": {
+   "lifecycle": "ended",
+   "toolCalls": 2
+  }
+ },
+ "hooksMissing": {
+  "00000000-0000-4000-8000-00000d070000": {
+   "lifecycle": "idle",
+   "confidence": "inferred"
+  }
+ }
+}

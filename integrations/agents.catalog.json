@@ -39,7 +39,19 @@
         "locations": ["~/.local/bin"]
       },
       "profileRoots": [{ "id": "user", "base": "home", "relative": ".gemini/antigravity-cli" }],
-      "existenceEvidence": [{ "root": "user", "path": "brain", "kind": "directory" }]
+      "existenceEvidence": [{ "root": "user", "path": "brain", "kind": "directory" }],
+      "hookMappings": {
+        "evidence": "P2-T00 agy 1.5.6 hook capture (spikes/p2-agy, D-P2-02); permission, input, compaction, subagent and interrupt behaviour unobserved, so unmapped",
+        "model": "modelName",
+        "rules": [
+          { "event": "SessionStart", "map": "session.start" },
+          { "event": "PreInvocation", "map": "busy" },
+          { "event": "PostInvocation", "map": "activity" },
+          { "event": "PreToolUse", "map": "tool.start", "id": "toolCall.id", "tool": "toolCall.name", "args": "toolCall.args" },
+          { "event": "PostToolUse", "map": "tool.end", "id": "toolCall.id" },
+          { "event": "Stop", "where": { "terminationReason": "NO_TOOL_CALL", "continuationActive": false, "fullyIdle": true, "error": null }, "map": "turn.end" }
+        ]
+      }
     }
   ],
   "sessionKinds": [

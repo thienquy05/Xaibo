@@ -4,6 +4,7 @@
 // order by the writer, D-P2-02 (2)); a line without a step index takes no part in revisions. Unknown types stay raw.
 import { createHash } from 'node:crypto';
 import type { LineResult, TailRecord } from '../tail-adapter.ts';
+import { utcMs } from '../../time.ts';
 
 export interface AgyRecord extends TailRecord {
   kind: 'user' | 'system' | 'assistant' | 'tool_output' | 'unknown';
@@ -34,7 +35,7 @@ export function parseLine(bytes: Buffer, c: { offset: number; fileMtime: number;
   const step = Number.isSafeInteger(o.step_index) && (o.step_index as number) >= 0 ? o.step_index as number : null;
   const hash = createHash('sha256').update(bytes).digest('hex').slice(0, 16);
   const [kind, role] = KINDS[typeof o.type === 'string' ? o.type : ''] ?? ['unknown', undefined];
-  const ts = typeof o.created_at === 'string' ? Date.parse(o.created_at) : NaN;
+  const ts = utcMs(o.created_at);
   const usage = kind === 'assistant'
     ? Object.fromEntries(USAGE_KEYS.filter((k) => typeof o[k] === 'number' && Number.isFinite(o[k]) && (o[k] as number) >= 0).map((k) => [k, o[k] as number]))
     : undefined;

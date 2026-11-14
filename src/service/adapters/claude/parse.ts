@@ -1,6 +1,7 @@
 // Claude Code transcript parser (P1-T09): one raw JSONL line + file context -> normalized record, or a malformed
 // outcome for quarantine. Pure and tolerant. Known types, injected prefixes: S9 facts for Claude 2.1.319.
 import { createHash } from 'node:crypto';
+import { utcMs } from '../../time.ts';
 
 // S9 2.6: the 2.1.319 observations plus the record type names from the owner's real-store audit. The audit kept
 // names only, so field shapes of those types (e.g. ai-title) are unverified and nothing is read from them yet.
@@ -92,7 +93,7 @@ export function parseLine(bytes: Buffer, ctx: ParseContext): ParseResult | null 
   const type = str(r.type) ?? '';
   const msg = isObj(r.message) ? r.message : undefined;
   const role = str(msg?.role);
-  const ts = typeof r.timestamp === 'string' ? Date.parse(r.timestamp) : NaN;
+  const ts = utcMs(r.timestamp);
   const calls = toolCalls(msg?.content);
   return {
     ok: true,

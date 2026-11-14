@@ -21,6 +21,15 @@ test('ready: readOnly is null or a known reason', () => {
   assert.equal(parseServiceEvent({ v: 1, type: 'quit' }), null);
 });
 
+test('notify (P3-T11): agent name, label or null, wait state only; extra fields are stripped', () => {
+  const ok = { v: 1, type: 'notify', agent: 'Claude Code', label: null, state: 'waiting-for-permission' } as const;
+  assert.deepEqual(parseServiceEvent({ ...ok, cwd: '/tmp/x', prompt: 'p' }), ok);
+  assert.deepEqual(parseServiceEvent({ ...ok, label: 'Alpha', state: 'needs-input' }), { ...ok, label: 'Alpha', state: 'needs-input' });
+  for (const bad of [{ state: 'error' }, { state: 'idle' }, { agent: '' }, { agent: 'x'.repeat(65) }, { agent: 1 }, { label: 'x'.repeat(129) }, { label: undefined }]) {
+    assert.equal(parseServiceEvent({ ...ok, ...bad }), null, JSON.stringify(bad));
+  }
+});
+
 test('health: state, attempt and readOnly are checked; text is plain', () => {
   const h = { v: 1, type: 'health', state: 'restarting', attempt: 2, readOnly: null } as const;
   assert.deepEqual(parseHealth(h), h);
@@ -46,7 +55,48 @@ test('accept() hands valid messages on and counts the dropped ones', () => {
 });
 
 // P1-T12 (XAIBO-PROD-110): renderer <-> service port messages and the setPath command.
-const row = { id: 7, agent: 'claude', entrypoint: 'cli', origin: 'CLI', interactive: true, model: 'Model unavailable', cwd: '/tmp/xaibo-fixture/a', title: null, lastActivity: 5, drift: false, compressed: false, quarantined: 0 };
+const row = { id: 7, agent: 'claude', entrypoint: 'cli', origin: 'CLI', interactive: true, model: 'Model unavailable', cwd: '/tmp/xaibo-fixture/a', title: null, lastActivity: 5, drift: false, compressed: false, quarantined: 0,
+  live: null, contextPct: null, costUsd: null, costCoverage: 'unavailable' };
+
+// P3-T10 (XAIBO-PROD-310): live status, context and cost on rows; coverage banners; delta ids for the perf trace.
+const live = { lifecycle: 'busy', confidence: 'confirmed', health: 'connected', reason: 'Finishing…', outcome: null, findings: ['R2', 'R5'] };
+test('rows: live status, context and cost are validated field by field', () => {
+  const full = { ...row, live, contextPct: 42.5, costUsd: 0.12, costCoverage: 'partial' };
+  assert.deepEqual(parsePortMessage({ v: 1, type: 'sessions', rows: [full] }), { v: 1, type: 'sessions', rows: [full] });
+  assert.deepEqual(parsePortMessage({ v: 1, type: 'sessions', rows: [{ ...full, live: { ...live, extra: '<b>' } }] }), { v: 1, type: 'sessions', rows: [full] });
+  for (const bad of [{ live: { ...live, lifecycle: 'asleep' } }, { live: { ...live, confidence: 'sure' } }, { live: { ...live, health: 'fine' } },
+    { live: { ...live, reason: 'Doing things' } }, { live: { ...live, outcome: 'exploded' } }, { live: { ...live, findings: ['R9'] } },
+    { live: { ...live, findings: ['R1', 'R1'] } }, { live: { ...live, findings: 'R1' } }, { live: 'busy' }, { live: undefined },
+    { contextPct: -1 }, { contextPct: 101 }, { contextPct: Number.NaN }, { contextPct: '5' }, { costUsd: -0.01 }, { costUsd: Number.POSITIVE_INFINITY },
+    { costCoverage: 'some' }, { costCoverage: undefined }]) {
+    assert.equal(parsePortMessage({ v: 1, type: 'sessions', rows: [{ ...full, ...bad }] }), null, JSON.stringify(bad));
+  }
+});
+
+test('sessions deltas may carry a positive integer delta id (perf trace); anything else drops the message', () => {
+  assert.deepEqual(parsePortMessage({ v: 1, type: 'sessions', rows: [row], delta: 9 }), { v: 1, type: 'sessions', rows: [row], delta: 9 });
+  assert.deepEqual(parsePortMessage({ v: 1, type: 'sessions', rows: [row] }), { v: 1, type: 'sessions', rows: [row] });
+  for (const delta of [0, -1, 1.5, '9', null]) assert.equal(parsePortMessage({ v: 1, type: 'sessions', rows: [row], delta }), null, String(delta));
+});
+
+test('coverage banners: each kind validated; one bad banner drops the message', () => {
+  const banners = [
+    { kind: 'hook-gap', reason: 'spool-overflow', agent: 'claude', count: 3, from: 10, to: 20 },
+    { kind: 'hook-gap', reason: 'spool-saturated', agent: null, count: null, from: 10, to: null },
+    { kind: 'disk-full' },
+    { kind: 'hooks-blocked', agent: 'claude', state: 'blocked' },
+    { kind: 'hooks-blocked', agent: 'claude', state: 'unknown' },
+    { kind: 'awaiting-trust', agent: 'codex', steps: ['Open Codex', 'Approve the Xaibo hooks'] },
+  ];
+  assert.deepEqual(parsePortMessage({ v: 1, type: 'coverage', banners }), { v: 1, type: 'coverage', banners });
+  assert.deepEqual(parsePortMessage({ v: 1, type: 'coverage', banners: [{ kind: 'disk-full', extra: 1 }] }), { v: 1, type: 'coverage', banners: [{ kind: 'disk-full' }] });
+  for (const bad of [{ kind: 'meltdown' }, { ...banners[0], reason: 'gone' }, { ...banners[0], count: -1 }, { ...banners[0], agent: 'Bad Agent' },
+    { ...banners[0], from: 'x' }, { ...banners[3], state: 'fine' }, { ...banners[5], steps: 'do it' }, { ...banners[5], steps: [5] },
+    { ...banners[5], steps: Array(17).fill('x') }, { ...banners[5], agent: undefined }, null]) {
+    assert.equal(parsePortMessage({ v: 1, type: 'coverage', banners: [banners[2], bad] }), null, JSON.stringify(bad));
+  }
+  assert.equal(parsePortMessage({ v: 1, type: 'coverage', banners: Array(65).fill({ kind: 'disk-full' }) }), null, 'bounded');
+});
 
 test('setPath command: agent id and an absolute path only', () => {
   assert.deepEqual(parseServiceCommand({ v: 1, type: 'setPath', agent: 'claude', path: '/tmp/x/claude', extra: 1 }), { v: 1, type: 'setPath', agent: 'claude', path: '/tmp/x/claude' });

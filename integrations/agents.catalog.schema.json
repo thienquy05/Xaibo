@@ -49,6 +49,11 @@
     "literalArg": { "type": "string", "pattern": "^[A-Za-z0-9@%+=:,./_-]+$" },
     "displayText": { "type": "string", "minLength": 1, "maxLength": 64 },
     "version": { "type": "string", "pattern": "^\\d{1,6}\\.\\d{1,6}\\.\\d{1,6}$" },
+    "fieldPath": {
+      "description": "P3-T13a: a dotted path into a hook payload, own properties only; prototype names are never paths.",
+      "type": "string",
+      "pattern": "^(?!(?:.*\\.)?(?:__proto__|prototype|constructor)(?:\\.|$))[A-Za-z_][A-Za-z0-9_]{0,63}(?:\\.[A-Za-z_][A-Za-z0-9_]{0,63}){0,3}$"
+    },
     "agent": {
       "type": "object",
       "additionalProperties": false,
@@ -138,6 +143,40 @@
               },
               "events": { "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Z][A-Za-z]{1,63}$" } },
               "evidence": { "type": "string", "minLength": 1, "maxLength": 256 }
+            }
+          }
+        },
+        "hookMappings": {
+          "description": "P3-T13a (PRD §6.8): hook events to normalized status evidence by exact event name and exact field predicates (null = absent or null). The first matching rule wins; no rule = reduced coverage. Data only, never executed.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["evidence", "rules"],
+          "properties": {
+            "evidence": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "model": { "$ref": "#/$defs/fieldPath" },
+            "rules": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 64,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["event", "map"],
+                "properties": {
+                  "event": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,63}$" },
+                  "where": {
+                    "type": "object",
+                    "maxProperties": 8,
+                    "propertyNames": { "$ref": "#/$defs/fieldPath" },
+                    "additionalProperties": { "anyOf": [{ "type": "string", "maxLength": 256 }, { "type": "number" }, { "type": "boolean" }, { "type": "null" }] }
+                  },
+                  "map": { "enum": ["session.start", "session.end", "turn.start", "turn.end", "busy", "activity", "tool.start", "tool.end"] },
+                  "id": { "$ref": "#/$defs/fieldPath" },
+                  "tool": { "$ref": "#/$defs/fieldPath" },
+                  "args": { "$ref": "#/$defs/fieldPath" },
+                  "result": { "$ref": "#/$defs/fieldPath" }
+                }
+              }
             }
           }
         }

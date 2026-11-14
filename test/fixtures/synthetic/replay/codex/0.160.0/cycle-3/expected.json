@@ -1,0 +1,565 @@
+{
+ "sessions": [
+  "00000000-0000-4000-8000-00000e090000"
+ ],
+ "streams": {
+  "hooks": {
+   "source": "hook",
+   "file": "hooks.jsonl"
+  },
+  "rollout": {
+   "source": "file",
+   "file": "rollout.jsonl",
+   "session": "00000000-0000-4000-8000-00000e090000"
+  }
+ },
+ "notVerified": [
+  "hook keys are the S5 set (0.160.0); rollout records follow the S9 shapes; values synthetic",
+  "a 3-tool sequence repeated 3x: R4 from the 9th result"
+ ],
+ "steps": [
+  {
+   "src": "hooks",
+   "line": 0,
+   "at": 0,
+   "expect": {
+    "lifecycle": "idle",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 0,
+   "at": 10,
+   "expect": {
+    "lifecycle": "idle",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 1,
+   "at": 1000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 1,
+   "at": 1040,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 2,
+   "at": 1050,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 3,
+   "at": 1100,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 4,
+   "at": 2000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 2,
+   "at": 2050,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 3,
+   "at": 2300,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 5,
+   "at": 2350,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null,
+    "findings": []
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 6,
+   "at": 3000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 4,
+   "at": 3050,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 5,
+   "at": 3300,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 7,
+   "at": 3350,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null,
+    "findings": []
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 8,
+   "at": 4000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 6,
+   "at": 4050,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 7,
+   "at": 4300,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 9,
+   "at": 4350,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null,
+    "findings": []
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 10,
+   "at": 5000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 8,
+   "at": 5050,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 9,
+   "at": 5300,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 11,
+   "at": 5350,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null,
+    "findings": []
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 12,
+   "at": 6000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 10,
+   "at": 6050,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 11,
+   "at": 6300,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 13,
+   "at": 6350,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null,
+    "findings": []
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 14,
+   "at": 7000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 12,
+   "at": 7050,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 13,
+   "at": 7300,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 15,
+   "at": 7350,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null,
+    "findings": []
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 16,
+   "at": 8000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 14,
+   "at": 8050,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 15,
+   "at": 8300,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 17,
+   "at": 8350,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null,
+    "findings": []
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 18,
+   "at": 9000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 16,
+   "at": 9050,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 17,
+   "at": 9300,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 19,
+   "at": 9350,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null,
+    "findings": []
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 20,
+   "at": 10000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 18,
+   "at": 10050,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 19,
+   "at": 10300,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 21,
+   "at": 10350,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null,
+    "findings": [
+     "R4"
+    ]
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 22,
+   "at": 11000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 20,
+   "at": 11050,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 21,
+   "at": 11300,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 23,
+   "at": 11350,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null,
+    "findings": []
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 24,
+   "at": 12000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 25,
+   "at": 12050,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 22,
+   "at": 12100,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": "Finishing…"
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 26,
+   "at": 12150,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": "Finishing…"
+   }
+  },
+  {
+   "tick": true,
+   "at": 17150,
+   "expect": {
+    "lifecycle": "idle",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 23,
+   "at": 19000,
+   "expect": {
+    "lifecycle": "ended",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  }
+ ],
+ "final": {
+  "00000000-0000-4000-8000-00000e090000": {
+   "lifecycle": "ended",
+   "toolCalls": 10
+  }
+ },
+ "hooksMissing": {
+  "00000000-0000-4000-8000-00000e090000": {
+   "lifecycle": "idle",
+   "confidence": "inferred"
+  }
+ }
+}

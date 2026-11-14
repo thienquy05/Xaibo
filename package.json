@@ -10,7 +10,7 @@
     "test:electron": "ELECTRON_RUN_AS_NODE=1 electron --test \"test/integration/**/*.test.ts\"",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p src/renderer && tsc --noEmit -p spikes",
-    "dist:mac": "npm run build && electron_config_cache=\"${electron_config_cache:-$INIT_CWD/.cache/electron}\" ELECTRON_CACHE=\"${ELECTRON_CACHE:-$INIT_CWD/.cache/electron}\" ELECTRON_BUILDER_CACHE=\"${ELECTRON_BUILDER_CACHE:-$INIT_CWD/.cache/electron-builder}\" electron-builder --mac --config electron-builder.json",
+    "dist:mac": "npm run build && sh scripts/build-forwarder.sh && electron_config_cache=\"${electron_config_cache:-$INIT_CWD/.cache/electron}\" ELECTRON_CACHE=\"${ELECTRON_CACHE:-$INIT_CWD/.cache/electron}\" ELECTRON_BUILDER_CACHE=\"${ELECTRON_BUILDER_CACHE:-$INIT_CWD/.cache/electron-builder}\" electron-builder --mac --config electron-builder.json",
     "spike:build": "tsc -p spikes",
     "spike:test": "node --test \"spikes/**/*.test.ts\"",
     "spike:dist:mac": "npm run spike:build && sh spikes/s3/build-sea.sh && electron_config_cache=\"${electron_config_cache:-$INIT_CWD/.cache/electron}\" ELECTRON_CACHE=\"${ELECTRON_CACHE:-$INIT_CWD/.cache/electron}\" ELECTRON_BUILDER_CACHE=\"${ELECTRON_BUILDER_CACHE:-$INIT_CWD/.cache/electron-builder}\" electron-builder --mac dir --config spikes/app/electron-builder.json && codesign --force --deep --sign - dist/spike/mac-arm64/XaiboSpike.app",

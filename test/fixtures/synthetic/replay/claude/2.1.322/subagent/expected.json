@@ -1,0 +1,183 @@
+{
+ "sessions": [
+  "00000000-0000-4000-8000-00000d0a0000"
+ ],
+ "streams": {
+  "hooks": {
+   "source": "hook",
+   "file": "hooks.jsonl"
+  },
+  "transcript": {
+   "source": "file",
+   "file": "transcript.jsonl",
+   "session": "00000000-0000-4000-8000-00000d0a0000"
+  }
+ },
+ "notVerified": [
+  "S7 t4 order (2.1.322): SubagentStart, Stop, SubagentStop (backgrounded subagent)",
+  "Finishing… is kept while a SubagentStart has no SubagentStop (PRD §6.2, S7; D-P3-07 as corrected by the Codex review); the end of the last child starts the turn-settle window",
+  "SubagentStart/SubagentStop keys are the S4 set",
+  "Claude Stop keys mirror SubagentStop without the agent fields (S4 lost the async Stop; S7 recorded event names only)"
+ ],
+ "steps": [
+  {
+   "src": "hooks",
+   "line": 0,
+   "at": 0,
+   "expect": {
+    "lifecycle": "idle",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 1,
+   "at": 1000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "transcript",
+   "line": 0,
+   "at": 1100,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "transcript",
+   "line": 1,
+   "at": 2000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 2,
+   "at": 2050,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 3,
+   "at": 2100,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 4,
+   "at": 2600,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "transcript",
+   "line": 2,
+   "at": 2650,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "transcript",
+   "line": 3,
+   "at": 3000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 5,
+   "at": 3100,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": "Finishing…"
+   }
+  },
+  {
+   "tick": true,
+   "at": 8100,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": "Finishing…"
+   }
+  },
+  {
+   "tick": true,
+   "at": 20000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": "Finishing…"
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 6,
+   "at": 25000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": "Finishing…"
+   }
+  },
+  {
+   "tick": true,
+   "at": 30000,
+   "expect": {
+    "lifecycle": "idle",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 7,
+   "at": 31000,
+   "expect": {
+    "lifecycle": "ended",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  }
+ ],
+ "final": {
+  "00000000-0000-4000-8000-00000d0a0000": {
+   "lifecycle": "ended",
+   "toolCalls": 1
+  }
+ },
+ "hooksMissing": {
+  "00000000-0000-4000-8000-00000d0a0000": {
+   "lifecycle": "idle",
+   "confidence": "inferred"
+  }
+ }
+}

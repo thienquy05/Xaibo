@@ -48,14 +48,16 @@ test('default and cap: invalid limits clamp; the hard cap is 100', async () => {
   assert.equal(listSessions(db, null, 130).next !== null, true);
 });
 
+// P3-T10: without an engine, estimate or context snapshot these are the defaults.
+const NO_LIVE = { live: null, contextPct: null, costUsd: null, costCoverage: 'unavailable' } as const;
 test('rows carry the list columns and coverage markers', async () => {
   const db = await store(2, (i) => i);
   db.prepare("UPDATE sessions SET drift = 1, quarantined_count = 3, entrypoint = 'cli' WHERE id = 1").run();
   db.prepare("INSERT INTO source_files (profile_id, session_id, path, kind, status) VALUES ('p1', 2, '/tmp/xaibo-fixture/z.jsonl.zst', 'transcript', 'compressed_not_imported')").run();
   const { rows } = listSessions(db, null, 10);
   assert.deepEqual(rows, [
-    { id: 2, agent: 'claude', entrypoint: null, origin: null, interactive: null, model: 'Model unavailable', cwd: '/tmp/xaibo-fixture/2', title: null, lastActivity: 2, drift: false, compressed: true, quarantined: 0 },
-    { id: 1, agent: 'claude', entrypoint: 'cli', origin: null, interactive: null, model: 'Model unavailable', cwd: '/tmp/xaibo-fixture/1', title: null, lastActivity: 1, drift: true, compressed: false, quarantined: 3 },
+    { id: 2, agent: 'claude', entrypoint: null, origin: null, interactive: null, model: 'Model unavailable', cwd: '/tmp/xaibo-fixture/2', title: null, lastActivity: 2, drift: false, compressed: true, quarantined: 0, ...NO_LIVE },
+    { id: 1, agent: 'claude', entrypoint: 'cli', origin: null, interactive: null, model: 'Model unavailable', cwd: '/tmp/xaibo-fixture/1', title: null, lastActivity: 1, drift: true, compressed: false, quarantined: 3, ...NO_LIVE },
   ]);
   assert.deepEqual(sessionsByKey(db, [{ agent: 'claude', profileId: 'p1', nativeSessionId: '00000000-0000-4000-8000-000000000001' }]).map((r) => r.id), [1]);
 });

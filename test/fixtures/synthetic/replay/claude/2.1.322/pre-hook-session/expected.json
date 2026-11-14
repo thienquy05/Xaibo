@@ -1,0 +1,104 @@
+{
+ "sessions": [
+  "00000000-0000-4000-8000-00000d150000"
+ ],
+ "streams": {
+  "hooks": {
+   "source": "hook",
+   "file": "hooks.jsonl"
+  },
+  "transcript": {
+   "source": "file",
+   "file": "transcript.jsonl",
+   "session": "00000000-0000-4000-8000-00000d150000"
+  }
+ },
+ "notVerified": [
+  "EC-02: a session started before hooks is inferred from its transcript and confirmed on the first hook",
+  "Claude Stop keys mirror SubagentStop without the agent fields (S4 lost the async Stop; S7 recorded event names only)"
+ ],
+ "steps": [
+  {
+   "src": "transcript",
+   "line": 0,
+   "at": 0,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "inferred",
+    "reason": null
+   }
+  },
+  {
+   "src": "transcript",
+   "line": 1,
+   "at": 1000,
+   "expect": {
+    "lifecycle": "idle",
+    "confidence": "inferred",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 0,
+   "at": 60000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "transcript",
+   "line": 2,
+   "at": 60100,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "transcript",
+   "line": 3,
+   "at": 61000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 1,
+   "at": 61100,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": "Finishing…"
+   }
+  },
+  {
+   "tick": true,
+   "at": 66100,
+   "expect": {
+    "lifecycle": "idle",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  }
+ ],
+ "final": {
+  "00000000-0000-4000-8000-00000d150000": {
+   "lifecycle": "idle",
+   "confidence": "confirmed",
+   "toolCalls": 0
+  }
+ },
+ "hooksMissing": {
+  "00000000-0000-4000-8000-00000d150000": {
+   "lifecycle": "idle",
+   "confidence": "inferred"
+  }
+ }
+}

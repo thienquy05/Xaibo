@@ -8,6 +8,7 @@
 // ponytail: chunk source_seq is the input position when the chunk started, exact only to one input piece.
 import { createHash } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
+import { utcMs } from '../../time.ts';
 import { INJECTED_PREFIXES, KNOWN_TYPES, type ClaudeRecord } from './parse.ts';
 
 const KEY_BYTES = 4096;
@@ -298,7 +299,7 @@ export class OversizedRecord {
     const s = (k: string) => { const v = this.#fields.get(k); return typeof v === 'string' ? v : undefined; };
     const type = s('type') ?? '';
     const role = s('message.role');
-    const ts = Date.parse(s('timestamp') ?? '');
+    const ts = utcMs(s('timestamp'));
     return {
       type, kind: !KNOWN_TYPES.has(type) ? 'unknown' : type === 'user' || type === 'assistant' ? 'message' : type,
       nativeId: s('uuid') ?? this.#key!, parentNativeId: s('parentUuid'), sessionId: s('sessionId'), sourceSeq: this.#o.offset,

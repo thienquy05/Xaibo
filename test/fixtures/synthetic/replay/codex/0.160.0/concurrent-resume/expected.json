@@ -1,0 +1,298 @@
+{
+ "sessions": [
+  "00000000-0000-4000-8000-00000e0c0000",
+  "00000000-0000-4000-8000-00000e0c0100"
+ ],
+ "streams": {
+  "hooks": {
+   "source": "hook",
+   "file": "hooks.jsonl"
+  },
+  "ra": {
+   "source": "file",
+   "file": "rollout-a.jsonl",
+   "session": "00000000-0000-4000-8000-00000e0c0000"
+  },
+  "rb": {
+   "source": "file",
+   "file": "rollout-b.jsonl",
+   "session": "00000000-0000-4000-8000-00000e0c0100"
+  }
+ },
+ "notVerified": [
+  "hook keys are the S5 set (0.160.0); rollout records follow the S9 shapes; values synthetic",
+  "two interleaved sessions: a tool completion in one never clears or settles the other; SessionStart source stays \"startup\" (the only S5 value; resume is unverified)"
+ ],
+ "steps": [
+  {
+   "src": "hooks",
+   "line": 0,
+   "at": 0,
+   "expect": {
+    "lifecycle": "idle",
+    "confidence": "confirmed",
+    "reason": null,
+    "session": "00000000-0000-4000-8000-00000e0c0000"
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 1,
+   "at": 1000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null,
+    "session": "00000000-0000-4000-8000-00000e0c0000"
+   }
+  },
+  {
+   "src": "ra",
+   "line": 0,
+   "at": 1050,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null,
+    "session": "00000000-0000-4000-8000-00000e0c0000"
+   }
+  },
+  {
+   "src": "ra",
+   "line": 1,
+   "at": 2000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null,
+    "session": "00000000-0000-4000-8000-00000e0c0000"
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 2,
+   "at": 2050,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null,
+    "session": "00000000-0000-4000-8000-00000e0c0000"
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 3,
+   "at": 2500,
+   "expect": {
+    "lifecycle": "idle",
+    "confidence": "confirmed",
+    "reason": null,
+    "session": "00000000-0000-4000-8000-00000e0c0100"
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 4,
+   "at": 3000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null,
+    "session": "00000000-0000-4000-8000-00000e0c0100"
+   }
+  },
+  {
+   "src": "rb",
+   "line": 0,
+   "at": 3050,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null,
+    "session": "00000000-0000-4000-8000-00000e0c0100"
+   }
+  },
+  {
+   "src": "rb",
+   "line": 1,
+   "at": 3500,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null,
+    "session": "00000000-0000-4000-8000-00000e0c0100"
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 5,
+   "at": 3550,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null,
+    "session": "00000000-0000-4000-8000-00000e0c0100"
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 6,
+   "at": 3800,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null,
+    "session": "00000000-0000-4000-8000-00000e0c0000"
+   }
+  },
+  {
+   "src": "rb",
+   "line": 2,
+   "at": 3850,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null,
+    "session": "00000000-0000-4000-8000-00000e0c0100"
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 7,
+   "at": 4100,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": "Finishing…",
+    "session": "00000000-0000-4000-8000-00000e0c0100"
+   }
+  },
+  {
+   "src": "rb",
+   "line": 3,
+   "at": 4150,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": "Finishing…",
+    "session": "00000000-0000-4000-8000-00000e0c0100"
+   }
+  },
+  {
+   "tick": true,
+   "at": 9200,
+   "expect": {
+    "lifecycle": "idle",
+    "confidence": "confirmed",
+    "reason": null,
+    "session": "00000000-0000-4000-8000-00000e0c0100"
+   }
+  },
+  {
+   "tick": true,
+   "at": 9300,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null,
+    "session": "00000000-0000-4000-8000-00000e0c0000"
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 8,
+   "at": 12000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null,
+    "session": "00000000-0000-4000-8000-00000e0c0000"
+   }
+  },
+  {
+   "src": "ra",
+   "line": 2,
+   "at": 12050,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null,
+    "session": "00000000-0000-4000-8000-00000e0c0000"
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 9,
+   "at": 13100,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": "Finishing…",
+    "session": "00000000-0000-4000-8000-00000e0c0000"
+   }
+  },
+  {
+   "src": "ra",
+   "line": 3,
+   "at": 13150,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": "Finishing…",
+    "session": "00000000-0000-4000-8000-00000e0c0000"
+   }
+  },
+  {
+   "tick": true,
+   "at": 18200,
+   "expect": {
+    "lifecycle": "idle",
+    "confidence": "confirmed",
+    "reason": null,
+    "session": "00000000-0000-4000-8000-00000e0c0000"
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 10,
+   "at": 19000,
+   "expect": {
+    "lifecycle": "ended",
+    "confidence": "confirmed",
+    "reason": null,
+    "session": "00000000-0000-4000-8000-00000e0c0100"
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 11,
+   "at": 20000,
+   "expect": {
+    "lifecycle": "ended",
+    "confidence": "confirmed",
+    "reason": null,
+    "session": "00000000-0000-4000-8000-00000e0c0000"
+   }
+  }
+ ],
+ "final": {
+  "00000000-0000-4000-8000-00000e0c0000": {
+   "lifecycle": "ended",
+   "toolCalls": 1
+  },
+  "00000000-0000-4000-8000-00000e0c0100": {
+   "lifecycle": "ended",
+   "toolCalls": 1
+  }
+ },
+ "hooksMissing": {
+  "00000000-0000-4000-8000-00000e0c0000": {
+   "lifecycle": "idle",
+   "confidence": "inferred"
+  },
+  "00000000-0000-4000-8000-00000e0c0100": {
+   "lifecycle": "idle",
+   "confidence": "inferred"
+  }
+ }
+}

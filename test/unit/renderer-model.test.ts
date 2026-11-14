@@ -3,11 +3,13 @@
 // before Phase 4). Order matches the service keyset: last activity descending (unknown last), then id.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyDelta, applyPage, compareRows, emptyList, formatTime, markers, PAGE } from '../../src/renderer/model.ts';
-import type { SessionRow } from '../../src/shared/ipc.ts';
+import { applyDelta, applyPage, bannerText, compareRows, contextText, costText, emptyList, findingBadges, formatTime, lifecycleMark, markers, PAGE,
+  statusText } from '../../src/renderer/model.ts';
+import type { LiveStatus, SessionRow } from '../../src/shared/ipc.ts';
 
 const r = (id: number, lastActivity: number | null, extra: Partial<SessionRow> = {}): SessionRow =>
-  ({ id, agent: 'claude', entrypoint: 'cli', origin: 'CLI', interactive: true, model: 'Model unavailable', cwd: `/tmp/xaibo-fixture/${id}`, title: null, lastActivity, drift: false, compressed: false, quarantined: 0, ...extra });
+  ({ id, agent: 'claude', entrypoint: 'cli', origin: 'CLI', interactive: true, model: 'Model unavailable', cwd: `/tmp/xaibo-fixture/${id}`, title: null, lastActivity, drift: false, compressed: false, quarantined: 0,
+    live: null, contextPct: null, costUsd: null, costCoverage: 'unavailable', ...extra });
 const ids = (s: { rows: SessionRow[] }) => s.rows.map((x) => x.id);
 
 test('order: newest first, ties by id, unknown activity last', () => {
@@ -56,4 +58,57 @@ test('coverage markers are text plus glyph; time is local and readable', () => {
   assert.equal(markers(r(1, 1, { quarantined: 1 }))[0]!.text, '1 quarantined line');
   assert.equal(formatTime(new Date(2026, 0, 2, 3, 4, 5).getTime()), '2026-01-02 03:04');
   assert.equal(formatTime(null), 'Unknown');
+});
+
+// P3-T10 (XAIBO-PROD-310, Q3-5): placeholder live status text. Every state is text plus glyph, never colour alone;
+// heuristic and inferred confidence are spelled out; findings name the rule and the PRD §6.4 warning.
+const L = (o: Partial<LiveStatus> = {}): LiveStatus =>
+  ({ lifecycle: 'busy', confidence: 'confirmed', health: 'connected', reason: null, outcome: null, findings: [], ...o });
+
+test('status text: lifecycle, reason, confidence, health and outcome as words; no evidence is said so', () => {
+  assert.equal(statusText(null), 'No live status');
+  assert.equal(statusText(L()), 'Busy (confirmed)');
+  assert.equal(statusText(L({ reason: 'Finishing…' })), 'Busy · Finishing… (confirmed)');
+  assert.equal(statusText(L({ lifecycle: 'waiting-for-permission', confidence: 'heuristic', reason: 'Probably waiting' })),
+    'Waiting for permission · Probably waiting (heuristic)');
+  assert.equal(statusText(L({ lifecycle: 'idle', confidence: 'inferred', outcome: 'interrupted' })), 'Idle (inferred) · last turn interrupted');
+  assert.equal(statusText(L({ health: 'stale' })), 'Busy (confirmed) · stale');
+  for (const lc of ['idle', 'busy', 'waiting-for-permission', 'needs-input', 'error', 'ended', 'unknown'] as const) {
+    const m = lifecycleMark(lc);
+    assert.ok(m.glyph.length > 0 && m.text.length > 0, lc);
+  }
+  assert.equal(lifecycleMark('needs-input').text, 'Needs input');
+});
+
+test('finding badges: rule id plus the §6.4 warning name', () => {
+  assert.deepEqual(findingBadges(null), []);
+  assert.deepEqual(findingBadges(L({ findings: ['R1', 'R2', 'R3', 'R4', 'R5'] })).map((b) => b.text),
+    ['R1 Possibly inactive', 'R2 Repeated tool', 'R3 Repeated error', 'R4 Possible loop', 'R5 Long-running tool']);
+});
+
+test('context and cost: minimal text, unavailable stays labelled, estimates marked ~', () => {
+  assert.equal(contextText(null), 'Context unavailable');
+  assert.equal(contextText(42.4), '42% context');
+  assert.equal(contextText(0), '0% context');
+  assert.equal(costText(null, 'unavailable'), '~$ unavailable');
+  assert.equal(costText(1.234, 'full'), '~$1.23');
+  assert.equal(costText(0.5, 'partial'), '~$0.50 known subtotal');
+  assert.equal(costText(0.5, 'uncertain'), '~$0.50 known subtotal');
+  assert.equal(costText(0.004, 'full'), '~$<0.01', 'a non-zero estimate never reads as $0.00');
+  assert.equal(costText(0, 'full'), '~$0.00');
+});
+
+test('coverage banners: gap counts, agent names and time ranges as text', () => {
+  const names = (id: string) => (id === 'claude' ? 'Claude Code' : id);
+  const at = new Date(2026, 0, 2, 3, 4).getTime();
+  assert.equal(bannerText({ kind: 'hook-gap', reason: 'spool-overflow', agent: 'claude', count: 3, from: at, to: at }, names),
+    'Hook events missing (spool overflow): 3 from Claude Code, 2026-01-02 03:04 to 2026-01-02 03:04');
+  assert.equal(bannerText({ kind: 'hook-gap', reason: 'spool-saturated', agent: null, count: null, from: null, to: null }, names),
+    'Hook events missing (spool overflow, count unknown): an unknown number from an unknown agent');
+  assert.equal(bannerText({ kind: 'hook-gap', reason: 'disk-full', agent: 'codex', count: 1, from: at, to: at }, names),
+    'Hook events missing (disk full): 1 from codex, 2026-01-02 03:04 to 2026-01-02 03:04');
+  assert.equal(bannerText({ kind: 'disk-full' }, names), 'Disk full: collection paused');
+  assert.equal(bannerText({ kind: 'hooks-blocked', agent: 'claude', state: 'blocked' }, names), 'Claude Code: hooks blocked by policy (files only)');
+  assert.equal(bannerText({ kind: 'hooks-blocked', agent: 'claude', state: 'unknown' }, names), 'Claude Code: hook policy unknown (files only)');
+  assert.equal(bannerText({ kind: 'awaiting-trust', agent: 'codex', steps: ['a'] }, names), 'codex: hooks installed, awaiting trust');
 });

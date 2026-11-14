@@ -11,7 +11,17 @@ export interface AgentEntry {
   existenceEvidence?: { root: string; path: string; kind: 'file' | 'directory' }[];
   /** P2-T12 (EC-53): hook events verified for an inclusive x.y.z range. */
   hookEvents?: { versions: { min: string; max?: string }; events: string[]; evidence: string }[];
+  /** P3-T13a (§6.8): hook events to status evidence by exact name and field predicates. */
+  hookMappings?: HookMappings;
 }
+export interface HookRule {
+  event: string;
+  /** Dotted payload path -> exact value; null = absent or null. */
+  where?: Record<string, string | number | boolean | null>;
+  map: 'session.start' | 'session.end' | 'turn.start' | 'turn.end' | 'busy' | 'activity' | 'tool.start' | 'tool.end';
+  id?: string; tool?: string; args?: string; result?: string;
+}
+export interface HookMappings { evidence: string; model?: string; rules: HookRule[] }
 /** P2-T04: entry point → badge, interactive flag, resume args (`{id}` placeholder) or a disabled reason. */
 export interface SessionKind {
   agent: string; id: string; match: { entrypoint?: string; originator?: string };

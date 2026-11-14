@@ -1,0 +1,20 @@
+#!/bin/sh
+# Stable report helper shim (P3-T13c, PRD §5.10). Installed at <appdata>/integrations/bin/xaibo-report and run by a
+# report producer as `'<this path>' <registration-id> <token-file>` with one report v1 event on stdin. The same trust
+# checks as xaibo-hook (security review 379): it runs only a sibling xaibo-forwarder that is a regular file of our own that
+# nobody else can modify, using system tools by absolute path, and the data dir comes from this file's physical location,
+# never from the environment. Unlike xaibo-hook it keeps the forwarder's exit code and its one code-only stderr line,
+# because a producer is a script, not an agent.
+PATH=/usr/bin:/bin
+export PATH
+refuse() { echo "xaibo-report: $1" >&2; exit 2; }
+dir=$(cd -P -- "$(/usr/bin/dirname -- "$0")" && pwd -P) || refuse forwarder
+fwd=$dir/xaibo-forwarder
+[ -f "$fwd" ] && [ ! -L "$fwd" ] && [ -x "$fwd" ] && [ -O "$fwd" ] && [ -O "$dir" ] || refuse forwarder
+writable=$(/usr/bin/find "$fwd" "$dir" -prune \( -perm -0020 -o -perm -0002 \) -print) || refuse forwarder
+[ -z "$writable" ] || refuse forwarder
+data=$(/usr/bin/dirname -- "$(/usr/bin/dirname -- "$dir")") || refuse forwarder
+unset NODE_OPTIONS NODE_DEBUG NODE_PATH NODE_EXTRA_CA_CERTS
+XAIBO_DATA_DIR=$data
+export XAIBO_DATA_DIR
+exec "$fwd" report "$@"

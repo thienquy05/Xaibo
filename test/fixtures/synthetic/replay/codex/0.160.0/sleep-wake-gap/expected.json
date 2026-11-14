@@ -1,0 +1,210 @@
+{
+ "sessions": [
+  "00000000-0000-4000-8000-00000e0a0000"
+ ],
+ "streams": {
+  "hooks": {
+   "source": "hook",
+   "file": "hooks.jsonl"
+  },
+  "rollout": {
+   "source": "file",
+   "file": "rollout.jsonl",
+   "session": "00000000-0000-4000-8000-00000e0a0000"
+  }
+ },
+ "notVerified": [
+  "hook keys are the S5 set (0.160.0); rollout records follow the S9 shapes; values synthetic",
+  "suspended time is excluded from R1/R5 (P3-T12); health is stale across the gap until new evidence"
+ ],
+ "steps": [
+  {
+   "src": "hooks",
+   "line": 0,
+   "at": 0,
+   "expect": {
+    "lifecycle": "idle",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 0,
+   "at": 10,
+   "expect": {
+    "lifecycle": "idle",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 1,
+   "at": 1000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 1,
+   "at": 1040,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 2,
+   "at": 1050,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 3,
+   "at": 1100,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 4,
+   "at": 2000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 2,
+   "at": 2050,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "suspend": true,
+   "at": 60000
+  },
+  {
+   "resume": true,
+   "at": 7260000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null,
+    "health": "stale",
+    "findings": []
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 3,
+   "at": 7270000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null,
+    "health": "connected",
+    "findings": []
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 5,
+   "at": 7270050,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 6,
+   "at": 7271000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 7,
+   "at": 7271050,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 4,
+   "at": 7271100,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": "Finishing…"
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 8,
+   "at": 7271150,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": "Finishing…"
+   }
+  },
+  {
+   "tick": true,
+   "at": 7276150,
+   "expect": {
+    "lifecycle": "idle",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 5,
+   "at": 7280000,
+   "expect": {
+    "lifecycle": "ended",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  }
+ ],
+ "final": {
+  "00000000-0000-4000-8000-00000e0a0000": {
+   "lifecycle": "ended",
+   "toolCalls": 1
+  }
+ },
+ "hooksMissing": {
+  "00000000-0000-4000-8000-00000e0a0000": {
+   "lifecycle": "idle",
+   "confidence": "inferred"
+  }
+ }
+}

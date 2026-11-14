@@ -1,0 +1,5 @@
+{
+  "name": "xaibo",
+  "owner": { "name": "Xaibo" },
+  "plugins": [{ "name": "xaibo-hooks", "source": "./xaibo-hooks", "description": "Hooks-only: forwards Claude Code hook events to the local Xaibo service; prints nothing" }]
+}

@@ -1,0 +1,7 @@
+{
+  "other-tool": {
+    "Stop": [
+      { "type": "command", "command": "/tmp/xaibo-fixture/tools/stop.sh", "timeout": 10 }
+    ]
+  }
+}

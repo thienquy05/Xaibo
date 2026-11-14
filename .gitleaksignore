@@ -1,0 +1,3 @@
+# Reviewed gitleaks findings (false positives only; history is never rewritten). One fingerprint per line.
+# Synthetic test token default of privateRun() (P3-T03), not a credential: test/integration/forwarder-service-down.test.ts:34
+4fed456bc8aabad1ac6ea55bf4e76e707de6bd69:test/integration/forwarder-service-down.test.ts:generic-api-key:34

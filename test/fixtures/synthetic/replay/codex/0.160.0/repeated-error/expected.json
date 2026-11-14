@@ -1,0 +1,3 @@
+{
+ "unavailable": "Codex 0.160.0 tool results carry no verified error flag (S5 PostToolUse tool_response is a string; S9 custom_tool_call_output has none), so an R3 error signature is not derivable; owner disposition (\u00a73.4)"
+}

@@ -1,0 +1,15 @@
+{
+	"hooks": {
+		"PreToolUse": [
+			{
+				"matcher": "shell",
+				"hooks": [
+					{
+						"type": "command",
+						"command": "/tmp/xaibo-fixture/tools/guard.sh"
+					}
+				]
+			}
+		]
+	}
+}

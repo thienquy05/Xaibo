@@ -84,13 +84,13 @@ test('writer: live batches before backfill; row bound and timer flush', async ()
   const { db } = await fresh();
   const order: string[] = [];
   const timers: (() => void)[] = [];
-  const w = new Writer(db, { maxRows: 5, maxBytes: 1 << 20, setTimer: (fn) => timers.push(fn), onCommit: (b) => order.push(b.file.path) });
-  const back = w.enqueue({ ...batch(2, 10), file: { ...batch(2, 10).file, path: '/tmp/xaibo-fixture/back.jsonl' } }, false);
-  const live = w.enqueue({ ...batch(1, 10), file: { ...batch(1, 10).file, path: '/tmp/xaibo-fixture/live.jsonl' } }, true);
+  const w = new Writer(db, { maxRows: 5, maxBytes: 1 << 20, setTimer: (fn) => timers.push(fn), onCommit: (b) => order.push(b.file!.path) });
+  const back = w.enqueue({ ...batch(2, 10), file: { ...batch(2, 10).file!, path: '/tmp/xaibo-fixture/back.jsonl' } }, false);
+  const live = w.enqueue({ ...batch(1, 10), file: { ...batch(1, 10).file!, path: '/tmp/xaibo-fixture/live.jsonl' } }, true);
   assert.equal(order.length, 0, 'below bounds: waits for the timer');
   timers.shift()!();
   await Promise.all([back, live]);
   assert.deepEqual(order, ['/tmp/xaibo-fixture/live.jsonl', '/tmp/xaibo-fixture/back.jsonl']);
-  await w.enqueue({ ...batch(6, 30), file: { ...batch(6, 30).file, path: '/tmp/xaibo-fixture/big.jsonl' } }, false); // over maxRows: immediate
+  await w.enqueue({ ...batch(6, 30), file: { ...batch(6, 30).file!, path: '/tmp/xaibo-fixture/big.jsonl' } }, false); // over maxRows: immediate
   assert.equal(order.at(-1), '/tmp/xaibo-fixture/big.jsonl');
 });

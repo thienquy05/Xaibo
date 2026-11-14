@@ -1,0 +1,8 @@
+{
+  "main": "out/forwarder/statusline-tee.js",
+  "mainFormat": "module",
+  "output": ".cache/sea/xaibo-statusline",
+  "useCodeCache": false,
+  "disableExperimentalSEAWarning": true,
+  "execArgvExtension": "none"
+}

@@ -5,6 +5,7 @@ import { byRank, mergeToolCalls, type ToolCallObservation } from '../normalize.t
 import { cwdKey } from '../paths.ts';
 import { agyUsage, claudeUsage, codexRateLimits, codexStep, codexUsage, tokenRecordDrift, type Usage } from '../usage/tokens.ts';
 import { contextStep, type ContextObs, type Snapshot } from '../usage/context.ts';
+import { codexReadings, historyStep, scopeKey, sourceTime, type Reading, type Stored } from '../usage/snapshots.ts';
 
 export const SCHEMA_VERSION = 1;
 const FTS_MAX_BYTES = 64 * 1024;
@@ -20,6 +21,8 @@ export interface SessionUpsert {
   nativeAvailable?: boolean;
   /** Every distinct cwd the batch saw (P2-T05, EC-06): cwd_history rows, never a second session. */
   cwds?: CwdSeen[];
+  /** P3-T15: the Codex account marker (salted HMAC, never the raw id); the first one stored is kept. */
+  accountEpoch?: string;
 }
 export interface CwdSeen { cwd: string; cwdKey: string; firstSeen?: number; source: string }
 export interface EventRow {
@@ -38,6 +41,10 @@ export interface EventRow {
   /** P2-T11 (EC-80, agy): apply in source order by sourceSeq: current rows of the session with seq >= this one become
    *  superseded (same seq) or rewound (higher), and this row is current again if it was stored before. */
   revise?: boolean;
+  /** P3-T15: quota readings this record carries (Claude statusLine tee); Codex readings come from `usage`. */
+  quota?: Reading[];
+  /** P3-T15 (§5.12): the agent-reported session cost (statusLine `cost.total_cost_usd`). */
+  reportedCost?: number;
 }
 type Obj = Record<string, unknown>;
 export type UsageObs =
@@ -48,8 +55,25 @@ export type UsageObs =
 export interface QuarantineRow { nativeSessionId?: string; byteOffset: number; reason: string; raw?: Uint8Array; receivedTs: number }
 export interface SubagentLink { nativeSessionId: string; nativeId: string; agentType?: string }
 export interface Batch {
-  profileId: string; agent: string; file: SourceFileCheckpoint; fileSession?: string;
+  /** Absent for hook deliveries (P3-T04): they carry no source file checkpoint. */
+  profileId: string; agent: string; file?: SourceFileCheckpoint; fileSession?: string;
   sessions: SessionUpsert[]; events: EventRow[]; quarantine?: QuarantineRow[]; subagents?: SubagentLink[];
+  /** P3-T04 (EC-09): the hook delivery this batch commits; a delivery_id already stored commits nothing else. */
+  delivery?: HookDelivery;
+  /** P3-T13b (§5.10): the report delivery this batch commits; a (registration, delivery_id) already stored commits nothing else. */
+  report?: ReportDelivery;
+  /** P3-T13b2: the profile a custom agent's registration creates with this batch (never replaces an existing one). */
+  profile?: { id: string; agent: string; root: string; origin: 'registration' };
+}
+export interface ReportDelivery {
+  registrationId: string; deliveryId: string; agent: string; profileKey: string; nativeSessionId: string; event: string;
+  producerId: string; producerSeq: number; receivedTs: number; committedTs: number; unattributed: 'unknown-profile' | null;
+  /** The content.upsert item this delivery advanced; a settled (complete or incomplete) item is never changed. */
+  content?: { itemId: string; revision: number; role: string; kind: string; state: 'pending' | 'complete' | 'incomplete'; chunks: number; bytes: number; text: string | null };
+}
+export interface HookDelivery {
+  deliveryId: string; agent: string; profileKey: string; nativeSessionId: string | null; event: string;
+  receivedTs: number; committedTs: number; unattributed: 'unknown-profile' | 'no-session' | null;
 }
 
 /** Adds a cwd to the session's batch history, keeping its earliest timestamp (EC-06). */
@@ -82,9 +106,10 @@ function prepare(db: DatabaseSync) {
   return {
     // ponytail: native_archived only rises (a rollout seen under archived_sessions/); unarchiving needs a scan-level check.
     upsertSession: db.prepare(`INSERT INTO sessions (agent, profile_id, native_session_id, cwd, cwd_key, entrypoint, interactive, title, started_at, last_activity,
-        originator, native_archived, native_available)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, coalesce(?, 1))
+        originator, native_archived, native_available, account_epoch)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, coalesce(?, 1), ?)
       ON CONFLICT (agent, profile_id, native_session_id) DO UPDATE SET
+        account_epoch = coalesce(sessions.account_epoch, excluded.account_epoch),
         cwd = coalesce(sessions.cwd, excluded.cwd), cwd_key = coalesce(sessions.cwd_key, excluded.cwd_key),
         entrypoint = coalesce(sessions.entrypoint, excluded.entrypoint), interactive = coalesce(sessions.interactive, excluded.interactive),
         originator = coalesce(sessions.originator, excluded.originator), native_archived = max(sessions.native_archived, excluded.native_archived),
@@ -104,6 +129,15 @@ function prepare(db: DatabaseSync) {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (session_id, source, native_id) DO NOTHING RETURNING id`),
     insertFts: db.prepare('INSERT INTO event_fts (rowid, content) VALUES (?, ?)'),
+    delivery: db.prepare(`INSERT INTO hook_delivery (delivery_id, agent, profile_key, native_session_id, event, received_ts, committed_ts, unattributed)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (delivery_id) DO NOTHING RETURNING delivery_id`),
+    report: db.prepare(`INSERT INTO report_delivery (registration_id, delivery_id, agent, profile_key, native_session_id, event, producer_id, producer_seq,
+        received_ts, committed_ts, unattributed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING delivery_id`),
+    newProfile: db.prepare('INSERT INTO profiles (id, agent, root, origin) VALUES (?, ?, ?, ?)'), // a conflict fails the commit, never skips
+    reportContent: db.prepare(`INSERT INTO report_content (registration_id, native_session_id, item_id, revision, role, kind, state, chunks, bytes, content, updated_ts)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT DO UPDATE SET state = excluded.state, chunks = excluded.chunks, bytes = excluded.bytes, content = excluded.content,
+        updated_ts = excluded.updated_ts WHERE report_content.state = 'pending'`),
     deleteFts: db.prepare("INSERT INTO event_fts (event_fts, rowid, content) VALUES ('delete', ?, ?)"),
     supersede: db.prepare(`UPDATE events SET revision_status = CASE WHEN source_seq = ? THEN 'superseded' ELSE 'rewound' END
       WHERE session_id = ? AND source = ? AND source_seq >= ? AND revision_status = 'current' AND native_id != ? RETURNING id, content`),
@@ -157,7 +191,55 @@ function prepare(db: DatabaseSync) {
       WHERE u.session_id = ? AND u.source = ? AND u.scope = 'message' AND u.identity = ?`),
     markDirty: db.prepare("UPDATE cost_estimates SET dirty = 1 WHERE session_id = ? AND covered_scope = ?"),
     markSessionDirty: db.prepare("UPDATE cost_estimates SET dirty = 1 WHERE session_id = ? AND source = ?"),
+    sessionEpoch: db.prepare('SELECT account_epoch FROM sessions WHERE id = ?'),
+    scope: db.prepare(`INSERT INTO usage_scopes (scope_key, profile_id, agent, epoch, session_id, verified) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT (scope_key) DO UPDATE SET scope_key = excluded.scope_key RETURNING id`),
+    prevHistory: db.prepare(`SELECT used_percent, window_minutes, resets_at, plan, credits, as_of, first_observed_at, measured_at FROM usage_history
+      WHERE usage_scope_id = ? AND limit_id = ? AND measured_at <= ? ORDER BY measured_at DESC, id DESC LIMIT 1`),
+    putHistory: db.prepare(`INSERT INTO usage_history (schema_version, usage_scope_id, limit_id, kind, minute, used_percent, window_minutes, resets_at,
+        plan, credits, as_of, first_observed_at, observed_at, measured_at, source, source_locator) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (usage_scope_id, limit_id, kind, minute) DO UPDATE SET used_percent = excluded.used_percent, window_minutes = excluded.window_minutes,
+        resets_at = excluded.resets_at, plan = excluded.plan, credits = excluded.credits, as_of = excluded.as_of,
+        first_observed_at = excluded.first_observed_at, observed_at = excluded.observed_at, measured_at = excluded.measured_at,
+        source = excluded.source, source_locator = excluded.source_locator
+      WHERE excluded.measured_at >= usage_history.measured_at`),
+    nextHistory: db.prepare(`SELECT id, kind, window_minutes, resets_at, plan, measured_at FROM usage_history
+      WHERE usage_scope_id = ? AND limit_id = ? AND measured_at > ? ORDER BY measured_at, id LIMIT 1`),
+    beforeHistory: db.prepare(`SELECT window_minutes, resets_at, plan FROM usage_history
+      WHERE usage_scope_id = ? AND limit_id = ? AND measured_at < ? ORDER BY measured_at DESC, id DESC LIMIT 1`),
+    // a clash with a row of that kind in the same minute keeps the old kind (the one-per-minute cap wins)
+    setKind: db.prepare('UPDATE OR IGNORE usage_history SET kind = ? WHERE id = ?'),
+    reportedCost: db.prepare(`INSERT INTO cost_estimates (session_id, schema_version, source, covered_scope, amount_usd, basis, coverage)
+      VALUES (?, ?, ?, 'session:statusline', ?, 'agent_reported', '{"coverage":"full"}')
+      ON CONFLICT (session_id, covered_scope) DO UPDATE SET amount_usd = excluded.amount_usd`),
   };
+}
+
+type HistRow = { used_percent: number | null; window_minutes: number | null; resets_at: number | null; plan: string | null; credits: string | null;
+  as_of: number | null; first_observed_at: number; measured_at: number };
+/** P3-T15 (§5.11, EC-91, EC-92): readings of one newly stored event into its usage scope's minute history. The scope is
+ *  the Codex account marker when the session has one, else the session itself (account unverified). */
+function history(st: ReturnType<typeof prepare>, batch: Batch, sid: number | bigint, e: EventRow, readings: Reading[]) {
+  if (!readings.length) return;
+  const epoch = batch.agent === 'codex' ? (st.sessionEpoch.get(sid) as { account_epoch: string | null } | undefined)?.account_epoch ?? null : null;
+  const k = scopeKey({ profileId: batch.profileId, agent: batch.agent, epoch, nativeSessionId: e.nativeSessionId });
+  const scope = (st.scope.get(k.key, batch.profileId, batch.agent, k.epoch, k.verified ? null : sid, k.verified ? 1 : 0) as { id: number }).id;
+  for (const r of readings) {
+    const p = st.prevHistory.get(scope, r.stream, sourceTime(r, e.receivedTs) ?? e.receivedTs) as HistRow | undefined;
+    const prev: Stored | null = p ? { stream: r.stream, usedPercent: p.used_percent, windowMinutes: p.window_minutes, resetsAt: p.resets_at, plan: p.plan,
+      credits: p.credits, asOf: p.as_of, firstObservedAt: p.first_observed_at, measuredAt: p.measured_at } : null;
+    const step = historyStep(prev, r, e.receivedTs);
+    if (step.action === 'skip') continue;
+    st.putHistory.run(SCHEMA_VERSION, scope, r.stream, step.action, step.minute, r.usedPercent, r.windowMinutes, r.resetsAt, r.plan, r.credits,
+      sourceTime(r, e.receivedTs), step.firstObservedAt, e.receivedTs, step.measuredAt, e.source, e.nativeId);
+    // Review M1: a backfilled older reading can change what the next row follows; reclassify it against its predecessor.
+    type K = { window_minutes: number | null; resets_at: number | null; plan: string | null };
+    const next = st.nextHistory.get(scope, r.stream, step.measuredAt) as (K & { id: number; kind: string; measured_at: number }) | undefined;
+    if (!next) continue;
+    const before = st.beforeHistory.get(scope, r.stream, next.measured_at) as K | undefined;
+    const kind = before && (before.resets_at !== next.resets_at || before.window_minutes !== next.window_minutes || before.plan !== next.plan) ? 'transition' : 'sample';
+    if (kind !== next.kind) st.setKind.run(kind, next.id);
+  }
 }
 
 type Row = { sources: string; tool: string | null; tool_source: string | null; args_event_id: number | null; result_event_id: number | null };
@@ -205,6 +287,7 @@ function usage(st: ReturnType<typeof prepare>, batch: Batch, sid: number | bigin
       const r = codexRateLimits(u.rateLimits);
       st.snapshot.run(SCHEMA_VERSION, batch.agent, batch.profileId, sid, e.source, e.nativeId, r.limitId, r.plan,
         r.credits === null ? null : JSON.stringify(r.credits), JSON.stringify(r.windows), e.sourceTs ?? null, e.receivedTs);
+      history(st, batch, sid, e, codexReadings(u.rateLimits, e.sourceTs ?? null));
     }
   }
 }
@@ -230,11 +313,25 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
   const st = statements(db);
   db.exec('BEGIN IMMEDIATE');
   try {
+    const d = batch.delivery;
+    if (d && !st.delivery.get(d.deliveryId, d.agent, d.profileKey, d.nativeSessionId, d.event, d.receivedTs, d.committedTs, d.unattributed)) {
+      db.exec('COMMIT'); // already stored (spool replay of an acked delivery, or a retry)
+      return;
+    }
+    const r = batch.report;
+    if (r) {
+      if (!st.report.get(r.registrationId, r.deliveryId, r.agent, r.profileKey, r.nativeSessionId, r.event, r.producerId, r.producerSeq, r.receivedTs,
+        r.committedTs, r.unattributed)) { db.exec('COMMIT'); return; }
+      const c = r.content;
+      if (c) st.reportContent.run(r.registrationId, r.nativeSessionId, c.itemId, c.revision, c.role, c.kind, c.state, c.chunks, c.bytes, c.text, r.committedTs);
+    }
+    const np = batch.profile;
+    if (np) st.newProfile.run(np.id, np.agent, np.root, np.origin);
     const ids = new Map<string, number | bigint>();
     for (const s of batch.sessions) {
       const row = st.upsertSession.get(batch.agent, batch.profileId, s.nativeSessionId, s.cwd ?? null, s.cwdKey ?? null, s.entrypoint ?? null,
         b(s.interactive), s.title ?? null, s.startedAt ?? null, s.lastActivity ?? null, s.originator ?? null, s.nativeArchived ? 1 : 0,
-        b(s.nativeAvailable), b(s.nativeAvailable)) as { id: number };
+        b(s.nativeAvailable), s.accountEpoch ?? null, b(s.nativeAvailable)) as { id: number };
       ids.set(s.nativeSessionId, row.id);
       for (const c of s.cwds ?? []) st.cwd.run(row.id, SCHEMA_VERSION, c.source, c.cwd, c.cwdKey, c.firstSeen ?? null);
     }
@@ -245,8 +342,8 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
     };
 
     const f = batch.file;
-    const file = st.upsertFile.get(batch.profileId, batch.fileSession ? sessionId(batch.fileSession) : null, f.path, f.kind, f.dev, f.ino,
-      f.size, f.mtime, f.offset, f.headHash, f.status) as { id: number };
+    const file = f ? st.upsertFile.get(batch.profileId, batch.fileSession ? sessionId(batch.fileSession) : null, f.path, f.kind, f.dev, f.ino,
+      f.size, f.mtime, f.offset, f.headHash, f.status) as { id: number } : { id: null };
 
     const added = new Map<number | bigint, [number, number, number]>();
     const bump = (id: number | bigint, i: 0 | 1 | 2) => { const c = added.get(id) ?? [0, 0, 0]; c[i]++; added.set(id, c); };
@@ -289,13 +386,15 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
         else if (e.sourceTs !== undefined) st.latestTurnModel.run(e.model.id, effort, sid, e.sourceTs);
       }
       if (e.context) context(st, sid, e, e.context);
+      if (e.quota) history(st, batch, sid, e, e.quota);
+      if (e.reportedCost !== undefined) st.reportedCost.run(sid, SCHEMA_VERSION, e.source, e.reportedCost);
       if (batch.agent === 'codex' && e.kind === 'settings' && codexTierIn(e.raw)) st.markSessionDirty.run(sid, e.source); // G2-2: tier evidence arrived
       if (e.kind.endsWith('-chunk')) continue; // storage of an oversized record (EC-15), not a record: keeps EC-04's ratio
       bump(sid, 0);
       if (e.kind === 'unknown') bump(sid, 1);
     }
 
-    for (const q of batch.quarantine ?? []) {
+    for (const q of file.id === null ? [] : batch.quarantine ?? []) {
       const row = st.quarantine.get(file.id, q.byteOffset, q.reason, q.raw ?? null, q.receivedTs);
       if (row && q.nativeSessionId) bump(sessionId(q.nativeSessionId), 2);
     }
@@ -308,16 +407,26 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
     }
     db.exec('COMMIT');
   } catch (e) {
-    db.exec('ROLLBACK');
+    if (db.isTransaction) db.exec('ROLLBACK'); // SQLite already rolled back on SQLITE_FULL; keep that error, not ours
     throw e;
   }
 }
+
+/** SQLITE_FULL (primary code 13) or ENOSPC: the store cannot grow (EC-44). */
+export const isDiskFull = (e: unknown) => {
+  const x = e as { errcode?: unknown; code?: unknown } | null;
+  return (typeof x?.errcode === 'number' && (x.errcode & 0xff) === 13) || x?.code === 'ENOSPC';
+};
 
 interface Pending { batch: Batch; resolve: () => void; reject: (e: unknown) => void }
 export interface WriterOptions {
   maxRows?: number; maxBytes?: number; maxDelayMs?: number;
   setTimer?: (fn: () => void, ms: number) => void;
   onCommit?: (batch: Batch) => void;
+  /** EC-44: called when the store becomes full and again when a commit succeeds after that, outside any transaction. */
+  onDiskFull?: (full: boolean) => void;
+  /** Fault injection for tests (Q3-15); commitBatch otherwise. */
+  commit?: (db: DatabaseSync, batch: Batch) => void;
 }
 
 const batchBytes = (b: Batch) => b.events.reduce((n, e) => n + (e.content?.length ?? 0) + (e.raw?.length ?? 0), 0);
@@ -325,7 +434,8 @@ const batchBytes = (b: Batch) => b.events.reduce((n, e) => n + (e.content?.lengt
 /** Queues batches; live work is committed before backfill. Each batch is its own transaction. */
 export class Writer {
   readonly #db: DatabaseSync;
-  readonly #o: Required<Omit<WriterOptions, 'onCommit'>> & Pick<WriterOptions, 'onCommit'>;
+  readonly #o: Required<Omit<WriterOptions, 'onCommit' | 'onDiskFull'>> & Pick<WriterOptions, 'onCommit' | 'onDiskFull'>;
+  #full = false;
   #live: Pending[] = [];
   #backfill: Pending[] = [];
   #rows = 0;
@@ -334,7 +444,28 @@ export class Writer {
 
   constructor(db: DatabaseSync, o: WriterOptions = {}) {
     this.#db = db;
-    this.#o = { maxRows: 100, maxBytes: 1 << 20, maxDelayMs: 50, setTimer: (fn, ms) => void setTimeout(fn, ms), ...o };
+    this.#o = { maxRows: 100, maxBytes: 1 << 20, maxDelayMs: 50, setTimer: (fn, ms) => void setTimeout(fn, ms), commit: commitBatch, ...o };
+  }
+
+  /** True from a disk-full commit until the next commit succeeds (EC-44). */
+  get diskFull(): boolean { return this.#full; }
+
+  /** A live hook delivery (OQ-A1): its own small transaction now, ahead of anything queued; throws on failure. */
+  commitLive(batch: Batch): void {
+    this.#commit(batch);
+  }
+
+  #commit(batch: Batch): void {
+    // ponytail: while full every commit still runs as the probe (SQLite fails fast without growing); a pause timer if
+    // the retried file reads ever cost too much.
+    try {
+      this.#o.commit(this.#db, batch);
+    } catch (e) {
+      if (isDiskFull(e) && !this.#full) { this.#full = true; this.#o.onDiskFull?.(true); }
+      throw e;
+    }
+    if (this.#full) { this.#full = false; this.#o.onDiskFull?.(false); }
+    this.#o.onCommit?.(batch);
   }
 
   enqueue(batch: Batch, live: boolean): Promise<void> {
@@ -358,8 +489,7 @@ export class Writer {
     this.#bytes = 0;
     for (const j of jobs) {
       try {
-        commitBatch(this.#db, j.batch);
-        this.#o.onCommit?.(j.batch);
+        this.#commit(j.batch);
         j.resolve();
       } catch (e) {
         j.reject(e);

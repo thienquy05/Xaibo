@@ -1,0 +1,184 @@
+{
+ "sessions": [
+  "00000000-0000-4000-8000-00000e0b0000"
+ ],
+ "streams": {
+  "hooks": {
+   "source": "hook",
+   "file": "hooks.jsonl"
+  },
+  "rollout": {
+   "source": "file",
+   "file": "rollout.jsonl",
+   "session": "00000000-0000-4000-8000-00000e0b0000"
+  }
+ },
+ "notVerified": [
+  "hook keys are the S5 set (0.160.0); rollout records follow the S9 shapes; values synthetic",
+  "EC-02: a session started before hooks is inferred from its rollout and confirmed on the first hook"
+ ],
+ "steps": [
+  {
+   "src": "rollout",
+   "line": 0,
+   "at": 0,
+   "expect": {
+    "lifecycle": "unknown",
+    "confidence": "inferred",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 1,
+   "at": 1000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "inferred",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 2,
+   "at": 2000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "inferred",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 3,
+   "at": 2050,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "inferred",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 4,
+   "at": 2150,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "inferred",
+    "reason": "Finishing…"
+   }
+  },
+  {
+   "tick": true,
+   "at": 7150,
+   "expect": {
+    "lifecycle": "idle",
+    "confidence": "inferred",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 0,
+   "at": 60000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 5,
+   "at": 60040,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 6,
+   "at": 60050,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 7,
+   "at": 60100,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 8,
+   "at": 61000,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 9,
+   "at": 61050,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  },
+  {
+   "src": "hooks",
+   "line": 1,
+   "at": 61100,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": "Finishing…"
+   }
+  },
+  {
+   "src": "rollout",
+   "line": 10,
+   "at": 61150,
+   "expect": {
+    "lifecycle": "busy",
+    "confidence": "confirmed",
+    "reason": "Finishing…"
+   }
+  },
+  {
+   "tick": true,
+   "at": 66150,
+   "expect": {
+    "lifecycle": "idle",
+    "confidence": "confirmed",
+    "reason": null
+   }
+  }
+ ],
+ "final": {
+  "00000000-0000-4000-8000-00000e0b0000": {
+   "lifecycle": "idle",
+   "confidence": "confirmed",
+   "toolCalls": 0,
+   "turns": 2
+  }
+ },
+ "hooksMissing": {
+  "00000000-0000-4000-8000-00000e0b0000": {
+   "lifecycle": "idle",
+   "confidence": "inferred"
+  }
+ }
+}
