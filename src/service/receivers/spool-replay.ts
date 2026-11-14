@@ -11,7 +11,7 @@
 // a symlink, and regular single-link files of our own, are read; nothing is followed.
 // Report records (P3-T13c, xaibo-report) are {v:1, kind:'report', registration, received_ts, frame} with exact keys, a
 // canonical-UUID registration and one object frame (else torn); they go through deliverReport, which rebuilds identity
-// from the registry. A rejection known to be permanent (revoked registration, invalid report) is dropped and counted, so
+// from the registry, and keep the helper's received_ts (G3c-3). A rejection known to be permanent (revoked registration, invalid report) is dropped and counted, so
 // it never blocks the spool; any other stops the replay and keeps the record, as for hooks.
 import { randomUUID } from 'node:crypto';
 import { chmodSync, closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync, renameSync, unlinkSync, type Stats } from 'node:fs';
@@ -23,7 +23,7 @@ import type { IntakeResult } from './socket.ts';
 export interface ReplayOptions {
   dataDir: string; db: DatabaseSync; deliver: (e: Envelope) => Promise<IntakeResult>; now?: () => number;
   /** P3-T13c: a spooled report frame of a registration; absent = report records wait for a service that has one. */
-  deliverReport?: (registration: string, frame: Record<string, unknown>) => Promise<IntakeResult>;
+  deliverReport?: (registration: string, frame: Record<string, unknown>, receivedTs: number) => Promise<IntakeResult>;
   /** Wait after a rename before a taken file may be removed (default 1 s). */
   graceMs?: number;
   /** Bytes of spool files read per replay (default 64 MiB). */
@@ -203,7 +203,7 @@ export async function replaySpool(o: ReplayOptions): Promise<ReplayResult> {
   for (const rec of records) {
     if (o.stopped?.()) { r.complete = false; break; }
     if ('report' in rec && !o.deliverReport) { r.complete = false; break; } // kept for a service with report intake
-    const res = 'hook' in rec ? await o.deliver(rec.hook) : await o.deliverReport!(rec.report.registration, rec.report.frame);
+    const res = 'hook' in rec ? await o.deliver(rec.hook) : await o.deliverReport!(rec.report.registration, rec.report.frame, rec.report.received_ts);
     if (res.status !== 'accepted') {
       if ('report' in rec && PERMANENT(res.code)) { r.dropped++; continue; }
       r.complete = false;

@@ -52,8 +52,8 @@ export interface Service {
   prices(): Prices | null;
   /** Re-reads <dataDir>/models.override.json (the reloadPrices command). */
   reloadPrices(): Prices | null;
-  /** P3-T10: live status of a session by agent and native id; null without evidence (or a read-only store). */
-  status(agent: string, nativeSessionId: string, profileId?: string): LiveStatus | null;
+  /** P3-T10: live status of a session by agent, native id and profile (§5.5); null without evidence (or a read-only store). */
+  status(agent: string, nativeSessionId: string, profileId: string): LiveStatus | null;
   /** Session keys (`agent\0profile\0native id`) whose status changed with time alone since the last call (settle,
    *  heuristic wait, R1/R5); called on a timer. */
   ticking(): string[];
@@ -90,34 +90,36 @@ export async function boot(o: BootOptions): Promise<Service> {
   // P3-T10: the status engine (P3-T08/T09) over durable hook deliveries and live-window file records.
   const clock = o.now ?? Date.now;
   // P3-T11: the approved project label is always null until the Phase 5 overlay can store one (FR-10, Q3-6, D-P3-10).
-  const onWait = (agent: string, _sid: string, state: NotifyState) =>
+  const onWait = (agent: string, _profile: string, _sid: string, state: NotifyState) =>
     o.onNotify?.({ agent: catalog?.agents.find((a) => a.id === agent)?.displayName ?? agent, label: null, state });
   const engine: StatusEngine | null = readOnly ? null : createEngine({ db, now: clock, settleMs: SETTLE_MS, log: (l) => o.log?.log(l.split(' ')[0]!), onWait });
-  const read = (agent: string, sid: string): LiveStatus | null => {
-    const s = engine?.status(agent, sid);
+  const read = (agent: string, profile: string, sid: string): LiveStatus | null => {
+    const s = engine?.status(agent, profile, sid);
     if (!s) return null;
     const known = <T extends string>(xs: readonly T[], x: string | null): T | null => (x !== null && (xs as readonly string[]).includes(x) ? x as T : null);
     return { lifecycle: s.lifecycle, confidence: s.confidence, health: s.health, reason: known(REASONS, s.reason), outcome: known(OUTCOMES, s.outcome),
       findings: s.findings.filter((r): r is LiveStatus['findings'][number] => (RULES as readonly string[]).includes(r)) };
   };
   // Sessions whose status can change with time alone (busy: settle, R1/R5; heuristic waits), with the last status seen.
-  const watched = new Map<string, { key: string; agent: string; sid: string; last: string }>();
-  const watch = (agent: string, profileId: string, sid: string) => {
-    watched.set(`${agent}\0${sid}`, { key: `${agent}\0${profileId}\0${sid}`, agent, sid, last: JSON.stringify(read(agent, sid)) });
-    arm({ agent, sid });
+  // Keyed `agent\0profile\0native id`, the session identity (§5.5).
+  type Watched = { agent: string; profile: string; sid: string };
+  const watched = new Map<string, Watched & { last: string }>();
+  const watch = (agent: string, profile: string, sid: string) => {
+    watched.set(`${agent}\0${profile}\0${sid}`, { agent, profile, sid, last: JSON.stringify(read(agent, profile, sid)) });
+    arm({ agent, profile, sid });
   };
   // P3-T16e: one timer at the earliest settle deadline among watched sessions, so a settle lands at its deadline and
   // not up to one status tick (250 ms) later; the tick still covers the other time-based changes. A newly watched
   // session only moves the timer earlier (review M1: a rescan per watch was O(n²), 5,000 rows ~2-4 s); the tick and the
   // timer itself rescan, so a deadline that moved later is dropped there.
   let due: { at: number; timer: NodeJS.Timeout } | undefined;
-  const arm = (only?: { agent: string; sid: string }) => {
+  const arm = (only?: Watched) => {
     if (!o.onTick || stopped) return;
     let next = Infinity;
     if (only) {
-      next = engine?.status(only.agent, only.sid)?.settleAt ?? Infinity;
+      next = engine?.status(only.agent, only.profile, only.sid)?.settleAt ?? Infinity;
       if (next >= (due?.at ?? Infinity)) return;
-    } else for (const w of watched.values()) next = Math.min(next, engine?.status(w.agent, w.sid)?.settleAt ?? Infinity);
+    } else for (const w of watched.values()) next = Math.min(next, engine?.status(w.agent, w.profile, w.sid)?.settleAt ?? Infinity);
     if (due?.at === next) return;
     if (due) clearTimeout(due.timer);
     due = undefined;
@@ -133,20 +135,21 @@ export async function boot(o: BootOptions): Promise<Service> {
   const timeBound = (s: LiveStatus | null) => !!s && (s.lifecycle === 'busy' || s.confidence === 'heuristic');
   // Rows are read through here: a time-bound session not yet watched is watched now, so one reloaded from the store at
   // start (or after a restart) still settles, turns into a heuristic wait and gets R1/R5 without new evidence (review M3).
-  const status = (agent: string, sid: string, profileId?: string): LiveStatus | null => {
-    const s = read(agent, sid);
-    if (profileId !== undefined && timeBound(s) && !watched.has(`${agent}\0${sid}`)) {
-      watched.set(`${agent}\0${sid}`, { key: `${agent}\0${profileId}\0${sid}`, agent, sid, last: JSON.stringify(s) });
-      arm({ agent, sid });
+  const status = (agent: string, sid: string, profile: string): LiveStatus | null => {
+    const s = read(agent, profile, sid);
+    const k = `${agent}\0${profile}\0${sid}`;
+    if (timeBound(s) && !watched.has(k)) {
+      watched.set(k, { agent, profile, sid, last: JSON.stringify(s) });
+      arm({ agent, profile, sid });
     }
     return s;
   };
   const ticking = () => {
     const out: string[] = [];
     for (const [k, w] of watched) {
-      const s = read(w.agent, w.sid);
+      const s = read(w.agent, w.profile, w.sid);
       const now = JSON.stringify(s);
-      if (now !== w.last) { w.last = now; out.push(w.key); }
+      if (now !== w.last) { w.last = now; out.push(k); }
       if (!timeBound(s)) watched.delete(k); // new evidence or a row read re-adds it
     }
     arm();

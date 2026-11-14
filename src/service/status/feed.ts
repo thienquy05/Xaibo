@@ -14,6 +14,6 @@ export function fileObservations(b: Batch, now: number): Observation[] {
   const file = b.file.path;
   return b.events.flatMap((e): Observation[] => {
     if (typeof e.raw !== 'string' || e.sourceTs === undefined || now - e.sourceTs > LIVE_WINDOW_MS) return [];
-    return [{ source: 'file', agent: b.agent, sessionId: e.nativeSessionId, file, offset: e.byteOffset ?? e.sourceSeq, line: e.raw, receivedTs: e.receivedTs }];
+    return [{ source: 'file', agent: b.agent, profile: b.profileId, sessionId: e.nativeSessionId, file, offset: e.byteOffset ?? e.sourceSeq, line: e.raw, receivedTs: e.receivedTs }];
   });
 }

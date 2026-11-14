@@ -161,9 +161,9 @@ export async function startHooks(o: HooksOptions): Promise<Hooks> {
     o.log?.log('hook_socket_failed', { error: e instanceof SocketError ? e.code : errorCode(e) });
   }
   let stopped = false; // set synchronously by close(): boot closes the store right after
-  const deliverReport = reports && ((id: string, frame: Record<string, unknown>): Promise<IntakeResult> => {
+  const deliverReport = reports && ((id: string, frame: Record<string, unknown>, receivedTs: number): Promise<IntakeResult> => {
     const reg = reports.registry.current(id); // identity from the registry, never the record (P3-T13c)
-    return reg ? reports.intake.deliver(reg, frame) : Promise.resolve({ status: 'rejected', code: 'auth' });
+    return reg ? reports.intake.deliver(reg, frame, receivedTs) : Promise.resolve({ status: 'rejected', code: 'auth' });
   });
   const replay = replaySpool({ dataDir: o.dataDir, db: o.db, deliver: intake.deliver, stopped: () => stopped, ...(o.now ? { now: o.now } : {}),
     ...(deliverReport ? { deliverReport } : {}) }).then((r) => {

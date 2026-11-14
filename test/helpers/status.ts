@@ -14,6 +14,6 @@ export function hookObs(agent: string, payload: Record<string, unknown>, o: { at
 }
 
 export function fileObs(agent: string, record: Record<string, unknown>, o: { at?: number; offset?: number; session?: string } = {}): Extract<Observation, { source: 'file' }> {
-  return { source: 'file', agent, sessionId: o.session ?? SID, file: 'transcript.jsonl', offset: o.offset ?? ++n * 1000,
+  return { source: 'file', agent, profile: 'p1', sessionId: o.session ?? SID, file: 'transcript.jsonl', offset: o.offset ?? ++n * 1000,
     line: JSON.stringify(record), receivedTs: T0 + (o.at ?? 0) };
 }

@@ -37,14 +37,14 @@ test('EC-43: busy session, 2-hour suspend on the fake clock, resume: no R1, stal
   e.ingest(hookObs('claude', { hook_event_name: 'UserPromptSubmit', prompt: 'p' }, { at: 0 }));
   now = T0 + 60_000; e.suspend(now);
   now = T0 + 60_000 + 7_200_000; e.resume(now);
-  let s = e.status('claude', SID)!;
+  let s = e.status('claude', 'p1', SID)!;
   assert.deepEqual([s.lifecycle, s.health, s.findings], ['busy', 'stale', []]);
   now += 1000;
   e.ingest(hookObs('claude', { hook_event_name: 'PreToolUse', tool_use_id: 't', tool_name: 'Bash' }, { at: now - T0 }));
-  s = e.status('claude', SID)!;
+  s = e.status('claude', 'p1', SID)!;
   assert.deepEqual([s.lifecycle, s.health, s.findings], ['busy', 'connected', []]);
   now += 299_000; // 4 min 59 s awake since the call started; R5 needs 10 min
-  assert.deepEqual(e.status('claude', SID)!.findings, []);
+  assert.deepEqual(e.status('claude', 'p1', SID)!.findings, []);
 });
 
 test('review L3: a second suspend while asleep is ignored, so health and the R1 exclusion agree on the sleep start', async () => {
@@ -57,5 +57,5 @@ test('review L3: a second suspend while asleep is ignored, so health and the R1 
   e.ingest(hookObs('claude', { hook_event_name: 'PreToolUse', tool_use_id: 't', tool_name: 'Bash' }, { at: 100_000 })); // received after the first suspend
   e.suspend(T0 + 7_000_000); // a duplicate suspend for the same sleep
   now = T0 + 7_260_000; e.resume(now);
-  assert.equal(e.status('claude', SID)!.health, 'connected', 'evidence after the sleep start (60 s) is newer than the suspend');
+  assert.equal(e.status('claude', 'p1', SID)!.health, 'connected', 'evidence after the sleep start (60 s) is newer than the suspend');
 });

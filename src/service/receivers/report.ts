@@ -28,7 +28,8 @@ export interface ReportIntakeOptions {
   customAgent?: (agent: string) => boolean;
 }
 export interface ReportIntake {
-  deliver(reg: Registration, frame: unknown): Promise<IntakeResult>;
+  /** receivedTs: when the xaibo-report helper received a spooled frame (replay); live frames are stamped now. */
+  deliver(reg: Registration, frame: unknown, receivedTs?: number): Promise<IntakeResult>;
   /** Counts a frame refused before intake (framing, size) as coverage for its registration. */
   rejected(reg: Registration, code: string): void;
 }
@@ -54,12 +55,13 @@ export function createReportIntake(o: ReportIntakeOptions): ReportIntake {
     try { putReject.run(reg.id, code, at, at); } catch { /* a full store: the ack still says rejected */ }
   };
 
-  const deliver = async (reg: Registration, frame: unknown): Promise<IntakeResult> => {
+  const deliver = async (reg: Registration, frame: unknown, receivedTs?: number): Promise<IntakeResult> => {
     const r = parseReport(frame);
     if (!r.ok) { rejected(reg, r.code); return { status: 'rejected', code: r.code }; }
     const x = r.event;
     if (stored.get(reg.id, x.delivery_id)) return { status: 'accepted', code: 'duplicate' };
-    const at = now();
+    // A replayed frame keeps the helper's receive time, never later than now, so it orders and ages as it happened (G3c-3).
+    const committed = now(), at = receivedTs === undefined ? committed : Math.min(receivedTs, committed);
     const p = x.payload;
     const isContent = x.event === 'content.upsert';
     const lean = isContent ? { ...x, payload: { ...p, content: '' } } : x;
@@ -97,7 +99,7 @@ export function createReportIntake(o: ReportIntakeOptions): ReportIntake {
       profileId: reg.profile_key, agent: reg.agent, sessions: [], events: [],
       ...(create ? { profile: { id: reg.profile_key, agent: reg.agent, root: `registration:${reg.id}`, origin: 'registration' as const } } : {}),
       report: { registrationId: reg.id, deliveryId: x.delivery_id, agent: reg.agent, profileKey: reg.profile_key, nativeSessionId: x.session_id,
-        event: x.event, producerId: x.producer_id, producerSeq: x.producer_seq, receivedTs: at, committedTs: at,
+        event: x.event, producerId: x.producer_id, producerSeq: x.producer_seq, receivedTs: at, committedTs: committed,
         unattributed: attributed ? null : 'unknown-profile', ...(content ? { content } : {}) },
     };
     if (attributed) {

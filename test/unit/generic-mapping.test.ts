@@ -34,8 +34,8 @@ async function harness() {
   let now = T0;
   const logs: string[] = [];
   const e = createEngine({ db, now: () => now, settleMs: 4000, log: (l) => logs.push(l) });
-  return { logs, feed: (o: Observation, ms: number) => { now = T0 + ms; e.ingest(o); return e.status('envelope' in o ? o.envelope.agent : o.agent, SID); },
-    at: (ms: number) => { now = T0 + ms; }, st: (agent: string) => e.status(agent, SID) };
+  return { logs, feed: (o: Observation, ms: number) => { now = T0 + ms; e.ingest(o); return e.status('envelope' in o ? o.envelope.agent : o.agent, 'p1', SID); },
+    at: (ms: number) => { now = T0 + ms; }, st: (agent: string) => e.status(agent, 'p1', SID) };
 }
 
 test('mapper: exact event and exact predicates (null = absent); no matching rule -> null (reduced coverage)', () => {
@@ -128,7 +128,7 @@ test('review M1: a transcript (inferred) end sorted before the hook start does n
   const h = await harness();
   const claudeHook = (event: string, p: Record<string, unknown>, at: number): Observation => ({ source: 'hook', envelope: env('claude', { hook_event_name: event, ...p }, at) });
   h.feed(claudeHook('UserPromptSubmit', { prompt: 'p' }, 0), 0);
-  h.feed({ source: 'file', agent: 'claude', sessionId: SID, file: 't.jsonl', offset: 10, receivedTs: T0 + 100,
+  h.feed({ source: 'file', agent: 'claude', profile: 'p1', sessionId: SID, file: 't.jsonl', offset: 10, receivedTs: T0 + 100,
     line: JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'w', content: 'ok' }] } }) }, 100);
   h.feed(claudeHook('PreToolUse', { tool_use_id: 'w', tool_name: 'Write' }, 200), 200);
   assert.equal(h.feed(claudeHook('PermissionRequest', { tool_name: 'Write' }, 300), 300)!.lifecycle, 'waiting-for-permission');

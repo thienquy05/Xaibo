@@ -118,7 +118,7 @@ async function settling(stops: Record<string, number>, frozen: number) {
   mkdirSync(dataDir);
   mkdirSync(join(base, 'home'));
   const pre = await openStore({ file: join(dataDir, 'xaibo.db'), backupDir: join(dataDir, 'backups') });
-  const put = pre.db.prepare("INSERT INTO status_evidence (agent, native_session_id, dedup, ts, rank, seq, confidence, ev) VALUES ('claude', ?, ?, ?, 0, ?, 'confirmed', ?)");
+  const put = pre.db.prepare("INSERT INTO status_evidence (agent, profile_id, native_session_id, dedup, ts, rank, seq, confidence, ev) VALUES ('claude', 'p1', ?, ?, ?, 0, ?, 'confirmed', ?)");
   for (const [sid, stopAt] of Object.entries(stops)) {
     put.run(sid, `${sid}:1`, stopAt - 1000, 1, JSON.stringify([{ k: 'turn.start', typed: true }]));
     put.run(sid, `${sid}:2`, stopAt, 2, JSON.stringify([{ k: 'turn.end' }]));
@@ -201,7 +201,7 @@ test('(3) watching many settling sessions stays linear (no rescan per watch)', a
   mkdirSync(join(base, 'home'));
   const stopAt = Date.now();
   const pre = await openStore({ file: join(dataDir, 'xaibo.db'), backupDir: join(dataDir, 'backups') });
-  const put = pre.db.prepare("INSERT INTO status_evidence (agent, native_session_id, dedup, ts, rank, seq, confidence, ev) VALUES ('claude', ?, ?, ?, 0, ?, 'confirmed', ?)");
+  const put = pre.db.prepare("INSERT INTO status_evidence (agent, profile_id, native_session_id, dedup, ts, rank, seq, confidence, ev) VALUES ('claude', 'p1', ?, ?, ?, 0, ?, 'confirmed', ?)");
   const sids = Array.from({ length: 5000 }, (_, i) => `00000000-0000-4000-8000-${String(900000 + i).padStart(12, '0')}`);
   pre.db.exec('BEGIN');
   for (const sid of sids) {

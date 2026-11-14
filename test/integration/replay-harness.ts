@@ -50,6 +50,8 @@ export interface Fixture {
   notVerified?: string[];
 }
 
+/** Every replayed observation belongs to this one profile. */
+export const PROFILE = 'replay-profile';
 export const REPLAY_ROOT = join(import.meta.dirname, '..', 'fixtures', 'synthetic', 'replay');
 
 export function loadFixture(dir: string, id: string): Fixture {
@@ -85,14 +87,14 @@ export function observation(fx: Fixture, step: ObsStep, receivedTs: number): Obs
     // A report event carries its own delivery_id, stable across retries (§5.10); a hook delivery's id is per line.
     const id = s.source === 'report' ? str('delivery_id') : null;
     return { source: s.source, envelope: {
-      v: 1, delivery_id: id ?? `replay-${step.src}-${step.line}`, agent: fx.agent, profile_key: 'replay-profile',
+      v: 1, delivery_id: id ?? `replay-${step.src}-${step.line}`, agent: fx.agent, profile_key: PROFILE,
       event: str('hook_event_name', 'hookEventName', 'event') ?? 'unknown', session_id: str('session_id', 'conversationId'),
       cwd: str('cwd'), received_ts: receivedTs, payload, ...(payload ? {} : { malformed: true }),
     } };
   }
   if (s.source === 'otel') return { source: 'otel', agent: fx.agent, sessionId: s.session!, record: JSON.parse(line), receivedTs };
   const offset = fx.lines[step.src]!.slice(0, step.line).reduce((n, l) => n + Buffer.byteLength(l) + 1, 0);
-  return { source: 'file', agent: fx.agent, sessionId: s.session!, file: s.file, offset, line, receivedTs };
+  return { source: 'file', agent: fx.agent, profile: PROFILE, sessionId: s.session!, file: s.file, offset, line, receivedTs };
 }
 
 // ---- Schedules ----------------------------------------------------------------------------------------------------
@@ -124,13 +126,15 @@ export function rng(seed: number) {
 }
 const hash = (s: string) => [...s].reduce((h, c) => (Math.imul(h, 31) + c.charCodeAt(0)) >>> 0, 7);
 
-/** Re-ordered delivery: arrival never earlier than the step's time and strictly increasing; the receive time stays the
- * original one (the forwarder and tailer stamp an observation when it happens, delivery order is what changes). */
+/** Re-ordered delivery: arrival never earlier than the step's time and strictly increasing. A hook or file line keeps
+ * its original receive time (the forwarder and tailer stamp an observation when it happens); a live report is stamped
+ * when the service receives it (report intake, §5.10), so only its producer_seq can place it (G3c-3). */
 function arrive(order: number[], fx: Fixture): Extract<Action, { kind: 'obs' }>[] {
   let t = -Infinity;
   return order.map((i) => {
     t = Math.max(t + 1, fx.steps[i]!.at);
-    return { kind: 'obs', step: i, at: t, receivedTs: fx.steps[i]!.at };
+    const report = fx.streams[(fx.steps[i] as ObsStep).src]!.source === 'report';
+    return { kind: 'obs', step: i, at: t, receivedTs: report ? t : fx.steps[i]!.at };
   });
 }
 
@@ -215,7 +219,7 @@ export async function replay(factory: EngineFactory, fx: Fixture, sched: Schedul
   const perStep = new Map<number, SessionStatus | null>();
   const record = (i: number) => {
     const e = (fx.steps[i] as { expect?: Expect } | undefined)?.expect;
-    if (e) perStep.set(i, engine.status(fx.agent, e.session ?? fx.sessions[0]!));
+    if (e) perStep.set(i, engine.status(fx.agent, PROFILE, e.session ?? fx.sessions[0]!));
   };
   for (const a of sched.actions) {
     now = Math.max(now, EPOCH + a.at);
@@ -228,7 +232,7 @@ export async function replay(factory: EngineFactory, fx: Fixture, sched: Schedul
   }
   now += DRAIN_MS;
   engine.advance(now);
-  const final = Object.fromEntries(fx.sessions.map((s) => [s, engine.status(fx.agent, s)]));
+  const final = Object.fromEntries(fx.sessions.map((s) => [s, engine.status(fx.agent, PROFILE, s)]));
   engine.close();
   db.close();
   rmSync(dir, { recursive: true, force: true });

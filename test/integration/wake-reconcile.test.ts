@@ -33,17 +33,18 @@ test('EC-43: suspend → stale; appends while suspended are reconciled within in
   const svc = await boot({ dataDir: join(tmp, 'data'), home, catalog, intervalMs: 60_000 });
   try {
     await svc.done;
-    await until(() => svc.status('claude', SESSION)?.lifecycle === 'busy', 2_000);
-    assert.equal(svc.status('claude', SESSION)!.health, 'connected');
+    const pid = String((svc.store.db.prepare("SELECT id FROM profiles WHERE agent = 'claude'").get() as { id: string }).id);
+    await until(() => svc.status('claude', SESSION, pid)?.lifecycle === 'busy', 2_000);
+    assert.equal(svc.status('claude', SESSION, pid)!.health, 'connected');
     svc.suspend(Date.now());
-    assert.equal(svc.status('claude', SESSION)!.health, 'stale');
+    assert.equal(svc.status('claude', SESSION, pid)!.health, 'stale');
 
     const before = count(svc.store.db, 'SELECT count(*) FROM events');
     appendFileSync(transcript, line({ type: 'assistant', uuid: '00000000-0000-4000-8000-0000000f1212', message: { id: 'msg_fixture_wake', role: 'assistant',
       content: [{ type: 'tool_use', id: 'toolu_fixture_wake', name: 'Bash', input: { command: 'npm run build' } }], stop_reason: 'tool_use' } }));
     await svc.wake();
     await until(() => count(svc.store.db, 'SELECT count(*) FROM events') > before, 1_000);
-    await until(() => svc.status('claude', SESSION)?.health === 'connected', 1_000);
-    assert.deepEqual(svc.status('claude', SESSION)!.findings, []);
+    await until(() => svc.status('claude', SESSION, pid)?.health === 'connected', 1_000);
+    assert.deepEqual(svc.status('claude', SESSION, pid)!.findings, []);
   } finally { svc.stop(); }
 });

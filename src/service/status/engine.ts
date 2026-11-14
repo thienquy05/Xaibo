@@ -38,7 +38,8 @@ export interface SessionStatus {
 
 export type Observation =
   | { source: 'hook' | 'report'; envelope: Envelope }
-  | { source: 'file'; agent: string; sessionId: string; file: string; offset: number; line: string; receivedTs: number }
+  /** profile: the profile id of the batch the line came from (§5.5 identity is agent, profile, native session id). */
+  | { source: 'file'; agent: string; profile: string; sessionId: string; file: string; offset: number; line: string; receivedTs: number }
   | { source: 'otel'; agent: string; sessionId: string; record: unknown; receivedTs: number };
 
 export interface StatusEngine {
@@ -47,7 +48,7 @@ export interface StatusEngine {
   advance(now: number): void;
   suspend(now: number): void;
   resume(now: number): void;
-  status(agent: string, sessionId: string): SessionStatus | null;
+  status(agent: string, profile: string, sessionId: string): SessionStatus | null;
   close(): void;
 }
 export type WaitState = 'waiting-for-permission' | 'needs-input';
@@ -58,7 +59,7 @@ export interface EngineOptions {
   /** P3-T11 notify intent (Q3-11): a confirmed request newly pending after the ingest of the entry that carries it,
    *  received within the last 60 s. Requests are confirmed-only evidence, so a heuristic wait never calls it; evidence
    *  reloaded at start never calls it. A request that changes kind under the same id is not new (review LOW-2). */
-  onWait?: (agent: string, sessionId: string, state: WaitState) => void;
+  onWait?: (agent: string, profile: string, sessionId: string, state: WaitState) => void;
   /** Agent catalog for hook mappings (P3-T13a); the bundled catalog by default. */
   catalog?: Catalog;
 }
@@ -108,7 +109,9 @@ const MAX_EVS = 256;
 const TURN_ENDS = new Set<Ev['k']>(['turn.end', 'turn.idle', 'turn.error', 'interrupt', 'session.end']);
 const CONFIRMED_ONLY = new Set<Ev['k']>(['session.start', 'session.end', 'request', 'resolve', 'turn.error', 'interrupt']);
 
-interface Entry { ts: number; rank: number; seq: number; conf: 'confirmed' | 'inferred'; evs: Ev[] }
+/** pid/pseq: a report's producer_id and producer_seq; the last sort key, so a late report placed at its successor's
+ *  (ts, rank, seq) sorts before it (G3c-3). */
+interface Entry { ts: number; rank: number; seq: number; conf: 'confirmed' | 'inferred'; evs: Ev[]; pid?: string; pseq?: number }
 interface Fold {
   hooked: boolean; started: boolean; ended: boolean; error: boolean;
   active: boolean; activeConf: Confidence; stopAt: number | null; stopConf: Confidence; idle: Confidence | null;
@@ -148,7 +151,14 @@ function step(f: Fold, x: Entry, r: RuleSettings, conflict?: (kind: string) => v
   for (const e of x.evs) {
     if (inferred && CONFIRMED_ONLY.has(e.k)) continue;
     switch (e.k) {
-      case 'session.start': f.started = true; break;
+      case 'session.start':
+        // A resume after SessionEnd starts a new invocation of the same session (G3c-2): totals stay, live state resets.
+        if (f.ended) {
+          Object.assign(f, { ended: false, active: false, stopAt: null, idle: null, error: false, outcome: null, bgTurn: false, background: false });
+          f.requests.clear(); f.inflight.clear(); f.children.clear(); f.calls.clear(); f.pat = freshPatterns();
+        }
+        f.started = true;
+        break;
       case 'session.end': f.ended = true; break;
       case 'turn.start':
         if (e.turn) f.turnIds.add(e.turn); else if (e.typed) f.typed[x.conf]++;
@@ -212,7 +222,10 @@ function step(f: Fold, x: Entry, r: RuleSettings, conflict?: (kind: string) => v
       case 'interrupt':
         f.active = false; f.stopAt = x.ts; f.stopConf = x.conf; f.outcome = 'interrupted'; f.background = false; f.bgTurn = false;
         break;
-      case 'child.start': f.children.add(e.id); break;
+      case 'child.start': // a subagent is work, even with no prompt first (G3c-4)
+        f.children.add(e.id);
+        if (!ignored && !f.active && f.stopAt === null && !f.error) activate(f, x.conf);
+        break;
       case 'child.end':
         if (f.children.delete(e.id) && f.children.size === 0 && !f.active && f.stopAt !== null) f.stopAt = x.ts;
         break;
@@ -254,12 +267,13 @@ function usageOf(f: Fold): Record<string, number> | null {
   return out;
 }
 
-interface Sess { agent: string; entries: Entry[]; dedup: Set<string>; fold: Fold }
-const after = (a: Entry, b: Entry) => a.ts - b.ts || a.rank - b.rank || a.seq - b.seq;
+/** top: the highest producer_seq seen per producer key, so an in-order report skips the successor search (review L1). */
+interface Sess { agent: string; entries: Entry[]; dedup: Set<string>; fold: Fold; top: Map<string, number> }
+const after = (a: Entry, b: Entry) => a.ts - b.ts || a.rank - b.rank || a.seq - b.seq || (a.pseq ?? 0) - (b.pseq ?? 0);
 
 export function createEngine(o: EngineOptions): StatusEngine {
-  const put = o.db.prepare(`INSERT OR IGNORE INTO status_evidence (agent, native_session_id, dedup, ts, rank, seq, confidence, ev)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+  const put = o.db.prepare(`INSERT OR IGNORE INTO status_evidence (agent, profile_id, native_session_id, dedup, ts, rank, seq, confidence, ev,
+    producer_id, producer_seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   // ponytail: every session's evidence stays in memory and is reloaded at start, and an out-of-order delivery refolds the
   // session (O(n)). Feeders must stamp file lines with their read time (in order, as the tailer does), or a backfill behind
   // existing hook entries costs O(n²). Compact settled sessions to a snapshot and fold from the insertion point when
@@ -267,22 +281,26 @@ export function createEngine(o: EngineOptions): StatusEngine {
   const rules: RuleSettings = { ...RULE_DEFAULTS, ...o.rules };
   const maps = statusMaps(o.catalog ?? loadCatalog());
   const sessions = new Map<string, Sess>();
-  const key = (agent: string, sid: string) => `${agent}\0${sid}`;
-  const get = (agent: string, sid: string) => {
-    let s = sessions.get(key(agent, sid));
-    if (!s) sessions.set(key(agent, sid), (s = { agent, entries: [], dedup: new Set(), fold: fresh() }));
+  const key = (agent: string, profile: string, sid: string) => `${agent}\0${profile}\0${sid}`;
+  const get = (agent: string, profile: string, sid: string) => {
+    let s = sessions.get(key(agent, profile, sid));
+    if (!s) sessions.set(key(agent, profile, sid), (s = { agent, entries: [], dedup: new Set(), fold: fresh(), top: new Map() }));
     return s;
   };
   let seq = 0;
-  for (const r of o.db.prepare('SELECT agent, native_session_id AS sid, dedup, ts, rank, seq, confidence, ev FROM status_evidence ORDER BY ts, rank, seq, id').all() as
-    { agent: string; sid: string; dedup: string; ts: number; rank: number; seq: number; confidence: 'confirmed' | 'inferred'; ev: string }[]) {
-    const s = get(r.agent, r.sid);
+  // Rows stored before 011 have profile '' (a session no profile reads) and no producer: harmless derived data.
+  for (const r of o.db.prepare(`SELECT agent, profile_id AS profile, native_session_id AS sid, dedup, ts, rank, seq, confidence, ev, producer_id AS pid,
+    producer_seq AS pseq FROM status_evidence ORDER BY ts, rank, seq, coalesce(producer_seq, 0), id`).all() as
+    { agent: string; profile: string; sid: string; dedup: string; ts: number; rank: number; seq: number; confidence: 'confirmed' | 'inferred'; ev: string;
+      pid: string | null; pseq: number | null }[]) {
+    const s = get(r.agent, r.profile, r.sid);
     s.dedup.add(r.dedup);
     try {
       const evs: unknown = JSON.parse(r.ev);
       if (!Array.isArray(evs) || !evs.every((e) => e && typeof e === 'object' && typeof e.k === 'string')) throw new Error('shape');
-      const x: Entry = { ts: r.ts, rank: r.rank, seq: r.seq, conf: r.confidence, evs: evs as Ev[] };
+      const x: Entry = { ts: r.ts, rank: r.rank, seq: r.seq, conf: r.confidence, evs: evs as Ev[], ...(r.pid !== null && r.pseq !== null ? { pid: r.pid, pseq: r.pseq } : {}) };
       step(s.fold, x, rules); s.entries.push(x);
+      if (x.pid !== undefined) s.top.set(x.pid, Math.max(s.top.get(x.pid) ?? -Infinity, x.pseq!));
     } catch { o.log('status_row_skipped'); } // one corrupt row never stops startup
     seq = Math.max(seq, r.rank === 0 ? r.seq : 0);
   }
@@ -295,25 +313,44 @@ export function createEngine(o: EngineOptions): StatusEngine {
     if (obs.source === 'otel') return; // OTel never drives status (§6.6)
     const hookish = obs.source !== 'file';
     const agent = hookish ? obs.envelope.agent : obs.agent;
+    const profile = hookish ? obs.envelope.profile_key : obs.profile;
     const sid = hookish ? obs.envelope.session_id : obs.sessionId;
     // Report events map by the report contract whatever agent the registration binds (§5.10); hooks and files by agent.
     const map: StatusMap | undefined = obs.source === 'report' ? (x) => (x.source === 'report' ? reportEvidence(x.envelope) : null) : maps.get(agent);
     if (!sid || !map) return; // agents without a status map are not tracked
     // A file is keyed by a hash of its path, so no path is stored (security review).
     const dedup = hookish ? `d:${obs.envelope.delivery_id}` : `f:${createHash('sha256').update(obs.file).digest('hex').slice(0, 16)}:${obs.offset}`;
-    if (sessions.get(key(agent, sid))?.dedup.has(dedup)) return;
+    if (sessions.get(key(agent, profile, sid))?.dedup.has(dedup)) return;
     let evs: Ev[];
     try {
       const mapped = map(obs);
       if (mapped === null) { o.log('status_unmapped'); return; } // reduced coverage: no invented state (§6.8)
       evs = mapped.slice(0, MAX_EVS);
     } catch { o.log('status_map_failed'); return; } // no session, nothing stored
-    const s = get(agent, sid);
+    const s = get(agent, profile, sid);
     s.dedup.add(dedup);
     const x: Entry = hookish
       ? { ts: obs.envelope.received_ts, rank: 0, seq: ++seq, conf: 'confirmed', evs }
       : { ts: obs.receivedTs, rank: 1, seq: obs.offset, conf: 'inferred', evs };
-    try { put.run(agent, sid, dedup, x.ts, x.rank, x.seq, x.conf, JSON.stringify(x.evs)); } catch { o.log('status_store_failed'); }
+    if (obs.source === 'report') {
+      // Report intake stamps arrival time, so producer_seq is the causal order within one producer (§5.10: timestamps do
+      // not override it). A late event sorting after a higher-seq event of its producer takes the earliest such
+      // successor's place, and its lower producer_seq puts it first. A producer is scoped to its registration (the
+      // intake's delivery id is `<registration>:<id>`), so one registration never reorders another's events (review L2).
+      const p = obs.envelope.payload ?? {}, id = p['producer_id'], pseq = p['producer_seq'];
+      if (typeof id === 'string' && Number.isSafeInteger(pseq)) {
+        const d = obs.envelope.delivery_id, pid = `${d.includes(':') ? d.slice(0, d.indexOf(':')) : ''}:${id}`;
+        x.pid = pid; x.pseq = pseq as number;
+        const top = s.top.get(pid) ?? -Infinity;
+        if (x.pseq < top) { // a late event: only then can a successor exist
+          let next: Entry | undefined;
+          for (const e of s.entries) if (e.pid === pid && e.pseq! > x.pseq && (!next || after(e, next) < 0)) next = e;
+          if (next && after(x, next) > 0) { x.ts = next.ts; x.seq = next.seq; }
+        }
+        s.top.set(pid, Math.max(top, x.pseq));
+      }
+    }
+    try { put.run(agent, profile, sid, dedup, x.ts, x.rank, x.seq, x.conf, JSON.stringify(x.evs), x.pid ?? null, x.pseq ?? null); } catch { o.log('status_store_failed'); }
     const pending = new Set(s.fold.requests.keys());
     let i = s.entries.length;
     while (i > 0 && after(s.entries[i - 1]!, x) > 0) i--;
@@ -326,12 +363,12 @@ export function createEngine(o: EngineOptions): StatusEngine {
     // NOTIFY_MAX_AGE_MS ago (a spool replayed after an outage) is stale: its resolution is likely already queued (M3).
     if (s.fold.ended || !x.evs.some((e) => e.k === 'request') || o.now() - x.ts > NOTIFY_MAX_AGE_MS) return;
     for (const [id, kind] of s.fold.requests) {
-      if (!pending.has(id)) o.onWait?.(agent, sid, kind === 'input' ? 'needs-input' : 'waiting-for-permission');
+      if (!pending.has(id)) o.onWait?.(agent, profile, sid, kind === 'input' ? 'needs-input' : 'waiting-for-permission');
     }
   };
 
-  const status = (agent: string, sid: string): SessionStatus | null => {
-    const s = sessions.get(key(agent, sid));
+  const status = (agent: string, profile: string, sid: string): SessionStatus | null => {
+    const s = sessions.get(key(agent, profile, sid));
     if (!s) return null;
     const f = s.fold, now = o.now();
     const l = life(f, agent, now, o.settleMs);

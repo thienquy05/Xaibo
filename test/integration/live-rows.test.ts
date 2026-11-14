@@ -71,7 +71,7 @@ test('file records reach the engine only inside the live window, with their file
   const obs = fileObservations(b, NOW);
   // visual check: a backfilled record without a source time was fed as "now" and gave an old session a live status
   assert.deepEqual(obs.map((o) => o.source === 'file' && o.offset), [10], 'old, raw-less and timeless records skipped');
-  assert.deepEqual(obs[0], { source: 'file', agent: 'claude', sessionId: SID, file: '/tmp/xaibo-fixture/t.jsonl', offset: 10, line: '{"type":"user"}', receivedTs: NOW });
+  assert.deepEqual(obs[0], { source: 'file', agent: 'claude', profile: 'p1', sessionId: SID, file: '/tmp/xaibo-fixture/t.jsonl', offset: 10, line: '{"type":"user"}', receivedTs: NOW });
   assert.deepEqual(fileObservations({ ...b, file: undefined as never }, NOW), [], 'hook batches are fed by intake publish');
   assert.equal(LIVE_WINDOW_MS, 24 * 3600_000);
 });
@@ -149,7 +149,7 @@ test('after a restart a busy session is watched once its row is read, and settle
   mkdirSync(dataDir);
   mkdirSync(join(base, 'home'));
   const pre = await openStore({ file: join(dataDir, 'xaibo.db'), backupDir: join(dataDir, 'backups') });
-  const put = pre.db.prepare("INSERT INTO status_evidence (agent, native_session_id, dedup, ts, rank, seq, confidence, ev) VALUES ('claude', ?, ?, ?, 0, ?, 'confirmed', ?)");
+  const put = pre.db.prepare("INSERT INTO status_evidence (agent, profile_id, native_session_id, dedup, ts, rank, seq, confidence, ev) VALUES ('claude', 'p1', ?, ?, ?, 0, ?, 'confirmed', ?)");
   put.run(SID, 'd:1', NOW, 1, JSON.stringify([{ k: 'turn.start', typed: true }]));
   put.run(SID, 'd:2', NOW + 1000, 2, JSON.stringify([{ k: 'turn.end' }]));
   pre.db.close();

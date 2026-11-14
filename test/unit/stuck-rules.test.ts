@@ -18,7 +18,7 @@ async function harness(agent = 'claude', rules?: EngineOptions['rules']) {
   const make = () => createEngine({ db, now: () => now, settleMs: 4000, log: () => {}, ...(rules ? { rules } : {}) });
   let e = make();
   const at = (ms: number) => { now = T0 + ms; e.advance(now); };
-  const st = () => e.status(agent, SID)!;
+  const st = () => e.status(agent, 'p1', SID)!;
   const feed = (o: Observation, ms: number) => { at(ms); e.ingest(o); return st(); };
   const hook = (event: string, p: Record<string, unknown>, ms: number) => feed(hookObs(agent, { hook_event_name: event, ...p }, { at: ms }), ms);
   let n = 0;

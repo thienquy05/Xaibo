@@ -213,7 +213,7 @@ CREATE TABLE status_evidence (
   rank INTEGER NOT NULL,
   seq INTEGER NOT NULL,
   confidence TEXT NOT NULL CHECK (confidence IN ('confirmed', 'inferred')),
-  ev TEXT NOT NULL,
+  ev TEXT NOT NULL, profile_id TEXT NOT NULL DEFAULT '', producer_id TEXT, producer_seq INTEGER,
   UNIQUE (agent, native_session_id, dedup)
 );
 CREATE TABLE subagents (

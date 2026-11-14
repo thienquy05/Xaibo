@@ -20,21 +20,21 @@ test('EC-02: transcript-only backfill is inferred; the first hook confirms; a re
   const lines = readFileSync(join(FIX, `${SID}.jsonl`), 'utf8').trimEnd().split('\n');
   let offset = 0;
   for (const line of lines) {
-    e.ingest({ source: 'file', agent: 'claude', sessionId: SID, file: `${SID}.jsonl`, offset, line, receivedTs: now });
+    e.ingest({ source: 'file', agent: 'claude', profile: 'p1', sessionId: SID, file: `${SID}.jsonl`, offset, line, receivedTs: now });
     offset += Buffer.byteLength(line) + 1;
   }
-  const backfilled = e.status('claude', SID)!;
+  const backfilled = e.status('claude', 'p1', SID)!;
   assert.equal(backfilled.confidence, 'inferred');
   assert.notEqual(backfilled.lifecycle, 'unknown');
   now += 1000;
   e.advance(now);
   e.ingest({ source: 'hook', envelope: { v: 1, delivery_id: 'prehook-1', agent: 'claude', profile_key: 'p1', event: 'UserPromptSubmit', session_id: SID,
     cwd: '/tmp/xaibo-fixture/alpha', received_ts: now, payload: { session_id: SID, hook_event_name: 'UserPromptSubmit', prompt: 'p' } } });
-  assert.deepEqual([e.status('claude', SID)!.lifecycle, e.status('claude', SID)!.confidence], ['busy', 'confirmed']);
+  assert.deepEqual([e.status('claude', 'p1', SID)!.lifecycle, e.status('claude', 'p1', SID)!.confidence], ['busy', 'confirmed']);
   e.close();
   e = make();
   e.advance(now);
-  assert.deepEqual([e.status('claude', SID)!.lifecycle, e.status('claude', SID)!.confidence], ['busy', 'confirmed']);
+  assert.deepEqual([e.status('claude', 'p1', SID)!.lifecycle, e.status('claude', 'p1', SID)!.confidence], ['busy', 'confirmed']);
   e.close();
   db.close();
 });

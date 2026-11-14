@@ -14,6 +14,7 @@ import { startSocketServer } from '../../src/service/receivers/socket.ts';
 import { replaySpool } from '../../src/service/receivers/spool-replay.ts';
 import { addRegistration, openRegistry, removeRegistration } from '../../src/service/receivers/registrations.ts';
 import { createReportIntake } from '../../src/service/receivers/report.ts';
+import { createEngine } from '../../src/service/status/engine.ts';
 import { count } from '../helpers/claude-profile.ts';
 import { envelope, hookStore } from '../helpers/hook-store.ts';
 
@@ -248,4 +249,24 @@ test('service up: accepted end to end (exit 0, stored once, not spooled); an inv
     assert.deepEqual([bad.status, bad.stderr], [2, 'xaibo-report: unsupported-version\n']);
     assert.deepEqual(spooled(h.dir), []);
   } finally { await server.close(); }
+});
+
+test('G3c-3: a spooled report keeps the helper received_ts through replay, so an old permission request never notifies', async () => {
+  const h = await setup();
+  const waits: string[] = [];
+  const engine = createEngine({ db: h.db, now: Date.now, settleMs: 4000, log: () => {}, onWait: (...a) => waits.push(a.join('/')) });
+  const reports = createReportIntake({ db: h.db, writer: h.writer, dataDir: h.dir,
+    publish: (e, durable) => { if (durable) engine.ingest({ source: 'report', envelope: e }); } });
+  const deliverReport = (id: string, frame: unknown, receivedTs?: number) => {
+    const reg = h.registry.current(id);
+    return reg ? reports.deliver(reg, frame, receivedTs) : Promise.resolve({ status: 'rejected' as const, code: 'auth' });
+  };
+  const old = Date.now() - 3600_000; // spooled an hour ago, during an outage
+  const rec = (ts: number, o: Record<string, unknown>) => JSON.stringify({ v: 1, kind: 'report', registration: h.reg.id, received_ts: ts, frame: event(o) });
+  mkdirSync(join(h.dir, 'spool'), { recursive: true, mode: 0o700 });
+  writeFileSync(join(h.dir, 'spool', '2026-01-01.jsonl'), `${rec(old, { event: 'session.start' })}\n${rec(old + 1, { event: 'permission.request', request_id: 'q1' })}\n`, { mode: 0o600 });
+  const r = await replaySpool({ dataDir: h.dir, db: h.db, deliver: h.intake.deliver, deliverReport, graceMs: 0 });
+  assert.deepEqual([r.complete, r.delivered], [true, 2]);
+  assert.equal(count(h.db, 'SELECT count(*) FROM report_delivery WHERE received_ts = ?', old + 1), 1, 'the helper received_ts is kept');
+  assert.deepEqual(waits, [], 'a stale replayed request does not notify');
 });

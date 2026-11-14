@@ -18,7 +18,7 @@ async function harness() {
   const { db } = await openStore({ file: join(dir, 'xaibo.db'), backupDir: join(dir, 'b') });
   let now = T0;
   const waits: { agent: string; sid: string; state: WaitState }[] = [];
-  const make = () => createEngine({ db, now: () => now, settleMs: 4000, log: () => {}, onWait: (agent, sid, state) => waits.push({ agent, sid, state }) });
+  const make = () => createEngine({ db, now: () => now, settleMs: 4000, log: () => {}, onWait: (agent, _profile, sid, state) => waits.push({ agent, sid, state }) });
   let e = make();
   const feed = (o: Observation, ms: number) => { now = T0 + ms; e.advance(now); e.ingest(o); };
   return { waits, feed, at: (ms: number) => { now = T0 + ms; e.advance(now); }, e: () => e, restart: () => { e.close(); e = make(); } };
@@ -50,7 +50,7 @@ test('a heuristic wait never notifies (EC-41)', async () => {
   const h = await harness();
   h.feed(fileObs('claude', { type: 'assistant', message: { id: 't1', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }], stop_reason: 'tool_use' } }), 0);
   h.at(10_000);
-  assert.equal(h.e().status('claude', SID)!.confidence, 'heuristic');
+  assert.equal(h.e().status('claude', 'p1', SID)!.confidence, 'heuristic');
   assert.deepEqual(h.waits, []);
 });
 
@@ -77,7 +77,7 @@ test('a refold from a delayed delivery and a restart reload never repeat an inte
   h.restart();
   h.feed(H('CwdChanged', {}, 40), 40);
   assert.equal(h.waits.length, 1, 'the reloaded pending request is not new');
-  assert.equal(h.e().status('claude', SID)!.lifecycle, 'waiting-for-permission');
+  assert.equal(h.e().status('claude', 'p1', SID)!.lifecycle, 'waiting-for-permission');
 });
 
 test('review M2: a later id-less request joined to an already resolved tool id still notifies; one prompt reported twice notifies once', async () => {
@@ -89,7 +89,7 @@ test('review M2: a later id-less request joined to an already resolved tool id s
   assert.equal(h.waits.length, 1);
   h.feed(H('PostToolUse', { tool_use_id: 't1' }, 30), 30);
   h.feed(H('PermissionRequest', { tool_name: 'Write' }, 40), 40); // no PreToolUse in between: joins the stale t1
-  assert.equal(h.e().status('claude', SID)!.lifecycle, 'waiting-for-permission');
+  assert.equal(h.e().status('claude', 'p1', SID)!.lifecycle, 'waiting-for-permission');
   assert.equal(h.waits.length, 2);
 });
 

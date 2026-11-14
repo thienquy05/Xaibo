@@ -16,12 +16,21 @@ async function harness() {
   const { db } = await openStore({ file: join(dir, 'xaibo.db'), backupDir: join(dir, 'b') });
   let now = T0;
   const logs: string[] = [];
-  const make = () => createEngine({ db, now: () => now, settleMs: 4000, log: (l) => logs.push(l) });
+  const waits: string[] = [];
+  const make = () => createEngine({ db, now: () => now, settleMs: 4000, log: (l) => logs.push(l), onWait: (...a) => waits.push(a.join('/')) });
   let e = make();
   const at = (ms: number) => { now = T0 + ms; e.advance(now); };
-  const feed = (o: Observation, ms: number) => { at(ms); e.ingest(o); return e.status('claude', SID); };
-  return { db, logs, e: () => e, at, feed, restart: () => { e.close(); e = make(); e.advance(now); }, st: () => e.status('claude', SID) };
+  const feed = (o: Observation, ms: number) => { at(ms); e.ingest(o); return e.status('claude', 'p1', SID); };
+  return { db, logs, waits, e: () => e, at, feed, restart: () => { e.close(); e = make(); e.advance(now); }, st: () => e.status('claude', 'p1', SID) };
 }
+let rn = 0;
+/** A report observation as the intake publishes it (§5.10): the registration's agent and profile, the frame as payload. */
+const R = (agent: string, profile: string, sid: string, event: string, seq: number, at: number, extra: Record<string, unknown> = {}, reg = 'reg'): Observation => {
+  const frame = { v: 1, delivery_id: `r-${++rn}`, session_id: sid, producer_id: 'fixture-producer', producer_seq: seq, event,
+    source_ts: '2026-01-01T00:00:00.000Z', payload: {}, ...extra };
+  return { source: 'report', envelope: { v: 1, delivery_id: `${reg}:${frame.delivery_id}`, agent, profile_key: profile, event, session_id: sid, cwd: null,
+    received_ts: T0 + at, payload: frame } };
+};
 const H = (event: string, p: Record<string, unknown> = {}, at = 0) => hookObs('claude', { hook_event_name: event, ...p }, { at });
 
 test('unknown session -> null; a session with only non-lifecycle evidence -> unknown', async () => {
@@ -107,12 +116,12 @@ test('interrupt: Claude transcript rejection -> idle inferred interrupted; Codex
     content: "The user doesn't want to proceed with this tool use. The tool use was rejected." }] } }, { at: 20 }), 20)!;
   assert.deepEqual([s.lifecycle, s.confidence, s.outcome], ['idle', 'inferred', 'interrupted']);
   const c = await harness();
-  const C = (event: string, ms: number) => { c.at(ms); c.e().ingest(hookObs('codex', { hook_event_name: event, turn_id: 'u' }, { at: ms })); return c.e().status('codex', SID)!; };
+  const C = (event: string, ms: number) => { c.at(ms); c.e().ingest(hookObs('codex', { hook_event_name: event, turn_id: 'u' }, { at: ms })); return c.e().status('codex', 'p1', SID)!; };
   C('UserPromptSubmit', 0);
   const i = C('Interrupt', 10);
   assert.deepEqual([i.lifecycle, i.reason, i.outcome], ['busy', 'Finishing…', 'interrupted']);
   c.at(4011);
-  assert.deepEqual([c.e().status('codex', SID)!.lifecycle, c.e().status('codex', SID)!.outcome], ['idle', 'interrupted']);
+  assert.deepEqual([c.e().status('codex', 'p1', SID)!.lifecycle, c.e().status('codex', 'p1', SID)!.outcome], ['idle', 'interrupted']);
 });
 
 test('duplicates count once; a restarted engine continues from the store; status carries no content', async () => {
@@ -145,10 +154,10 @@ test('an agent name on Object.prototype is ignored, never persisted; a corrupt s
   const h = await harness();
   const o = hookObs('constructor', { hook_event_name: 'Stop' });
   assert.doesNotThrow(() => h.e().ingest(o));
-  assert.equal(h.e().status('constructor', SID), null);
+  assert.equal(h.e().status('constructor', 'p1', SID), null);
   assert.equal(h.db.prepare("SELECT count(*) AS n FROM status_evidence WHERE agent = 'constructor'").get()!['n'], 0);
-  h.db.prepare("INSERT INTO status_evidence (agent, native_session_id, dedup, ts, rank, seq, confidence, ev) VALUES ('claude', ?, 'd:bad', 0, 0, 0, 'confirmed', '{bad')").run(SID);
-  h.db.prepare("INSERT INTO status_evidence (agent, native_session_id, dedup, ts, rank, seq, confidence, ev) VALUES ('claude', ?, 'd:obj', 0, 0, 1, 'confirmed', '{}')").run(SID);
+  h.db.prepare("INSERT INTO status_evidence (agent, profile_id, native_session_id, dedup, ts, rank, seq, confidence, ev) VALUES ('claude', 'p1', ?, 'd:bad', 0, 0, 0, 'confirmed', '{bad')").run(SID);
+  h.db.prepare("INSERT INTO status_evidence (agent, profile_id, native_session_id, dedup, ts, rank, seq, confidence, ev) VALUES ('claude', 'p1', ?, 'd:obj', 0, 0, 1, 'confirmed', '{}')").run(SID);
   assert.doesNotThrow(() => h.restart());
   assert.equal(h.feed(H('UserPromptSubmit', { prompt: 'p' }, 10), 10)!.lifecycle, 'busy');
 });
@@ -185,8 +194,91 @@ test('stored evidence carries no file path; overlong ids and invalid usage numbe
 test('a stored row with a non-evidence element is skipped whole, never half-applied', async () => {
   const h = await harness();
   h.feed(H('SessionStart'), 0);
-  h.db.prepare("INSERT INTO status_evidence (agent, native_session_id, dedup, ts, rank, seq, confidence, ev) VALUES ('claude', ?, 'd:half', 5, 0, 99, 'confirmed', ?)")
+  h.db.prepare("INSERT INTO status_evidence (agent, profile_id, native_session_id, dedup, ts, rank, seq, confidence, ev) VALUES ('claude', 'p1', ?, 'd:half', 5, 0, 99, 'confirmed', ?)")
     .run(SID, JSON.stringify([{ k: 'turn.start', typed: true }, null]));
   h.restart();
   assert.equal(h.st()!.lifecycle, 'idle', 'the row is dropped as a whole');
+});
+
+// Gate 3 review c (XAIBO-PROD-324; PRD §5.5 identity (agent, profile, native_session_id), §5.10, §6.2/§6.3).
+test('G3c-1: two profiles of one agent with the same native session id are separate sessions, also after a restart', async () => {
+  const h = await harness();
+  const st = (p: string) => h.e().status('mytool', p, 'session-1')?.lifecycle;
+  h.at(0); h.e().ingest(R('mytool', 'pA', 'session-1', 'session.start', 1, 0));
+  h.at(10); h.e().ingest(R('mytool', 'pA', 'session-1', 'turn.start', 2, 10, { turn_id: 't1' }));
+  h.at(20); h.e().ingest(R('mytool', 'pB', 'session-1', 'session.start', 1, 20));
+  h.at(30); h.e().ingest(R('mytool', 'pB', 'session-1', 'session.end', 2, 30));
+  assert.deepEqual([st('pA'), st('pB')], ['busy', 'ended'], 'pB ending never ends pA');
+  // a row stored before 011 (profile '') reloads into a session no profile reads, and breaks nothing
+  h.db.prepare("INSERT INTO status_evidence (agent, native_session_id, dedup, ts, rank, seq, confidence, ev) VALUES ('mytool', 'session-1', 'd:legacy', 40, 0, 0, 'confirmed', ?)")
+    .run(JSON.stringify([{ k: 'session.end' }]));
+  h.restart();
+  assert.deepEqual([st('pA'), st('pB')], ['busy', 'ended'], 'reloaded evidence keeps the profiles apart');
+});
+
+test('G3c-2: a session resumed after SessionEnd is live again: idle, busy, then a notified permission wait, also after a restart', async () => {
+  const h = await harness();
+  h.feed(H('SessionStart', { source: 'startup' }), 0);
+  assert.equal(h.feed(H('SessionEnd', {}, 100), 100)!.lifecycle, 'ended');
+  const r = h.feed(H('SessionStart', { source: 'resume' }, 1000), 1000)!;
+  assert.deepEqual([r.lifecycle, r.confidence], ['idle', 'confirmed']);
+  assert.equal(h.feed(H('UserPromptSubmit', { prompt: 'p' }, 1100), 1100)!.lifecycle, 'busy');
+  h.feed(H('PreToolUse', { tool_use_id: 'w', tool_name: 'Write' }, 1200), 1200);
+  assert.equal(h.feed(H('PermissionRequest', {}, 1300), 1300)!.lifecycle, 'waiting-for-permission');
+  assert.equal(h.waits.length, 1, 'the wait notifies exactly once');
+  h.restart();
+  assert.equal(h.st()!.lifecycle, 'waiting-for-permission');
+  assert.equal(h.waits.length, 1, 'reloaded evidence never notifies');
+});
+
+test('G3c-3: a late report event with a lower producer_seq lands before its successor, so the turn settles', async () => {
+  const h = await harness();
+  h.at(0); h.e().ingest(R('mytool', 'p1', SID, 'session.start', 1, 0));
+  h.at(1000); h.e().ingest(R('mytool', 'p1', SID, 'turn.end', 3, 1000));
+  h.at(2000); h.e().ingest(R('mytool', 'p1', SID, 'turn.start', 2, 2000, { turn_id: 't' }));
+  h.at(12_000);
+  assert.deepEqual([h.e().status('mytool', 'p1', SID)?.lifecycle, h.e().status('mytool', 'p1', SID)?.reason], ['idle', null]);
+  h.restart();
+  assert.equal(h.e().status('mytool', 'p1', SID)?.lifecycle, 'idle', 'the same order after a reload');
+});
+
+test('G3c-4: SubagentStart after SessionStart with no prompt is busy, confirmed', async () => {
+  const h = await harness();
+  h.feed(H('SessionStart'), 0);
+  const s = h.feed(H('SubagentStart', { agent_id: 'c1' }, 100), 100)!;
+  assert.deepEqual([s.lifecycle, s.confidence], ['busy', 'confirmed']);
+});
+
+// Security review of G3c (all low): bounded producer ordering, producer ids scoped to their registration, no error reset.
+test('L1: in-order report ingest never scans the session for a successor', async () => {
+  const h = await harness();
+  const N = 300;
+  for (let i = 1; i <= 150; i++) { h.at(i); h.e().ingest(R('mytool', 'p1', SID, 'usage.snapshot', i, i)); }
+  // A scan iterates the session's entry list (>= 150 entries); evidence lists and other arrays here stay small.
+  const it = Array.prototype[Symbol.iterator];
+  let scans = 0;
+  Array.prototype[Symbol.iterator] = function (this: unknown[]) { if (this.length >= 150) scans++; return it.call(this); };
+  try {
+    for (let i = 151; i <= N; i++) { h.at(i); h.e().ingest(R('mytool', 'p1', SID, 'usage.snapshot', i, i)); }
+  } finally { Array.prototype[Symbol.iterator] = it; }
+  assert.equal(scans, 0);
+  assert.equal(h.e().status('mytool', 'p1', SID)?.lifecycle, 'busy');
+});
+
+test('L2: a producer id is scoped to its registration: another registration cannot backdate under it', async () => {
+  const h = await harness();
+  h.at(0); h.e().ingest(R('mytool', 'p1', SID, 'session.start', 1, 0, {}, 'regY'));
+  h.at(100); h.e().ingest(R('mytool', 'p1', SID, 'turn.start', 2, 100, { turn_id: 't1' }, 'regY'));
+  h.at(1000); h.e().ingest(R('mytool', 'p1', SID, 'turn.end', 3, 1000, {}, 'regY'));
+  h.at(3000); h.e().ingest(R('mytool', 'p1', SID, 'turn.start', 2, 3000, { turn_id: 't2' }, 'regX')); // same producer_id string, low seq
+  h.at(20_000);
+  const s = h.e().status('mytool', 'p1', SID)!;
+  assert.deepEqual([s.lifecycle, s.reason], ['busy', null], "X's turn starts after Y's turn ended, where it arrived");
+});
+
+test('L4: SubagentStart after a turn error keeps the error', async () => {
+  const h = await harness();
+  h.feed(H('UserPromptSubmit', { prompt: 'p' }), 0);
+  assert.equal(h.feed(H('StopFailure', {}, 100), 100)!.lifecycle, 'error');
+  assert.equal(h.feed(H('SubagentStart', { agent_id: 'c1' }, 200), 200)!.lifecycle, 'error');
 });

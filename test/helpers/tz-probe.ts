@@ -31,7 +31,7 @@ const { db } = await openStore({ file: join(dir, 'xaibo.db'), backupDir: join(di
 const T = Date.parse('2026-03-08T06:59:58.000Z'); // 2 s before 02:00 EST becomes 03:00 EDT
 let now = T;
 const e = createEngine({ db, now: () => now, settleMs: 4000, log: () => {} });
-const read = () => { const s = e.status('claude', SID)!; return [s.lifecycle, s.reason, s.findings.join(',')].join('|'); };
+const read = () => { const s = e.status('claude', 'p1', SID)!; return [s.lifecycle, s.reason, s.findings.join(',')].join('|'); };
 const timers: string[] = [];
 const feed = (event: string, t: number) => {
   now = t;
