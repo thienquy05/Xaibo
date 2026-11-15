@@ -10,7 +10,7 @@ import { errorCode, installCrashPolicy } from '../shared/crash.ts';
 import { accept, IPC_VERSION, parsePortRequest, parseServiceCommand } from '../shared/ipc.ts';
 import type { Banner, PortMessage, ServiceEvent } from '../shared/ipc.ts';
 import { createLogger, loadInstallSecret, type Logger } from '../shared/log.ts';
-import { answer, answerLiveSet, answerUsage, answerUsageHistory, coalesce, createHub, sessionsByKey, type LiveOf } from './api.ts';
+import { answer, answerLiveSet, answerSession, answerSlice, answerTranscript, answerUsage, answerUsageHistory, coalesce, createHub, sessionsByKey, type LiveOf } from './api.ts';
 import { boot, type Service } from './boot.ts';
 import type { Batch } from './store/writer.ts';
 import { traceableIds } from './trace-ids.ts';
@@ -63,6 +63,9 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
       case 'liveSet': port.postMessage(db.isOpen ? answerLiveSet(db, req, Date.now(), s.kinds(), s.models(), live) : { v: IPC_VERSION, type: 'liveSet', id: req.id, rows: [], more: false }); break;
       case 'usage': port.postMessage(answerUsage(db, req, homedir())); break;
       case 'usageHistory': port.postMessage(answerUsageHistory(db, req)); break;
+      case 'session': port.postMessage(answerSession(db, req, s.kinds(), s.models(), live)); break;
+      case 'transcript': port.postMessage(answerTranscript(db, req)); break;
+      case 'slice': port.postMessage(answerSlice(db, req)); break;
       default: port.postMessage(db.isOpen ? answer(db, req, s.kinds(), s.models(), live) : { v: IPC_VERSION, type: 'page', id: req.id, rows: [], next: null });
     }
   });

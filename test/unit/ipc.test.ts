@@ -191,3 +191,42 @@ test('review: utilization above 10,000 % (the service bound) drops the message',
   assert.equal(parsePortMessage({ v: 1, type: 'usage', id: 2, scopes: [{ ...scope, usedPercent: 10_001 }] }), null);
   assert.equal(parsePortMessage({ v: 1, type: 'usageHistory', id: 6, records: [{ id: 3, kind: 'sample', measuredAt: 12, usedPercent: 10_001, windowMinutes: 300, resetsAt: null, sourceTimeKnown: false }], next: null }), null);
 });
+
+// XAIBO-PROD-410 (P4-T05b1): single-session requests and replies; every field bounded, untrusted text stays a string.
+test('session, transcript and slice requests: fields checked', () => {
+  assert.deepEqual(parsePortRequest({ v: 1, type: 'session', id: 3, session: 9 }), { v: 1, type: 'session', id: 3, session: 9 });
+  for (const at of ['first', 'latest', { after: { seq: 4, id: 2 } }, { before: { seq: -1, id: 2 } }]) {
+    const req = { v: 1, type: 'transcript', id: 3, session: 9, at, limit: 50 };
+    assert.deepEqual(parsePortRequest(req), req, JSON.stringify(at));
+  }
+  const slice = { v: 1, type: 'slice', id: 3, session: 9, event: 12, part: 'reasoning', offset: 0 };
+  assert.deepEqual(parsePortRequest(slice), slice);
+  for (const bad of [
+    { v: 1, type: 'session', id: 3, session: 0 }, { v: 1, type: 'session', id: 3 },
+    { v: 1, type: 'transcript', id: 3, session: 9, at: 'middle', limit: 50 },
+    { v: 1, type: 'transcript', id: 3, session: 9, at: { after: { seq: 1.5, id: 2 } }, limit: 50 },
+    { v: 1, type: 'transcript', id: 3, session: 9, at: { after: { seq: 1, id: 2 }, before: { seq: 1, id: 2 } }, limit: 50 },
+    { v: 1, type: 'transcript', id: 3, session: 9, at: 'first', limit: 0 },
+    { ...slice, part: 'raw' }, { ...slice, offset: -1 }, { ...slice, offset: 1.5 }, { ...slice, event: 0 },
+  ]) assert.equal(parsePortRequest(bad), null, JSON.stringify(bad));
+});
+
+test('session, transcript and slice replies: bounds and fixed codes validated', () => {
+  const detail = { row, coverage: ['compressed', 'hook-gap'] };
+  assert.deepEqual(parsePortMessage({ v: 1, type: 'session', id: 3, detail }), { v: 1, type: 'session', id: 3, detail });
+  assert.deepEqual(parsePortMessage({ v: 1, type: 'session', id: 3, detail: null }), { v: 1, type: 'session', id: 3, detail: null });
+  assert.equal(parsePortMessage({ v: 1, type: 'session', id: 3, detail: { row, coverage: ['made-up'] } }), null);
+  const item = { event: 12, seq: 4, ts: null, kind: 'response', preview: 'Done', length: 4, reasoning: true, callId: null };
+  const page = { v: 1, type: 'transcript', id: 3, items: [item, { ...item, event: 13, kind: 'tool-call', preview: null, reasoning: false, callId: 'toolu_1' }], prev: null, next: { seq: 5, id: 13 } };
+  assert.deepEqual(parsePortMessage(page), page);
+  for (const bad of [
+    { ...page, items: Array.from({ length: 101 }, () => item) },
+    { ...page, items: [{ ...item, kind: 'html' }] },
+    { ...page, items: [{ ...item, preview: 'x'.repeat(4097) }] },
+    { ...page, items: [{ ...item, length: -1 }] },
+    { ...page, next: { seq: 5 } },
+  ]) assert.equal(parsePortMessage(bad), null);
+  assert.deepEqual(parsePortMessage({ v: 1, type: 'slice', id: 3, text: 'abc', next: 3 }), { v: 1, type: 'slice', id: 3, text: 'abc', next: 3 });
+  assert.equal(parsePortMessage({ v: 1, type: 'slice', id: 3, text: 'x'.repeat(16 * 1024 + 1), next: null }), null);
+  assert.equal(parsePortMessage({ v: 1, type: 'slice', id: 3, text: 'abc', next: -2 }), null);
+});

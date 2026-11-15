@@ -15,7 +15,12 @@ function message(raw: string): Obj | undefined {
 
 /** Claude record: visible text and available reasoning (thinking blocks) apart (PRD §5.6); tool blocks belong to tools. */
 export function claudeMessageParts(raw: string): { text: string | null; reasoning: string | null } {
-  const content = message(raw)?.content;
+  return claudeMessagePartsOf(message(raw));
+}
+
+/** The same split from an already parsed `message` object, so a caller parses each record once (T05b1 review 1). */
+export function claudeMessagePartsOf(msg: unknown): { text: string | null; reasoning: string | null } {
+  const content = isObj(msg) ? msg.content : undefined;
   if (nonEmpty(content)) return { text: content, reasoning: null };
   if (!Array.isArray(content)) return { text: null, reasoning: null };
   const text: string[] = [], reasoning: string[] = [];

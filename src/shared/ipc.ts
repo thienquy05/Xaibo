@@ -127,6 +127,19 @@ export const MAX_SCOPES = 256;
 export const MAX_RECORDS = 100;
 const MAX_STREAM = 80; // a 64-character limit id plus ':secondary'
 export interface AgentStatus { agent: string; name: string; state: 'detected' | 'not-detected'; version: string | null }
+// XAIBO-PROD-410 (P4-T05b1): one session's detail, transcript page and text slices (design §5.2, §6.3).
+export const COVERAGE_CODES = ['compressed', 'quarantined', 'drift', 'oversized', 'hook-gap'] as const;
+export type CoverageCode = (typeof COVERAGE_CODES)[number];
+export interface SessionDetail { row: SessionRow; coverage: CoverageCode[] }
+export const ITEM_KINDS = ['prompt', 'response', 'tool-call', 'tool-result', 'compaction', 'interrupted'] as const;
+export type ItemKind = (typeof ITEM_KINDS)[number];
+export interface TCursor { seq: number; id: number }
+export type TranscriptAt = 'first' | 'latest' | { after: TCursor } | { before: TCursor };
+export interface TranscriptItem { event: number; seq: number; ts: number | null; kind: ItemKind; preview: string | null; length: number; reasoning: boolean; callId: string | null }
+export const PREVIEW_BYTES = 4096;
+export const SLICE_BYTES = 16 * 1024;
+export const MAX_ITEMS = 100;
+const MAX_CALL_ID = 256;
 export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Cursor | null; limit: number }
   /** P4-T02: the window is visible (live session deltas wanted) or hidden (paused; the renderer resyncs by cursor). */
   | { v: 1; type: 'live'; on: boolean }
@@ -134,8 +147,14 @@ export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Curs
   | { v: 1; type: 'liveSet'; id: number }
   /** P4-T04b1: usage scopes; one scope+stream's observations with measured time in [from, to), by keyset cursor. */
   | { v: 1; type: 'usage'; id: number }
-  | { v: 1; type: 'usageHistory'; id: number; scope: number; stream: string; from: number; to: number; cursor: HistoryCursor | null; limit: number };
+  | { v: 1; type: 'usageHistory'; id: number; scope: number; stream: string; from: number; to: number; cursor: HistoryCursor | null; limit: number }
+  | { v: 1; type: 'session'; id: number; session: number }
+  | { v: 1; type: 'transcript'; id: number; session: number; at: TranscriptAt; limit: number }
+  | { v: 1; type: 'slice'; id: number; session: number; event: number; part: 'text' | 'reasoning'; offset: number };
 export type PortMessage =
+  | { v: 1; type: 'session'; id: number; detail: SessionDetail | null }
+  | { v: 1; type: 'transcript'; id: number; items: TranscriptItem[]; prev: TCursor | null; next: TCursor | null }
+  | { v: 1; type: 'slice'; id: number; text: string; next: number | null }
   | { v: 1; type: 'page'; id: number; rows: SessionRow[]; next: Cursor | null }
   | { v: 1; type: 'liveSet'; id: number; rows: SessionRow[]; more: boolean }
   | { v: 1; type: 'usage'; id: number; scopes: UsageScope[] }
@@ -245,8 +264,44 @@ const all = <T>(xs: unknown, max: number, parse: (x: unknown) => T | null): T[] 
   return out.every((v) => v !== null) ? (out as T[]) : null;
 };
 
+const positive = (x: unknown): x is number => count(x) && x > 0;
+const limitOk = (x: unknown): x is number => Number.isSafeInteger(x) && (x as number) >= 1;
+function parseTCursor(x: unknown): TCursor | null | undefined { // undefined = invalid
+  if (x === null) return null;
+  return isObj(x) && Number.isSafeInteger(x.seq) && positive(x.id) ? { seq: x.seq as number, id: x.id } : undefined;
+}
+function parseAt(x: unknown): TranscriptAt | null {
+  if (x === 'first' || x === 'latest') return x;
+  if (!isObj(x) || Object.keys(x).length !== 1) return null;
+  const c = parseTCursor('after' in x ? x.after : x.before);
+  if (!c) return null;
+  return 'after' in x ? { after: c } : 'before' in x ? { before: c } : null;
+}
+function parseItem(x: unknown): TranscriptItem | null {
+  if (!isObj(x) || !positive(x.event) || !Number.isSafeInteger(x.seq) || !timeOrNull(x.ts) || !oneOf(ITEM_KINDS, x.kind)) return null;
+  if (!(x.preview === null || text(x.preview, PREVIEW_BYTES)) || !count(x.length) || typeof x.reasoning !== 'boolean') return null;
+  if (!(x.callId === null || (text(x.callId, MAX_CALL_ID) && x.callId !== ''))) return null;
+  return { event: x.event, seq: x.seq as number, ts: x.ts, kind: x.kind, preview: x.preview, length: x.length, reasoning: x.reasoning, callId: x.callId };
+}
+function parseDetail(x: unknown): SessionDetail | null | undefined { // undefined = invalid
+  if (x === null) return null;
+  if (!isObj(x)) return undefined;
+  const row = parseRow(x.row);
+  const coverage = all(x.coverage, COVERAGE_CODES.length, (c) => (oneOf(COVERAGE_CODES, c) ? c : null));
+  return row && coverage ? { row, coverage } : undefined;
+}
+
 export function parsePortRequest(x: unknown): PortRequest | null {
   const m = envelope(x);
+  if (m?.type === 'session') return count(m.id) && positive(m.session) ? { v: 1, type: 'session', id: m.id, session: m.session } : null;
+  if (m?.type === 'transcript') {
+    const at = parseAt(m.at);
+    return count(m.id) && positive(m.session) && at && limitOk(m.limit) ? { v: 1, type: 'transcript', id: m.id, session: m.session, at, limit: m.limit } : null;
+  }
+  if (m?.type === 'slice') {
+    if (!count(m.id) || !positive(m.session) || !positive(m.event) || !oneOf(['text', 'reasoning'] as const, m.part) || !count(m.offset)) return null;
+    return { v: 1, type: 'slice', id: m.id, session: m.session, event: m.event, part: m.part, offset: m.offset };
+  }
   if (m?.type === 'live') return typeof m.on === 'boolean' ? { v: 1, type: 'live', on: m.on } : null;
   if (m?.type === 'liveSet') return count(m.id) ? { v: 1, type: 'liveSet', id: m.id } : null;
   if (m?.type === 'usage') return count(m.id) ? { v: 1, type: 'usage', id: m.id } : null;
@@ -264,6 +319,18 @@ export function parsePortRequest(x: unknown): PortRequest | null {
 export function parsePortMessage(x: unknown): PortMessage | null {
   const m = envelope(x);
   if (!m) return null;
+  if (m.type === 'session') {
+    const detail = parseDetail(m.detail);
+    return count(m.id) && detail !== undefined ? { v: 1, type: 'session', id: m.id, detail } : null;
+  }
+  if (m.type === 'transcript') {
+    const items = all(m.items, MAX_ITEMS, parseItem);
+    const prev = parseTCursor(m.prev), next = parseTCursor(m.next);
+    return count(m.id) && items && prev !== undefined && next !== undefined ? { v: 1, type: 'transcript', id: m.id, items, prev, next } : null;
+  }
+  if (m.type === 'slice') {
+    return count(m.id) && text(m.text, SLICE_BYTES) && (m.next === null || count(m.next)) ? { v: 1, type: 'slice', id: m.id, text: m.text, next: m.next as number | null } : null;
+  }
   if (m.type === 'page') {
     const rows = parseRows(m.rows);
     const next = parseCursor(m.next);
