@@ -1,22 +1,24 @@
-/* Xaibo design tokens (docs/design/xaibo-design.md §2; P4-T01). Light on :root; the ten base colors are redefined for
+/* Xaibo design tokens (docs/design/xaibo-design.md §2; P4-T01). Light on :root; the twelve base colors are redefined for
    dark under prefers-color-scheme, which Electron's nativeTheme drives (no theme setting, Q-4.6). Aliases stay var()
    references so they follow the theme. test/unit/renderer/contrast.test.ts parses this file: keep one declaration
    per line in the color blocks and add no new color pair without updating design §8.2 and that test. */
 :root {
   color-scheme: light dark;
 
-  --x-canvas: #F6F3EC;
-  --x-surface: #FFFCF5;
-  --x-tint: #E9E1D8;
-  --x-ink: #25222A;
-  --x-muted: #605763;
-  --x-accent: #65405D;
-  --x-success: #31604D;
-  --x-warning: #77501D;
-  --x-danger: #903D42;
-  --x-line: #867881;
+  --x-canvas: #EDF3FC;
+  --x-surface: #FFFFFF;
+  --x-tint: #DDE8F8;
+  --x-ink: #102443;
+  --x-muted: #435773;
+  --x-accent: #204FA8;
+  --x-success: #205E50;
+  --x-warning: #775500;
+  --x-danger: #993744;
+  --x-line: #617896;
+  --x-cyan: #006879;
+  --x-divider: #D7E0ED;
   --x-focus: var(--x-accent);
-  --x-chart: var(--x-accent);
+  --x-chart: var(--x-cyan);
   --x-selected: var(--x-tint);
   --x-inset: var(--x-canvas);
 
@@ -26,12 +28,12 @@
   --x-leading-small: 1.25rem;
   --x-text-body: 0.875rem;
   --x-leading-body: 1.375rem;
-  --x-text-section: 1rem;
-  --x-leading-section: 1.5rem;
-  --x-text-title: 1.5rem;
-  --x-leading-title: 1.875rem;
-  --x-text-value: 1.25rem;
-  --x-leading-value: 1.75rem;
+  --x-text-section: 1.125rem;
+  --x-leading-section: 1.625rem;
+  --x-text-title: 1.75rem;
+  --x-leading-title: 2.125rem;
+  --x-text-value: 1.75rem;
+  --x-leading-value: 2.125rem;
   --x-weight-normal: 400;
   --x-weight-strong: 600;
   --x-tracking: 0;
@@ -44,15 +46,15 @@
   --x-space-6: 24px;
   --x-space-8: 32px;
   --x-space-10: 40px;
-  --x-radius-control: 4px;
-  --x-radius-panel: 8px;
-  --x-radius-badge: 2px;
+  --x-radius-control: 8px;
+  --x-radius-panel: 12px;
+  --x-radius-badge: 6px;
   --x-border: 1px solid var(--x-line);
-  --x-selected-border: 3px solid var(--x-accent);
+  --x-selected-border: 2px solid var(--x-accent);
   --x-focus-width: 2px;
   --x-focus-offset: 2px;
   --x-shadow-flat: none;
-  --x-shadow-raised: 0 8px 24px rgb(0 0 0 / 0.16);
+  --x-shadow-raised: none;
   --x-control-height: 36px;
   --x-target-min: 32px;
   --x-row-min: 104px;
@@ -176,9 +178,9 @@ body {
   line-height: var(--x-leading-small);
   font-variant-numeric: tabular-nums;
 }
-.x-record-fields > div { display: flex; gap: var(--x-space-1); }
+.x-record-fields > div { display: flex; flex-wrap: wrap; min-width: 0; gap: var(--x-space-1); }
 .x-record-fields dt { color: var(--x-muted); }
-.x-record-fields dd { margin: 0; }
+.x-record-fields dd { margin: 0; overflow-wrap: anywhere; }
 /* Secondary action button (design §5.1): ink on surface, line boundary; disabled is muted on tint, never opacity. */
 .x-button {
   min-height: var(--x-control-height);
@@ -202,27 +204,71 @@ body {
   white-space: nowrap;
 }
 
-/* P4-T04c shared frame (design §6.0): navigation band, collection band, one centered main region. */
-.x-skip { position: absolute; left: var(--x-space-4); top: -100px; }
+/* DD2 rev 3: modern tonal panels; the detective is the only pixel element. */
+* { box-sizing: border-box; }
+::selection { color: var(--x-ink); background: var(--x-tint); }
+.x-shell { min-height: 100vh; }
+.x-skip { position: absolute; left: var(--x-space-4); top: -100px; z-index: var(--x-z-tooltip); color: var(--x-accent); }
 .x-skip:focus { top: var(--x-space-2); background: var(--x-surface); padding: var(--x-space-2); }
-.x-frame { background: var(--x-surface); border-bottom: var(--x-border); }
-.x-nav { display: flex; flex-wrap: wrap; align-items: center; gap: var(--x-space-4); min-height: var(--x-chrome-height); padding: 0 var(--x-space-6); }
-.x-mark { font-weight: var(--x-weight-strong); font-size: var(--x-text-section); }
-.x-nav a { display: inline-flex; align-items: center; min-height: var(--x-control-height); padding: 0 var(--x-space-2); color: var(--x-ink); text-decoration: none; border-left: 3px solid transparent; }
-.x-nav a[aria-current="page"] { background: var(--x-selected); border-left: var(--x-selected-border); }
-.x-band { margin: 0; min-height: var(--x-control-height); display: flex; align-items: center; gap: var(--x-space-1); padding: 0 var(--x-space-6); border-top: var(--x-border); }
-.x-main { max-width: 1440px; margin: 0 auto; padding: var(--x-space-6); }
-@media (max-width: 799px) { .x-main { padding: var(--x-space-4); } .x-nav, .x-band { padding: 0 var(--x-space-4); } }
-.x-main h1 { font-size: var(--x-text-title); line-height: var(--x-leading-title); margin: 0 0 var(--x-space-4); }
-.x-main section { border-top: var(--x-border); margin-top: var(--x-space-4); padding-top: var(--x-space-4); }
-.x-views { display: flex; flex-wrap: wrap; gap: var(--x-space-2); }
-.x-view[aria-pressed="true"] { background: var(--x-selected); box-shadow: inset 3px 0 0 var(--x-accent); }
-.x-queue { list-style: none; margin: 0; padding: 0; }
+.x-frame { background: var(--x-surface); border-bottom: 1px solid var(--x-divider); min-width: 0; }
+.x-nav { display: flex; flex-wrap: wrap; align-items: center; gap: var(--x-space-2) var(--x-space-4); min-height: var(--x-chrome-height); padding: var(--x-space-2) var(--x-space-6); }
+.x-mark { display: inline-flex; align-items: center; gap: var(--x-space-3); font-family: var(--x-font-ui); font-weight: var(--x-weight-strong); font-size: var(--x-text-section); }
+.x-logo { width: 32px; height: 32px; flex: none; color: var(--x-ink); }
+.x-nav a { display: inline-flex; align-items: center; min-height: var(--x-control-height); padding: var(--x-space-1) var(--x-space-3); color: var(--x-ink); font-family: var(--x-font-ui); text-decoration: none; gap: var(--x-space-2); border: 1px solid transparent; border-left-width: 2px; border-radius: var(--x-radius-control); overflow-wrap: anywhere; }
+.x-nav a:hover { background: var(--x-tint); }
+.x-nav a[aria-current="page"] { background: var(--x-selected); color: var(--x-accent); border-left: var(--x-selected-border); }
+.x-band { margin: 0; min-height: var(--x-health-height); display: flex; align-items: baseline; gap: var(--x-space-1); padding: var(--x-space-2) var(--x-space-6); border-top: 1px solid var(--x-divider); overflow-wrap: anywhere; }
+.x-main { width: 100%; min-width: 0; max-width: var(--x-content-max); margin: 0 auto; padding: var(--x-space-6); }
+.x-main h1, .x-main h2, .x-main h3, .x-main h4 { font-family: var(--x-font-ui); font-weight: var(--x-weight-strong); overflow-wrap: anywhere; }
+.x-main h1 { font-size: var(--x-text-title); line-height: var(--x-leading-title); margin: 0; }
+.x-main h2 { font-size: var(--x-text-section); line-height: var(--x-leading-section); margin: 0 0 var(--x-space-3); }
+.x-main h3, .x-main h4 { font-size: var(--x-text-body); margin: 0 0 var(--x-space-2); }
+.x-main p { overflow-wrap: anywhere; }
+.x-main section { min-width: 0; }
+.x-main > section > h1 { margin-bottom: var(--x-space-4); }
+.x-dashboard { display: grid; gap: var(--x-space-6); }
+.x-dashboard-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--x-space-4); }
+.x-views { display: flex; flex-wrap: wrap; gap: var(--x-space-2); padding: var(--x-space-1); }
+.x-view { font-family: var(--x-font-ui); }
+.x-view[aria-pressed="true"] { background: var(--x-selected); border-color: var(--x-accent); }
+.x-button { cursor: pointer; overflow-wrap: anywhere; max-width: 100%; }
+.x-button:disabled, .x-button[aria-disabled="true"] { cursor: not-allowed; }
+.x-summary > p { color: var(--x-muted); margin: 0 0 var(--x-space-4); }
+.x-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--x-space-4); margin: 0; padding: 0; }
+.x-metrics > div { position: relative; min-width: 0; background: var(--x-surface); border: 1px solid var(--x-divider); border-radius: var(--x-radius-panel); padding: var(--x-space-4); }
+.x-metrics dt { color: var(--x-muted); margin-bottom: var(--x-space-2); }
+.x-metrics dd { margin: 0; font-family: var(--x-font-ui); font-size: var(--x-text-value); line-height: var(--x-leading-value); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.x-metric-evidence { display: block; font-family: var(--x-font-ui); font-size: var(--x-text-small); line-height: var(--x-leading-small); color: var(--x-muted); margin-top: var(--x-space-2); }
+.x-dashboard-panels { display: grid; gap: var(--x-panel-gap); align-items: start; min-width: 0; }
+.x-view-body, .x-agents, .x-coverage { background: var(--x-surface); border: 1px solid var(--x-divider); border-radius: var(--x-radius-panel); padding: var(--x-space-4); }
+.x-agents ul { margin: 0; padding: 0; list-style: none; }
+.x-agents li { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--x-space-2); padding: var(--x-space-3) 0; border-top: 1px solid var(--x-divider); overflow-wrap: anywhere; }
+.x-coverage ul { margin: 0; padding-left: var(--x-space-5); }
+.x-queue { list-style: none; margin: 0; padding: var(--x-space-1); display: grid; gap: var(--x-space-2); }
 .x-queue > li { min-height: 64px; }
+.x-view-body section { border-top: 1px solid var(--x-divider); margin-top: var(--x-space-4); padding-top: var(--x-space-4); }
 .x-scope-row { margin: var(--x-space-2) 0; }
 .x-scope-row p { margin: var(--x-space-1) 0; overflow-wrap: anywhere; }
 .x-history { border: var(--x-border); border-radius: var(--x-radius-panel); padding: var(--x-space-3); margin-top: var(--x-space-2); }
-.x-history-scroll { max-height: 320px; overflow-y: auto; }
+.x-history-scroll { max-height: 320px; overflow-y: auto; padding: var(--x-space-1); scroll-padding: var(--x-space-1); }
+@media (min-width: 1200px) {
+  .x-shell { display: grid; grid-template-columns: 184px minmax(0, 1fr); grid-template-rows: auto 1fr; }
+  .x-frame { grid-column: 1; grid-row: 1 / 3; border-bottom: 0; border-right: 1px solid var(--x-divider); }
+  .x-shell > .x-health { grid-column: 2; grid-row: 1; }
+  .x-main { grid-column: 2; grid-row: 2; }
+  .x-nav { align-items: stretch; flex-direction: column; padding: var(--x-space-6) var(--x-space-4); }
+  .x-mark { margin-bottom: var(--x-space-6); }
+  .x-band { padding: var(--x-space-4); }
+  .x-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .x-dashboard-lower { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 799px) {
+  .x-main { padding: var(--x-space-4); }
+  .x-nav, .x-band { padding: var(--x-space-2) var(--x-space-4); }
+  .x-mark { flex-basis: 100%; }
+  .x-metrics { grid-template-columns: minmax(0, 1fr); }
+  .x-dashboard-head { align-items: stretch; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   :root { --x-duration-state: 0ms; --x-duration-disclosure: 0ms; }
@@ -230,15 +276,51 @@ body {
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --x-canvas: #211F24;
-    --x-surface: #29262D;
-    --x-tint: #39323D;
-    --x-ink: #F3EDE4;
-    --x-muted: #C5B9C5;
-    --x-accent: #E6B5D6;
-    --x-success: #A7D3BC;
-    --x-warning: #E5C181;
-    --x-danger: #F0A9AF;
-    --x-line: #A18F9F;
+    --x-canvas: #080F21;
+    --x-surface: #111F38;
+    --x-tint: #1A2E4B;
+    --x-ink: #F4F7FF;
+    --x-muted: #B9C9E2;
+    --x-accent: #93B8FF;
+    --x-success: #8DDFC0;
+    --x-warning: #FFD166;
+    --x-danger: #FFACB9;
+    --x-line: #7188AD;
+    --x-cyan: #63E6F5;
+    --x-divider: #293B56;
   }
+}
+
+.x-nav a, .x-button, summary { transition: background-color var(--x-duration-state) var(--x-ease); }
+.x-nav a { font-weight: var(--x-weight-strong); }
+.x-health { min-width: 0; }
+.x-health > [role="alert"] { padding: 0 var(--x-space-6); overflow-wrap: anywhere; }
+.x-band { flex-wrap: wrap; align-items: center; }
+.x-dashboard-lower { display: grid; gap: var(--x-panel-gap); min-width: 0; }
+.x-panel { min-width: 0; padding: var(--x-space-5); background: var(--x-surface); border-radius: var(--x-radius-panel); border: 1px solid var(--x-divider); }
+.x-view-body { padding: var(--x-space-5); }
+.x-view-body .x-scope { border-top: 1px solid var(--x-divider); }
+.x-scope-select { display: grid; gap: var(--x-space-2); margin-bottom: var(--x-space-4); }
+.x-scope-select select { width: 100%; min-height: var(--x-control-height); padding: var(--x-space-2); color: var(--x-ink); background: var(--x-surface); border: var(--x-border); border-radius: var(--x-radius-control); font: inherit; }
+.x-instruments { display: grid; grid-template-columns: minmax(0, 1.85fr) minmax(0, 1fr); gap: var(--x-panel-gap); align-items: start; }
+.x-instruments > .x-history { margin: 0; min-width: 0; }
+.x-gauge-reading { min-width: 0; }
+.x-arc { display: block; width: 100%; max-width: 290px; height: auto; margin: var(--x-space-4) auto; }
+.x-arc-track, .x-chart-axis, .x-zero { fill: none; stroke: var(--x-line); }
+.x-arc-track { stroke-width: 2; }
+.x-arc-value { fill: none; stroke: var(--x-chart); stroke-width: 8; stroke-linecap: round; }
+.x-chart-scale { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--x-space-2); color: var(--x-muted); font-size: var(--x-text-small); }
+.x-arc-value-text { font-size: var(--x-text-value); font-variant-numeric: tabular-nums; }
+.x-history-chart { display: block; width: 100%; height: auto; margin-top: var(--x-space-4); }
+.x-chart-line { fill: none; stroke: var(--x-chart); stroke-width: 2; }
+.x-chart-area { fill: var(--x-chart); fill-opacity: 0.12; stroke: none; }
+.x-chart-point { fill: var(--x-chart); stroke: none; }
+.x-micro { display: block; width: 100%; height: 46px; margin-top: var(--x-space-4); fill: var(--x-chart); }
+.x-chart-caption, .x-micro-details { font-size: var(--x-text-small); line-height: var(--x-leading-small); color: var(--x-muted); }
+.x-micro-details { margin-top: var(--x-space-2); }
+summary { min-height: var(--x-control-height); padding: var(--x-space-2) var(--x-space-1); color: var(--x-accent); cursor: pointer; border-radius: var(--x-radius-control); }
+summary:hover { background: var(--x-tint); }
+.x-state-list { margin: 0; padding-left: var(--x-space-5); }
+@media (max-width: 799px) {
+  .x-instruments { grid-template-columns: minmax(0, 1fr); }
 }

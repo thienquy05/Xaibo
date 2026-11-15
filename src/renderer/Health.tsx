@@ -2,15 +2,18 @@
 // validation live in src/shared/ipc.ts and text.ts.
 import { healthText, READ_ONLY_BANNER } from '../shared/ipc.ts';
 import type { AgentStatus, Health, HealthState } from '../shared/ipc.ts';
+import { Icon } from './status/StatusBadge.tsx';
+import type { IconId } from './status/icons.ts';
 import { visible } from './text.ts';
 
-const GLYPH: Record<HealthState, string> = { starting: '◌', running: '●', restarting: '↻', stopped: '■' };
+const GLYPH: Record<HealthState, IconId> = { starting: 'hourglass', running: 'link', restarting: 'restore', stopped: 'ended' };
+const TONE = { starting: 'muted', running: 'success', restarting: 'warning', stopped: 'danger' };
 
 export function HealthStatus({ health }: { health: Health | null }) {
   const state = health?.state ?? 'starting';
   return (
     <>
-      <p role="status" aria-live="polite" className="x-band"><span aria-hidden="true">{GLYPH[state]}</span> Collection: {health ? healthText(health) : 'Starting'}</p>
+      <p role="status" aria-live="polite" className="x-band"><span className={`x-tone-${TONE[state]}`}><Icon id={GLYPH[state]} /></span> Collection: {health ? healthText(health) : 'Starting'}</p>
       {health?.readOnly ? <p role="alert">{READ_ONLY_BANNER[health.readOnly]}</p> : null}
     </>
   );
@@ -18,14 +21,14 @@ export function HealthStatus({ health }: { health: Health | null }) {
 
 export function AgentStrip({ agents, onSetPath }: { agents: AgentStatus[] | null; onSetPath: (agent: string) => void }) {
   return (
-    <section aria-label="Agents">
+    <section aria-label="Agents" className="x-agents">
       <h2>Agents</h2>
       {agents === null ? <p>Detecting agents…</p> : agents.length === 0 ? <p>No agents detected</p> : (
         <ul>
           {agents.map((a) => (
             <li key={a.agent}>
               {visible(a.name)}: {a.state === 'detected' ? `Detected${a.version ? ` ${visible(a.version)}` : ''}` : 'Not detected'}{' '}
-              <button type="button" aria-label={`Set path for ${visible(a.name)}`} onClick={() => onSetPath(a.agent)}>Set path…</button>
+              <button type="button" className="x-button" aria-label={`Set path for ${visible(a.name)}`} onClick={() => onSetPath(a.agent)}>Set path…</button>
             </li>
           ))}
         </ul>

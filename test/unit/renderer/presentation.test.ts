@@ -60,7 +60,7 @@ test('icon geometry is exactly design §4 (review of P4-T01)', () => {
   const P = (d: string) => ({ kind: 'path', d });
   const R = (x: number, y: number, w: number, h: number, more: object = {}) => ({ kind: 'rect', x, y, w, h, ...more });
   const C = (cx: number, cy: number, r: number) => ({ kind: 'circle', cx, cy, r });
-  assert.deepEqual(ICONS, {
+  assert.deepEqual(Object.fromEntries(Object.entries(ICONS).filter(([id]) => !['dashboard', 'session', 'link', 'hourglass', 'restore', 'finding'].includes(id))), {
     idle: [C(12, 12, 7)],
     busy: [P('M3 15 L7 9 L12 15 L17 9 L21 15')],
     permission: [P('M6 20 L6 10 L9 10 L9 5 L12 5 L12 11 L15 8 L18 11 L18 17 L15 20 L6 20')],

@@ -1,6 +1,6 @@
 // Dashboard (P4-T04c; design §6.1, §6.2, §5.2-§5.3): h1, the named "Dashboard view" group (Live sessions, Needs
 // attention [n], Usage and history; Left/Right/Home/End rove, Enter/Space select and keep focus), the agent strip and
-// coverage notices, the live-set summary and the active view. Every number and label comes from the pure modules
+// coverage notices, the live-set summary and the active view. Quantity semantics come from the pure modules
 // (totals.ts, queue.ts, usage/presentation.ts); while the collector is not running every live label reads "Last known".
 // Service-supplied strings go through visible() (EC-55).
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
@@ -15,6 +15,7 @@ import { StatusBadge } from '../status/StatusBadge.tsx';
 import { visible } from '../text.ts';
 import { dayRange, historyBounds, scopeBlocks, shiftDay, usageView } from '../usage/presentation.ts';
 import { attentionQueue, sinceText } from './queue.ts';
+import { barGeometry, historyGeometry, quotaArc, tileSeries, type Datum } from './charts.ts';
 import { abbreviate, liveSetSummary, type Summary } from './totals.ts';
 
 export interface UsageApi {
@@ -36,14 +37,16 @@ export function Dashboard(p: {
   api: UsageApi; tick: number; onSetPath: (agent: string) => void;
 }) {
   const [view, setView] = useState<View>('live');
+  const lastKnown = p.lastKnown ?? (p.live.loaded && p.liveFailed ? 'refresh unavailable' : null);
   const buttons = useRef<(HTMLButtonElement | null)[]>([]);
   const summary = liveSetSummary(p.live.rows, p.live.more);
   const queue = attentionQueue(p.live.rows);
   const waiting = queue.reduce((n, g) => n + g.rows.length, 0);
   const name = (id: string) => visible(p.agents?.find((a) => a.agent === id)?.name ?? id);
+  const series = tileSeries(p.live.rows, name);
   const label: Record<View, string> = {
     live: 'Live sessions',
-    attention: p.live.loaded ? `Needs attention ${waiting}${p.live.more ? '+' : ''}${p.lastKnown ? ` · last known ${p.lastKnown}` : ''}` : 'Needs attention · count unavailable',
+    attention: p.live.loaded ? `Needs attention ${waiting}${p.live.more ? '+' : ''}${lastKnown ? ` · last known ${lastKnown}` : ''}` : 'Needs attention · count unavailable',
     usage: 'Usage and history',
   };
   const onKey = (e: KeyboardEvent, i: number) => {
@@ -54,59 +57,107 @@ export function Dashboard(p: {
   };
   const showLive = () => { setView('live'); requestAnimationFrame(() => document.getElementById('view-live-heading')?.focus()); };
   return (
-    <>
-      <h1 id="dashboard-heading" tabIndex={-1}>Dashboard</h1>
-      <div role="group" aria-label="Dashboard view" className="x-views">
-        {VIEWS.map((v, i) => (
-          <button key={v} ref={(el) => { buttons.current[i] = el; }} type="button" className="x-button x-view" aria-pressed={view === v}
-            aria-controls={view === v ? `view-${v}` : undefined} tabIndex={view === v ? 0 : -1} onKeyDown={(e) => onKey(e, i)} onClick={() => setView(v)}>
-            {label[v]}
-          </button>
-        ))}
+    <div className="x-dashboard">
+      <div className="x-dashboard-head">
+        <h1 id="dashboard-heading" tabIndex={-1}>Dashboard</h1>
+        <div role="group" aria-label="Dashboard view" className="x-views">
+          {VIEWS.map((v, i) => (
+            <button key={v} ref={(el) => { buttons.current[i] = el; }} type="button" className="x-button x-view" aria-pressed={view === v}
+              aria-controls={view === v ? `view-${v}` : undefined} tabIndex={view === v ? 0 : -1} onKeyDown={(e) => onKey(e, i)} onClick={() => setView(v)}>
+              {label[v]}
+            </button>
+          ))}
+        </div>
       </div>
-      <AgentStrip agents={p.agents} onSetPath={p.onSetPath} />
       <Coverage banners={p.banners} agents={p.agents} />
-      {p.live.loaded ? <LiveSummary s={summary} lastKnown={p.lastKnown} /> : (
+      {p.live.loaded && p.liveFailed ? <p>Could not refresh live sessions. Showing last known data. <button type="button" className="x-button" onClick={p.onRetryLive}>Retry</button></p> : null}
+      {p.live.loaded ? <LiveSummary s={summary} rows={p.live.rows} series={series} lastKnown={lastKnown} /> : (
         <section aria-labelledby="summary-heading" className="x-summary">
           <h2 id="summary-heading">Live-session set</h2>
           {p.liveFailed ? <p>Could not load live sessions. <button type="button" className="x-button" onClick={p.onRetryLive}>Retry</button></p> : <p>Loading live sessions…</p>}
         </section>
       )}
-      <section id={`view-${view}`} aria-labelledby={`view-${view}-heading`} className="x-view-body">
-        {view === 'live' ? <LiveView live={p.live} lastKnown={p.lastKnown} />
-          : view === 'attention' ? <AttentionView queue={queue} lastKnown={p.lastKnown} name={name} onShowLive={showLive} />
-            : <UsageView api={p.api} tick={p.tick} name={name} />}
-      </section>
-    </>
+      <div className="x-dashboard-panels">
+        <section id={`view-${view}`} aria-labelledby={`view-${view}-heading`} className="x-view-body">
+          {view === 'live' ? <LiveView live={p.live} lastKnown={lastKnown} />
+            : view === 'attention' ? <AttentionView queue={queue} lastKnown={lastKnown} name={name} onShowLive={showLive} />
+              : <UsageView api={p.api} tick={p.tick} name={name} />}
+        </section>
+        {view === 'usage' ? <div className="x-dashboard-lower">
+          <section className="x-panel" aria-labelledby="current-state-heading">
+            <h2 id="current-state-heading">{lastKnown ? 'Last known current state' : 'Current state'}</h2>
+            {p.live.loaded ? <><p className="x-chart-caption">{p.live.more ? 'Loaded subset' : 'Loaded live-session set'}{lastKnown ? ` · ${lastKnown}` : ''}</p><StateCounts data={series.states} /></> : <p>Current state unavailable</p>}
+          </section>
+          <AgentStrip agents={p.agents} onSetPath={p.onSetPath} />
+          <section className="x-panel" aria-labelledby="monthly-heading">
+            <h2 id="monthly-heading">Monthly usage</h2>
+            <p>No observations yet — monthly totals are not available in this phase.</p>
+          </section>
+        </div> : <AgentStrip agents={p.agents} onSetPath={p.onSetPath} />}
+      </div>
+    </div>
   );
 }
 
-function LiveSummary({ s, lastKnown }: { s: Summary; lastKnown: string | null }) {
+function LiveSummary({ s, rows, series, lastKnown }: { s: Summary; rows: SessionRow[]; series: ReturnType<typeof tileSeries>; lastKnown: string | null }) {
   const cover = (n: number, of: number, verb: string) => (of === 0 ? 'coverage unavailable' : `${verb} for ${n} of ${of} sessions`);
   const tokens = s.tokens.value === null ? 'Unavailable' : `${abbreviate(s.tokens.value)}${s.tokens.partial ? ' known subtotal' : ''}`;
+  const times = rows.map((r) => r.lastActivity).filter((t): t is number => t !== null);
+  const observed = times.length ? `Latest loaded session activity ${formatTime(Math.max(...times))}` : 'Observation time unavailable';
   const cost = s.cost.usd === null ? '~$ unavailable' : costText(s.cost.usd, s.cost.partial ? 'partial' : 'full');
   return (
     <section aria-labelledby="summary-heading" className="x-summary">
       <h2 id="summary-heading">{lastKnown ? `Last known live-session set · ${lastKnown}` : 'Live-session set'}</h2>
       <p>{`${lastKnown ? 'Last known live-session set' : 'Live-session set'}: ${s.sessions}${s.atLeast ? ' or more' : ''} currently tracked, non-ended sessions`}</p>
-      <dl className="x-record-fields">
-        <div><dt>Active agents</dt><dd data-field="active-agents">{s.activeAgents}</dd></div>
-        <div><dt>Sessions</dt><dd data-field="sessions">{s.sessions}{s.atLeast ? ' or more' : ''}</dd></div>
+      <dl className="x-metrics">
+        <div><dt>Active agents</dt><dd data-field="active-agents">{s.activeAgents}</dd>
+          <dd className="x-metric-chart"><Microchart title="Active sessions by agent" unit="sessions" data={series.agents} /></dd>
+        </div>
+        <div><dt>Sessions</dt><dd data-field="sessions">{s.sessions}{s.atLeast ? ' or more' : ''}</dd>
+          <dd className="x-metric-chart"><Microchart title="Sessions by live state" unit="sessions" data={series.states.map((d) => ({ ...d, label: stateName(d.label) }))} /></dd>
+        </div>
         <div>
           <dt>Observed tokens</dt>
           <dd data-field="tokens">
             <span aria-hidden={s.tokens.value !== null}>{tokens}</span>
             {s.tokens.value !== null ? <span className="x-sr-only">{`${s.tokens.value.toLocaleString('en-US')} tokens${s.tokens.partial ? ', known subtotal' : ''}`}</span> : null}
-            {' · '}{cover(s.tokens.observed, s.tokens.eligible, 'observed')}{s.tokens.low ? ' · coverage below 80%' : ''}
+            {' '}<span className="x-metric-evidence">{cover(s.tokens.observed, s.tokens.eligible, 'observed')}{s.tokens.low ? ' · coverage below 80%' : ''}</span>
           </dd>
+          <dd className="x-metric-chart"><Microchart title="Observed tokens by session" unit="tokens" data={series.tokens} /></dd>
         </div>
         <div>
           <dt>Estimated cost</dt>
-          <dd data-field="cost">{cost} · {cover(s.cost.priced, s.cost.eligible, 'priced')}{s.cost.low ? ' · coverage below 80%' : ''}</dd>
+          <dd data-field="cost">{cost}{' '}<span className="x-metric-evidence">{cover(s.cost.priced, s.cost.eligible, 'priced')}{s.cost.low ? ' · coverage below 80%' : ''}</span></dd>
+          <dd className="x-metric-chart"><Microchart title="Estimated cost by session" unit="estimated USD" data={series.cost} /></dd>
         </div>
       </dl>
+      <p className="x-chart-caption">{s.atLeast ? 'Loaded subset' : 'Loaded live-session set'} · {observed}. Categorical bars, not time trends. Session estimates retain service cost coverage; price provenance is unavailable in this view.</p>
+      <details className="x-micro-details"><summary>Session measurement coverage</summary><ul>{[...new Map(rows.map((r) => [r.id, r])).values()].map((r, i) => <li key={r.id}>
+        Session {i + 1}: tokens {r.tokens === null ? 'unavailable' : `${r.tokens.toLocaleString('en-US')} · ${r.tokensComplete ? 'complete' : 'known subtotal'}`} · estimated cost coverage {r.costCoverage} · {r.lastActivity === null ? 'Activity time unavailable' : `Activity ${formatTime(r.lastActivity)}`}
+      </li>)}</ul></details>
     </section>
   );
+}
+
+
+const stateName = (label: string) => label === 'waiting-for-permission' ? 'Waiting for permission' : label === 'needs-input' ? 'Needs input' : label.charAt(0).toUpperCase() + label.slice(1);
+function StateCounts({ data }: { data: Datum[] }) {
+  return <ul className="x-state-list">{data.map((d) => <li key={d.label}>{stateName(d.label)}: {d.value}</li>)}</ul>;
+}
+function Microchart({ title, unit, data }: { title: string; unit: string; data: Datum[] }) {
+  const bars = barGeometry(data.map((d) => d.value));
+  const max = data.reduce((max, d) => Math.max(max, d.value ?? 0), 0);
+  return <>
+    <svg className="x-micro" viewBox="0 0 240 46" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+      {bars.map((b, i) => b ? b.height === 0
+        ? <path key={i} className="x-zero" d={`M${b.x} 43h${b.width}`} />
+        : <rect key={i} x={b.x} y={44 - b.height} width={b.width} height={b.height} rx={2} /> : null)}
+    </svg>
+    <details className="x-micro-details"><summary>{title}</summary>
+      <p>{data.some((d) => d.value !== null) ? `Local scale: zero to ${unit === 'estimated USD' ? costText(max, 'full') : max.toLocaleString('en-US')} ${unit}; loaded set only.` : 'Scale unavailable; no known values.'}</p>
+      {data.length ? <ul>{data.map((d, i) => <li key={i}>{visible(d.label)}: {unit === 'estimated USD' ? `Estimated cost ${costText(d.value, d.coverage ?? 'unavailable')}` : d.value === null ? 'Unavailable' : `${d.value.toLocaleString('en-US')} ${unit}${d.partial ? ' known subtotal' : ''}`}</li>)}</ul> : <p>No active sessions observed.</p>}
+    </details>
+  </>;
 }
 
 const keyOf = (r: SessionRow) => r.id;
@@ -157,6 +208,7 @@ function UsageView({ api, tick, name }: { api: UsageApi; tick: number; name: (id
   const now = useNow(1000);
   const [scopes, setScopes] = useState<UsageScope[] | null>(null);
   const [failed, setFailed] = useState(false);
+  const [selected, setSelected] = useState<string | null>(null);
   const last = useRef(0);
   const seq = useRef(0);
   const mounted = useRef(true);
@@ -170,41 +222,59 @@ function UsageView({ api, tick, name }: { api: UsageApi; tick: number; name: (id
     api.usage().then((s) => { if (mounted.current && n === seq.current) { setScopes(s); setFailed(false); } },
       () => { if (mounted.current && n === seq.current) setFailed(true); });
   }, [api, tick]);
+  const scopeKey = (s: UsageScope) => JSON.stringify([s.scope, s.agent, s.profile, s.stream]);
+  const choice = scopes?.find((s) => scopeKey(s) === selected) ?? scopes?.find((s) => s.scope !== null && s.stream !== null) ?? scopes?.[0];
   return (
     <>
       <h2 id="view-usage-heading" tabIndex={-1}>Usage and history</h2>
+      {scopes?.length ? <label className="x-scope-select">Usage scope and window
+        <select value={choice ? scopeKey(choice) : ''} onChange={(e) => setSelected(e.target.value)}>
+          {scopes.map((s) => <option key={scopeKey(s)} value={scopeKey(s)}>{name(s.agent)} · {visible(s.profile)} · {s.scope === null ? 'Scope unavailable' : `Scope ${s.scope}`} · {usageView(s, now).title}{s.stream ? ` · ${visible(s.stream)}` : ''}</option>)}
+        </select>
+      </label> : null}
+      {failed && scopes !== null ? <p>Usage refresh unavailable; showing prior observations.</p> : null}
       {failed && scopes === null ? <p>Usage unavailable: the service did not answer.</p> : scopes === null ? <p>Loading usage…</p>
         : scopes.length === 0 ? <p>No usage scopes yet.</p> : scopeBlocks(scopes).map((b) => (
           <section key={b.key} className="x-scope" aria-label={`${name(b.agent)} · ${visible(b.profile)}`}>
             <h3>{name(b.agent)} · {visible(b.profile)}</h3>
             {b.unverified ? <p className="x-tone-warning">Account scope unverified</p> : null}
-            {b.rows.map((s, i) => <ScopeRow key={`${s.stream ?? 'none'}-${i}`} s={s} now={now} api={api} />)}
+            {b.rows.map((s, i) => <ScopeRow key={`${s.stream ?? 'none'}-${i}`} s={s} now={now} api={api} selected={choice !== undefined && scopeKey(choice) === scopeKey(s)} onSelect={() => setSelected(scopeKey(s))} />)}
           </section>
         ))}
     </>
   );
 }
 
-function ScopeRow({ s, now, api }: { s: UsageScope; now: number; api: UsageApi }) {
+function ScopeRow({ s, now, api, selected, onSelect }: { s: UsageScope; now: number; api: UsageApi; selected: boolean; onSelect: () => void }) {
   const v = usageView(s, now);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   const button = useRef<HTMLButtonElement>(null);
+  const arc = quotaArc(v.percent);
+  const reading = <div className="x-gauge-reading">
+    <h4>Observed quota · {v.title}</h4>
+    <p><strong>{v.title}</strong>: <span data-field="usage-value" className={selected ? 'x-arc-value-text' : undefined}>{v.value}</span>
+      {v.aboveScale ? <span> Above displayed scale</span> : null}
+    </p>
+    {selected && arc !== null ? <svg className="x-arc" viewBox="0 0 260 158" role="img" aria-label={`${v.title} utilization ${v.value}; displayed scale zero to 100 percent`}>
+      <path className="x-arc-track" d="M8 130 A122 122 0 0 1 252 130" />
+      {arc ? <path className="x-arc-value" d={arc} /> : null}
+    </svg> : null}
+    {selected && arc !== null ? <p className="x-chart-scale"><span>0%</span><span>100%</span></p> : null}
+    {v.reset || v.countdown ? <p>{[v.reset, v.countdown].filter(Boolean).join(' · ')}</p> : null}
+    {v.stale ? <p className="x-tone-warning">{v.stale}</p> : null}
+    {v.plan || v.credits ? <p>{[v.plan, v.credits].filter(Boolean).join(' · ')}</p> : null}
+    {v.freshness ? <p className="x-tone-muted">{v.freshness}</p> : null}
+    <p className="x-chart-caption">{s.stream ? `Stream ${visible(s.stream)}` : 'Stream unavailable'} · {s.scope === null ? 'Scope unavailable' : `Scope ${s.scope}`} · local stored observation</p>
+  </div>;
   return (
     <div className="x-scope-row" data-field="usage">
-      <p><strong>{v.title}</strong>: <span data-field="usage-value">{v.value}</span>
-        {v.percent !== null ? <> <meter min={0} max={100} value={Math.min(v.percent, 100)} aria-label={`${v.title} utilization`} /></> : null}
-        {v.aboveScale ? <span> Above displayed scale</span> : null}
-      </p>
-      {v.reset || v.countdown ? <p>{[v.reset, v.countdown].filter(Boolean).join(' · ')}</p> : null}
-      {v.stale ? <p className="x-tone-warning">{v.stale}</p> : null}
-      {v.plan || v.credits ? <p>{[v.plan, v.credits].filter(Boolean).join(' · ')}</p> : null}
-      {v.freshness ? <p className="x-tone-muted">{v.freshness}</p> : null}
-      {s.scope !== null && s.stream !== null ? (
-        <>
-          <button ref={button} type="button" className="x-button" aria-expanded={open} onClick={() => setOpen((o) => !o)}>Observed history</button>
-          {open ? <History scope={s.scope} stream={s.stream} api={api} onClose={() => { setOpen(false); button.current?.focus(); }} /> : null}
-        </>
-      ) : null}
+      {s.scope !== null && s.stream !== null ? <>
+        <button ref={button} type="button" className="x-button" aria-expanded={selected && open} onClick={() => { if (selected) setOpen((o) => !o); else { setOpen(true); onSelect(); } }}>Observed history</button>
+        <div className={selected && open ? 'x-instruments' : undefined}>
+          {selected && open ? <History key={`${s.scope}-${s.stream}`} scope={s.scope} stream={s.stream} api={api} onClose={() => { setOpen(false); button.current?.focus(); }} /> : null}
+          {reading}
+        </div>
+      </> : reading}
     </div>
   );
 }
@@ -234,24 +304,46 @@ function History({ scope, stream, api, onClose }: { scope: number; stream: strin
   const row = (r: UsageRecord): ReactNode => (
     <li key={r.id}>
       {formatTime(r.measuredAt).slice(11)} · {r.usedPercent === null ? 'Utilization unavailable' : `${Math.round(r.usedPercent * 10) / 10}%`}
-      {r.resetsAt !== null ? ` · Resets ${formatTime(r.resetsAt)}` : ''}{r.kind === 'transition' ? ' · Window or reset changed' : ''}
+      {r.windowMinutes === null ? ' · Window unavailable' : ` · ${r.windowMinutes}-minute window`}
+      {r.resetsAt !== null ? ` · Resets ${formatTime(r.resetsAt)}` : ' · Reset unavailable'}{r.kind === 'transition' ? ' · Window or reset changed' : ''}
       {r.sourceTimeKnown ? '' : ' · Source time unknown'}
     </li>
   );
   return (
     <div className="x-history" role="region" aria-label={`Observed history ${range.date}`} onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } }}>
-      <h4 aria-live="polite">{range.date}</h4>
+      <h4>Observed quota history</h4>
+      <p aria-live="polite">{range.date}</p>
+      <p className="x-chart-caption">Scope {scope} · stream {visible(stream)} · utilization (%) · local stored observations</p>
       <div className="x-views">
         <button type="button" className="x-button" aria-disabled={atFirst} onClick={step(-1, atFirst)}>Previous day</button>
         <button type="button" className="x-button" aria-disabled={atLast} onClick={step(1, atLast)}>Next day</button>
         <button type="button" className="x-button" onClick={onClose}>Close</button>
       </div>
+      <HistoryChart records={records} />
       <div className="x-history-scroll">
-        {records.length ? <ul>{records.map(row)}</ul> : state === 'ready' ? <p>No observations for this day</p> : null}
+        {records.length ? <ul>{records.map(row)}</ul> : state === 'ready' ? <p>No observations yet</p> : null}
         {state === 'loading' ? <p>Loading observations…</p> : null}
         {state === 'failed' ? <p>Observations unavailable. <button type="button" className="x-button" onClick={() => load(next)}>Retry</button></p> : null}
         {state === 'ready' && next ? <button type="button" className="x-button" onClick={() => load(next)}>Load more</button> : null}
       </div>
     </div>
   );
+}
+
+function HistoryChart({ records }: { records: UsageRecord[] }) {
+  const g = historyGeometry(records);
+  if (!records.length) return null;
+  return <>
+    <p className="x-chart-caption">Utilization (%) · scale 0–{g.maxPercent}%</p>
+    {g.points.length ? <svg className="x-history-chart" viewBox="0 0 560 235" role="img" aria-label={`Observed quota history, ${g.points.length} percentage observations; observation records below. Missing minutes and window changes break the line.`}>
+      <path className="x-chart-axis" d="M32 16V208H528" />
+      {g.segments.filter((part) => part.length > 1).map((part, i) => {
+        const trace = part.map((p) => `${p.x} ${p.y}`).join(' L');
+        return <g key={i}><path className="x-chart-area" d={`M${part[0]!.x} 200 L${trace} L${part.at(-1)!.x} 200 Z`} /><path className="x-chart-line" d={`M${trace}`} /></g>;
+      })}
+      {g.points.map((p) => <circle key={p.record.id} className="x-chart-point" cx={p.x} cy={p.y} r={3} />)}
+    </svg> : <p>Utilization unavailable for loaded observations.</p>}
+    <p className="x-chart-scale"><span>{formatTime(g.from).slice(11)}</span><span>{formatTime(g.to).slice(11)}</span></p>
+    <p className="x-chart-caption">Loaded range: {formatTime(g.from)} – {formatTime(g.to)}. Displayed scale 0–{g.maxPercent}%; values rounded to one decimal below. Straight joins show sequence only between adjacent observed minutes of the same known window/reset; no measured intermediate values. Missing minutes, unknown source time and transitions break the line and area. {records.length} loaded records.</p>
+  </>;
 }

@@ -7,6 +7,7 @@ import { parseHealth } from '../shared/ipc.ts';
 import type { AgentStatus, Banner, Health, SessionRow } from '../shared/ipc.ts';
 import { createClient, parseVisible, type Client, type PortLike } from './client.ts';
 import { HealthStatus } from './Health.tsx';
+import { Icon } from './status/StatusBadge.tsx';
 import { createCoalescer } from './data/coalesce.ts';
 import { reloadWindow } from './data/pages.ts';
 import { applyDelta, applyLiveDelta, applyPage, collectorStep, emptyCollector, emptyList, emptyLiveSet, lastKnownLabel, PAGE, type ListState, type LiveSetState } from './model.ts';
@@ -125,24 +126,62 @@ function App() {
     requestAnimationFrame(() => document.getElementById(to === 'dashboard' ? 'dashboard-heading' : 'sessions-heading')?.focus());
   };
   return (
-    <>
+    <div className="x-shell">
       <a className="x-skip" href="#main">Skip to main content</a>
       <header className="x-frame">
         <nav aria-label="Areas" className="x-nav">
-          <span className="x-mark">Xaibo</span>
+          <span className="x-mark">
+            <svg className="x-logo" viewBox="0 0 16 16" width="32" height="32" role="img" aria-label="Xaibo detective" shapeRendering="crispEdges">
+              <rect x="6" y="1" width="4" height="1" fill="var(--x-ink)" />
+              <rect x="5" y="2" width="6" height="1" fill="var(--x-ink)" />
+              <rect x="4" y="3" width="8" height="1" fill="var(--x-ink)" />
+              <rect x="4" y="4" width="1" height="1" fill="var(--x-ink)" />
+              <rect x="9" y="4" width="3" height="1" fill="var(--x-ink)" />
+              <rect x="2" y="5" width="12" height="1" fill="var(--x-ink)" />
+              <rect x="3" y="6" width="10" height="1" fill="var(--x-ink)" />
+              <rect x="4" y="7" width="1" height="1" fill="var(--x-ink)" />
+              <rect x="7" y="7" width="2" height="1" fill="var(--x-ink)" />
+              <rect x="11" y="7" width="1" height="1" fill="var(--x-ink)" />
+              <rect x="4" y="8" width="1" height="1" fill="var(--x-ink)" />
+              <rect x="7" y="8" width="2" height="1" fill="var(--x-ink)" />
+              <rect x="11" y="8" width="1" height="1" fill="var(--x-ink)" />
+              <rect x="5" y="9" width="5" height="1" fill="var(--x-ink)" />
+              <rect x="3" y="10" width="3" height="1" fill="var(--x-ink)" />
+              <rect x="7" y="10" width="2" height="1" fill="var(--x-ink)" />
+              <rect x="12" y="10" width="3" height="1" fill="var(--x-cyan)" />
+              <rect x="2" y="11" width="4" height="1" fill="var(--x-ink)" />
+              <rect x="7" y="11" width="2" height="1" fill="var(--x-ink)" />
+              <rect x="11" y="11" width="1" height="1" fill="var(--x-cyan)" />
+              <rect x="15" y="11" width="1" height="1" fill="var(--x-cyan)" />
+              <rect x="2" y="12" width="5" height="1" fill="var(--x-ink)" />
+              <rect x="8" y="12" width="1" height="1" fill="var(--x-ink)" />
+              <rect x="11" y="12" width="1" height="1" fill="var(--x-cyan)" />
+              <rect x="15" y="12" width="1" height="1" fill="var(--x-cyan)" />
+              <rect x="1" y="13" width="6" height="1" fill="var(--x-ink)" />
+              <rect x="8" y="13" width="1" height="1" fill="var(--x-ink)" />
+              <rect x="11" y="13" width="1" height="1" fill="var(--x-cyan)" />
+              <rect x="15" y="13" width="1" height="1" fill="var(--x-cyan)" />
+              <rect x="1" y="14" width="6" height="1" fill="var(--x-ink)" />
+              <rect x="8" y="14" width="2" height="1" fill="var(--x-ink)" />
+              <rect x="12" y="14" width="3" height="1" fill="var(--x-cyan)" />
+              <rect x="2" y="15" width="8" height="1" fill="var(--x-ink)" />
+              <rect x="15" y="15" width="1" height="1" fill="var(--x-cyan)" />
+            </svg>
+            Xaibo
+          </span>
           {/* ponytail: Agent Map and Settings links arrive with their areas (Phases 5–6); no placeholder links now. */}
-          <a href="#dashboard" aria-current={area === 'dashboard' ? 'page' : undefined} onClick={go('dashboard')}>Dashboard</a>
-          <a href="#session" aria-current={area === 'session' ? 'page' : undefined} onClick={go('session')}>Session</a>
+          <a href="#dashboard" aria-current={area === 'dashboard' ? 'page' : undefined} onClick={go('dashboard')}><Icon id="dashboard" />Dashboard</a>
+          <a href="#session" aria-current={area === 'session' ? 'page' : undefined} onClick={go('session')}><Icon id="session" />Session</a>
         </nav>
-        <HealthStatus health={health} />
       </header>
+      <div className="x-health"><HealthStatus health={health} /></div>
       <main id="main" className="x-main" tabIndex={-1}>
         {area === 'dashboard'
           ? <Dashboard live={liveSet} liveFailed={liveFailed} onRetryLive={retryLive} lastKnown={lastKnown} agents={agents} banners={banners} api={api} tick={tick}
             onSetPath={(agent) => window.xaibo?.setAgentPath(agent)} />
           : <SessionList list={list} loading={loading} onLoadMore={loadMore} lastKnown={lastKnown !== null} />}
       </main>
-    </>
+    </div>
   );
 }
 

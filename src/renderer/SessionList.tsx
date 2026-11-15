@@ -4,7 +4,7 @@
 import type { SessionRow } from '../shared/ipc.ts';
 import { VirtualList } from './components/VirtualList.tsx';
 import { contextText, costText, findingBadges, formatTime, markers, originText, statusExtras, type ListState } from './model.ts';
-import { StatusBadge } from './status/StatusBadge.tsx';
+import { Icon, StatusBadge } from './status/StatusBadge.tsx';
 import { visible } from './text.ts';
 
 const show = (s: string | null, fallback: string) => (s ? visible(s) : fallback);
@@ -24,13 +24,13 @@ export function Record({ row, lastKnown = false }: { row: SessionRow; lastKnown?
         {lastKnown ? <span>Last known: </span> : null}
         <StatusBadge status={row.live} />
         {row.live ? statusExtras(row.live).map((t) => <span key={t}> · {t}</span>) : null}
-        {findingBadges(row.live).map((b) => <span key={b.text}> <span aria-hidden="true">{b.glyph}</span> {b.text}</span>)}
+        {findingBadges(row.live).map((b) => <span key={b.text}> <Icon id="finding" /> {b.text}</span>)}
       </p>
       <dl className="x-record-fields">
         <div><dt>Origin</dt><dd data-field="origin">{originText(row)}</dd></div>
         <div><dt>Last activity</dt><dd data-field="activity">{formatTime(row.lastActivity)}</dd></div>
         <div><dt>Model</dt><dd data-field="model">{visible(row.model)}</dd></div>
-        <div><dt>Coverage</dt><dd data-field="coverage">{m.length === 0 ? '—' : m.map((x) => <span key={x.text}><span aria-hidden="true">{x.glyph}</span> {x.text} </span>)}</dd></div>
+        <div><dt>Coverage</dt><dd data-field="coverage">{m.length === 0 ? '—' : m.map((x) => <span key={x.text}><Icon id="finding" /> {x.text} </span>)}</dd></div>
         <div><dt>Context</dt><dd data-field="context">{contextText(row.contextPct)}</dd></div>
         <div><dt>Cost</dt><dd data-field="cost">{costText(row.costUsd, row.costCoverage)}</dd></div>
       </dl>
