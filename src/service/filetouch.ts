@@ -11,6 +11,8 @@ export interface FileTouch { path: string; kind: FileTouchKind; callId: string }
 const MAX_PATH = 4096;
 const READS = new Set(['Read']);
 const WRITES = new Set(['Write', 'Edit']);
+/** Tool names that can give a touch, so a caller selects only those calls. */
+export const FILE_TOOLS = [...READS, ...WRITES];
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);

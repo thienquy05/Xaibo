@@ -4,7 +4,11 @@ import type { DatabaseSync } from 'node:sqlite';
 import { IPC_VERSION } from '../shared/ipc.ts';
 import type { CoverageCode, Credits, Cursor, HistoryCursor, LiveStatus, Page, PortMessage, PortRequest, SessionRow, TCursor, TranscriptItem, UsageRecord, UsageScope } from '../shared/ipc.ts';
 import { MAX_ITEMS, MAX_RECORDS, MAX_SCOPES, PREVIEW_BYTES, SLICE_BYTES } from '../shared/ipc.ts';
+import type { FileItem, MCursor, ModelMarker, SubagentItem, ToolItem } from '../shared/ipc.ts';
 import { classifyItem, utf8Slice, type StoredRecord } from './transcript.ts';
+import { callApprovals, callDuration, claudeCallError, MAX_MODEL } from './session-detail.ts';
+import { deriveFileTouches, FILE_TOOLS } from './filetouch.ts';
+import type { Ev } from './status/engine.ts';
 import type { SessionKind } from './catalog/validate.ts';
 import { sessionKind } from './resume.ts';
 import { LIVE_WINDOW_MS } from './status/feed.ts'; // D-P3-09 feed eligibility
@@ -295,6 +299,209 @@ export function answerSlice(db: DatabaseSync, req: PortRequest & { type: 'slice'
     const full = hit.text;
     const cut = full ? utf8Slice(full, req.offset, SLICE_BYTES) : null;
     return cut ? { v: IPC_VERSION, type: 'slice', id: req.id, text: cut.text, next: cut.next } : empty();
+  } catch { return empty(); }
+}
+
+// XAIBO-PROD-411 (P4-T05b2; design §6.3 Tools/Subagents/Files/Timeline): forward keyset pages by row id (markers by
+// turn time). Tools and files hold the session's own main-thread calls (no subagent record, current revision); event ids
+// are given only where answerSlice can serve their text. Unknown stays null.
+export const EVIDENCE_MAX = 100_000;
+const SAFE = 9007199254740991; // node:sqlite throws on integers past 2^53; such a stored time is unknown (review L7)
+const safeTs = (col: string) => `CASE WHEN ${col} BETWEEN -${SAFE} AND ${SAFE} THEN ${col} END`; // re-review: abs() raises on -2^63
+type Sess = { agent: string; profile_id: string; native_session_id: string; last_activity: number | null };
+const sessionOf = (db: DatabaseSync, id: number) =>
+  db.prepare(`SELECT agent, profile_id, native_session_id, ${safeTs('last_activity')} AS last_activity FROM sessions WHERE id = ?`).get(id) as Sess | undefined;
+/** Review M4: a pending state (approval requested, subagent running) is current only while the session is live: tracked,
+ *  not ended and active within the live window (as the live set). Otherwise its outcome is unknown. */
+const isLive = (s: Sess, live: LiveOf | undefined, now: number) => {
+  const st = live?.(s.agent, s.native_session_id, s.profile_id);
+  return !!st && st.lifecycle !== 'ended' && s.last_activity !== null && s.last_activity >= now - LIVE_WINDOW_MS;
+};
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+const callIdOf = (id: string) => (id !== '' && id.length <= 256 ? id : null);
+/** The session's status evidence in the engine's order, or null past EVIDENCE_MAX rows or RAW_BUDGET characters: a cut
+ *  history could show a stale state (e.g. `requested` whose answer lies beyond the cut), so callers report unknown.
+ *  Review M2: the size is checked before the sorted read, so an oversized history is never sorted.
+ *  ponytail: re-read per page request; reuse the engine's in-memory entries if Tools paging over long sessions is slow. */
+function sessionEvidence(db: DatabaseSync, s: Sess): Ev[] | null {
+  const WHERE = 'agent = ? AND profile_id = ? AND native_session_id = ?';
+  const size = db.prepare(`SELECT count(*) AS n, total(octet_length(ev)) AS bytes FROM (SELECT ev FROM status_evidence WHERE ${WHERE} LIMIT ${EVIDENCE_MAX + 1})`)
+    .get(s.agent, s.profile_id, s.native_session_id) as { n: number; bytes: number };
+  if (size.n > EVIDENCE_MAX || size.bytes > RAW_BUDGET) return null;
+  const evs: Ev[] = [];
+  let rows = 0, read = 0;
+  for (const r of db.prepare(`SELECT ev FROM status_evidence WHERE ${WHERE} ORDER BY ts, rank, seq, coalesce(producer_seq, 0), id`)
+    .iterate(s.agent, s.profile_id, s.native_session_id) as Iterable<{ ev: string }>) {
+    if (++rows > EVIDENCE_MAX || (read += r.ev.length) > RAW_BUDGET) return null; // rows added since the size check
+    try {
+      const a: unknown = JSON.parse(r.ev);
+      if (Array.isArray(a) && a.every((e) => isObj(e) && typeof e.k === 'string')) evs.push(...(a as Ev[])); // a malformed row is skipped, as the engine does
+    } catch { /* corrupt row skipped */ }
+  }
+  return evs;
+}
+
+// Review H1: revision_status is stored after raw, so reading it walks a long record's overflow pages. The current-revision
+// check goes through the covering partial index events_current_seq instead, and only columns stored before content/raw
+// are read; raw is read only for a call that is shown.
+const EV_INFO = `SELECT e.session_id AS session, e.source, ${safeTs('e.source_ts')} AS ts, e.injected, e.subagent_native_id AS sub,
+  EXISTS (SELECT 1 FROM events x INDEXED BY events_current_seq WHERE x.session_id = e.session_id AND x.source = e.source AND x.source_seq = e.source_seq
+    AND x.id = e.id AND x.revision_status = 'current') AS cur FROM events e WHERE e.id = ?`;
+type EvInfo = { session: number; source: string; ts: number | null; injected: number; sub: string | null; cur: number };
+type Cand = { id: number; callId: string; tool: string | null; sources: string; a: number | null; r: number | null };
+/** Calls the session's own main thread made after `cursor`, in id order, each with its linked events' metadata (absent
+ *  when unlinked or gone). `take` returns the characters it read. Stops at n shown calls, SCAN_MAX examined calls or
+ *  RAW_BUDGET characters; returns the cursor to continue from (null at the end). Review L6: a link to another session's
+ *  event hides the call. ponytail: candidates are sorted per request from tool_calls (small rows); add an index on
+ *  (session_id, id) if sessions reach hundreds of thousands of calls. */
+function eachMainCall(db: DatabaseSync, session: number, cursor: number | null, n: number, files: boolean, take: (c: Cand, a?: EvInfo, r?: EvInfo) => number): number | null {
+  const info = db.prepare(EV_INFO);
+  const cand = db.prepare(`SELECT id, native_call_id AS callId, tool, sources, args_event_id AS a, result_event_id AS r FROM tool_calls
+    WHERE session_id = ? AND id > ?${files ? ' AND args_event_id IS NOT NULL AND tool IN (SELECT value FROM json_each(?))' : ''} ORDER BY id`);
+  const ok = (e: EvInfo | undefined) => e === undefined || (e.session === session && e.sub === null && e.cur === 1);
+  let shown = 0, scanned = 0, read = 0;
+  for (const c of cand.iterate(...(files ? [session, cursor ?? 0, JSON.stringify(FILE_TOOLS)] : [session, cursor ?? 0])) as Iterable<Cand>) {
+    scanned++;
+    const a = c.a === null ? undefined : (info.get(c.a) as EvInfo | undefined);
+    const r = c.r === null ? undefined : (info.get(c.r) as EvInfo | undefined);
+    if (ok(a) && ok(r)) { read += take(c, a, r); shown++; }
+    if (shown === n || scanned >= SCAN_MAX || read >= RAW_BUDGET) return c.id;
+  }
+  return null;
+}
+const sliceableId = (id: number | null, e?: EvInfo) => (e && (e.source === 'transcript' || e.source === 'rollout') && e.injected === 0 ? id : null);
+function sourcesOf(raw: string): string[] {
+  try {
+    const a: unknown = JSON.parse(raw);
+    return Array.isArray(a) ? [...new Set(a.filter((v): v is string => typeof v === 'string' && v !== '' && v.length <= 32))].slice(0, 8) : [];
+  } catch { return []; }
+}
+const rawOf = (db: DatabaseSync) => { const q = db.prepare('SELECT raw FROM events WHERE id = ?'); return (id: number) => (q.get(id) as { raw: string | null } | undefined)?.raw ?? undefined; };
+
+export function answerTools(db: DatabaseSync, req: PortRequest & { type: 'tools' }, live?: LiveOf, now = Date.now()): PortMessage & { type: 'tools' } {
+  const empty = (): PortMessage & { type: 'tools' } => ({ v: IPC_VERSION, type: 'tools', id: req.id, calls: [], next: null });
+  try {
+    const s = sessionOf(db, req.session);
+    if (!s) return empty();
+    const evs = sessionEvidence(db, s);
+    const approvals = evs && callApprovals(evs);
+    const pending = isLive(s, live, now);
+    const raw = rawOf(db);
+    const calls: ToolItem[] = [];
+    const next = eachMainCall(db, req.session, req.cursor, Math.min(req.limit, MAX_ITEMS), false, (c, a, r) => {
+      const rRaw = s.agent === 'claude' && r ? raw(c.r!) : undefined; // only Claude results carry is_error
+      const d = callDuration(a && { ts: a.ts, source: a.source }, r && { ts: r.ts, source: r.source });
+      const approval = approvals?.get(c.callId) ?? null;
+      calls.push({
+        call: c.id, callId: callIdOf(c.callId), tool: c.tool ? display(c.tool) : null, sources: sourcesOf(c.sources), argsEvent: sliceableId(c.a, a), resultEvent: sliceableId(c.r, r),
+        ts: a?.ts ?? null, durationMs: d !== null && Number.isSafeInteger(d) ? d : null,
+        approval: approval === 'requested' && !pending ? null : approval, error: rRaw ? claudeCallError(rRaw, c.callId) : null,
+      });
+      return rRaw?.length ?? 0;
+    });
+    return { v: IPC_VERSION, type: 'tools', id: req.id, calls, next };
+  } catch { return empty(); }
+}
+
+export function answerSubagents(db: DatabaseSync, req: PortRequest & { type: 'subagents' }, models: ModelEntry[] = [], live?: LiveOf, now = Date.now()): PortMessage & { type: 'subagents' } {
+  const empty = (): PortMessage & { type: 'subagents' } => ({ v: IPC_VERSION, type: 'subagents', id: req.id, subagents: [], next: null });
+  try {
+    const s = sessionOf(db, req.session);
+    if (!s) return empty();
+    const n = Math.min(req.limit, MAX_ITEMS);
+    const subs = db.prepare(`SELECT id, native_id AS nativeId, agent_type AS agentType FROM subagents WHERE session_id = ? AND id > ? AND native_id <> ''
+      ORDER BY id LIMIT ?`).all(req.session, req.cursor ?? 0, n) as { id: number; nativeId: string; agentType: string | null }[];
+    if (!subs.length) return empty();
+    // One pass over the session's current records (covering partial index, then columns stored before content/raw) for
+    // this page's subagents: span, count and latest assistant record. ponytail: O(session records) per subagents page;
+    // add an index on (session_id, subagent_native_id) if sessions with many subagents and records get slow.
+    type Span = { sub: string; start: number | null; end: number | null; records: number; lastAssistant: number | null };
+    const spans = new Map((db.prepare(`SELECT subagent_native_id AS sub, min(${safeTs('source_ts')}) AS start, max(${safeTs('source_ts')}) AS end, count(*) AS records,
+        max(CASE WHEN kind = 'message' AND role = 'assistant' THEN id END) AS lastAssistant
+      FROM events INDEXED BY events_current_seq WHERE session_id = ? AND revision_status = 'current' AND subagent_native_id IN (SELECT value FROM json_each(?))
+      GROUP BY subagent_native_id`).all(req.session, JSON.stringify(subs.map((x) => x.nativeId))) as Span[]).map((x) => [x.sub, x]));
+    // The subagent's own reported model, read in SQLite so a long record never enters JS; never the parent's. Review M3:
+    // the record sizes count against RAW_BUDGET (octet_length reads no content); past it the model is unknown.
+    // ponytail: the latest assistant record only (subagentModel's rule over one record); scan earlier ones if a record without a model shows up.
+    const size = db.prepare('SELECT octet_length(raw) AS n FROM events WHERE id = ?');
+    const modelOf = db.prepare(`SELECT CASE WHEN json_valid(raw) THEN CASE WHEN json_type(raw, '$.message.model') = 'text' THEN json_extract(raw, '$.message.model') END END AS m
+      FROM events WHERE id = ?`);
+    let read = 0;
+    const model = (id: number | null): string | null => {
+      if (id === null) return null;
+      read += (size.get(id) as { n: number | null } | undefined)?.n ?? 0;
+      if (read > RAW_BUDGET) return null;
+      const m = (modelOf.get(id) as { m: unknown } | undefined)?.m;
+      return typeof m === 'string' && m !== '' && m !== '<synthetic>' && m.length <= MAX_MODEL ? m : null; // review L7: Claude's placeholder for a synthetic message
+    };
+    const evs = sessionEvidence(db, s);
+    const pending = isLive(s, live, now);
+    const life = new Map<string, 'running' | 'ended'>();
+    for (const e of evs ?? []) {
+      if (e.k === 'child.start' && !life.has(e.id)) life.set(e.id, 'running');
+      else if (e.k === 'child.end') life.set(e.id, 'ended');
+    }
+    const out: SubagentItem[] = subs.map((x) => {
+      const sp = spans.get(x.nativeId);
+      const l = evs ? (life.get(x.nativeId) ?? null) : null;
+      return { id: x.id, nativeId: display(x.nativeId)!, agentType: x.agentType ? display(x.agentType) : null, model: display(displayName(models, model(sp?.lastAssistant ?? null)))!,
+        start: sp?.start ?? null, end: sp?.end ?? null, records: sp?.records ?? 0, lifecycle: l === 'running' && !pending ? null : l };
+    });
+    return { v: IPC_VERSION, type: 'subagents', id: req.id, subagents: out, next: out.length === n ? out.at(-1)!.id : null };
+  } catch { return empty(); }
+}
+
+export function answerFiles(db: DatabaseSync, req: PortRequest & { type: 'files' }): PortMessage & { type: 'files' } {
+  const empty = (): PortMessage & { type: 'files' } => ({ v: IPC_VERSION, type: 'files', id: req.id, touches: [], next: null });
+  try {
+    if (sessionOf(db, req.session)?.agent !== 'claude') return empty(); // FileTouch knows Claude shapes only (filetouch.ts ponytail)
+    const raw = rawOf(db);
+    const touches: FileItem[] = [];
+    const next = eachMainCall(db, req.session, req.cursor, Math.min(req.limit, MAX_ITEMS), true, (c, _a, r) => {
+      const argsRaw = raw(c.a!), resultRaw = r ? raw(c.r!) : undefined;
+      for (const f of deriveFileTouches([{ agent: 'claude', callId: c.callId, argsRaw, resultRaw }])) touches.push({ path: f.path, kind: f.kind, callId: callIdOf(f.callId), call: c.id });
+      return (argsRaw?.length ?? 0) + (resultRaw?.length ?? 0);
+    });
+    return { v: IPC_VERSION, type: 'files', id: req.id, touches, next };
+  } catch { return empty(); }
+}
+
+/** Model markers: a timed turn whose model differs from the previous known one, or whose effort differs from the last
+ *  reported effort (an effort that only becomes known is not a switch). State at a cursor is re-read from the turns at or
+ *  before it, so pages agree with one scan. ponytail: at most SCAN_MAX turns per request; a longer run gives a short page. */
+export function answerMarkers(db: DatabaseSync, req: PortRequest & { type: 'markers' }, models: ModelEntry[] = []): PortMessage & { type: 'markers' } {
+  const empty = (): PortMessage & { type: 'markers' } => ({ v: IPC_VERSION, type: 'markers', id: req.id, markers: [], next: null });
+  try {
+    const n = Math.min(req.limit, MAX_ITEMS);
+    const TIMED = `session_id = ? AND typeof(started_at) = 'integer' AND started_at BETWEEN -${SAFE} AND ${SAFE} AND model_id IS NOT NULL`;
+    // Review L5: the bare range term lets turns_started seek to the cursor instead of walking from the session's start.
+    const UPTO = 'started_at <= ? AND (started_at < ? OR (started_at = ? AND id <= ?)) ORDER BY started_at DESC, id DESC LIMIT 1';
+    let c: MCursor = req.cursor ?? { ts: Number.MIN_SAFE_INTEGER, id: 0 };
+    let model: string | null = null, effort: string | null = null;
+    if (req.cursor) {
+      model = (db.prepare(`SELECT model_id AS v FROM turns WHERE ${TIMED} AND ${UPTO}`).get(req.session, c.ts, c.ts, c.ts, c.id) as { v: string } | undefined)?.v ?? null;
+      effort = (db.prepare(`SELECT effort AS v FROM turns WHERE ${TIMED} AND effort IS NOT NULL AND ${UPTO}`).get(req.session, c.ts, c.ts, c.ts, c.id) as { v: string } | undefined)?.v ?? null;
+    }
+    const page = db.prepare(`SELECT id, started_at AS ts, model_id AS model, effort FROM turns WHERE ${TIMED} AND started_at >= ? AND (started_at > ? OR (started_at = ? AND id > ?))
+      ORDER BY started_at, id LIMIT ?`);
+    const markers: ModelMarker[] = [];
+    let scanned = 0, more = true;
+    scan: for (;;) {
+      let rows = 0;
+      for (const t of page.iterate(req.session, c.ts, c.ts, c.ts, c.id, n) as Iterable<{ id: number; ts: number; model: string; effort: string | null }>) {
+        rows++;
+        scanned++;
+        c = { ts: t.ts, id: t.id };
+        if (t.model !== model || (t.effort !== null && effort !== null && t.effort !== effort)) {
+          markers.push({ turn: t.id, ts: t.ts, model: display(modelLabel(displayName(models, t.model), t.effort))! });
+        }
+        model = t.model;
+        if (t.effort !== null) effort = t.effort;
+        if (markers.length === n || scanned >= SCAN_MAX) break scan;
+      }
+      if (rows < n) { more = false; break; }
+    }
+    return { v: IPC_VERSION, type: 'markers', id: req.id, markers, next: more && scanned > 0 ? c : null };
   } catch { return empty(); }
 }
 

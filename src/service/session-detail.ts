@@ -32,6 +32,13 @@ export function claudeMessagePartsOf(msg: unknown): { text: string | null; reaso
   return { text: text.join('\n') || null, reasoning: reasoning.join('\n') || null };
 }
 
+/** A Claude result record's `is_error` for one call as reported; null when absent, not boolean or unparsable. */
+export function claudeCallError(raw: string, callId: string): boolean | null {
+  const content = message(raw)?.content;
+  const b: unknown = Array.isArray(content) ? content.find((x) => isObj(x) && x.type === 'tool_result' && x.tool_use_id === callId) : undefined;
+  return isObj(b) && typeof b.is_error === 'boolean' ? b.is_error : null;
+}
+
 export interface Stamp { ts: number | null; source: string }
 /** EC-08: a duration comes from one source only; cross-source, missing or negative -> null. */
 export function callDuration(args: Stamp | undefined, result: Stamp | undefined): number | null {
@@ -85,7 +92,7 @@ export function callApprovals(evs: Ev[]): Map<string, Approval> {
   return state;
 }
 
-const MAX_MODEL = 200;
+export const MAX_MODEL = 200;
 /** The latest reported model across a Claude subagent's own records; nothing is inferred from the parent. */
 export function subagentModel(raws: string[]): string | null {
   let model: string | null = null;

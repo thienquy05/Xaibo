@@ -140,6 +140,26 @@ export const PREVIEW_BYTES = 4096;
 export const SLICE_BYTES = 16 * 1024;
 export const MAX_ITEMS = 100;
 const MAX_CALL_ID = 256;
+// XAIBO-PROD-411 (P4-T05b2): forward keyset pages of one session's tool calls, subagents, files touched and model markers.
+export const APPROVALS = ['not_requested', 'requested', 'approved', 'denied'] as const;
+export const SUB_LIFECYCLES = ['running', 'ended'] as const;
+export const TOUCH_KINDS = ['read', 'write_attempted', 'write_confirmed'] as const;
+/** approval/durationMs/error null = unknown; argsEvent/resultEvent only when a slice can serve them. */
+export interface ToolItem {
+  call: number; callId: string | null; tool: string | null; sources: string[]; argsEvent: number | null; resultEvent: number | null;
+  ts: number | null; durationMs: number | null; approval: (typeof APPROVALS)[number] | null; error: boolean | null;
+}
+export interface SubagentItem {
+  id: number; nativeId: string; agentType: string | null; model: string; start: number | null; end: number | null; records: number;
+  lifecycle: (typeof SUB_LIFECYCLES)[number] | null;
+}
+export interface FileItem { path: string; kind: (typeof TOUCH_KINDS)[number]; callId: string | null; call: number }
+export interface ModelMarker { turn: number; ts: number; model: string }
+export interface MCursor { ts: number; id: number }
+/** A forward page by row id; cursor is the last row id of the previous page. */
+type IdPage<T extends string> = { v: 1; type: T; id: number; session: number; cursor: number | null; limit: number };
+export const MAX_FILE_TOUCHES = 2 * MAX_ITEMS; // a page holds up to MAX_ITEMS calls, at most two touches each
+const MAX_SOURCES = 8, MAX_SOURCE = 32, MAX_LABEL = 4097; // labels are cut to DISPLAY_MAX plus "…" by the service
 export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Cursor | null; limit: number }
   /** P4-T02: the window is visible (live session deltas wanted) or hidden (paused; the renderer resyncs by cursor). */
   | { v: 1; type: 'live'; on: boolean }
@@ -150,11 +170,17 @@ export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Curs
   | { v: 1; type: 'usageHistory'; id: number; scope: number; stream: string; from: number; to: number; cursor: HistoryCursor | null; limit: number }
   | { v: 1; type: 'session'; id: number; session: number }
   | { v: 1; type: 'transcript'; id: number; session: number; at: TranscriptAt; limit: number }
-  | { v: 1; type: 'slice'; id: number; session: number; event: number; part: 'text' | 'reasoning'; offset: number };
+  | { v: 1; type: 'slice'; id: number; session: number; event: number; part: 'text' | 'reasoning'; offset: number }
+  | IdPage<'tools'> | IdPage<'subagents'> | IdPage<'files'>
+  | { v: 1; type: 'markers'; id: number; session: number; cursor: MCursor | null; limit: number };
 export type PortMessage =
   | { v: 1; type: 'session'; id: number; detail: SessionDetail | null }
   | { v: 1; type: 'transcript'; id: number; items: TranscriptItem[]; prev: TCursor | null; next: TCursor | null }
   | { v: 1; type: 'slice'; id: number; text: string; next: number | null }
+  | { v: 1; type: 'tools'; id: number; calls: ToolItem[]; next: number | null }
+  | { v: 1; type: 'subagents'; id: number; subagents: SubagentItem[]; next: number | null }
+  | { v: 1; type: 'files'; id: number; touches: FileItem[]; next: number | null }
+  | { v: 1; type: 'markers'; id: number; markers: ModelMarker[]; next: MCursor | null }
   | { v: 1; type: 'page'; id: number; rows: SessionRow[]; next: Cursor | null }
   | { v: 1; type: 'liveSet'; id: number; rows: SessionRow[]; more: boolean }
   | { v: 1; type: 'usage'; id: number; scopes: UsageScope[] }
@@ -291,8 +317,45 @@ function parseDetail(x: unknown): SessionDetail | null | undefined { // undefine
   return row && coverage ? { row, coverage } : undefined;
 }
 
+const idOrNull = (x: unknown): x is number | null => x === null || positive(x);
+const label = (x: unknown): x is string => text(x, MAX_LABEL) && x !== '';
+const labelOrNull = (x: unknown): x is string | null => x === null || label(x);
+const callIdOk = (x: unknown): x is string | null => x === null || (text(x, MAX_CALL_ID) && x !== '');
+function parseMCursor(x: unknown): MCursor | null | undefined { // undefined = invalid
+  if (x === null) return null;
+  return isObj(x) && Number.isSafeInteger(x.ts) && positive(x.id) ? { ts: x.ts as number, id: x.id } : undefined;
+}
+function parseTool(x: unknown): ToolItem | null {
+  if (!isObj(x) || !positive(x.call) || !callIdOk(x.callId) || !labelOrNull(x.tool) || !idOrNull(x.argsEvent) || !idOrNull(x.resultEvent)) return null;
+  const s = x.sources;
+  if (!Array.isArray(s) || s.length > MAX_SOURCES || !s.every((v) => text(v, MAX_SOURCE) && v !== '')) return null;
+  if (!timeOrNull(x.ts) || !(x.durationMs === null || count(x.durationMs)) || !(x.approval === null || oneOf(APPROVALS, x.approval)) || !boolOrNull(x.error)) return null;
+  return { call: x.call, callId: x.callId, tool: x.tool, sources: [...s] as string[], argsEvent: x.argsEvent, resultEvent: x.resultEvent, ts: x.ts,
+    durationMs: x.durationMs as number | null, approval: x.approval, error: x.error };
+}
+function parseSubagent(x: unknown): SubagentItem | null {
+  if (!isObj(x) || !positive(x.id) || !label(x.nativeId) || !labelOrNull(x.agentType) || !label(x.model) || !timeOrNull(x.start) || !timeOrNull(x.end)) return null;
+  if (!count(x.records) || !(x.lifecycle === null || oneOf(SUB_LIFECYCLES, x.lifecycle))) return null;
+  return { id: x.id, nativeId: x.nativeId, agentType: x.agentType, model: x.model, start: x.start, end: x.end, records: x.records, lifecycle: x.lifecycle };
+}
+function parseTouch(x: unknown): FileItem | null {
+  if (!isObj(x) || !text(x.path, 4096) || x.path === '' || !oneOf(TOUCH_KINDS, x.kind) || !callIdOk(x.callId) || !positive(x.call)) return null;
+  return { path: x.path, kind: x.kind, callId: x.callId, call: x.call };
+}
+function parseMarker(x: unknown): ModelMarker | null {
+  return isObj(x) && positive(x.turn) && Number.isSafeInteger(x.ts) && label(x.model) ? { turn: x.turn, ts: x.ts as number, model: x.model } : null;
+}
+
 export function parsePortRequest(x: unknown): PortRequest | null {
   const m = envelope(x);
+  if (m?.type === 'tools' || m?.type === 'subagents' || m?.type === 'files') {
+    if (!count(m.id) || !positive(m.session) || !idOrNull(m.cursor) || !limitOk(m.limit)) return null;
+    return { v: 1, type: m.type, id: m.id, session: m.session, cursor: m.cursor, limit: m.limit } as IdPage<typeof m.type> as PortRequest;
+  }
+  if (m?.type === 'markers') {
+    const cursor = parseMCursor(m.cursor);
+    return count(m.id) && positive(m.session) && cursor !== undefined && limitOk(m.limit) ? { v: 1, type: 'markers', id: m.id, session: m.session, cursor, limit: m.limit } : null;
+  }
   if (m?.type === 'session') return count(m.id) && positive(m.session) ? { v: 1, type: 'session', id: m.id, session: m.session } : null;
   if (m?.type === 'transcript') {
     const at = parseAt(m.at);
@@ -330,6 +393,23 @@ export function parsePortMessage(x: unknown): PortMessage | null {
   }
   if (m.type === 'slice') {
     return count(m.id) && text(m.text, SLICE_BYTES) && (m.next === null || count(m.next)) ? { v: 1, type: 'slice', id: m.id, text: m.text, next: m.next as number | null } : null;
+  }
+  if (m.type === 'tools') {
+    const calls = all(m.calls, MAX_ITEMS, parseTool);
+    return count(m.id) && calls && idOrNull(m.next) ? { v: 1, type: 'tools', id: m.id, calls, next: m.next } : null;
+  }
+  if (m.type === 'subagents') {
+    const subagents = all(m.subagents, MAX_ITEMS, parseSubagent);
+    return count(m.id) && subagents && idOrNull(m.next) ? { v: 1, type: 'subagents', id: m.id, subagents, next: m.next } : null;
+  }
+  if (m.type === 'files') {
+    const touches = all(m.touches, MAX_FILE_TOUCHES, parseTouch);
+    return count(m.id) && touches && idOrNull(m.next) ? { v: 1, type: 'files', id: m.id, touches, next: m.next } : null;
+  }
+  if (m.type === 'markers') {
+    const markers = all(m.markers, MAX_ITEMS, parseMarker);
+    const next = parseMCursor(m.next);
+    return count(m.id) && markers && next !== undefined ? { v: 1, type: 'markers', id: m.id, markers, next } : null;
   }
   if (m.type === 'page') {
     const rows = parseRows(m.rows);

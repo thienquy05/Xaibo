@@ -230,3 +230,53 @@ test('session, transcript and slice replies: bounds and fixed codes validated', 
   assert.equal(parsePortMessage({ v: 1, type: 'slice', id: 3, text: 'x'.repeat(16 * 1024 + 1), next: null }), null);
   assert.equal(parsePortMessage({ v: 1, type: 'slice', id: 3, text: 'abc', next: -2 }), null);
 });
+
+// XAIBO-PROD-411 (P4-T05b2): tool, subagent, file and model-marker pages; fixed enums and bounds.
+test('tools, subagents, files and markers requests: fields checked', () => {
+  for (const type of ['tools', 'subagents', 'files']) {
+    for (const cursor of [null, 7]) {
+      const req = { v: 1, type, id: 3, session: 9, cursor, limit: 50 };
+      assert.deepEqual(parsePortRequest(req), req);
+    }
+    for (const bad of [{ cursor: 0 }, { cursor: 1.5 }, { cursor: '7' }, { limit: 0 }, { session: 0 }]) {
+      assert.equal(parsePortRequest({ v: 1, type, id: 3, session: 9, cursor: null, limit: 50, ...bad }), null, `${type} ${JSON.stringify(bad)}`);
+    }
+  }
+  const mk = { v: 1, type: 'markers', id: 3, session: 9, cursor: { ts: 5, id: 2 }, limit: 50 };
+  assert.deepEqual(parsePortRequest(mk), mk);
+  assert.deepEqual(parsePortRequest({ ...mk, cursor: null }), { ...mk, cursor: null });
+  for (const cursor of [{ ts: 5 }, { ts: 1.5, id: 2 }, { ts: 5, id: 0 }, 7]) assert.equal(parsePortRequest({ ...mk, cursor }), null, JSON.stringify(cursor));
+});
+
+test('tools, subagents, files and markers replies: bounds and fixed codes validated', () => {
+  const tool = { call: 4, callId: 'toolu_1', tool: 'Read', sources: ['transcript', 'hook'], argsEvent: 12, resultEvent: null, ts: 100, durationMs: 10, approval: 'approved', error: false };
+  const tools = { v: 1, type: 'tools', id: 3, calls: [tool, { ...tool, call: 5, callId: null, tool: null, sources: [], argsEvent: null, ts: null, durationMs: null, approval: null, error: null }], next: 5 };
+  assert.deepEqual(parsePortMessage(tools), tools);
+  for (const bad of [{ approval: 'maybe' }, { durationMs: -1 }, { sources: ['x'.repeat(33)] }, { sources: Array(9).fill('hook') }, { callId: '' }, { error: 'no' }, { argsEvent: 0 }]) {
+    assert.equal(parsePortMessage({ ...tools, calls: [{ ...tool, ...bad }] }), null, JSON.stringify(bad));
+  }
+  assert.equal(parsePortMessage({ ...tools, calls: Array(101).fill(tool) }), null);
+  assert.equal(parsePortMessage({ ...tools, next: 0 }), null);
+
+  const sub = { id: 10, nativeId: 'agent-a', agentType: 'general-purpose', model: 'model-late', start: 1, end: 2, records: 3, lifecycle: 'ended' };
+  const subs = { v: 1, type: 'subagents', id: 3, subagents: [sub, { ...sub, id: 11, agentType: null, start: null, end: null, records: 0, lifecycle: null }], next: null };
+  assert.deepEqual(parsePortMessage(subs), subs);
+  for (const bad of [{ lifecycle: 'zombie' }, { records: -1 }, { nativeId: '' }, { model: 'x'.repeat(4098) }]) {
+    assert.equal(parsePortMessage({ ...subs, subagents: [{ ...sub, ...bad }] }), null, JSON.stringify(bad));
+  }
+
+  const touch = { path: '/w/a.ts', kind: 'write_confirmed', callId: 'toolu_1', call: 4 };
+  const files = { v: 1, type: 'files', id: 3, touches: [touch, { ...touch, callId: null }], next: 4 };
+  assert.deepEqual(parsePortMessage(files), files);
+  for (const bad of [{ kind: 'deleted' }, { path: '' }, { path: 'x'.repeat(4097) }, { call: 0 }]) {
+    assert.equal(parsePortMessage({ ...files, touches: [{ ...touch, ...bad }] }), null, JSON.stringify(bad));
+  }
+  assert.equal(parsePortMessage({ ...files, touches: Array(201).fill(touch) }), null);
+
+  const marker = { turn: 3, ts: 100, model: 'model-b · low' };
+  const markers = { v: 1, type: 'markers', id: 3, markers: [marker], next: { ts: 100, id: 3 } };
+  assert.deepEqual(parsePortMessage(markers), markers);
+  for (const bad of [{ ...markers, markers: [{ ...marker, ts: null }] }, { ...markers, markers: [{ ...marker, model: '' }] }, { ...markers, next: { ts: 100 } }]) {
+    assert.equal(parsePortMessage(bad), null, JSON.stringify(bad));
+  }
+});

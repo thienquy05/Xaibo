@@ -6,9 +6,9 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { answerSession, answerSlice, answerTranscript, RAW_BUDGET, SCAN_MAX, TRANSCRIPT_MAX, transcriptStats } from '../../src/service/api.ts';
+import { answerFiles, answerMarkers, answerSession, answerSlice, answerSubagents, answerTools, answerTranscript, EVIDENCE_MAX, RAW_BUDGET, SCAN_MAX, TRANSCRIPT_MAX, transcriptStats } from '../../src/service/api.ts';
 import { openStore } from '../../src/service/store/db.ts';
-import type { PortRequest } from '../../src/shared/ipc.ts';
+import type { LiveStatus, PortRequest } from '../../src/shared/ipc.ts';
 
 const T = Date.parse('2026-01-02T00:00:00.000Z');
 const cl = (type: string, content: unknown) => JSON.stringify({ type, message: { role: type, content } });
@@ -155,4 +155,188 @@ test('session detail: the row plus fixed coverage codes; unknown session null', 
   assert.deepEqual([...d.detail!.coverage].sort(), ['compressed', 'drift', 'hook-gap', 'oversized', 'quarantined']);
   assert.deepEqual(answerSession(db, { v: 1, type: 'session', id: 4, session: 2 }).detail?.coverage, []);
   assert.equal(answerSession(db, { v: 1, type: 'session', id: 4, session: 99 }).detail, null);
+});
+
+// XAIBO-PROD-411 (P4-T05b2; design §6.3 Tools/Subagents/Files/Timeline): forward keyset pages of the session's tool
+// calls, subagents, files touched and model markers. Unknown stays null; only the session's own main-thread calls.
+const evidence = (db: Awaited<ReturnType<typeof store>>['db']) => {
+  const ins = db.prepare(`INSERT INTO status_evidence (agent, profile_id, native_session_id, dedup, ts, rank, seq, confidence, ev) VALUES ('claude', ?, ?, ?, ?, 0, ?, 'confirmed', ?)`);
+  let k = 0;
+  return (ts: number, evs: unknown[], profile = 'p1', sid = 'sess-1') => ins.run(profile, sid, `d${++k}`, ts, k, JSON.stringify(evs));
+};
+const page = <T extends 'tools' | 'subagents' | 'files'>(type: T, cursor: number | null, limit = 50, session = 1) => ({ v: 1, type, id: 6, session, cursor, limit }) as PortRequest & { type: T };
+const use = (id: string, name: string, input: unknown = {}) => cl('assistant', [{ type: 'tool_use', id, name, input }]);
+const res = (id: string, isError?: boolean) => cl('user', [{ type: 'tool_result', tool_use_id: id, content: 'out', ...(isError === undefined ? {} : { is_error: isError }) }]);
+const call = (db: Awaited<ReturnType<typeof store>>['db'], o: { session?: number; callId: string; tool: string | null; sources?: string; args?: number | null; result?: number | null }) =>
+  Number(db.prepare(`INSERT INTO tool_calls (session_id, schema_version, sources, native_call_id, tool, tool_source, args_event_id, result_event_id) VALUES (?, 1, ?, ?, ?, 'transcript', ?, ?)`)
+    .run(o.session ?? 1, o.sources ?? '["transcript"]', o.callId, o.tool, o.args ?? null, o.result ?? null).lastInsertRowid);
+
+test('tools: approval from status evidence, single-source duration, error flag, sliceable event ids, main-thread only', async () => {
+  const { db, put } = await store();
+  const ev = evidence(db);
+  const a1 = put({ seq: 30, role: 'assistant', content: 'Read', raw: use('toolu_1', 'Read', { file_path: '/w/a' }) });
+  const r1 = put({ seq: 40, role: 'user', content: 'out', raw: res('toolu_1', false) });
+  const a2 = put({ seq: 50, role: 'assistant', content: 'Bash', raw: use('toolu_2', 'Bash') });
+  const r2 = put({ seq: 60, source: 'hook', kind: 'PostToolUse', content: 'hook', raw: JSON.stringify({ hook_event_name: 'PostToolUse' }) });
+  const a3 = put({ seq: 70, role: 'assistant', content: 'Grep', raw: use('toolu_3', 'Grep') });
+  const aSub = put({ seq: 80, role: 'assistant', sub: 'agent-1', raw: use('toolu_sub', 'Read') });
+  const aRew = put({ seq: 90, role: 'assistant', raw: use('toolu_rew', 'Read'), rev: 'rewound' });
+  const aOther = put({ session: 2, seq: 30, role: 'assistant', raw: use('toolu_o', 'Read') });
+  const c1 = call(db, { callId: 'toolu_1', tool: 'Read', args: a1, result: r1 });
+  const c2 = call(db, { callId: 'toolu_2', tool: 'Bash', sources: '["transcript","hook"]', args: a2, result: r2 });
+  const c3 = call(db, { callId: 'toolu_3', tool: 'Grep', args: a3 });
+  call(db, { callId: 'toolu_sub', tool: 'Read', args: aSub });
+  call(db, { callId: 'toolu_rew', tool: 'Read', args: aRew });
+  call(db, { session: 2, callId: 'toolu_o', tool: 'Read', args: aOther });
+  ev(T + 31, [{ k: 'tool.start', id: 'toolu_1', tool: 'Read' }]);
+  ev(T + 32, [{ k: 'request', kind: 'permission', id: null }]);
+  ev(T + 39, [{ k: 'tool.end', id: 'toolu_1' }]);
+  ev(T + 51, [{ k: 'tool.start', id: 'toolu_2' }, { k: 'request', kind: 'permission', id: 'toolu_2' }]);
+  ev(T + 52, [{ k: 'resolve', id: 'toolu_2', outcome: 'denied' }]);
+  ev(T + 71, [{ k: 'tool.start', id: 'toolu_3' }, { k: 'request', kind: 'permission', id: 'toolu_3' }], 'p2'); // another profile's evidence
+
+  const p1 = answerTools(db, page('tools', null, 2));
+  assert.equal(p1.type, 'tools');
+  assert.deepEqual(p1.calls[0], { call: c1, callId: 'toolu_1', tool: 'Read', sources: ['transcript'], argsEvent: a1, resultEvent: r1, ts: T + 30, durationMs: 10, approval: 'approved', error: false });
+  assert.deepEqual(p1.calls[1], { call: c2, callId: 'toolu_2', tool: 'Bash', sources: ['transcript', 'hook'], argsEvent: a2, resultEvent: null, ts: T + 50, durationMs: null, approval: 'denied', error: null });
+  assert.equal(p1.next, c2);
+  const p2 = answerTools(db, page('tools', p1.next));
+  assert.deepEqual(p2.calls.map((c) => [c.call, c.approval, c.durationMs, c.resultEvent, c.error]), [[c3, null, null, null, null]]);
+  assert.equal(p2.next, null);
+  // Review M4: a pending request is shown only while the session is live; otherwise its outcome is unknown.
+  const a4 = put({ seq: 75, role: 'assistant', raw: use('toolu_4', 'Bash') });
+  call(db, { callId: 'toolu_4', tool: 'Bash', args: a4 });
+  ev(T + 76, [{ k: 'tool.start', id: 'toolu_4' }, { k: 'request', kind: 'permission', id: 'toolu_4' }]);
+  const at4 = (l?: () => LiveStatus) => answerTools(db, page('tools', c3), l, T + 200).calls.map((c) => [c.callId, c.approval]);
+  assert.deepEqual(at4(), [['toolu_4', null]]);
+  assert.deepEqual(at4(live), [['toolu_4', 'requested']]);
+  assert.ok(answerTools(db, page('tools', null, 10_000)).calls.length <= 100);
+  assert.deepEqual(answerTools(db, page('tools', null, 50, 99)).calls, []);
+});
+
+test('tools and subagents: evidence beyond EVIDENCE_MAX leaves approval and lifecycle unknown, never a partial state', async () => {
+  const { db, put } = await store();
+  const ev = evidence(db);
+  const a1 = put({ seq: 30, role: 'assistant', raw: use('toolu_1', 'Read') });
+  call(db, { callId: 'toolu_1', tool: 'Read', args: a1 });
+  db.exec(`INSERT INTO subagents (session_id, native_id, agent_type) VALUES (1, 'agent-a', NULL)`);
+  ev(T, [{ k: 'tool.start', id: 'toolu_1' }, { k: 'request', kind: 'permission', id: 'toolu_1' }, { k: 'child.start', id: 'agent-a' }]);
+  db.exec('BEGIN');
+  for (let i = 0; i < EVIDENCE_MAX; i++) ev(T + 1 + i, [{ k: 'activity' }]);
+  db.exec('COMMIT');
+  assert.equal(answerTools(db, page('tools', null)).calls[0]!.approval, null);
+  assert.equal(answerSubagents(db, page('subagents', null)).subagents[0]!.lifecycle, null);
+});
+
+const busy: LiveStatus = { lifecycle: 'busy', confidence: 'confirmed', health: 'connected', reason: null, outcome: null, findings: [], since: null };
+const live = () => busy;
+
+test('subagents: own model from its latest assistant record (never the parent), record span, lifecycle from evidence', async () => {
+  const { db, put } = await store();
+  const ev = evidence(db);
+  db.exec(`UPDATE sessions SET current_model = 'parent-model' WHERE id = 1;
+    INSERT INTO subagents (id, session_id, native_id, agent_type) VALUES (10, 1, 'agent-a', 'general-purpose'), (11, 1, 'agent-b', NULL), (12, 1, 'agent-c', NULL), (13, 2, 'agent-x', NULL);`);
+  const m = (model: string) => JSON.stringify({ type: 'assistant', message: { role: 'assistant', model, content: [{ type: 'text', text: 'x' }] } });
+  put({ seq: 100, role: 'user', sub: 'agent-a', raw: cl('user', 'task') });
+  put({ seq: 110, role: 'assistant', sub: 'agent-a', raw: m('model-early') });
+  put({ seq: 120, role: 'assistant', sub: 'agent-a', raw: m('model-late') });
+  put({ seq: 130, role: 'assistant', sub: 'agent-a', raw: m('model-rewound'), rev: 'rewound' });
+  put({ seq: 140, role: 'user', sub: 'agent-b', raw: cl('user', 'task') });
+  ev(T + 99, [{ k: 'child.start', id: 'agent-a' }, { k: 'child.start', id: 'agent-b' }]);
+  ev(T + 125, [{ k: 'child.end', id: 'agent-a' }]);
+
+  const p1 = answerSubagents(db, page('subagents', null, 2), [], live, T + 200);
+  assert.deepEqual(p1.subagents, [
+    { id: 10, nativeId: 'agent-a', agentType: 'general-purpose', model: 'model-late', start: T + 100, end: T + 120, records: 3, lifecycle: 'ended' },
+    { id: 11, nativeId: 'agent-b', agentType: null, model: 'Model unavailable', start: T + 140, end: T + 140, records: 1, lifecycle: 'running' },
+  ]);
+  assert.equal(p1.next, 11);
+  const p2 = answerSubagents(db, page('subagents', p1.next), [], live, T + 200);
+  assert.deepEqual(p2.subagents, [{ id: 12, nativeId: 'agent-c', agentType: null, model: 'Model unavailable', start: null, end: null, records: 0, lifecycle: null }]);
+  assert.equal(p2.next, null);
+  // Review M4: "running" only while the session is live; an ended, untracked or quiet session leaves it unknown ("ended" stays).
+  for (const [l, now] of [[undefined, T + 200], [() => ({ ...busy, lifecycle: 'ended' as const }), T + 200], [live, T + 25 * 3600_000]] as const) {
+    assert.deepEqual(answerSubagents(db, page('subagents', null, 2), [], l, now).subagents.map((x) => x.lifecycle), ['ended', null]);
+  }
+});
+
+test('review L7: a <synthetic> placeholder model is unknown; out-of-range stored times are unknown, never a voided page', async () => {
+  const { db, put } = await store();
+  db.exec(`INSERT INTO subagents (id, session_id, native_id) VALUES (10, 1, 'agent-a');`);
+  put({ seq: 100, role: 'assistant', sub: 'agent-a', raw: JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: '<synthetic>', content: [] } }) });
+  const a = put({ seq: 30, role: 'assistant', raw: use('toolu_1', 'Read') });
+  db.prepare('UPDATE events SET source_ts = ? WHERE id = ?').run(2n ** 60n, a);
+  call(db, { callId: 'toolu_1', tool: 'Read', args: a });
+  db.prepare(`INSERT INTO turns (id, session_id, schema_version, source, native_turn_id, started_at, model_id) VALUES (1, 1, 1, 'transcript', 't1', ?, 'model-a'), (2, 1, 1, 'transcript', 't2', ?, 'model-b')`).run(2n ** 60n, T);
+  // Re-review L: SQLite abs() raises on -2^63, so the range check must not use it.
+  db.prepare('UPDATE sessions SET last_activity = ? WHERE id = 1').run(-(2n ** 63n));
+  db.prepare(`INSERT INTO turns (id, session_id, schema_version, source, native_turn_id, started_at, model_id) VALUES (3, 1, 1, 'transcript', 't3', ?, 'model-c')`).run(-(2n ** 63n));
+  assert.equal(answerSubagents(db, page('subagents', null)).subagents[0]!.model, 'Model unavailable');
+  assert.deepEqual(answerTools(db, page('tools', null)).calls.map((c) => [c.callId, c.ts]), [['toolu_1', null]]);
+  assert.deepEqual(answerMarkers(db, { v: 1, type: 'markers', id: 7, session: 1, cursor: null, limit: 50 }).markers.map((m) => m.turn), [2]);
+});
+
+test('review H1/L6: at most SCAN_MAX calls examined per request (cursor continues); a call linked to another session is not shown', async () => {
+  const { db, put } = await store();
+  db.exec('BEGIN');
+  for (let i = 0; i < SCAN_MAX + 5; i++) call(db, { callId: `toolu_s${i}`, tool: 'Read', args: put({ seq: i, role: 'assistant', sub: 'agent-1', raw: use(`toolu_s${i}`, 'Read', { file_path: '/w/s' }) }) });
+  db.exec('COMMIT');
+  const foreign = put({ session: 2, seq: 1, role: 'assistant', raw: use('toolu_f', 'Read', { file_path: '/w/f' }) });
+  call(db, { callId: 'toolu_f', tool: 'Read', args: foreign }); // a corrupt cross-session link on session 1
+  const main = call(db, { callId: 'toolu_m', tool: 'Read', args: put({ seq: 9999, role: 'assistant', raw: use('toolu_m', 'Read', { file_path: '/w/m' }) }) });
+  for (const type of ['tools', 'files'] as const) {
+    const p1 = type === 'tools' ? answerTools(db, page(type, null)) : answerFiles(db, page(type, null));
+    assert.deepEqual(type === 'tools' ? (p1 as { calls: unknown[] }).calls : (p1 as { touches: unknown[] }).touches, [], type);
+    assert.ok(p1.next, type);
+    const p2 = type === 'tools' ? answerTools(db, page(type, p1.next)) : answerFiles(db, page(type, p1.next));
+    const calls = type === 'tools' ? (p2 as { calls: { call: number }[] }).calls.map((c) => c.call) : (p2 as { touches: { call: number }[] }).touches.map((c) => c.call);
+    assert.deepEqual(calls, [main], type);
+  }
+});
+
+test('files: Read/Write/Edit touches per call in call order, write confirmed only by a successful result, main thread only', async () => {
+  const { db, put } = await store();
+  const aR = put({ seq: 10, role: 'assistant', raw: use('toolu_r', 'Read', { file_path: '/w/a.ts' }) });
+  const rR = put({ seq: 11, role: 'user', raw: res('toolu_r', false) });
+  const aW = put({ seq: 20, role: 'assistant', raw: use('toolu_w', 'Write', { file_path: '/w/b.ts' }) });
+  const rW = put({ seq: 21, role: 'user', raw: res('toolu_w', false) });
+  const aB = put({ seq: 25, role: 'assistant', raw: use('toolu_b', 'Bash', { command: 'true' }) });
+  const aE = put({ seq: 30, role: 'assistant', raw: use('toolu_e', 'Edit', { file_path: '/w/a.ts' }) });
+  const aS = put({ seq: 40, role: 'assistant', sub: 'agent-1', raw: use('toolu_s', 'Write', { file_path: '/w/sub.ts' }) });
+  const cR = call(db, { callId: 'toolu_r', tool: 'Read', args: aR, result: rR });
+  const cW = call(db, { callId: 'toolu_w', tool: 'Write', args: aW, result: rW });
+  call(db, { callId: 'toolu_b', tool: 'Bash', args: aB });
+  const cE = call(db, { callId: 'toolu_e', tool: 'Edit', args: aE });
+  call(db, { callId: 'toolu_s', tool: 'Write', args: aS });
+
+  const p1 = answerFiles(db, page('files', null, 2));
+  assert.deepEqual(p1.touches, [
+    { path: '/w/a.ts', kind: 'read', callId: 'toolu_r', call: cR },
+    { path: '/w/b.ts', kind: 'write_attempted', callId: 'toolu_w', call: cW },
+    { path: '/w/b.ts', kind: 'write_confirmed', callId: 'toolu_w', call: cW },
+  ]);
+  assert.equal(p1.next, cW);
+  const p2 = answerFiles(db, page('files', p1.next));
+  assert.deepEqual(p2.touches, [{ path: '/w/a.ts', kind: 'write_attempted', callId: 'toolu_e', call: cE }]);
+  assert.equal(p2.next, null);
+});
+
+test('markers: timed model/effort changes in turn order, across page boundaries; unknown model or effort is not a change', async () => {
+  const { db } = await store();
+  const turn = db.prepare(`INSERT INTO turns (id, session_id, schema_version, source, native_turn_id, started_at, model_id, effort) VALUES (?, 1, 1, 'transcript', ?, ?, ?, ?)`);
+  turn.run(1, 't1', T + 1, 'model-a', null);
+  turn.run(2, 't2', T + 2, 'model-a', null);
+  turn.run(3, 't3', T + 3, 'model-b', null);
+  turn.run(4, 't4', T + 4, null, null);
+  turn.run(5, 't5', T + 5, 'model-b', 'high'); // effort becomes known: not a switch
+  turn.run(6, 't6', T + 6, 'model-b', 'low');
+  turn.run(7, 't7', null, 'model-c', null); // untimed: no marker
+  const mk = (cursor: { ts: number; id: number } | null, limit: number) => answerMarkers(db, { v: 1, type: 'markers', id: 7, session: 1, cursor, limit });
+  const p1 = mk(null, 2);
+  assert.deepEqual(p1.markers, [{ turn: 1, ts: T + 1, model: 'model-a' }, { turn: 3, ts: T + 3, model: 'model-b' }]);
+  assert.ok(p1.next);
+  const p2 = mk(p1.next, 2);
+  assert.deepEqual(p2.markers, [{ turn: 6, ts: T + 6, model: 'model-b · low' }]);
+  assert.equal(p2.next, null);
+  assert.deepEqual(mk(null, 50).markers.map((x) => x.turn), [1, 3, 6]);
 });
