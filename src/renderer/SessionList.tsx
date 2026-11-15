@@ -1,17 +1,16 @@
 // Read-only session list (P1-T12, OQ-P1-04; P4-T03 virtualized record list, design §5.1): one record per session with
 // title, agent and folder first, then status and the remaining fields as labeled detail. Every transcript-derived string
-// is a React text node run through visible() (EC-55). Opening a record arrives with the Session workspace (P4-T05).
+// is a React text node run through visible() (EC-55). P4-T05d: the Session area's list is the workspace's compact list
+// (workspace/Workspace.tsx); this full record stays for the Dashboard's live sessions, with an Open session button.
 import type { SessionRow } from '../shared/ipc.ts';
-import { VirtualList } from './components/VirtualList.tsx';
-import { contextText, costText, findingBadges, formatTime, markers, originText, statusExtras, type ListState } from './model.ts';
+import { contextText, costText, findingBadges, formatTime, markers, originText, statusExtras } from './model.ts';
 import { Icon, StatusBadge } from './status/StatusBadge.tsx';
 import { visible } from './text.ts';
 
 const show = (s: string | null, fallback: string) => (s ? visible(s) : fallback);
-const keyOf = (r: SessionRow) => r.id;
 
 /** One session record; `lastKnown` qualifies its status while the collector is not running (design §3.2, §6.0). */
-export function Record({ row, lastKnown = false }: { row: SessionRow; lastKnown?: boolean }) {
+export function Record({ row, lastKnown = false, onOpen }: { row: SessionRow; lastKnown?: boolean; onOpen?: (row: SessionRow) => void }) {
   const m = markers(row);
   return (
     <article className="x-record">
@@ -34,21 +33,7 @@ export function Record({ row, lastKnown = false }: { row: SessionRow; lastKnown?
         <div><dt>Context</dt><dd data-field="context">{contextText(row.contextPct)}</dd></div>
         <div><dt>Cost</dt><dd data-field="cost">{costText(row.costUsd, row.costCoverage)}</dd></div>
       </dl>
+      {onOpen ? <button type="button" className="x-btn x-btn-primary x-record-open" onClick={() => onOpen(row)}>Open session</button> : null}
     </article>
-  );
-}
-
-export function SessionList({ list, loading, onLoadMore, lastKnown = false }: { list: ListState; loading: boolean; onLoadMore: () => void; lastKnown?: boolean }) {
-  return (
-    <section aria-labelledby="sessions-heading">
-      <h1 id="sessions-heading" tabIndex={-1}>Session</h1>
-      {list.loaded && list.rows.length === 0 ? <p>No sessions yet.</p> : (
-        <VirtualList
-          items={list.rows} getKey={keyOf} label="Sessions" estimateSize={132}
-          hasMore={list.next !== null} loading={loading} onLoadMore={onLoadMore}
-          render={(row) => <Record row={row} lastKnown={lastKnown} />}
-        />
-      )}
-    </section>
   );
 }

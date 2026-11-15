@@ -35,6 +35,8 @@ function useNow(ms: number): number {
 export function Dashboard(p: {
   live: LiveSetState; liveFailed: boolean; onRetryLive: () => void; lastKnown: string | null; agents: AgentStatus[] | null; banners: Banner[];
   api: UsageApi; tick: number; onSetPath: (agent: string) => void;
+  /** P4-T05d: a live record's Open session button opens it in the Session area. */
+  onOpen?: (row: SessionRow) => void;
 }) {
   const [view, setView] = useState<View>('live');
   const lastKnown = p.lastKnown ?? (p.live.loaded && p.liveFailed ? 'refresh unavailable' : null);
@@ -79,7 +81,7 @@ export function Dashboard(p: {
       )}
       <div className="x-dashboard-panels">
         <section id={`view-${view}`} aria-labelledby={`view-${view}-heading`} className="x-view-body">
-          {view === 'live' ? <LiveView live={p.live} lastKnown={lastKnown} />
+          {view === 'live' ? <LiveView live={p.live} lastKnown={lastKnown} onOpen={p.onOpen} />
             : view === 'attention' ? <AttentionView queue={queue} lastKnown={lastKnown} name={name} onShowLive={showLive} />
               : <UsageView api={p.api} tick={p.tick} name={name} />}
         </section>
@@ -161,14 +163,14 @@ function Microchart({ title, unit, data }: { title: string; unit: string; data: 
 }
 
 const keyOf = (r: SessionRow) => r.id;
-function LiveView({ live, lastKnown }: { live: LiveSetState; lastKnown: string | null }) {
+function LiveView({ live, lastKnown, onOpen }: { live: LiveSetState; lastKnown: string | null; onOpen?: (row: SessionRow) => void }) {
   return (
     <>
       <h2 id="view-live-heading" tabIndex={-1}>{lastKnown ? 'Last known live sessions' : 'Live sessions'}</h2>
       {live.more ? <p>Showing the {live.rows.length} most recently active live sessions; more are tracked.</p> : null}
       {!live.loaded ? <p>Loading live sessions…</p> : live.rows.length === 0 ? <p>No live sessions.</p> : (
         <VirtualList items={live.rows} getKey={keyOf} label="Live sessions" estimateSize={132} hasMore={false} loading={false} onLoadMore={() => undefined}
-          render={(row) => <SessionRecord row={row} lastKnown={lastKnown !== null} />} />
+          render={(row) => <SessionRecord row={row} lastKnown={lastKnown !== null} onOpen={onOpen} />} />
       )}
     </>
   );

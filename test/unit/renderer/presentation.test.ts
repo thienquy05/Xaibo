@@ -73,5 +73,13 @@ test('icon geometry is exactly design §4 (review of P4-T01)', () => {
     'evidence-dashed': [R(7, 7, 10, 10, { dash: true })],
     settle: [P('M5 6 L19 6'), P('M5 12 L15 12'), P('M5 18 L11 18')],
     branch: [P('M7 3 L7 17 L11 21'), P('M7 11 L17 11 L17 5')],
+    // P4-T05d: chevron, back, close, check, information, file, external rows of design §4
+    chevron: [P('M9 5 L16 12 L9 19')],
+    back: [P('M13 5 L6 12 L13 19'), P('M6 12 L21 12')],
+    close: [P('M6 6 L18 18'), P('M18 6 L6 18')],
+    check: [P('M4 12 L9 17 L20 6')],
+    information: [C(12, 12, 9), P('M12 11 L12 17'), C(12, 7, 0.5)],
+    file: [P('M6 3 L14 3 L19 8 L19 21 L6 21 L6 3'), P('M14 3 L14 8 L19 8')],
+    external: [R(4, 9, 11, 11), P('M10 14 L20 4'), P('M13 4 L20 4 L20 11')],
   });
 });

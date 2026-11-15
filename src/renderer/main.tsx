@@ -1,6 +1,6 @@
 // Renderer entry (P1-T12): takes the brokered service port and main's health messages from the preload (window
 // messages from this window only, validated), keeps the list state (model.ts) and renders health, agents and sessions.
-import { StrictMode, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
+import { StrictMode, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { parseHealth } from '../shared/ipc.ts';
@@ -13,7 +13,8 @@ import { reloadWindow } from './data/pages.ts';
 import { applyDelta, applyLiveDelta, applyPage, collectorStep, emptyCollector, emptyList, emptyLiveSet, lastKnownLabel, PAGE, type ListState, type LiveSetState } from './model.ts';
 import { Dashboard, type UsageApi } from './overview/Dashboard.tsx';
 import { firstUsablePage, LONG_FRAME, watchLongFrames } from './perf-marks.ts';
-import { SessionList } from './SessionList.tsx';
+import { Workspace } from './workspace/Workspace.tsx';
+import type { WorkspaceApi } from './workspace/OpenSession.tsx';
 import './styles/tokens.css';
 
 declare global { interface Window { xaibo?: { setAgentPath(agent: string): void; paintAck(delta: number): void } } }
@@ -36,6 +37,7 @@ function App() {
   const [tick, setTick] = useState(0); // session activity: the usage view refreshes on it (throttled there)
   const [collector, setCollector] = useState(emptyCollector); // the Last known qualifier (design §6.0)
   const [liveFailed, setLiveFailed] = useState(false); // the live set could not be loaded: Retry
+  const [request, setRequest] = useState<SessionRow | null>(null); // P4-T05d: a Dashboard record opened in the Session area
   const client = useRef<Client | null>(null);
   const loadedRows = useRef(0); // rows the user has loaded: a resync refetches that many (P4-T03)
   loadedRows.current = list.rows.length;
@@ -112,6 +114,24 @@ function App() {
     usage: () => client.current?.usage() ?? Promise.reject(new Error('no service')),
     history: (scope, stream, from, to, cursor) => client.current?.usageHistory(scope, stream, from, to, cursor, PAGE) ?? Promise.reject(new Error('no service')),
   }), []);
+  // P4-T05d: the Session workspace's page requests go to the current client (a restart brings a new one).
+  const workspaceApi = useMemo<WorkspaceApi>(() => {
+    const c = () => client.current ?? (() => { throw new Error('no service'); })();
+    return {
+      session: async (id) => c().session(id),
+      transcript: async (id, at, limit) => c().transcript(id, at, limit),
+      slice: async (id, event, part, offset) => c().slice(id, event, part, offset),
+      tools: async (id, cursor, limit) => c().tools(id, cursor, limit),
+      subagents: async (id, cursor, limit) => c().subagents(id, cursor, limit),
+      files: async (id, cursor, limit) => c().files(id, cursor, limit),
+      markers: async (id, cursor, limit) => c().markers(id, cursor, limit),
+    };
+  }, []);
+  const clearRequest = useCallback(() => setRequest(null), []);
+  const openSession = (row: SessionRow) => {
+    setRequest(row);
+    setArea('session');
+  };
   // Design §6.0: no unqualified live indicator while the collector is not running (starting, restarting, stopped).
   const lastKnown = lastKnownLabel(collector, health?.state ?? null);
   const retryLive = () => {
@@ -126,7 +146,7 @@ function App() {
     requestAnimationFrame(() => document.getElementById(to === 'dashboard' ? 'dashboard-heading' : 'sessions-heading')?.focus());
   };
   return (
-    <div className="x-shell">
+    <div className={`x-shell${area === 'session' ? ' x-fixed' : ''}`}>
       <a className="x-skip" href="#main">Skip to main content</a>
       <header className="x-frame">
         <nav aria-label="Areas" className="x-nav">
@@ -178,8 +198,8 @@ function App() {
       <main id="main" className="x-main" tabIndex={-1}>
         {area === 'dashboard'
           ? <Dashboard live={liveSet} liveFailed={liveFailed} onRetryLive={retryLive} lastKnown={lastKnown} agents={agents} banners={banners} api={api} tick={tick}
-            onSetPath={(agent) => window.xaibo?.setAgentPath(agent)} />
-          : <SessionList list={list} loading={loading} onLoadMore={loadMore} lastKnown={lastKnown !== null} />}
+            onSetPath={(agent) => window.xaibo?.setAgentPath(agent)} onOpen={openSession} />
+          : <Workspace list={list} loading={loading} onLoadMore={loadMore} lastKnown={lastKnown !== null} api={workspaceApi} request={request} onRequestDone={clearRequest} />}
       </main>
     </div>
   );

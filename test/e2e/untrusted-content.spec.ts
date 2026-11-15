@@ -31,7 +31,10 @@ test('EC-55: injected markup, markdown, ANSI and bidi render as escaped text', a
   const row = page.getByRole('list', { name: 'Sessions' }).getByRole('listitem').filter({ hasText: 'xaibo-fixture/<img' });
   await expect(row).toHaveCount(1);
   expect(await row.locator('[data-field="folder"]').textContent()).toBe(visible(CWD));
-  expect(await row.locator('[data-field="origin"]').textContent()).toBe(`${visible(ENTRY)} (unverified)`); // unknown kind (P2-T04)
+  // P4-T05d: origin moved from the compact list row to the open session's Details drawer
+  await row.getByRole('button').first().click();
+  await page.getByRole('button', { name: 'Details' }).click();
+  expect(await page.locator('#session-details [data-field="origin"]').textContent()).toBe(`${visible(ENTRY)} (unverified)`); // unknown kind (P2-T04)
   expect(await page.locator('img').count()).toBe(0);
   expect(await page.locator('main b, main script').count()).toBe(0);
   expect(await page.locator('script').evaluateAll((s) => s.filter((x) => (x.textContent ?? '').includes('__xss')).length)).toBe(0);

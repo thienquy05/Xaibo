@@ -696,7 +696,7 @@ Apply §2.4's four text-spacing test overrides together in both themes, includin
 
 ### 8.2 Closed pair inventory (F7)
 
-WCAG sRGB channels normalized to 0–1, linearization threshold 0.04045, luminance weights 0.2126/0.7152/0.0722, (lighter+.05)/(darker+.05). Test the unrounded result before rounding to 2 decimals. **62/62 checks pass: 21 text pairs + 9 neutral UI/focus/chart pairs + 1 chart/area-composite pair per theme.**
+WCAG sRGB channels normalized to 0–1, linearization threshold 0.04045, luminance weights 0.2126/0.7152/0.0722, (lighter+.05)/(darker+.05). Test the unrounded result before rounding to 2 decimals. **64/64 checks pass: 22 text pairs + 9 neutral UI/focus/chart pairs + 1 chart/area-composite pair per theme.**
 
 | Foreground | Background | Minimum | Light | Dark | Result |
 |---|---|---:|---:|---:|---|
@@ -709,6 +709,7 @@ WCAG sRGB channels normalized to 0–1, linearization threshold 0.04045, luminan
 | `accent` | `canvas` | 4.5:1 | 6.86:1 | 9.58:1 | Pass / Pass |
 | `accent` | `surface` | 4.5:1 | 7.65:1 | 8.25:1 | Pass / Pass |
 | `accent` | `tint` | 4.5:1 | 6.18:1 | 6.86:1 | Pass / Pass |
+| `surface` | `accent` | 4.5:1 | 7.65:1 | 8.25:1 | Pass / Pass (D-P4-06: filled primary buttons, selected section tab) |
 | `cyan` | `canvas` | 4.5:1 | 5.78:1 | 12.87:1 | Pass / Pass |
 | `cyan` | `surface` | 4.5:1 | 6.45:1 | 11.10:1 | Pass / Pass |
 | `cyan` | `tint` | 4.5:1 | 5.21:1 | 9.22:1 | Pass / Pass |

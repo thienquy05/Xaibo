@@ -26,6 +26,14 @@ const GEOMETRY = {
   'evidence-dashed': [{ kind: 'rect', x: 7, y: 7, w: 10, h: 10, dash: true }],
   settle: [line([5, 6], [19, 6]), line([5, 12], [15, 12]), line([5, 18], [11, 18])],
   branch: [line([7, 3], [7, 17], [11, 21]), line([7, 11], [17, 11], [17, 5])],
+  // P4-T05d (Session workspace): from §4 verbatim
+  chevron: [line([9, 5], [16, 12], [9, 19])],
+  back: [line([13, 5], [6, 12], [13, 19]), line([6, 12], [21, 12])],
+  close: [line([6, 6], [18, 18]), line([18, 6], [6, 18])],
+  check: [line([4, 12], [9, 17], [20, 6])],
+  information: [{ kind: 'circle', cx: 12, cy: 12, r: 9 }, line([12, 11], [12, 17]), { kind: 'circle', cx: 12, cy: 7, r: 0.5 }],
+  file: [line([6, 3], [14, 3], [19, 8], [19, 21], [6, 21], [6, 3]), line([14, 3], [14, 8], [19, 8])],
+  external: [{ kind: 'rect', x: 4, y: 9, w: 11, h: 11 }, line([10, 14], [20, 4]), line([13, 4], [20, 4], [20, 11])],
 } satisfies Record<string, Shape[]>;
 
 export type IconId = keyof typeof GEOMETRY;

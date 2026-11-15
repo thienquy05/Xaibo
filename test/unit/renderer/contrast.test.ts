@@ -45,6 +45,7 @@ const PAIRS: [string, string, number, number, number][] = [
   ['accent', 'canvas', 4.5, 6.86, 9.58],
   ['accent', 'surface', 4.5, 7.65, 8.25],
   ['accent', 'tint', 4.5, 6.18, 6.86],
+  ['surface', 'accent', 4.5, 7.65, 8.25], // D-P4-06: filled primary buttons and the selected section tab
   ['cyan', 'canvas', 4.5, 5.78, 12.87],
   ['cyan', 'surface', 4.5, 6.45, 11.10],
   ['cyan', 'tint', 4.5, 5.21, 9.22],
@@ -70,7 +71,7 @@ const PAIRS: [string, string, number, number, number][] = [
 ];
 
 test('every §8.2 pair meets its threshold in both themes and matches the design ratio to 0.01 (31 × 2)', () => {
-  assert.equal(PAIRS.length, 31);
+  assert.equal(PAIRS.length, 32);
   for (const [fg, bg, min, wantLight, wantDark] of PAIRS) {
     for (const [theme, want, name] of [[light, wantLight, 'light'], [dark, wantDark, 'dark']] as const) {
       const background = bg === 'area-composite' ? [1, 3, 5].map((i) =>
