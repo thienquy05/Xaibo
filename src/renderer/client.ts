@@ -3,7 +3,8 @@
 // are counted; an invalid reply rejects its request, so the caller can recover. A service restart brings a new port
 // and a new client; replies owed on the old one never arrive.
 import { accept, IPC_VERSION, parsePortMessage } from '../shared/ipc.ts';
-import type { AgentStatus, Banner, Cursor, HistoryCursor, Page, PortMessage, PortRequest, SessionRow, UsageRecord, UsageScope } from '../shared/ipc.ts';
+import type { AgentStatus, Banner, Cursor, FileItem, HistoryCursor, MCursor, ModelMarker, Page, PortMessage, PortRequest, SessionDetail, SessionRow, SubagentItem, TCursor,
+  ToolItem, TranscriptAt, TranscriptItem, UsageRecord, UsageScope } from '../shared/ipc.ts';
 
 export interface LiveSet { rows: SessionRow[]; more: boolean }
 export interface PortLike { onmessage: ((e: { data: unknown }) => void) | null; postMessage(m: unknown): void; close(): void }
@@ -18,7 +19,7 @@ export function parseVisible(x: unknown): boolean | null {
 }
 
 type Reply = Extract<PortMessage, { id: number }>;
-const REPLY_TYPES = new Set<string>(['page', 'liveSet', 'usage', 'usageHistory']);
+const REPLY_TYPES = new Set<string>(['page', 'liveSet', 'usage', 'usageHistory', 'session', 'transcript', 'slice', 'tools', 'subagents', 'files', 'markers']);
 
 export function createClient(port: PortLike, push: Pushes) {
   let nextId = 1;
@@ -61,6 +62,32 @@ export function createClient(port: PortLike, push: Pushes) {
     async usageHistory(scope: number, stream: string, from: number, to: number, cursor: HistoryCursor | null, limit: number): Promise<{ records: UsageRecord[]; next: HistoryCursor | null }> {
       const m = await ask({ v: IPC_VERSION, type: 'usageHistory', id: nextId++, scope, stream, from, to, cursor, limit }, 'usageHistory');
       return { records: m.records, next: m.next };
+    },
+    // P4-T05c (XAIBO-PROD-412): one session's workspace pages (design §6.3); each settles only on its own reply.
+    async session(session: number): Promise<SessionDetail | null> { return (await ask({ v: IPC_VERSION, type: 'session', id: nextId++, session }, 'session')).detail; },
+    async transcript(session: number, at: TranscriptAt, limit: number): Promise<{ items: TranscriptItem[]; prev: TCursor | null; next: TCursor | null }> {
+      const m = await ask({ v: IPC_VERSION, type: 'transcript', id: nextId++, session, at, limit }, 'transcript');
+      return { items: m.items, prev: m.prev, next: m.next };
+    },
+    async slice(session: number, event: number, part: 'text' | 'reasoning', offset: number): Promise<{ text: string; next: number | null }> {
+      const m = await ask({ v: IPC_VERSION, type: 'slice', id: nextId++, session, event, part, offset }, 'slice');
+      return { text: m.text, next: m.next };
+    },
+    async tools(session: number, cursor: number | null, limit: number): Promise<{ calls: ToolItem[]; next: number | null }> {
+      const m = await ask({ v: IPC_VERSION, type: 'tools', id: nextId++, session, cursor, limit }, 'tools');
+      return { calls: m.calls, next: m.next };
+    },
+    async subagents(session: number, cursor: number | null, limit: number): Promise<{ subagents: SubagentItem[]; next: number | null }> {
+      const m = await ask({ v: IPC_VERSION, type: 'subagents', id: nextId++, session, cursor, limit }, 'subagents');
+      return { subagents: m.subagents, next: m.next };
+    },
+    async files(session: number, cursor: number | null, limit: number): Promise<{ touches: FileItem[]; next: number | null }> {
+      const m = await ask({ v: IPC_VERSION, type: 'files', id: nextId++, session, cursor, limit }, 'files');
+      return { touches: m.touches, next: m.next };
+    },
+    async markers(session: number, cursor: MCursor | null, limit: number): Promise<{ markers: ModelMarker[]; next: MCursor | null }> {
+      const m = await ask({ v: IPC_VERSION, type: 'markers', id: nextId++, session, cursor, limit }, 'markers');
+      return { markers: m.markers, next: m.next };
     },
     /** P4-T02: live session deltas while the window is visible; paused while hidden (resync by cursor on show). */
     setLive(on: boolean): void { port.postMessage({ v: IPC_VERSION, type: 'live', on } satisfies PortRequest); },

@@ -99,3 +99,49 @@ test('usage and usageHistory resolve their own replies; a reply of another type 
   f.deliver({ v: 1, type: 'usage', id: 3, scopes: 'none' });
   await assert.rejects(bad, /invalid reply/);
 });
+
+// XAIBO-PROD-412 (P4-T05c): the session workspace calls; each settles only on its own reply type and id.
+test('session workspace calls post their requests and resolve their own replies; an invalid reply rejects', async () => {
+  const f = fakePort();
+  const c = createClient(f.port, { sessions() {}, agents() {} });
+  const detail = c.session(9);
+  const tr = c.transcript(9, 'latest', 50);
+  const sl = c.slice(9, 12, 'reasoning', 0);
+  const tools = c.tools(9, null, 50);
+  const subs = c.subagents(9, 4, 50);
+  const files = c.files(9, null, 50);
+  const marks = c.markers(9, { ts: 5, id: 2 }, 50);
+  assert.deepEqual(f.sent, [
+    { v: 1, type: 'session', id: 1, session: 9 },
+    { v: 1, type: 'transcript', id: 2, session: 9, at: 'latest', limit: 50 },
+    { v: 1, type: 'slice', id: 3, session: 9, event: 12, part: 'reasoning', offset: 0 },
+    { v: 1, type: 'tools', id: 4, session: 9, cursor: null, limit: 50 },
+    { v: 1, type: 'subagents', id: 5, session: 9, cursor: 4, limit: 50 },
+    { v: 1, type: 'files', id: 6, session: 9, cursor: null, limit: 50 },
+    { v: 1, type: 'markers', id: 7, session: 9, cursor: { ts: 5, id: 2 }, limit: 50 },
+  ]);
+  f.deliver({ v: 1, type: 'tools', id: 1, calls: [], next: null }); // wrong type for id 1: ignored
+  f.deliver({ v: 1, type: 'session', id: 1, detail: null });
+  f.deliver({ v: 1, type: 'transcript', id: 2, items: [], prev: null, next: { seq: 3, id: 4 } });
+  f.deliver({ v: 1, type: 'slice', id: 3, text: 'abc', next: null });
+  f.deliver({ v: 1, type: 'tools', id: 4, calls: [], next: null });
+  f.deliver({ v: 1, type: 'subagents', id: 5, subagents: [], next: null });
+  f.deliver({ v: 1, type: 'files', id: 6, touches: [], next: 8 });
+  f.deliver({ v: 1, type: 'markers', id: 7, markers: [{ turn: 3, ts: 6, model: 'model-b' }], next: null });
+  assert.equal(await detail, null);
+  assert.deepEqual(await tr, { items: [], prev: null, next: { seq: 3, id: 4 } });
+  assert.deepEqual(await sl, { text: 'abc', next: null });
+  assert.deepEqual(await tools, { calls: [], next: null });
+  assert.deepEqual(await subs, { subagents: [], next: null });
+  assert.deepEqual(await files, { touches: [], next: 8 });
+  assert.deepEqual(await marks, { markers: [{ turn: 3, ts: 6, model: 'model-b' }], next: null });
+  for (const [call, reply] of [
+    [() => c.tools(9, null, 50), { type: 'tools', calls: 'x', next: null }],
+    [() => c.markers(9, null, 50), { type: 'markers', markers: [], next: { ts: 5 } }],
+    [() => c.transcript(9, 'first', 50), { type: 'transcript', items: [], prev: 0, next: null }],
+  ] as const) {
+    const p = call();
+    f.deliver({ v: 1, id: (f.sent.at(-1) as { id: number }).id, ...reply });
+    await assert.rejects(p, /invalid reply/, reply.type);
+  }
+});
