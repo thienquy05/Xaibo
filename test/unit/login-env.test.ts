@@ -49,7 +49,7 @@ test('a hanging shell times out to an empty result', async () => {
 
 test('missing, relative or failing shells give an empty result, never a throw', async () => {
   assert.deepEqual(await readLoginEnv({ shell: join(dir, 'absent') }), {});
-  assert.deepEqual(await readLoginEnv({ shell: 'sh' }), {});
+  assert.deepEqual(await readLoginEnv({ shell: 'bin/sh' }), {}); // relative; not a bare `sh` literal (CodeQL alert #2, see spawn.test.ts)
   assert.deepEqual(await readLoginEnv({}), {});
   assert.deepEqual(await readLoginEnv({ shell: shell('fails', 'exit 3') }), {});
 });
