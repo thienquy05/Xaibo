@@ -447,6 +447,21 @@ summary:hover { background: var(--x-tint); }
 .x-table td { padding: var(--x-space-2); border-bottom: 1px solid var(--x-divider); vertical-align: top; overflow-wrap: break-word; }
 .x-table tr:hover td { background: var(--x-inset); }
 .x-table td strong { font-weight: var(--x-weight-strong); }
+/* P4-T06b Context section (design §6.3.1): flat 12 px meter, accent used segment, neutral unoccupied with a line outline. */
+.x-context { max-width: 960px; margin: 0 auto; padding: var(--x-space-4); display: grid; gap: var(--x-space-3); }
+.x-context h3 { margin: 0; font-size: var(--x-text-section); }
+.x-context p { margin: 0; }
+.x-context-model, .x-context-note { color: var(--x-muted); font-size: var(--x-text-small); }
+.x-context-value { display: flex; flex-wrap: wrap; align-items: center; gap: var(--x-space-2); font-size: var(--x-text-value); font-weight: var(--x-weight-strong); font-variant-numeric: tabular-nums; }
+.x-context-value .x-chip { font-weight: var(--x-weight-normal); }
+.x-meter { height: 12px; max-width: 480px; border: 1px solid var(--x-line); border-radius: 6px; background: var(--x-inset); overflow: hidden; }
+.x-meter-used { display: block; height: 100%; background: var(--x-accent); }
+.x-context-meta { display: flex; flex-wrap: wrap; gap: var(--x-space-2) var(--x-space-4); font-size: var(--x-text-small); }
+.x-context-meta span { display: inline-flex; align-items: center; gap: 6px; }
+.x-context .x-gap { margin: 0; }
+.x-context-table { margin: 0; }
+.x-context-table caption { text-align: left; font-weight: var(--x-weight-strong); padding: var(--x-space-2) 0; }
+.x-context-table th { width: 50%; color: var(--x-ink); white-space: normal; }
 .x-status-cell { display: inline-flex; align-items: center; gap: 6px; }
 .x-mono { font-family: var(--x-font-mono); }
 .x-kinds { display: flex; flex-wrap: wrap; gap: var(--x-space-1); }

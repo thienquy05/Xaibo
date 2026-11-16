@@ -8,6 +8,7 @@ import type { Client } from '../client.ts';
 import { contextText, costText, findingBadges, formatTime, markers as rowMarkers, originText, statusExtras } from '../model.ts';
 import { Icon, StatusBadge } from '../status/StatusBadge.tsx';
 import { visible } from '../text.ts';
+import { ContextPane } from './context/ContextSection.tsx';
 import { Conversation, Files, Subagents, Timeline, Tools, type Paged, type SliceFn } from './sections.tsx';
 import { mergeTimeline } from './timeline.ts';
 import { appendLive, compactStatus, countText, incompleteReasons, initialAt, trimWindow } from './view.ts';
@@ -67,9 +68,9 @@ function usePaged<T, C>(fetch: (c: C | null) => Promise<{ items: T[]; next: C | 
 }
 
 interface Window { items: TranscriptItem[]; prev: TCursor | null; next: TCursor | null; loading: boolean; failed: boolean; loaded: boolean }
-const SECTIONS = ['conversation', 'timeline', 'tools', 'subagents', 'files'] as const;
+const SECTIONS = ['conversation', 'timeline', 'tools', 'subagents', 'files', 'context'] as const;
 type Section = (typeof SECTIONS)[number];
-const SECTION_TEXT: Record<Section, string> = { conversation: 'Conversation', timeline: 'Timeline', tools: 'Tools', subagents: 'Subagents', files: 'Files' };
+const SECTION_TEXT: Record<Section, string> = { conversation: 'Conversation', timeline: 'Timeline', tools: 'Tools', subagents: 'Subagents', files: 'Files', context: 'Context' };
 
 export function OpenSession({ row, api, lastKnown, listShown, onShowList, onBack }: {
   row: SessionRow; api: WorkspaceApi; lastKnown: boolean; listShown: boolean; onShowList: () => void; onBack: () => void;
@@ -84,7 +85,14 @@ export function OpenSession({ row, api, lastKnown, listShown, onShowList, onBack
   const closeRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => { titleRef.current?.focus(); }, []);
-  useEffect(() => { let on = true; api.session(id).then((d) => { if (on) setDetail(d); }, () => undefined); return () => { on = false; }; }, [api, id, activity]);
+  // Review M (P4-T06b): a rejected or null detail is a failure the Context tab shows with Retry; a later success clears it.
+  const [detailFailed, setDetailFailed] = useState(false);
+  const [detailRetry, setDetailRetry] = useState(0);
+  useEffect(() => {
+    let on = true;
+    api.session(id).then((d) => { if (!on) return; if (d) setDetail(d); setDetailFailed(d === null); }, () => { if (on) setDetailFailed(true); });
+    return () => { on = false; };
+  }, [api, id, activity, detailRetry]);
 
   const tools = usePaged<ToolItem, number>((c) => api.tools(id, c, LEDGER_PAGE).then((r) => ({ items: r.calls, next: r.next })), TOOL_PAGES, activity);
   const files = usePaged<FileItem, number>((c) => api.files(id, c, LEDGER_PAGE).then((r) => ({ items: r.touches, next: r.next })), 1, activity);
@@ -178,7 +186,10 @@ export function OpenSession({ row, api, lastKnown, listShown, onShowList, onBack
           : section === 'timeline' ? <Timeline entries={entries} next={tr.next !== null} onNext={() => grow('after')} loading={tr.loading} />
             : section === 'tools' ? <div className="x-scroll"><Tools tools={tools} touches={files.items} /></div>
               : section === 'subagents' ? <div className="x-scroll"><Subagents subagents={subagents} /></div>
-                : <div className="x-scroll"><Files files={files} tools={tools.items} /></div>}
+                : section === 'files' ? <div className="x-scroll"><Files files={files} tools={tools.items} /></div>
+                  // ponytail: Stale is evaluated at render (detail reloads on activity); a quiet live session shows it
+                  // only on its next render. Add a minute tick if a quiet session must flip to Stale on its own.
+                  : <div className="x-scroll"><ContextPane row={row} detail={detail} failed={detailFailed} onRetry={() => setDetailRetry((n) => n + 1)} now={Date.now()} /></div>}
         {tr.failed && (section === 'conversation' || section === 'timeline') ? <p className="x-gap" role="alert">The transcript could not be loaded <button type="button" className="x-btn x-btn-secondary" onClick={() => loadAt(initial.current)}>Retry</button></p> : null}
       </div>
       <div className="x-foot" inert={drawer}>

@@ -81,5 +81,7 @@ test('icon geometry is exactly design §4 (review of P4-T01)', () => {
     information: [C(12, 12, 9), P('M12 11 L12 17'), C(12, 7, 0.5)],
     file: [P('M6 3 L14 3 L19 8 L19 21 L6 21 L6 3'), P('M14 3 L14 8 L19 8')],
     external: [R(4, 9, 11, 11), P('M10 14 L20 4'), P('M13 4 L20 4 L20 11')],
+    // P4-T06b: the Stale glyph of design §4
+    'clock-gap': [P('M12 3 L5 3 L3 10 L5 18 L12 21 L20 17 L21 10'), P('M12 7 L12 12 L16 12')],
   });
 });

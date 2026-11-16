@@ -25,7 +25,7 @@ const exact = (n: number) => n.toLocaleString('en-US');
 export function percentText(p: number): string {
   return p > 0 && p < 0.1 ? '<0.1%' : `${Math.round(p * 10) / 10}%`;
 }
-const percentWords = (p: number) => percentText(p).replace('<', 'less than ').replace('%', ' percent');
+export const percentWords = (p: number) => percentText(p).replace('<', 'less than ').replace('%', ' percent');
 
 function unavailable(reason: string): ContextView {
   return { value: 'Context unavailable', qualifier: null, meter: null, meterNote: `Context meter unavailable — ${reason}`, warning: null, unoccupied: null,

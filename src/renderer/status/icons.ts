@@ -34,6 +34,8 @@ const GEOMETRY = {
   information: [{ kind: 'circle', cx: 12, cy: 12, r: 9 }, line([12, 11], [12, 17]), { kind: 'circle', cx: 12, cy: 7, r: 0.5 }],
   file: [line([6, 3], [14, 3], [19, 8], [19, 21], [6, 21], [6, 3]), line([14, 3], [14, 8], [19, 8])],
   external: [{ kind: 'rect', x: 4, y: 9, w: 11, h: 11 }, line([10, 14], [20, 4]), line([13, 4], [20, 4], [20, 11])],
+  // P4-T06b: Stale (design §4)
+  'clock-gap': [line([12, 3], [5, 3], [3, 10], [5, 18], [12, 21], [20, 17], [21, 10]), line([12, 7], [12, 12], [16, 12])],
 } satisfies Record<string, Shape[]>;
 
 export type IconId = keyof typeof GEOMETRY;
