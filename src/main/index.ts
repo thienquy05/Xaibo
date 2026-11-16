@@ -8,7 +8,7 @@ import { release } from 'node:os';
 import path from 'node:path';
 import { installCrashPolicy } from '../shared/crash.ts';
 import { AGENT_ID, IPC_VERSION, type ServiceMetrics } from '../shared/ipc.ts';
-import { createLogger, loadInstallSecret } from '../shared/log.ts';
+import { appendQuiet, createLogger, loadInstallSecret } from '../shared/log.ts';
 import { initDataDir } from './app-paths.ts';
 import { buildBundle, foldMetrics, readLogTail, writeBundle } from './diagnostics.ts';
 import { notificationText, showNotification } from './notifications.ts';
@@ -105,7 +105,7 @@ function start(dataDir: string) {
   ipcMain.on('paint-ack', (e, delta: unknown) => {
     const t = process.hrtime.bigint();
     if (!trace || !win || e.sender !== win.webContents || !Number.isSafeInteger(delta) || (delta as number) <= 0) return;
-    appendFileSync(trace, `${JSON.stringify({ ev: 'paint', delta, t: t.toString() })}\n`);
+    appendQuiet(trace, `${JSON.stringify({ ev: 'paint', delta, t: t.toString() })}\n`); // XAIBO-PROD-430: never throws
   });
   // "Set path…" (P1-T08/T12): only from our window, only an agent id; the user picks the file, the service validates it.
   ipcMain.on('set-agent-path', (e, agent: unknown) => {

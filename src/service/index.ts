@@ -3,13 +3,12 @@
 // answers main's commands. Logs go to their own dir so two processes never rotate one file. P1-T12: each brokered
 // port gets agent status on connect, answers listSessions after boot, and receives coalesced session deltas.
 import type { MessagePortMain } from 'electron';
-import { appendFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { errorCode, installCrashPolicy } from '../shared/crash.ts';
 import { accept, IPC_VERSION, parsePortRequest, parseServiceCommand } from '../shared/ipc.ts';
 import type { Banner, PortMessage, ServiceEvent } from '../shared/ipc.ts';
-import { createLogger, loadInstallSecret, type Logger } from '../shared/log.ts';
+import { appendQuiet, createLogger, loadInstallSecret, type Logger } from '../shared/log.ts';
 import { answer, answerCost, answerFiles, answerLiveSet, answerMarkers, answerSession, answerSlice, answerSubagents, answerTools, answerTranscript, answerUsage, answerUsageHistory, coalesce, createHub, sessionsByKey, type LiveOf } from './api.ts';
 import { boot, type Service } from './boot.ts';
 import type { Batch } from './store/writer.ts';
@@ -32,7 +31,7 @@ const live: LiveOf = (agent, sid, profileId) => svc?.status(agent, sid, profileI
 let trace: string | null = null;
 const pendingIds = new Map<string, string[]>();
 let deltaSeq = 0;
-const stamp = (line: object) => { if (trace) appendFileSync(trace, `${JSON.stringify({ ...line, t: process.hrtime.bigint().toString() })}\n`); };
+const stamp = (line: object) => { if (trace) appendQuiet(trace, `${JSON.stringify({ ...line, t: process.hrtime.bigint().toString() })}\n`); };
 
 // P4-T10c1: a window with more changed sessions than this sends a resync instead of rows, so one flush is one bounded
 // query and message. ponytail: a fixed bound; raise it if the P4-T11 T2 run shows resyncs under normal load.
