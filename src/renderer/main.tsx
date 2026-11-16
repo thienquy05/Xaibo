@@ -9,7 +9,7 @@ import { createClient, parseVisible, type Client, type PortLike } from './client
 import { HealthStatus } from './Health.tsx';
 import { Icon } from './status/StatusBadge.tsx';
 import { createCoalescer } from './data/coalesce.ts';
-import { reloadWindow } from './data/pages.ts';
+import { reloadWindow, singleFlight } from './data/pages.ts';
 import { applyDelta, applyLiveDelta, applyPage, collectorStep, emptyCollector, emptyList, emptyLiveSet, lastKnownLabel, PAGE, type ListState, type LiveSetState } from './model.ts';
 import { Dashboard, type UsageApi } from './overview/Dashboard.tsx';
 import { firstUsablePage, LONG_FRAME, watchLongFrames } from './perf-marks.ts';
@@ -45,19 +45,22 @@ function App() {
 
   useEffect(() => {
     // The loaded window again by cursor, replacing the list: after a (re)start, a coalescer overflow or showing the window.
-    const reload = (c: Client | null) => {
-      if (!c) return;
+    const reload = (c: Client | null): Promise<unknown> => {
+      if (!c) return Promise.resolve();
       // P4-T04c: the Dashboard's live set is resynced with the list (start, coalescer overflow, show).
-      c.liveSet().then((set) => { if (client.current === c) { setLiveSet({ ...set, loaded: true }); setLiveFailed(false); } },
+      const set = c.liveSet().then((s) => { if (client.current === c) { setLiveSet({ ...s, loaded: true }); setLiveFailed(false); } },
         () => { if (client.current === c) setLiveFailed(true); });
-      reloadWindow(loadedRows.current, (cursor, limit) => c.listSessions(cursor, limit), PAGE)
-        .then((page) => { if (client.current === c) setList((s) => applyPage(s, page, false)); }, () => undefined);
+      const page = reloadWindow(loadedRows.current, (cursor, limit) => c.listSessions(cursor, limit), PAGE)
+        .then((p) => { if (client.current === c) setList((s) => applyPage(s, p, false)); }, () => undefined);
       setChanges((x) => ({ rows: [], resync: x.resync + 1, n: x.n + 1 })); // a resync may hide any change: the open session refreshes
+      return Promise.all([set, page]);
     };
+    // P4-T10c1 review M1: overflow resyncs (the service's or the frame coalescer's) run one reload at a time.
+    const resync = singleFlight(() => reload(client.current));
     // P4-T02: deltas are coalesced per session and committed once per frame. P3-T10 perf trace: delta ids arrive only
     // under XAIBO_PERF_TRACE=1 and are acked after rAF plus one frame, so the ack follows the paint that shows them.
     const deltas = createCoalescer<SessionRow>({
-      max: DELTA_MAX, schedule: (cb) => requestAnimationFrame(cb), resync: () => reload(client.current),
+      max: DELTA_MAX, schedule: (cb) => requestAnimationFrame(cb), resync,
       flush: (rows, tags) => {
         flushSync(() => {
           setList((s) => applyDelta(s, rows)); setLiveSet((s) => applyLiveDelta(s, rows)); setTick((t) => t + 1);
@@ -82,7 +85,7 @@ function App() {
       if (e.source !== window) return;
       if (e.data === 'xaibo-port' && e.ports[0]) { // a (re)started service: new client, reload the first page
         client.current?.close();
-        const c = createClient(e.ports[0] as unknown as PortLike, { sessions, agents: setAgents, coverage: setBanners });
+        const c = createClient(e.ports[0] as unknown as PortLike, { sessions, agents: setAgents, coverage: setBanners, resync });
         client.current = c;
         setLoading(false);
         if (!visible()) c.setLive(false);

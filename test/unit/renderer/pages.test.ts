@@ -2,7 +2,7 @@
 // in as few requests as the page size allows; it stops early when the store has fewer rows.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { reloadWindow } from '../../../src/renderer/data/pages.ts';
+import { reloadWindow, singleFlight } from '../../../src/renderer/data/pages.ts';
 import type { Cursor, Page, SessionRow } from '../../../src/shared/ipc.ts';
 
 const row = (id: number) => ({ id, lastActivity: 1_000 - id }) as unknown as SessionRow;
@@ -44,4 +44,24 @@ test('review L3: a later page failing keeps the fresh pages already fetched (and
   assert.equal(p.rows.length, 100);
   assert.deepEqual(p.next, { lastActivity: 1_000 - 100, id: 100 });
   await assert.rejects(reloadWindow(150, () => Promise.reject(new Error('down')), 50), /down/, 'the first page failing still fails');
+});
+
+// P4-T10c1 review M1: back-to-back resyncs (a long backfill overflowing every window) run one reload at a time, and
+// calls during a run collapse into one trailing reload, so the last state is always fetched.
+test('singleFlight: one run at a time; calls during a run give exactly one more run after it; a failed run still releases', async () => {
+  let runs = 0;
+  const gates: (() => void)[] = [];
+  const fail = [false, true, false];
+  const go = singleFlight(() => new Promise<void>((resolve, reject) => { const n = runs++; gates.push(() => (fail[n] ? reject(new Error('x')) : resolve())); }));
+  const tick = () => new Promise((r) => setImmediate(r));
+  go(); go(); go();
+  assert.equal(runs, 1, 'calls during a run wait');
+  gates.shift()!(); await tick();
+  assert.equal(runs, 2, 'one trailing run for all of them');
+  gates.shift()!(); await tick(); // this run fails
+  assert.equal(runs, 2, 'nothing was asked during it');
+  go();
+  assert.equal(runs, 3, 'a failed run released the flight');
+  gates.shift()!(); await tick();
+  assert.equal(runs, 3);
 });

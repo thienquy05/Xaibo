@@ -572,18 +572,21 @@ export function createHub<P extends { postMessage(m: PortMessage): void }>() {
     remove(p: P): void { ports.delete(p); },
     setLive(p: P, on: boolean): void { if (ports.has(p)) ports.set(p, on); },
     anyLive(): boolean { return [...ports.values()].some(Boolean); },
-    sessions(m: PortMessage & { type: 'sessions' }): void { for (const [p, live] of ports) if (live) p.postMessage(m); },
+    sessions(m: PortMessage & { type: 'sessions' | 'resync' }): void { for (const [p, live] of ports) if (live) p.postMessage(m); },
     broadcast(m: PortMessage): void { for (const p of ports.keys()) p.postMessage(m); },
   };
 }
 
-/** Collects keys and flushes each distinct key once per window of `ms`. */
-export function coalesce(flush: (keys: string[]) => void, ms: number, setTimer: (fn: () => void, ms: number) => unknown = setTimeout): (key: string) => void {
-  let keys: Set<string> | undefined;
+/** Collects keys and flushes each distinct key once per window of `ms`. P4-T10c1: past `max` distinct keys the window
+ *  stops collecting and flushes null (the receiver resyncs by cursor), so a window never holds more than `max` keys. */
+export function coalesce(flush: (keys: string[] | null) => void, ms: number, setTimer: (fn: () => void, ms: number) => unknown = setTimeout,
+  max = Infinity): (key: string) => void {
+  let keys: Set<string> | null | undefined; // undefined: no window; null: this window overflowed
   return (key) => {
-    if (keys) { keys.add(key); return; }
+    if (keys === null) return;
+    if (keys) { if (!keys.has(key) && keys.size >= max) keys = null; else keys.add(key); return; }
     keys = new Set([key]);
-    setTimer(() => { const k = [...keys!]; keys = undefined; flush(k); }, ms);
+    setTimer(() => { const k = keys ? [...keys] : null; keys = undefined; flush(k); }, ms);
   };
 }
 

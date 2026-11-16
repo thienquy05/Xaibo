@@ -17,3 +17,15 @@ export async function reloadWindow(count: number, fetch: (cursor: Cursor | null,
   } while (cursor && rows.length < want);
   return { rows, next: cursor };
 }
+
+/** P4-T10c1 review M1: runs `run` one at a time; calls made during a run collapse into one more run after it, so a burst
+ *  of resyncs costs at most two reloads and the last state is always fetched. A failed run still releases the flight. */
+export function singleFlight(run: () => Promise<unknown>): () => void {
+  let busy = false, again = false;
+  const go = (): void => {
+    if (busy) { again = true; return; }
+    busy = true;
+    void run().catch(() => undefined).finally(() => { busy = false; if (again) { again = false; go(); } });
+  };
+  return go;
+}

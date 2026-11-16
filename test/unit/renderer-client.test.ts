@@ -51,6 +51,14 @@ test('pushes reach their handlers; invalid messages are dropped and counted', ()
   assert.equal(c.dropped, 2);
 });
 
+test('P4-T10c1: a resync push reaches its handler', () => {
+  const f = fakePort();
+  let resyncs = 0;
+  createClient(f.port, { sessions: () => assert.fail('no rows'), agents: () => assert.fail('no agents'), resync: () => resyncs++ });
+  f.deliver({ v: 1, type: 'resync' });
+  assert.equal(resyncs, 1);
+});
+
 test('close detaches and closes the port', () => {
   const f = fakePort();
   const c = createClient(f.port, { sessions() {}, agents() {} });

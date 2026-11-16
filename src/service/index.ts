@@ -34,8 +34,16 @@ const pendingIds = new Map<string, string[]>();
 let deltaSeq = 0;
 const stamp = (line: object) => { if (trace) appendFileSync(trace, `${JSON.stringify({ ...line, t: process.hrtime.bigint().toString() })}\n`); };
 
+// P4-T10c1: a window with more changed sessions than this sends a resync instead of rows, so one flush is one bounded
+// query and message. ponytail: a fixed bound; raise it if the P4-T11 T2 run shows resyncs under normal load.
+const DELTA_KEYS_MAX = 200;
 const broadcast = (m: PortMessage) => hub.broadcast(m);
 const changed = coalesce((keys) => {
+  if (!keys) { // review L1: a trace tells an overflow (no paint ack for that window's ids) from a lost delta
+    pendingIds.clear(); stamp({ ev: 'resync' });
+    if (hub.anyLive()) hub.sessions({ v: IPC_VERSION, type: 'resync' });
+    return;
+  }
   const ids = trace ? keys.flatMap((k) => { const x = pendingIds.get(k) ?? []; pendingIds.delete(k); return x; }) : []; // cleared on every flush (review L2)
   if (!svc?.store.db.isOpen || !hub.anyLive()) return; // hidden windows resync by cursor when shown (P4-T02)
   const rows = sessionsByKey(svc.store.db, keys.map((k) => { const [agent, profileId, nativeSessionId] = k.split('\0') as [string, string, string]; return { agent, profileId, nativeSessionId }; }), svc.kinds(), svc.models(), live);
@@ -44,7 +52,7 @@ const changed = coalesce((keys) => {
   const delta = ++deltaSeq;
   stamp({ ev: 'delta', delta, ids });
   hub.sessions({ v: IPC_VERSION, type: 'sessions', rows, delta });
-}, DELTA_MS);
+}, DELTA_MS, setTimeout, DELTA_KEYS_MAX);
 
 let banners: Banner[] = [];
 const coverage = () => {

@@ -9,7 +9,11 @@ import type { AgentStatus, Banner, CostDetail, Cursor, FileItem, HistoryCursor, 
 export interface LiveSet { rows: SessionRow[]; more: boolean }
 export interface PortLike { onmessage: ((e: { data: unknown }) => void) | null; postMessage(m: unknown): void; close(): void }
 /** delta: the perf-trace id of a sessions push (P3-T10), present only under XAIBO_PERF_TRACE=1. */
-export interface Pushes { sessions(rows: SessionRow[], delta?: number): void; agents(agents: AgentStatus[] | null): void; coverage?(banners: Banner[]): void }
+export interface Pushes {
+  sessions(rows: SessionRow[], delta?: number): void; agents(agents: AgentStatus[] | null): void; coverage?(banners: Banner[]): void;
+  /** P4-T10c1: the service dropped a delta too large to send; reload by cursor. */
+  resync?(): void;
+}
 
 /** P4-T02: main's window hide/show, forwarded by the preload as `{ xaiboVisible: boolean }`; anything else is null. */
 export function parseVisible(x: unknown): boolean | null {
@@ -31,6 +35,7 @@ export function createClient(port: PortLike, push: Pushes) {
       if (p?.type === m.type) { pending.delete(m.id); p.resolve(m); }
     } else if (m.type === 'sessions') push.sessions(m.rows, m.delta);
     else if (m.type === 'coverage') push.coverage?.(m.banners);
+    else if (m.type === 'resync') push.resync?.();
     else push.agents(m.agents);
   });
   port.onmessage = (e) => {

@@ -219,6 +219,8 @@ export type PortMessage =
   | { v: 1; type: 'usageHistory'; id: number; records: UsageRecord[]; next: HistoryCursor | null }
   // coalesced deltas: current rows of changed sessions; delta only with XAIBO_PERF_TRACE=1 (the renderer acks its paint)
   | { v: 1; type: 'sessions'; rows: SessionRow[]; delta?: number }
+  // P4-T10c1: too many sessions changed in one window for a delta; reload the list and live set by cursor
+  | { v: 1; type: 'resync' }
   | { v: 1; type: 'agents'; agents: AgentStatus[] | null } // null while detection runs
   | { v: 1; type: 'coverage'; banners: Banner[] };
 
@@ -516,6 +518,7 @@ export function parsePortMessage(x: unknown): PortMessage | null {
     if (m.delta === undefined) return { v: 1, type: 'sessions', rows };
     return Number.isSafeInteger(m.delta) && (m.delta as number) > 0 ? { v: 1, type: 'sessions', rows, delta: m.delta as number } : null;
   }
+  if (m.type === 'resync') return { v: 1, type: 'resync' };
   if (m.type === 'coverage') {
     if (!Array.isArray(m.banners) || m.banners.length > MAX_BANNERS) return null;
     const banners = m.banners.map(parseBanner);

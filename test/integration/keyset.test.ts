@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { answer, coalesce, DISPLAY_MAX, listSessions, PAGE_DEFAULT, PAGE_MAX, sessionsByKey } from '../../src/service/api.ts';
+import { answer, coalesce, createHub, DISPLAY_MAX, listSessions, PAGE_DEFAULT, PAGE_MAX, sessionsByKey } from '../../src/service/api.ts';
 import { parsePortMessage } from '../../src/shared/ipc.ts';
 import { openStore } from '../../src/service/store/db.ts';
 
@@ -73,7 +73,7 @@ test('answer() returns a valid page message; a store without tables answers an e
 
 test('coalesce: one flush per window with each key once', () => {
   const timers: (() => void)[] = [];
-  const flushed: string[][] = [];
+  const flushed: (string[] | null)[] = [];
   const add = coalesce((keys) => flushed.push(keys), 250, (fn, ms) => { assert.equal(ms, 250); timers.push(fn); });
   add('a'); add('b'); add('a');
   assert.equal(timers.length, 1);
@@ -81,6 +81,21 @@ test('coalesce: one flush per window with each key once', () => {
   add('c');
   timers.shift()!();
   assert.deepEqual(flushed, [['a', 'b'], ['c']]);
+});
+
+// XAIBO-PROD-426 (P4-T10c1): a window past `max` distinct keys stops collecting and flushes null (cursor resync).
+test('P4-T10c1 coalesce: more than max distinct keys in a window flush null once; the next window is normal', () => {
+  const timers: (() => void)[] = [];
+  const flushed: (string[] | null)[] = [];
+  const add = coalesce((keys) => flushed.push(keys), 50, (fn) => { timers.push(fn); }, 2);
+  add('a'); add('b'); add('a');
+  timers.shift()!();
+  add('a'); add('b'); add('c'); add('d'); add('c');
+  assert.equal(timers.length, 1, 'one timer per window, overflow or not');
+  timers.shift()!();
+  add('e');
+  timers.shift()!();
+  assert.deepEqual(flushed, [['a', 'b'], null, ['e']]);
 });
 
 test('H3: display strings are bounded before IPC; the stored original is untouched', async () => {
@@ -92,4 +107,13 @@ test('H3: display strings are bounded before IPC; the stored original is untouch
   assert.ok(msg.rows[0]!.cwd!.length <= DISPLAY_MAX + 1 && msg.rows[0]!.cwd!.endsWith('…'));
   assert.equal((db.prepare('SELECT length(cwd) AS n FROM sessions').get() as { n: number }).n, long.length);
   assert.ok(sessionsByKey(db, [{ agent: 'claude', profileId: 'p1', nativeSessionId: '00000000-0000-4000-8000-000000000001' }])[0]!.entrypoint!.length <= DISPLAY_MAX + 1);
+});
+
+test('P4-T10c1 review M2: a resync goes only to live ports; broadcasts go to all', () => {
+  const hub = createHub<{ postMessage(m: unknown): void; got: unknown[] }>();
+  const port = () => { const got: unknown[] = []; return { got, postMessage: (m: unknown) => { got.push(m); } }; };
+  const shown = port(), hidden = port();
+  hub.add(shown); hub.add(hidden); hub.setLive(hidden, false);
+  hub.sessions({ v: 1, type: 'resync' });
+  assert.deepEqual([shown.got, hidden.got], [[{ v: 1, type: 'resync' }], []]);
 });

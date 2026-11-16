@@ -319,3 +319,8 @@ test('cost request and reply: bounded groups, fixed names, finite non-negative a
     { ...cost, groups: [{ ...group, components: [{ ...comp, unpriced: -1 }] }] }, { ...cost, priced: 3 },
   ]) assert.equal(parsePortMessage({ v: 1, type: 'cost', id: 3, cost: bad }), null, JSON.stringify(bad));
 });
+
+test('P4-T10c1: the resync push carries nothing; extra fields are stripped', () => {
+  assert.deepEqual(parsePortMessage({ v: 1, type: 'resync', rows: [1], delta: 3, extra: 'x' }), { v: 1, type: 'resync' });
+  assert.equal(parsePortMessage({ v: 2, type: 'resync' }), null);
+});
