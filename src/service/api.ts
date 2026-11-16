@@ -3,7 +3,9 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { IPC_VERSION } from '../shared/ipc.ts';
 import type { ContextReading, CoverageCode, Credits, Cursor, HistoryCursor, LiveStatus, Page, PortMessage, PortRequest, SessionRow, TCursor, TranscriptItem, UsageRecord, UsageScope } from '../shared/ipc.ts';
-import { MAX_ITEMS, MAX_RECORDS, MAX_SCOPES, parseContext, PREVIEW_BYTES, SLICE_BYTES } from '../shared/ipc.ts';
+import { COST_CODE, COST_COMPONENTS, MAX_COST_CODES, MAX_COST_GROUPS, MAX_ITEMS, MAX_RECORDS, MAX_REFERENCES, MAX_SCOPES, parseContext, parseCost, PREVIEW_BYTES,
+  REFERENCE_MAX, SLICE_BYTES } from '../shared/ipc.ts';
+import type { CostDetail, CostGroup, PriceRevisionInfo } from '../shared/ipc.ts';
 import type { FileItem, MCursor, ModelMarker, SubagentItem, ToolItem } from '../shared/ipc.ts';
 import { classifyItem, utf8Slice, type StoredRecord } from './transcript.ts';
 import { callApprovals, callDuration, claudeCallError, MAX_MODEL } from './session-detail.ts';
@@ -13,7 +15,7 @@ import type { SessionKind } from './catalog/validate.ts';
 import { sessionKind } from './resume.ts';
 import { LIVE_WINDOW_MS } from './status/feed.ts'; // D-P3-09 feed eligibility
 import { sessionCost } from './usage/cost.ts';
-import { displayName, modelLabel, type ModelEntry } from './usage/models.ts';
+import { displayName, modelLabel, type ModelEntry, type ModelList } from './usage/models.ts';
 
 export const PAGE_DEFAULT = 50;
 export const PAGE_MAX = 100;
@@ -535,4 +537,108 @@ export function coalesce(flush: (keys: string[]) => void, ms: number, setTimer: 
     keys = new Set([key]);
     setTimer(() => { const k = [...keys!]; keys = undefined; flush(k); }, ms);
   };
+}
+
+// XAIBO-PROD-417 (P4-T07a; PRD FR-48, US-18, §5.12; design §6.3.2): the session's cost breakdown. The selected total is
+// sessionCost's (a reported estimate replaces the calculated one, never added). Per-request estimates group by (model,
+// price revision, basis) in SQL, so memory stays bounded; a component's ~$ sums tokens × its applied rate over requests
+// the engine priced without that component as a gap. Codex/agy cache write has no applied rate, so it is never priced.
+type CostComp = (typeof COST_COMPONENTS)[number];
+const RATE = (path: string) => `json_extract(e.applied_rates, '${path}')`;
+const CLASS = (k: string) => `CASE WHEN u.cache_write = 0 THEN 0 WHEN u.cache_write_classes IS NULL THEN NULL ELSE coalesce(json_extract(u.cache_write_classes, '$."${k}"'), 0) END`;
+const COST_SQL: Record<CostComp, { tokens: string; rate: string; gap: string }> = {
+  uncached_input: { tokens: 'u.uncached_input', rate: RATE('$.input'), gap: 'uncached_input' },
+  cache_read: { tokens: 'u.cache_read', rate: RATE('$.cache_read'), gap: 'cache_read' },
+  cache_write: { tokens: 'u.cache_write', rate: 'NULL', gap: 'cache_write' },
+  cache_write_5m: { tokens: CLASS('5m'), rate: RATE('$.cache_write."5m"'), gap: 'cache_write' },
+  cache_write_1h: { tokens: CLASS('1h'), rate: RATE('$.cache_write."1h"'), gap: 'cache_write' },
+  output: { tokens: 'u.output', rate: RATE('$.output'), gap: 'output' },
+};
+const CLAUDE_COMPS: CostComp[] = ['uncached_input', 'cache_read', 'cache_write_5m', 'cache_write_1h', 'output'];
+const OTHER_COMPS: CostComp[] = ['uncached_input', 'cache_read', 'cache_write', 'output'];
+const COST_GROUPS_SQL = `SELECT json_extract(e.coverage, '$.model') AS model, e.price_revision_id AS rev, e.basis AS basis, COUNT(*) AS requests,
+    COUNT(e.amount_usd) AS priced, MIN(e.as_of) AS "from", MAX(e.as_of) AS "to",
+    ${COST_COMPONENTS.map((k) => {
+      const c = COST_SQL[k];
+      const ok = `e.amount_usd IS NOT NULL AND NOT EXISTS (SELECT 1 FROM json_each(e.coverage, '$.gaps') g WHERE g.value = '${c.gap}')`;
+      return `SUM(${c.tokens}) AS ${k}_t, COUNT(*) - COUNT(${c.tokens}) AS ${k}_m, COUNT(DISTINCT ${c.rate}) AS ${k}_n, MIN(${c.rate}) AS ${k}_r,
+      SUM(CASE WHEN ${ok} THEN (${c.tokens}) * (${c.rate}) END) AS ${k}_u, SUM(CASE WHEN (${c.tokens}) > 0 AND NOT (${ok}) THEN 1 ELSE 0 END) AS ${k}_p`;
+    }).join(',\n    ')}
+  FROM cost_estimates e JOIN usage u ON u.session_id = e.session_id AND u.source = e.source AND u.scope = 'message'
+    AND u.identity = substr(e.covered_scope, length(e.source) + 8)
+  WHERE e.session_id = ? AND e.basis <> 'agent_reported' AND e.covered_scope = 'usage:' || e.source || ':' || u.identity
+  GROUP BY 1, 2, 3 ORDER BY MIN(e.as_of) IS NULL, MIN(e.as_of), rev, model LIMIT ${MAX_COST_GROUPS + 1}`;
+const clip = (s: string, max: number) => (s.length <= max ? s : `${s.slice(0, (s.charCodeAt(max - 2) & 0xfc00) === 0xd800 ? max - 2 : max - 1)}…`);
+const safeCount = (x: unknown): number | null => (Number.isSafeInteger(x) && (x as number) >= 0 ? (x as number) : null);
+const finiteUsd = (x: unknown): number | null => (typeof x === 'number' && Number.isFinite(x) && x >= 0 ? x : null);
+
+export function answerCost(db: DatabaseSync, req: PortRequest & { type: 'cost' }, models: ModelEntry[] = []): PortMessage & { type: 'cost' } {
+  const reply = (cost: CostDetail | null): PortMessage & { type: 'cost' } => ({ v: IPC_VERSION, type: 'cost', id: req.id, cost });
+  let s: { agent: string } | undefined;
+  try { s = db.prepare('SELECT agent FROM sessions WHERE id = ?').get(req.session) as { agent: string } | undefined; } catch { return reply(null); }
+  if (!s) return reply(null); // null means only "no such session"
+  // Review M2: an unreadable estimate row (malformed JSON, an integer node:sqlite cannot read, overflow) degrades the
+  // reply to what was read plus 'breakdown-unavailable'; it never nulls a known session.
+  const out: CostDetail = { amountUsd: null, basis: 'token_table', coverage: 'unavailable', reportedUsd: null, requests: 0, priced: 0, gaps: [], reasons: [],
+    groups: [], more: false, revisions: [] };
+  const failed = (): PortMessage & { type: 'cost' } => reply(parseCost({ ...out, groups: [], revisions: [], more: false,
+    reasons: [...out.reasons.filter((r) => r !== 'breakdown-unavailable').slice(0, MAX_COST_CODES - 1), 'breakdown-unavailable'] }) ?? null);
+  try {
+    const sel = sessionCost(db, req.session);
+    out.amountUsd = finiteUsd(sel.amountUsd);
+    out.basis = sel.basis;
+    out.coverage = out.amountUsd === null ? 'unavailable' : sel.coverage;
+    // review L4: the same row order sessionCost scans, so reportedUsd is the amount it selected
+    const reported = db.prepare(`SELECT amount_usd AS a FROM cost_estimates WHERE session_id = ? AND basis = 'agent_reported' AND amount_usd IS NOT NULL
+      ORDER BY id LIMIT 1`).get(req.session) as { a: number } | undefined;
+    out.reportedUsd = finiteUsd(reported?.a ?? null);
+    const counts = db.prepare(`SELECT COUNT(*) AS n, COUNT(amount_usd) AS p FROM cost_estimates WHERE session_id = ? AND basis <> 'agent_reported'`)
+      .get(req.session) as { n: number; p: number };
+    out.requests = safeCount(counts.n) ?? 0;
+    out.priced = Math.min(safeCount(counts.p) ?? 0, out.requests);
+    const codes = (sql: string) => (db.prepare(sql).all(req.session) as { c: unknown }[]).map((r) => r.c).filter((c): c is string => typeof c === 'string' && COST_CODE.test(c));
+    out.reasons = codes(`SELECT DISTINCT unavailable_reason AS c FROM cost_estimates WHERE session_id = ? AND basis <> 'agent_reported'
+      AND unavailable_reason IS NOT NULL LIMIT ${MAX_COST_CODES}`);
+    out.gaps = codes(`SELECT DISTINCT g.value AS c FROM cost_estimates e, json_each(e.coverage, '$.gaps') g WHERE e.session_id = ? AND e.basis <> 'agent_reported'
+      LIMIT ${MAX_COST_CODES}`);
+    const rows = db.prepare(COST_GROUPS_SQL).all(req.session) as Record<string, unknown>[];
+    const comps = s.agent === 'claude' ? CLAUDE_COMPS : OTHER_COMPS;
+    const raw: { model: string | null; rev: number | null; basis: CostGroup['basis'] }[] = [];
+    const groups: CostGroup[] = rows.slice(0, MAX_COST_GROUPS).map((r) => {
+      const model = typeof r.model === 'string' ? r.model : null;
+      const rev = safeCount(r.rev) || null;
+      const basis = r.basis === 'owner_fallback' ? 'owner_fallback' : 'token_table';
+      const requests = safeCount(r.requests) ?? 0;
+      raw.push({ model, rev, basis });
+      return {
+        model: display(displayName(models, model))!, revision: rev, basis, requests, priced: Math.min(safeCount(r.priced) ?? 0, requests),
+        from: Number.isSafeInteger(r.from) ? (r.from as number) : null, to: Number.isSafeInteger(r.to) ? (r.to as number) : null,
+        components: comps.map((k) => {
+          const n = safeCount(r[`${k}_n`]) ?? 0;
+          return { name: k, tokens: safeCount(r[`${k}_t`]), missing: safeCount(r[`${k}_m`]) ?? 0, unpriced: safeCount(r[`${k}_p`]) ?? 0,
+            rate: n === 1 ? finiteUsd(r[`${k}_r`]) : null, rateVaries: n > 1, usd: finiteUsd(typeof r[`${k}_u`] === 'number' ? (r[`${k}_u`] as number) / 1e6 : null) };
+        }),
+      };
+    });
+    const revisions: PriceRevisionInfo[] = [];
+    const getRev = db.prepare('SELECT id, source, revision, prices_as_of AS asOf, body FROM price_revisions WHERE id = ?');
+    for (const id of [...new Set(raw.map((g) => g.rev).filter((x): x is number => x !== null))].sort((a, b) => a - b)) {
+      const p = getRev.get(id) as { id: number; source: string; revision: string; asOf: string | null; body: string } | undefined;
+      if (!p || (p.source !== 'bundled' && p.source !== 'override')) continue;
+      const refs = new Set<string>();
+      let table: Partial<ModelList> | null = null;
+      try { table = (JSON.parse(p.body) as { table: ModelList }).table ?? null; } catch { /* references unavailable */ }
+      const listed = Array.isArray(table?.models) ? table.models : [], sources = Array.isArray(table?.sources) ? table.sources : [];
+      for (const g of raw.filter((x) => x.rev === id)) {
+        if (g.basis === 'owner_fallback') { refs.add('Owner-set fallback'); continue; }
+        const m = listed.find((x) => x?.id === g.model);
+        const src = m && sources.find((x) => x?.id === m.source);
+        if (src) refs.add(clip(`${String(src.id)}: ${String(src.url)} (retrieved ${String(src.retrieved)})`, REFERENCE_MAX));
+      }
+      revisions.push({ id, label: clip(String(p.revision), REFERENCE_MAX), pricesAsOf: p.asOf === null ? null : clip(String(p.asOf), 64), source: p.source,
+        references: [...refs].slice(0, MAX_REFERENCES) });
+    }
+    const full = parseCost({ ...out, groups, more: rows.length > MAX_COST_GROUPS, revisions });
+    return full ? reply(full) : failed();
+  } catch { return failed(); }
 }

@@ -3,7 +3,7 @@
 // are counted; an invalid reply rejects its request, so the caller can recover. A service restart brings a new port
 // and a new client; replies owed on the old one never arrive.
 import { accept, IPC_VERSION, parsePortMessage } from '../shared/ipc.ts';
-import type { AgentStatus, Banner, Cursor, FileItem, HistoryCursor, MCursor, ModelMarker, Page, PortMessage, PortRequest, SessionDetail, SessionRow, SubagentItem, TCursor,
+import type { AgentStatus, Banner, CostDetail, Cursor, FileItem, HistoryCursor, MCursor, ModelMarker, Page, PortMessage, PortRequest, SessionDetail, SessionRow, SubagentItem, TCursor,
   ToolItem, TranscriptAt, TranscriptItem, UsageRecord, UsageScope } from '../shared/ipc.ts';
 
 export interface LiveSet { rows: SessionRow[]; more: boolean }
@@ -19,7 +19,7 @@ export function parseVisible(x: unknown): boolean | null {
 }
 
 type Reply = Extract<PortMessage, { id: number }>;
-const REPLY_TYPES = new Set<string>(['page', 'liveSet', 'usage', 'usageHistory', 'session', 'transcript', 'slice', 'tools', 'subagents', 'files', 'markers']);
+const REPLY_TYPES = new Set<string>(['page', 'liveSet', 'usage', 'usageHistory', 'session', 'transcript', 'slice', 'tools', 'subagents', 'files', 'markers', 'cost']);
 
 export function createClient(port: PortLike, push: Pushes) {
   let nextId = 1;
@@ -89,6 +89,8 @@ export function createClient(port: PortLike, push: Pushes) {
       const m = await ask({ v: IPC_VERSION, type: 'markers', id: nextId++, session, cursor, limit }, 'markers');
       return { markers: m.markers, next: m.next };
     },
+    /** P4-T07a: the session's cost breakdown; null for an unknown session. */
+    async cost(session: number): Promise<CostDetail | null> { return (await ask({ v: IPC_VERSION, type: 'cost', id: nextId++, session }, 'cost')).cost; },
     /** P4-T02: live session deltas while the window is visible; paused while hidden (resync by cursor on show). */
     setLive(on: boolean): void { port.postMessage({ v: IPC_VERSION, type: 'live', on } satisfies PortRequest); },
     get dropped() { return receive.dropped; },

@@ -10,7 +10,7 @@ import { errorCode, installCrashPolicy } from '../shared/crash.ts';
 import { accept, IPC_VERSION, parsePortRequest, parseServiceCommand } from '../shared/ipc.ts';
 import type { Banner, PortMessage, ServiceEvent } from '../shared/ipc.ts';
 import { createLogger, loadInstallSecret, type Logger } from '../shared/log.ts';
-import { answer, answerFiles, answerLiveSet, answerMarkers, answerSession, answerSlice, answerSubagents, answerTools, answerTranscript, answerUsage, answerUsageHistory, coalesce, createHub, sessionsByKey, type LiveOf } from './api.ts';
+import { answer, answerCost, answerFiles, answerLiveSet, answerMarkers, answerSession, answerSlice, answerSubagents, answerTools, answerTranscript, answerUsage, answerUsageHistory, coalesce, createHub, sessionsByKey, type LiveOf } from './api.ts';
 import { boot, type Service } from './boot.ts';
 import type { Batch } from './store/writer.ts';
 import { traceableIds } from './trace-ids.ts';
@@ -70,6 +70,7 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
       case 'subagents': port.postMessage(answerSubagents(db, req, s.models(), live)); break;
       case 'files': port.postMessage(answerFiles(db, req)); break;
       case 'markers': port.postMessage(answerMarkers(db, req, s.models())); break;
+      case 'cost': port.postMessage(answerCost(db, req, s.models())); break;
       default: port.postMessage(db.isOpen ? answer(db, req, s.kinds(), s.models(), live) : { v: IPC_VERSION, type: 'page', id: req.id, rows: [], next: null });
     }
   });

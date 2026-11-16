@@ -293,3 +293,29 @@ test('tools, subagents, files and markers replies: bounds and fixed codes valida
     assert.equal(parsePortMessage(bad), null, JSON.stringify(bad));
   }
 });
+
+// XAIBO-PROD-417 (P4-T07a; PRD FR-48, US-18; design §6.3.2): the session cost breakdown request and reply.
+test('cost request and reply: bounded groups, fixed names, finite non-negative amounts, rates and counts', () => {
+  assert.deepEqual(parsePortRequest({ v: 1, type: 'cost', id: 3, session: 9 }), { v: 1, type: 'cost', id: 3, session: 9 });
+  for (const bad of [{ v: 1, type: 'cost', id: 3, session: 0 }, { v: 1, type: 'cost', id: 3 }]) assert.equal(parsePortRequest(bad), null);
+  const comp = { name: 'uncached_input', tokens: 10, missing: 0, unpriced: 0, rate: 4, rateVaries: false, usd: 0.00004 };
+  const group = { model: 'Claude Opus 5.5', revision: 2, basis: 'token_table', requests: 2, priced: 2, from: 1, to: 2,
+    components: [comp, { ...comp, name: 'cache_write_1h', tokens: null, missing: 2, unpriced: 1, rate: null, rateVaries: true, usd: null }] };
+  const rev = { id: 2, label: 'bundled-1', pricesAsOf: '2026-11-01', source: 'bundled', references: ['anthropic: https://example.com/p (retrieved 2026-11-01)'] };
+  const cost = { amountUsd: 0, basis: 'agent_reported', coverage: 'full', reportedUsd: 0, requests: 2, priced: 2, gaps: ['cache_write'],
+    reasons: ['unpriced-model'], groups: [group], more: false, revisions: [rev] };
+  const msg = { v: 1, type: 'cost', id: 3, cost };
+  assert.deepEqual(parsePortMessage(msg), msg);
+  assert.deepEqual(parsePortMessage({ v: 1, type: 'cost', id: 3, cost: null }), { v: 1, type: 'cost', id: 3, cost: null });
+  for (const bad of [
+    { ...cost, amountUsd: -1 }, { ...cost, amountUsd: Infinity }, { ...cost, basis: 'guess' }, { ...cost, coverage: 'most' },
+    { ...cost, reportedUsd: NaN }, { ...cost, requests: -1 }, { ...cost, gaps: ['<b>'] }, { ...cost, reasons: Array(17).fill('x') },
+    { ...cost, groups: Array(33).fill(group) }, { ...cost, more: 'no' }, { ...cost, revisions: [{ ...rev, source: 'web' }] },
+    { ...cost, revisions: [{ ...rev, references: Array(9).fill('r') }] }, { ...cost, groups: [{ ...group, basis: 'agent_reported' }] },
+    { ...cost, groups: [{ ...group, components: [{ ...comp, name: 'reasoning' }] }] }, { ...cost, groups: [{ ...group, components: [{ ...comp, rate: -4 }] }] },
+    { ...cost, groups: [{ ...group, components: [{ ...comp, tokens: 1.5 }] }] }, { ...cost, groups: [{ ...group, revision: 0 }] },
+    { ...cost, extra: 1 },
+    { ...cost, groups: [{ ...group, components: [comp, comp] }] }, { ...cost, groups: [{ ...group, priced: 3 }] }, // review L7
+    { ...cost, groups: [{ ...group, components: [{ ...comp, unpriced: -1 }] }] }, { ...cost, priced: 3 },
+  ]) assert.equal(parsePortMessage({ v: 1, type: 'cost', id: 3, cost: bad }), null, JSON.stringify(bad));
+});

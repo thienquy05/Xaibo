@@ -138,6 +138,28 @@ export interface ContextReading {
   source: (typeof CONTEXT_SOURCES)[number]; asOf: number | null; observedAt: number;
 }
 export interface SessionDetail { row: SessionRow; coverage: CoverageCode[]; context: ContextReading | null }
+
+/** XAIBO-PROD-417 (P4-T07a; design §6.3.2): the session's cost breakdown. Groups are the per-request estimates of one
+ *  (model, price revision, basis); a component's ~$ comes only from its applied rate over priced requests. */
+export const COST_COMPONENTS = ['uncached_input', 'cache_read', 'cache_write', 'cache_write_5m', 'cache_write_1h', 'output'] as const;
+export interface CostComponent {
+  name: (typeof COST_COMPONENTS)[number]; tokens: number | null; missing: number;
+  /** Review M1: requests with tokens of this component the engine did not price (unpriced request or this component a gap). */
+  unpriced: number; rate: number | null; rateVaries: boolean; usd: number | null;
+}
+export interface CostGroup {
+  model: string; revision: number | null; basis: 'token_table' | 'owner_fallback'; requests: number; priced: number;
+  from: number | null; to: number | null; components: CostComponent[];
+}
+export interface PriceRevisionInfo { id: number; label: string; pricesAsOf: string | null; source: 'bundled' | 'override'; references: string[] }
+export interface CostDetail {
+  amountUsd: number | null; basis: 'agent_reported' | 'token_table'; coverage: CostCoverage; reportedUsd: number | null;
+  requests: number; priced: number; gaps: string[]; reasons: string[]; groups: CostGroup[]; more: boolean; revisions: PriceRevisionInfo[];
+}
+export const MAX_COST_GROUPS = 32;
+export const MAX_COST_CODES = 16;
+export const MAX_REFERENCES = 8;
+export const REFERENCE_MAX = 512;
 export const ITEM_KINDS = ['prompt', 'response', 'tool-call', 'tool-result', 'compaction', 'interrupted'] as const;
 export type ItemKind = (typeof ITEM_KINDS)[number];
 export interface TCursor { seq: number; id: number }
@@ -179,8 +201,10 @@ export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Curs
   | { v: 1; type: 'transcript'; id: number; session: number; at: TranscriptAt; limit: number }
   | { v: 1; type: 'slice'; id: number; session: number; event: number; part: 'text' | 'reasoning'; offset: number }
   | IdPage<'tools'> | IdPage<'subagents'> | IdPage<'files'>
-  | { v: 1; type: 'markers'; id: number; session: number; cursor: MCursor | null; limit: number };
+  | { v: 1; type: 'markers'; id: number; session: number; cursor: MCursor | null; limit: number }
+  | { v: 1; type: 'cost'; id: number; session: number };
 export type PortMessage =
+  | { v: 1; type: 'cost'; id: number; cost: CostDetail | null }
   | { v: 1; type: 'session'; id: number; detail: SessionDetail | null }
   | { v: 1; type: 'transcript'; id: number; items: TranscriptItem[]; prev: TCursor | null; next: TCursor | null }
   | { v: 1; type: 'slice'; id: number; text: string; next: number | null }
@@ -333,6 +357,41 @@ export function parseContext(x: unknown): ContextReading | undefined {
   return { generation: x.generation, used: x.used, window: x.window, basis: x.basis, source: x.source, asOf: x.asOf, observedAt: x.observedAt as number };
 }
 
+// XAIBO-PROD-417: cost breakdown reply; exact key sets at every level, fixed names, finite non-negative numbers.
+const exactKeys = (x: unknown, keys: string[]): x is Msg => isObj(x) && Object.keys(x).length === keys.length && keys.every((k) => Object.hasOwn(x, k));
+const usd = (x: unknown): x is number | null => x === null || (typeof x === 'number' && Number.isFinite(x) && x >= 0);
+export const COST_CODE = /^[a-z0-9_-]{1,48}$/;
+const code = (x: unknown) => (typeof x === 'string' && COST_CODE.test(x) ? x : null);
+function parseComponent(x: unknown): CostComponent | null {
+  if (!exactKeys(x, ['name', 'tokens', 'missing', 'unpriced', 'rate', 'rateVaries', 'usd']) || !oneOf(COST_COMPONENTS, x.name)) return null;
+  if (!(x.tokens === null || count(x.tokens)) || !count(x.missing) || !count(x.unpriced) || !usd(x.rate) || typeof x.rateVaries !== 'boolean' || !usd(x.usd)) return null;
+  return { name: x.name, tokens: x.tokens, missing: x.missing, unpriced: x.unpriced, rate: x.rate, rateVaries: x.rateVaries, usd: x.usd };
+}
+function parseGroup(x: unknown): CostGroup | null {
+  if (!exactKeys(x, ['model', 'revision', 'basis', 'requests', 'priced', 'from', 'to', 'components'])) return null;
+  if (!text(x.model, MAX_TEXT) || !(x.revision === null || positive(x.revision)) || !(x.basis === 'token_table' || x.basis === 'owner_fallback')) return null;
+  const components = all(x.components, COST_COMPONENTS.length, parseComponent);
+  if (!components || !count(x.requests) || !count(x.priced) || x.priced > x.requests || !timeOrNull(x.from) || !timeOrNull(x.to)) return null;
+  if (new Set(components.map((c) => c.name)).size !== components.length) return null; // review L7
+  return { model: x.model, revision: x.revision, basis: x.basis, requests: x.requests, priced: x.priced, from: x.from, to: x.to, components };
+}
+function parseRevision(x: unknown): PriceRevisionInfo | null {
+  if (!exactKeys(x, ['id', 'label', 'pricesAsOf', 'source', 'references']) || !positive(x.id) || !text(x.label, REFERENCE_MAX)) return null;
+  if (!(x.pricesAsOf === null || text(x.pricesAsOf, 64)) || !(x.source === 'bundled' || x.source === 'override')) return null;
+  const references = all(x.references, MAX_REFERENCES, (r) => (text(r, REFERENCE_MAX) ? r : null));
+  return references ? { id: x.id, label: x.label, pricesAsOf: x.pricesAsOf, source: x.source, references } : null;
+}
+export function parseCost(x: unknown): CostDetail | undefined {
+  if (!exactKeys(x, ['amountUsd', 'basis', 'coverage', 'reportedUsd', 'requests', 'priced', 'gaps', 'reasons', 'groups', 'more', 'revisions'])) return undefined;
+  if (!usd(x.amountUsd) || !(x.basis === 'agent_reported' || x.basis === 'token_table') || !oneOf(COSTS, x.coverage) || !usd(x.reportedUsd)) return undefined;
+  if (!count(x.requests) || !count(x.priced) || x.priced > x.requests || typeof x.more !== 'boolean') return undefined;
+  const gaps = all(x.gaps, MAX_COST_CODES, code), reasons = all(x.reasons, MAX_COST_CODES, code);
+  const groups = all(x.groups, MAX_COST_GROUPS, parseGroup), revisions = all(x.revisions, MAX_COST_GROUPS, parseRevision);
+  if (!gaps || !reasons || !groups || !revisions) return undefined;
+  return { amountUsd: x.amountUsd, basis: x.basis, coverage: x.coverage, reportedUsd: x.reportedUsd, requests: x.requests, priced: x.priced,
+    gaps, reasons, groups, more: x.more, revisions };
+}
+
 const idOrNull = (x: unknown): x is number | null => x === null || positive(x);
 const label = (x: unknown): x is string => text(x, MAX_LABEL) && x !== '';
 const labelOrNull = (x: unknown): x is string | null => x === null || label(x);
@@ -373,6 +432,7 @@ export function parsePortRequest(x: unknown): PortRequest | null {
     return count(m.id) && positive(m.session) && cursor !== undefined && limitOk(m.limit) ? { v: 1, type: 'markers', id: m.id, session: m.session, cursor, limit: m.limit } : null;
   }
   if (m?.type === 'session') return count(m.id) && positive(m.session) ? { v: 1, type: 'session', id: m.id, session: m.session } : null;
+  if (m?.type === 'cost') return count(m.id) && positive(m.session) ? { v: 1, type: 'cost', id: m.id, session: m.session } : null;
   if (m?.type === 'transcript') {
     const at = parseAt(m.at);
     return count(m.id) && positive(m.session) && at && limitOk(m.limit) ? { v: 1, type: 'transcript', id: m.id, session: m.session, at, limit: m.limit } : null;
@@ -401,6 +461,10 @@ export function parsePortMessage(x: unknown): PortMessage | null {
   if (m.type === 'session') {
     const detail = parseDetail(m.detail);
     return count(m.id) && detail !== undefined ? { v: 1, type: 'session', id: m.id, detail } : null;
+  }
+  if (m.type === 'cost') {
+    const cost = m.cost === null ? null : parseCost(m.cost);
+    return count(m.id) && cost !== undefined ? { v: 1, type: 'cost', id: m.id, cost } : null;
   }
   if (m.type === 'transcript') {
     const items = all(m.items, MAX_ITEMS, parseItem);
