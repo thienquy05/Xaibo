@@ -160,7 +160,8 @@ export const MAX_COST_GROUPS = 32;
 export const MAX_COST_CODES = 16;
 export const MAX_REFERENCES = 8;
 export const REFERENCE_MAX = 512;
-export const ITEM_KINDS = ['prompt', 'response', 'tool-call', 'tool-result', 'compaction', 'interrupted'] as const;
+/** 'large' (P4-T09a): a record above the parse cap; its length is UTF-8 bytes and its slice cursor is opaque. */
+export const ITEM_KINDS = ['prompt', 'response', 'tool-call', 'tool-result', 'compaction', 'interrupted', 'large'] as const;
 export type ItemKind = (typeof ITEM_KINDS)[number];
 export interface TCursor { seq: number; id: number }
 export type TranscriptAt = 'first' | 'latest' | { after: TCursor } | { before: TCursor };

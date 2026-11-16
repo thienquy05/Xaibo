@@ -35,13 +35,19 @@ export const argFor = (callId: string | null, touches: readonly FileItem[]): str
 /** A section count; `+` when more pages exist than are loaded (never an invented total). */
 export const countText = (n: number, more: boolean): string => `${n}${more ? '+' : ''}`;
 const two = (n: number) => String(n).padStart(2, '0');
-/** Local HH:mm (design §7.1 clock time); unknown is said, never blank. */
 /** P4-T08b: the machine-readable form of a known instant (a <time> dateTime); null when unknown or out of Date range. */
 export function isoTime(ms: number | null): string | null {
   const d = new Date(ms ?? Number.NaN);
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
+/** P4-T09a: a large record's UTF-8 size, decimal units, one decimal (e.g. "52.4 MB", "300.0 KB"). */
+export function sizeText(bytes: number): string {
+  const kb = (bytes / 1e3).toFixed(1);
+  return Number(kb) >= 1000 ? `${(bytes / 1e6).toFixed(1)} MB` : `${kb} KB`; // review L6: 999,999 B reads 1.0 MB
+}
+
+/** Local HH:mm (design §7.1 clock time); unknown is said, never blank. */
 export function clock(ms: number | null): string {
   if (ms === null) return 'Time unknown';
   const d = new Date(ms);

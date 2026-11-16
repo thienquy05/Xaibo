@@ -6,7 +6,7 @@ import type { FileItem, ModelMarker, SubagentItem, ToolItem, TranscriptItem } fr
 import { durationText } from '../overview/queue.ts';
 
 export type Entry =
-  | { key: string; kind: 'prompt' | 'response' | 'tool-result' | 'compaction' | 'interrupted'; item: TranscriptItem }
+  | { key: string; kind: 'prompt' | 'response' | 'tool-result' | 'compaction' | 'interrupted' | 'large'; item: TranscriptItem }
   | { key: string; kind: 'tool'; item: TranscriptItem | null; tool: ToolItem | null }
   | { key: string; kind: 'model'; marker: ModelMarker }
   | { key: string; kind: 'subagent-start' | 'subagent-end'; subagent: SubagentItem };

@@ -200,9 +200,44 @@ export const SCAN_MAX = 1000;
 export const RAW_BUDGET = 32 * 1024 * 1024; // characters of stored record text read per transcript request
 /** Rows the last transcript request loaded (tests check the budget bounds loading). */
 export const transcriptStats = { rowsRead: 0 };
-const VISIBLE = `e.session_id = ? AND e.source IN ('transcript', 'rollout') AND e.subagent_native_id IS NULL AND e.revision_status = 'current' AND e.injected = 0`;
-const TR_COLS = 'e.id, e.kind, e.role, e.content, e.raw, e.source_seq AS seq, e.source_ts AS ts';
-interface TrRow { id: number; kind: string; role: string | null; content: string | null; raw: string | null; seq: number; ts: number | null }
+// P4-T09a: chunk rows of an oversized line (EC-15) are storage, not records: never paged, counted or sliced on their own.
+const VISIBLE = `e.session_id = ? AND e.source IN ('transcript', 'rollout') AND e.subagent_native_id IS NULL AND e.revision_status = 'current' AND e.injected = 0
+  AND e.kind NOT IN ('content-chunk', 'raw-chunk')`;
+const TR_COLS = 'e.id, e.kind, e.role, e.content, e.raw, e.source_seq AS seq, e.source_ts AS ts, e.ingest_id AS ingest';
+interface TrRow { id: number; kind: string; role: string | null; content: string | null; raw: string | null; seq: number; ts: number | null; ingest: string | null }
+
+// P4-T09a (EC-56, PRD §5.7): an oversized Claude line is a head row (raw '', ingest id `x:<hash>`) plus content chunks
+// `<key>#c000001…` of at most 64 KiB UTF-8 each, cut on code points. Sizes come from octet_length, which reads no text,
+// so paging and finding a cursor read no chunk; a slice reads only the chunk holding its byte cursor. Chunks are never
+// revised (only agy revises), so revision_status, stored after the text, is not read for them. Every oversized line is
+// one 'large' item whatever its role (review M1): the head keeps only small fields and the chunks join every readable
+// field, so calling it a prompt, response or tool call would be a guess.
+const largeKey = (bare: boolean, ingest: string | null): string | null => (bare && typeof ingest === 'string' && ingest.startsWith('x:') ? ingest : null);
+const CHUNKS = "FROM events WHERE session_id = ? AND source = 'transcript' AND native_id > ? AND native_id < ? AND kind = 'content-chunk'";
+const chunkSizes = (db: DatabaseSync, session: number, key: string) =>
+  db.prepare(`SELECT id, octet_length(content) AS n ${CHUNKS} ORDER BY native_id`).all(session, `${key}#c`, `${key}#d`) as { id: number; n: number | null }[];
+const largeBytes = (db: DatabaseSync, session: number, key: string) =>
+  (db.prepare(`SELECT TOTAL(octet_length(content)) AS n ${CHUNKS}`).get(session, `${key}#c`, `${key}#d`) as { n: number }).n;
+
+/** At most SLICE_BYTES of a large record's text from a UTF-8 byte cursor, never past its chunk; null for a cursor
+ *  inside a code point, at or past the end. ponytail: re-reads the chunk size list per slice (an index walk, ~800 rows
+ *  for 50 MB); cache it per event if far larger lines page slowly. */
+function largeSlice(db: DatabaseSync, session: number, key: string, offset: number): { text: string; next: number | null } | null {
+  if (!Number.isSafeInteger(offset) || offset < 0) return null;
+  const sizes = chunkSizes(db, session, key);
+  const total = sizes.reduce((t, c) => t + (c.n ?? 0), 0);
+  let at = 0;
+  const hit = sizes.find((c) => { if (offset < at + (c.n ?? 0)) return true; at += c.n ?? 0; return false; });
+  if (!hit) return null;
+  const text = (db.prepare('SELECT content FROM events WHERE id = ?').get(hit.id) as { content: string | null } | undefined)?.content ?? '';
+  const buf = Buffer.from(text, 'utf8');
+  const start = offset - at;
+  if (start >= buf.length || (buf[start]! & 0xc0) === 0x80) return null;
+  let end = Math.min(buf.length, start + SLICE_BYTES);
+  while (end < buf.length && (buf[end]! & 0xc0) === 0x80) end--; // never cut inside a code point
+  const next = offset + (end - start);
+  return { text: buf.toString('utf8', start, end), next: next < total ? next : null };
+}
 const stored = (agent: string, r: Pick<TrRow, 'kind' | 'role' | 'content' | 'raw'>): StoredRecord => ({ agent, kind: r.kind, role: r.role, injected: false, content: r.content, raw: r.raw });
 
 export function answerSession(db: DatabaseSync, req: PortRequest & { type: 'session' }, kinds: SessionKind[] = [], models: ModelEntry[] = [], live?: LiveOf): PortMessage & { type: 'session' } {
@@ -258,11 +293,16 @@ export function answerTranscript(db: DatabaseSync, req: PortRequest & { type: 't
         rows++;
         transcriptStats.rowsRead++;
         read += (row.raw?.length ?? 0) + (row.content?.length ?? 0);
-        const it = classifyItem(stored(s.agent, row));
+        const large = largeKey(!row.raw, row.ingest);
+        const bytes = large !== null ? largeBytes(db, req.session, large) : null;
+        // Review M2: a line with no readable text is still listed (length 0). Review M3: its size counts toward
+        // RAW_BUDGET as if read, so chunk lookups per page stay bounded too.
+        if (bytes !== null) read += bytes;
+        const it = bytes !== null ? { kind: 'large' as const, text: null, reasoning: null } : classifyItem(stored(s.agent, row));
         const message = it !== null && (it.kind === 'prompt' || it.kind === 'response');
         consumed.push({ id: row.id, seq: row.seq, ts: Number.isFinite(row.ts) ? row.ts : null, item: it && {
           kind: it.kind, preview: message && it.text !== null ? utf8Slice(it.text, 0, PREVIEW_BYTES)!.text : null,
-          length: it.text?.length ?? 0, reasoning: it.reasoning !== null,
+          length: bytes ?? it.text?.length ?? 0, reasoning: it.reasoning !== null, // a large record's length is UTF-8 bytes
         } });
         if (it) found++;
         if (full()) break;
@@ -297,7 +337,15 @@ const sliceCache = new WeakMap<DatabaseSync, { key: string; text: string | null 
 export function answerSlice(db: DatabaseSync, req: PortRequest & { type: 'slice' }): PortMessage & { type: 'slice' } {
   const empty = (): PortMessage & { type: 'slice' } => ({ v: IPC_VERSION, type: 'slice', id: req.id, text: '', next: null });
   try {
-    if (!db.prepare(`SELECT 1 FROM events e WHERE e.id = ? AND ${VISIBLE}`).get(req.event, req.session)) return empty();
+    // One visibility check that also tells a large head apart; octet_length reads no raw text (review L5).
+    const head = db.prepare(`SELECT coalesce(octet_length(e.raw), 0) = 0 AS bare, e.ingest_id AS ingest FROM events e WHERE e.id = ? AND ${VISIBLE}`)
+      .get(req.event, req.session) as { bare: number; ingest: string | null } | undefined;
+    if (!head) return empty();
+    const large = largeKey(head.bare === 1, head.ingest);
+    if (large !== null) {
+      const cut = req.part === 'text' ? largeSlice(db, req.session, large, req.offset) : null;
+      return cut ? { v: IPC_VERSION, type: 'slice', id: req.id, text: cut.text, next: cut.next } : empty();
+    }
     const key = `${req.session}:${req.event}:${req.part}`;
     let hit = sliceCache.get(db);
     if (hit?.key !== key) {

@@ -7,7 +7,7 @@ import { VirtualList } from '../components/VirtualList.tsx';
 import { Icon } from '../status/StatusBadge.tsx';
 import { visible } from '../text.ts';
 import { approvalText, durationLabel, FILE_KIND_TEXT, groupFiles, lifecycleText, resultText, toolTitle, type Entry } from './timeline.ts';
-import { argFor, clock, isoTime, toolMeta, toolTone } from './view.ts';
+import { argFor, clock, isoTime, sizeText, toolMeta, toolTone } from './view.ts';
 
 /** Fetches one bounded slice of an item's text or reasoning. */
 export type SliceFn = (event: number, part: 'text' | 'reasoning', offset: number) => Promise<{ text: string; next: number | null }>;
@@ -124,6 +124,9 @@ function ConversationEntry({ e, touches, slice }: { e: Entry; touches: FileItem[
     case 'tool':
     case 'tool-result':
       return <div className="x-steps"><ToolStep tool={e.kind === 'tool' ? e.tool : null} item={e.item} touches={touches} slice={slice} /></div>;
+    case 'large': // P4-T09a: a record above the parse cap; its text loads in bounded slices only when expanded
+      return <div className="x-steps"><Step lead={<Icon id="chevron" />} name="Large record" meta={<><span>{e.item.length > 0 ? sizeText(e.item.length) : 'No readable text'}</span><span>{clock(e.item.ts)}</span></>}>
+        {() => <Slices event={e.item.event} part="text" slice={slice} />}</Step></div>;
     case 'compaction': return <Marker icon="settle">Compaction · {clock(e.item.ts)}</Marker>;
     case 'interrupted': return <Marker icon="error">Interrupted · {clock(e.item.ts)}</Marker>;
     case 'model': return <Marker icon="information">Model {visible(e.marker.model)} · <When ms={e.marker.ts} /></Marker>;
@@ -157,6 +160,7 @@ function ledgerOf(e: Entry): { icon: Parameters<typeof Icon>[0]['id']; tone?: st
         detail: t ? [approvalText(t.approval), durationLabel(t.durationMs), resultText(t), t.sources.map(visible).join(', ')].join(' · ') : undefined, ts: e.item?.ts ?? t?.ts ?? null };
     }
     case 'tool-result': return { icon: 'check', title: 'Tool result', ts: e.item.ts };
+    case 'large': return { icon: 'session', title: 'Large record', detail: e.item.length > 0 ? sizeText(e.item.length) : 'No readable text', ts: e.item.ts };
     case 'compaction': return { icon: 'settle', title: 'Compaction', ts: e.item.ts };
     case 'interrupted': return { icon: 'error', title: 'Interrupted', ts: e.item.ts };
     case 'model': return { icon: 'information', title: `Model ${visible(e.marker.model)}`, ts: e.marker.ts };
