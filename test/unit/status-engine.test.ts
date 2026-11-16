@@ -8,16 +8,16 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openStore } from '../../src/service/store/db.ts';
-import { createEngine, type Observation } from '../../src/service/status/engine.ts';
+import { createEngine, type EngineOptions, type Observation } from '../../src/service/status/engine.ts';
 import { fileObs, hookObs, SID, T0 } from '../helpers/status.ts';
 
-async function harness() {
+async function harness(extra: Partial<EngineOptions> = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'xaibo-status-'));
   const { db } = await openStore({ file: join(dir, 'xaibo.db'), backupDir: join(dir, 'b') });
   let now = T0;
   const logs: string[] = [];
   const waits: string[] = [];
-  const make = () => createEngine({ db, now: () => now, settleMs: 4000, log: (l) => logs.push(l), onWait: (...a) => waits.push(a.join('/')) });
+  const make = () => createEngine({ db, now: () => now, settleMs: 4000, log: (l) => logs.push(l), onWait: (...a) => waits.push(a.join('/')), ...extra });
   let e = make();
   const at = (ms: number) => { now = T0 + ms; e.advance(now); };
   const feed = (o: Observation, ms: number) => { at(ms); e.ingest(o); return e.status('claude', 'p1', SID); };
@@ -322,4 +322,65 @@ test('since: the oldest pending request, cleared on resolution; the error time; 
   f.feed(fileObs('claude', { type: 'assistant', message: { id: 't1', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }], stop_reason: 'tool_use' } }, { at: 0 }), 0);
   f.at(9000);
   assert.deepEqual([f.st()!.confidence, f.st()!.since], ['heuristic', T0 + 5000], 'when the 5 s rule fired');
+});
+
+// XAIBO-PROD-425 (P4-T10b, PRD PERF bounded live state): sessions load from the store on demand into a bounded cache
+// and leave it only once everything they hold is stored.
+const S = (n: number) => `00000000-0000-4000-8000-00000a10b00${n}`;
+const on = (sid: string, event: string, at: number, p: Record<string, unknown> = {}, id?: string) =>
+  hookObs('claude', { hook_event_name: event, ...p }, { at, session: sid, ...(id ? { id } : {}) });
+
+test('P4-T10b: at most maxSessions stay cached; an evicted session reloads with the same status and dedup, and never notifies', async () => {
+  const h = await harness({ maxSessions: 2 });
+  const st = (sid: string) => h.e().status('claude', 'p1', sid);
+  const pre = on(S(1), 'PreToolUse', 10, { tool_use_id: 't1', tool_name: 'Write' });
+  h.at(0); h.e().ingest(on(S(1), 'UserPromptSubmit', 0, { prompt: 'p' }));
+  h.at(10); h.e().ingest(pre);
+  h.at(20); h.e().ingest(on(S(1), 'PermissionRequest', 20, { tool_name: 'Write' }));
+  const before = st(S(1));
+  assert.equal(h.waits.length, 1);
+  for (const n of [2, 3, 4]) { h.at(30 + n); h.e().ingest(on(S(n), 'UserPromptSubmit', 30 + n, { prompt: 'p' })); }
+  assert.equal(h.e().cached(), 2, 'the cap holds');
+  assert.deepEqual(st(S(1)), before, 'reloaded from the store');
+  assert.equal(h.e().cached(), 2, 'the reload evicted another session');
+  h.e().ingest(pre);
+  assert.equal(st(S(1))!.toolCalls, 1, 'a redelivery after a reload is still a duplicate');
+  assert.equal(h.waits.length, 1, 'a reload never notifies');
+  assert.equal(st(S(2))!.lifecycle, 'busy', 'every evicted session reloads');
+});
+
+test('P4-T10b: a session holding unstored evidence is never evicted; a restarted engine loads no session until one is read', async () => {
+  const h = await harness({ maxSessions: 1 });
+  h.db.exec(`CREATE TRIGGER t10b BEFORE INSERT ON status_evidence WHEN NEW.native_session_id = '${S(9)}' BEGIN SELECT RAISE(ABORT, 'full'); END`);
+  h.at(0); h.e().ingest(on(S(9), 'UserPromptSubmit', 0, { prompt: 'p' }));
+  assert.ok(h.logs.includes('status_store_failed'));
+  // the same delivery id in another profile is ignored by the store's unique key, so that session holds unstored evidence too
+  const a = on(S(1), 'SessionStart', 10, {}, 'same-delivery');
+  const b = on(S(1), 'SessionStart', 10, {}, 'same-delivery');
+  b.envelope.profile_key = 'p2';
+  h.at(10); h.e().ingest(a); h.e().ingest(b);
+  for (const n of [2, 3]) { h.at(20 + n); h.e().ingest(on(S(n), 'SessionStart', 20 + n)); }
+  assert.equal(h.e().status('claude', 'p1', S(9))?.lifecycle, 'busy', 'a failed insert keeps the session in memory');
+  assert.equal(h.e().status('claude', 'p2', S(1))?.lifecycle, 'idle', 'an ignored insert keeps the session in memory');
+  h.db.exec('DROP TRIGGER t10b');
+  h.restart();
+  assert.equal(h.e().cached(), 0, 'start loads no session');
+  assert.equal(h.e().status('claude', 'p1', S(3))?.lifecycle, 'idle');
+  assert.equal(h.e().cached(), 1);
+});
+
+// Review M1: boot reads every time-bound session each tick, so more of them than the cap would reload on every tick.
+test('P4-T10b review M1: a session last read busy or heuristic stays cached above the cap; it can leave once settled', async () => {
+  const h = await harness({ maxSessions: 1 });
+  const st = (sid: string) => h.e().status('claude', 'p1', sid);
+  h.at(0); h.e().ingest(on(S(1), 'UserPromptSubmit', 0, { prompt: 'p' })); st(S(1));
+  h.at(10); h.e().ingest(on(S(2), 'UserPromptSubmit', 10, { prompt: 'p' })); st(S(2));
+  h.at(20); h.e().ingest(on(S(3), 'SessionStart', 20)); st(S(3));
+  assert.equal(h.e().cached(), 2, 'both busy sessions stay; the idle one leaves');
+  h.at(30); h.e().ingest(on(S(1), 'Stop', 30));
+  assert.equal(st(S(1))!.reason, 'Finishing…');
+  h.at(5000);
+  assert.equal(st(S(1))!.lifecycle, 'idle');
+  assert.equal(st(S(2))!.lifecycle, 'busy');
+  assert.equal(h.e().cached(), 1, 'the settled session left');
 });

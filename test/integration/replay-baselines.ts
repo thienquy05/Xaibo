@@ -35,6 +35,7 @@ function base(on: (o: Observation, s: (id: string) => S, now: number) => void, n
         toolCalls: 0, turns: 0, usage: null, model: null, effort: null } : null;
     },
     close: () => {},
+    cached: () => sessions.size,
   };
 }
 

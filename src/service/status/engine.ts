@@ -53,6 +53,8 @@ export interface StatusEngine {
   resume(now: number): void;
   status(agent: string, profile: string, sessionId: string): SessionStatus | null;
   close(): void;
+  /** Sessions held in memory (P4-T10b; for P4-T10c metrics). */
+  cached(): number;
 }
 export type WaitState = 'waiting-for-permission' | 'needs-input';
 export interface EngineOptions {
@@ -65,6 +67,8 @@ export interface EngineOptions {
   onWait?: (agent: string, profile: string, sessionId: string, state: WaitState) => void;
   /** Agent catalog for hook mappings (P3-T13a); the bundled catalog by default. */
   catalog?: Catalog;
+  /** P4-T10b: sessions kept in memory (least recently used leave first); MAX_SESSIONS by default. */
+  maxSessions?: number;
 }
 
 /** Normalized evidence, the output of an agent's status map. Ids are native ids; nothing here is content. */
@@ -106,6 +110,9 @@ function statusMaps(catalog: Catalog): Map<string, StatusMap> {
 const HEURISTIC_MS = 5000;
 /** P3-T11: older requests do not notify; above the service's 30 s restart backoff cap (D-P3-10). */
 const NOTIFY_MAX_AGE_MS = 60_000;
+// ponytail: a fixed cap, well above the 50 concurrent sessions of EC-57; derive it from memory metrics (P4-T10c) if a
+// reload loop shows up there.
+const MAX_SESSIONS = 500;
 /** Evidence kept per observation: bounds what one adversarial line or payload can add. */
 const MAX_EVS = 256;
 /** Evidence a file record may never produce: only a hook or report confirms these (§6.1-§6.3). */
@@ -279,7 +286,9 @@ function usageOf(f: Fold): Record<string, number> | null {
 
 /** top: per producer key the highest producer_seq and the latest ordering time, so a report newest in both skips the
  *  neighbour search (review L1). */
-interface Sess { agent: string; entries: Entry[]; dedup: Set<string>; fold: Fold; top: Map<string, { seq: number; ts: number }> }
+interface Sess { agent: string; entries: Entry[]; dedup: Set<string>; fold: Fold; top: Map<string, { seq: number; ts: number }>; unstored?: true;
+  /** Last read busy or heuristic: its status changes with time alone, so boot reads it every tick (review M1). */
+  timed?: boolean }
 const raise = (s: Sess, x: Entry) => {
   const t = s.top.get(x.pid!);
   s.top.set(x.pid!, { seq: Math.max(t?.seq ?? -Infinity, x.pseq!), ts: Math.max(t?.ts ?? -Infinity, x.ts) });
@@ -289,36 +298,54 @@ const after = (a: Entry, b: Entry) => a.ts - b.ts || a.rank - b.rank || a.seq - 
 export function createEngine(o: EngineOptions): StatusEngine {
   const put = o.db.prepare(`INSERT OR IGNORE INTO status_evidence (agent, profile_id, native_session_id, dedup, ts, rank, seq, confidence, ev,
     producer_id, producer_seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-  // ponytail: every session's evidence stays in memory and is reloaded at start, and an out-of-order delivery refolds the
-  // session (O(n)). Feeders must stamp file lines with their read time (in order, as the tailer does), or a backfill behind
-  // existing hook entries costs O(n²). Compact settled sessions to a snapshot and fold from the insertion point when
-  // retention, session counts or a hostile local hook client make that matter.
+  // ponytail: a cached session holds all its evidence, and an out-of-order delivery refolds it (O(n)). Feeders must stamp
+  // file lines with their read time (in order, as the tailer does), or a backfill behind existing hook entries costs
+  // O(n²). Compact settled sessions to a snapshot and fold from the insertion point when retention, session size or a
+  // hostile local hook client make that matter.
   const rules: RuleSettings = { ...RULE_DEFAULTS, ...o.rules };
   const maps = statusMaps(o.catalog ?? loadCatalog());
+  // P4-T10b: sessions load from the store on first use into an LRU of at most `max` (Map order is use order). Status is a
+  // pure function of the stored evidence, so an evicted session reloads to the same fold, dedup and producer tops, and a
+  // load (through step, not ingest) never notifies. A session leaves only once all it holds is stored (`unstored`).
+  const max = o.maxSessions ?? MAX_SESSIONS;
   const sessions = new Map<string, Sess>();
   const key = (agent: string, profile: string, sid: string) => `${agent}\0${profile}\0${sid}`;
-  const get = (agent: string, profile: string, sid: string) => {
-    let s = sessions.get(key(agent, profile, sid));
-    if (!s) sessions.set(key(agent, profile, sid), (s = { agent, entries: [], dedup: new Set(), fold: fresh(), top: new Map() }));
+  // Rows stored before 011 have profile '' (a session no profile reads) and no producer: harmless derived data.
+  const rowsOf = o.db.prepare(`SELECT dedup, ts, rank, seq, confidence, ev, producer_id AS pid, producer_seq AS pseq FROM status_evidence
+    WHERE agent = ? AND native_session_id = ? AND profile_id = ? ORDER BY ts, rank, seq, coalesce(producer_seq, 0), id`);
+  const find = (agent: string, profile: string, sid: string): Sess | undefined => {
+    const k = key(agent, profile, sid);
+    let s = sessions.get(k);
+    if (s) { sessions.delete(k); sessions.set(k, s); return s; }
+    const rows = rowsOf.all(agent, sid, profile) as { dedup: string; ts: number; rank: number; seq: number; confidence: 'confirmed' | 'inferred'; ev: string;
+      pid: string | null; pseq: number | null }[];
+    if (!rows.length) return undefined;
+    s = { agent, entries: [], dedup: new Set(), fold: fresh(), top: new Map() };
+    for (const r of rows) {
+      s.dedup.add(r.dedup);
+      try {
+        const evs: unknown = JSON.parse(r.ev);
+        if (!Array.isArray(evs) || !evs.every((e) => e && typeof e === 'object' && typeof e.k === 'string')) throw new Error('shape');
+        const x: Entry = { ts: r.ts, rank: r.rank, seq: r.seq, conf: r.confidence, evs: evs as Ev[], ...(r.pid !== null && r.pseq !== null ? { pid: r.pid, pseq: r.pseq } : {}) };
+        step(s.fold, x, rules); s.entries.push(x);
+        if (x.pid !== undefined) raise(s, x);
+      } catch { o.log('status_row_skipped'); } // one corrupt row never stops a load
+    }
+    sessions.set(k, s);
     return s;
   };
-  let seq = 0;
-  // Rows stored before 011 have profile '' (a session no profile reads) and no producer: harmless derived data.
-  for (const r of o.db.prepare(`SELECT agent, profile_id AS profile, native_session_id AS sid, dedup, ts, rank, seq, confidence, ev, producer_id AS pid,
-    producer_seq AS pseq FROM status_evidence ORDER BY ts, rank, seq, coalesce(producer_seq, 0), id`).all() as
-    { agent: string; profile: string; sid: string; dedup: string; ts: number; rank: number; seq: number; confidence: 'confirmed' | 'inferred'; ev: string;
-      pid: string | null; pseq: number | null }[]) {
-    const s = get(r.agent, r.profile, r.sid);
-    s.dedup.add(r.dedup);
-    try {
-      const evs: unknown = JSON.parse(r.ev);
-      if (!Array.isArray(evs) || !evs.every((e) => e && typeof e === 'object' && typeof e.k === 'string')) throw new Error('shape');
-      const x: Entry = { ts: r.ts, rank: r.rank, seq: r.seq, conf: r.confidence, evs: evs as Ev[], ...(r.pid !== null && r.pseq !== null ? { pid: r.pid, pseq: r.pseq } : {}) };
-      step(s.fold, x, rules); s.entries.push(x);
-      if (x.pid !== undefined) raise(s, x);
-    } catch { o.log('status_row_skipped'); } // one corrupt row never stops startup
-    seq = Math.max(seq, r.rank === 0 ? r.seq : 0);
-  }
+  // Runs after each public call, never inside one, so the session being worked on is never dropped mid-call.
+  // Time-bound sessions stay too: boot reads each of them every tick, so more than the cap would reload them all per tick.
+  // ponytail: sessions holding unstored evidence (a failing disk) or busy forever (silence never ends a session) are kept
+  // even above the cap, and each trim walks them; spill them or retry the insert if long disk-full spells or a hostile
+  // hook client starting many sessions make that matter (security review M1, L1).
+  const trim = () => {
+    for (const [k, s] of sessions) {
+      if (sessions.size <= max) break;
+      if (!s.unstored && !s.timed) sessions.delete(k);
+    }
+  };
+  let seq = Number((o.db.prepare('SELECT coalesce(max(seq), 0) AS seq FROM status_evidence WHERE rank = 0').get() as { seq: number }).seq);
   let suspendedAt: number | null = null;
   // ponytail: suspended intervals live in memory, so a restart forgets earlier sleeps; persist them if R1/R5 must hold
   // across a restart that follows a sleep inside one long call (P3-T12 owns the sleep/wake source).
@@ -335,14 +362,16 @@ export function createEngine(o: EngineOptions): StatusEngine {
     if (!sid || !map) return; // agents without a status map are not tracked
     // A file is keyed by a hash of its path, so no path is stored (security review).
     const dedup = hookish ? `d:${obs.envelope.delivery_id}` : `f:${createHash('sha256').update(obs.file).digest('hex').slice(0, 16)}:${obs.offset}`;
-    if (sessions.get(key(agent, profile, sid))?.dedup.has(dedup)) return;
+    const known = find(agent, profile, sid);
+    if (known?.dedup.has(dedup)) return;
     let evs: Ev[];
     try {
       const mapped = map(obs);
       if (mapped === null) { o.log('status_unmapped'); return; } // reduced coverage: no invented state (§6.8)
       evs = mapped.slice(0, MAX_EVS);
     } catch { o.log('status_map_failed'); return; } // no session, nothing stored
-    const s = get(agent, profile, sid);
+    const s: Sess = known ?? { agent, entries: [], dedup: new Set(), fold: fresh(), top: new Map() };
+    if (!known) sessions.set(key(agent, profile, sid), s);
     s.dedup.add(dedup);
     const x: Entry = hookish
       ? { ts: obs.envelope.received_ts, rank: 0, seq: ++seq, conf: 'confirmed', evs }
@@ -372,7 +401,10 @@ export function createEngine(o: EngineOptions): StatusEngine {
       }
     }
     const received = hookish ? obs.envelope.received_ts : x.ts; // the receipt time, before any reordering (G3f-2)
-    try { put.run(agent, profile, sid, dedup, x.ts, x.rank, x.seq, x.conf, JSON.stringify(x.evs), x.pid ?? null, x.pseq ?? null); } catch { o.log('status_store_failed'); }
+    // An ignored insert (the store's unique key spans profiles) leaves the entry in memory only, like a failed one.
+    try {
+      if (put.run(agent, profile, sid, dedup, x.ts, x.rank, x.seq, x.conf, JSON.stringify(x.evs), x.pid ?? null, x.pseq ?? null).changes === 0) s.unstored = true;
+    } catch { s.unstored = true; o.log('status_store_failed'); }
     const pending = new Set(s.fold.requests.keys());
     let i = s.entries.length;
     while (i > 0 && after(s.entries[i - 1]!, x) > 0) i--;
@@ -391,10 +423,11 @@ export function createEngine(o: EngineOptions): StatusEngine {
   };
 
   const status = (agent: string, profile: string, sid: string): SessionStatus | null => {
-    const s = sessions.get(key(agent, profile, sid));
+    const s = find(agent, profile, sid);
     if (!s) return null;
     const f = s.fold, now = o.now();
     const l = life(f, agent, now, o.settleMs);
+    s.timed = l.lifecycle === 'busy' || l.confidence === 'heuristic'; // boot's timeBound
     const findings = [...f.pat.found.keys()];
     // R1: busy in a turn with no known wait (call, request, subagent, background work) and no evidence for too long.
     if (l.lifecycle === 'busy' && l.reason === null && !f.inflight.size && !f.children.size
@@ -414,7 +447,9 @@ export function createEngine(o: EngineOptions): StatusEngine {
   };
 
   return {
-    ingest, status,
+    ingest: (obs) => { try { ingest(obs); } finally { trim(); } },
+    status: (agent, profile, sid) => { try { return status(agent, profile, sid); } finally { trim(); } },
+    cached: () => sessions.size,
     advance: () => {},
     // A second suspend while asleep is the same sleep: health and the R1/R5 exclusion keep its first start (P3-T12 review).
     suspend: (now) => { if (sleeps.at(-1)?.[1] !== Infinity) { suspendedAt = now; sleeps.push([now, Infinity]); } },
