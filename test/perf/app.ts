@@ -86,11 +86,7 @@ export function query<T>(dataDir: string, sql: string, ...params: (string | numb
 
 export const fileBytes = (f: string) => (existsSync(f) ? statSync(f).size : 0);
 
-export function stats(xs: number[]) {
-  const s = [...xs].sort((a, b) => a - b);
-  const q = (p: number) => s[Math.min(s.length - 1, Math.max(0, Math.ceil(p * s.length) - 1))] ?? Number.NaN;
-  return { n: s.length, p50: q(0.5), p95: q(0.95), max: s.at(-1) ?? Number.NaN, mean: s.reduce((a, b) => a + b, 0) / (s.length || 1) };
-}
+export { stats } from './stats.ts'; // P4-T11: in its own module, so the pure t2 analysis loads without Playwright
 
 export async function environment(app: ElectronApplication) {
   const v = await app.evaluate(() => ({ electron: process.versions.electron, chrome: process.versions.chrome, node: process.versions.node }));

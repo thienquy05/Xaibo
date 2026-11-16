@@ -128,7 +128,11 @@ async function main(dataDir: string, log: Logger) {
   setInterval(coverage, COVERAGE_MS);
   // P4-T10c2: content-free metrics for main's diagnostics bundle, at the coverage cadence (peaks cover the interval).
   setInterval(() => { // a failing metric is logged, never an uncaught exception (the crash policy would restart us; review L5)
-    try { parent.postMessage({ v: IPC_VERSION, type: 'metrics', metrics: { ...svc!.metrics(), deltaResyncs: resyncs } } satisfies ServiceEvent); }
+    try {
+      const metrics = { ...svc!.metrics(), deltaResyncs: resyncs };
+      stamp({ ev: 'metrics', ...metrics }); // P4-T11: the live-load run reads queue age and resyncs from the perf trace
+      parent.postMessage({ v: IPC_VERSION, type: 'metrics', metrics } satisfies ServiceEvent);
+    }
     catch (e) { log.log('metrics_failed', { error: errorCode(e) }); }
   }, COVERAGE_MS);
   svc.done.then(coverage, coverage); // profiles are synced by then; a spool replay still running is caught by the interval

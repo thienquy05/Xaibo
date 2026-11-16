@@ -1,0 +1,99 @@
+// XAIBO-PROD-428 (P4-T11, EC-57 at TP per owner decision 2026-11-16): the live-load run's post-hoc analysis. Every
+// emitted event is joined to its own commit, delta and paint on one monotonic clock; a restarted service reuses delta
+// numbers, so a paint is matched to its delta by time; samples from the restart window are kept apart from the steady
+// figures; an unpainted event is a miss, never dropped; drain is the last paint after the end of load.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { analyze, type Emitted, type TraceLine } from '../perf/t2-analysis.ts';
+
+const T = (ms: number) => BigInt(Math.round(ms * 1e6));
+const t = (ms: number) => T(ms).toString();
+const commit = (ms: number, ...ids: string[]): TraceLine => ({ ev: 'commit', ids, t: t(ms) });
+const delta = (ms: number, n: number, ...ids: string[]): TraceLine => ({ ev: 'delta', delta: n, ids, t: t(ms) });
+const paint = (ms: number, n: number): TraceLine => ({ ev: 'paint', delta: n, t: t(ms) });
+const hook = (id: string | null, at: number, exit = at + 30): Emitted => ({ kind: 'hook', id, t0: T(at), exit: T(exit) });
+const file = (id: string, at: number): Emitted => ({ kind: 'file', id, t0: T(at) });
+
+test('each event joins to its own commit, delta and paint; hops and totals in ms', () => {
+  const r = analyze({
+    emitted: [hook('h1', 0), file('f1', 10)],
+    service: [commit(40, 'h1'), delta(90, 1, 'h1'), commit(300, 'f1'), delta(350, 2, 'f1')],
+    main: [paint(120, 1), paint(400, 2)],
+    restart: null, loadEnd: T(20),
+  });
+  assert.deepEqual([r.m1.steady.n, r.m1.steady.max, r.m2.steady.n, r.m2.steady.max], [1, 120, 1, 390]);
+  assert.deepEqual(r.hops.m1, { dispatch: 30, toCommit: 40, commitToDelta: 50, deltaToPaint: 30 });
+  assert.equal(r.drainMs, 380, 'last paint (400) after the end of load (20)');
+  assert.deepEqual(r.unpainted, { steady: 0, restart: 0 });
+});
+
+test('a restarted service reuses delta numbers: a paint matches its delta by time, never an earlier paint', () => {
+  const r = analyze({
+    emitted: [hook('a', 0), hook('b', 1000)],
+    service: [commit(20, 'a'), delta(30, 1, 'a'), commit(1020, 'b'), delta(1030, 1, 'b')],
+    main: [paint(50, 1), paint(1100, 1)],
+    restart: null, loadEnd: T(1000),
+  });
+  assert.equal(r.m1.steady.max, 100, 'b painted at 1100, not by the first service\'s delta 1 at 50');
+});
+
+test('restart-window samples stay apart; an unpainted or spooled event is a miss; drain is then Infinity', () => {
+  const r = analyze({
+    emitted: [hook('s1', 0), hook('r1', 500), hook(null, 600), file('r2', 700), file('lost', 2000)],
+    service: [commit(20, 's1'), delta(30, 1, 's1'), commit(1500, 'r1'), delta(1510, 1, 'r1'), commit(1600, 'r2'), delta(1610, 2, 'r2')],
+    main: [paint(60, 1), paint(1550, 1), paint(1650, 2)],
+    restart: { from: T(400), to: T(1700) }, loadEnd: T(2000),
+  });
+  assert.deepEqual([r.m1.steady.n, r.m1.steady.max], [1, 60]);
+  assert.deepEqual([r.m1.restartWindow.n, r.m1.restartWindow.max], [2, Number.POSITIVE_INFINITY], 'the spooled hook is a miss in its window');
+  assert.deepEqual([r.m2.restartWindow.n, r.m2.restartWindow.max, r.m2.steady.n, r.m2.steady.max], [1, 950, 1, Number.POSITIVE_INFINITY]);
+  assert.deepEqual(r.unpainted, { steady: 1, restart: 1 });
+  assert.deepEqual(r.steadyMisses, [{ kind: 'file', missing: 'commit', atMs: 2000 }], 'diagnosis: which hop is missing, and when');
+  assert.equal(r.drainMs, Number.POSITIVE_INFINITY, 'a steady event never painted');
+});
+
+test('drain counts steady events only: a restart-window miss (replayed later) does not make it Infinity', () => {
+  const r = analyze({
+    emitted: [file('s', 0), hook(null, 500)],
+    service: [commit(100, 's'), delta(110, 1, 's')], main: [paint(150, 1)],
+    restart: { from: T(400), to: T(900) }, loadEnd: T(100),
+  });
+  assert.deepEqual([r.unpainted.restart, r.drainMs], [1, 50]);
+});
+
+test('ingest lag: emit to commit for every steady event, the queue age the live-load check uses', () => {
+  const r = analyze({
+    emitted: [hook('h', 0), file('f', 0), file('late', 500)],
+    service: [commit(40, 'h'), delta(50, 1, 'h'), commit(300, 'f'), delta(310, 2, 'f'), commit(900, 'late'), delta(910, 3, 'late')],
+    main: [paint(60, 1), paint(320, 2), paint(920, 3)],
+    restart: { from: T(450), to: T(1000) }, loadEnd: T(500),
+  });
+  assert.deepEqual([r.ingestLagMs.n, r.ingestLagMs.max], [2, 300], 'the restart-window event is left out');
+});
+
+test('a commit stamped before the emit is not the event\'s own', () => {
+  const r = analyze({ emitted: [file('x', 100)], service: [commit(50, 'x'), delta(60, 1, 'x')], main: [paint(70, 1)], restart: null, loadEnd: T(100) });
+  assert.equal(r.unpainted.steady, 1);
+});
+
+test('queue age and resyncs come from trace-stamped service metrics', () => {
+  const metrics = (ms: number, q: number, resyncs: number): TraceLine => ({ ev: 'metrics', writerQueueAgeMs: q, deltaResyncs: resyncs, t: t(ms) });
+  const restart = { from: T(12_000), to: T(14_000) };
+  const r = analyze({ emitted: [], service: [metrics(5000, 40, 0), metrics(10_000, 900, 2), metrics(15_000, 10, 1)], main: [], restart, loadEnd: T(0) });
+  assert.deepEqual([r.queueAgeMs.n, r.queueAgeMs.max, r.deltaResyncs], [3, 900, 3], 'the counter restarts with the service: 2, then 1 more');
+  assert.equal(r.drainMs, 0, 'no events: nothing to drain');
+  const same = analyze({ emitted: [], service: [metrics(10_000, 0, 2), metrics(15_000, 0, 2)], main: [], restart, loadEnd: T(0) });
+  assert.equal(same.deltaResyncs, 4, 'review L1: a restarted counter that reaches the old value still adds');
+  const none = analyze({ emitted: [], service: [metrics(5000, 0, 1), metrics(10_000, 0, 3)], main: [], restart: null, loadEnd: T(0) });
+  assert.equal(none.deltaResyncs, 3);
+});
+
+test('review L4: a commit carrying many ids joins each; an id committed twice uses its first commit at or after the emit', () => {
+  const r = analyze({
+    emitted: [file('a', 0), file('b', 0), file('c', 100)],
+    service: [commit(50, 'a', 'b', 'c'), delta(60, 1, 'a', 'b'), commit(150, 'c'), delta(160, 2, 'c')],
+    main: [paint(70, 1), paint(170, 2)],
+    restart: null, loadEnd: T(100),
+  });
+  assert.deepEqual([r.m2.steady.n, r.m2.steady.max, r.unpainted.steady], [3, 70, 0], 'c (emitted at 100) joins its commit at 150, not the earlier one');
+});
