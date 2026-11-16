@@ -252,10 +252,14 @@ body {
 .x-history { border: var(--x-border); border-radius: var(--x-radius-panel); padding: var(--x-space-3); margin-top: var(--x-space-2); }
 .x-history-scroll { max-height: 320px; overflow-y: auto; padding: var(--x-space-1); scroll-padding: var(--x-space-1); }
 @media (min-width: 1200px) {
-  .x-shell { display: grid; grid-template-columns: 184px minmax(0, 1fr); grid-template-rows: auto 1fr; }
-  .x-frame { grid-column: 1; grid-row: 1 / 3; border-bottom: 0; border-right: 1px solid var(--x-divider); }
-  .x-shell > .x-health { grid-column: 2; grid-row: 1; }
-  .x-main { grid-column: 2; grid-row: 2; }
+  /* Owner request 2026-11-16: the collection band sits at the bottom of the rail, so main takes the full height. The
+     frame (sticky top) and the band (sticky bottom) share the rail's one cell, the sticky range of both; ::before paints
+     the rail behind them. DOM order (navigation, band, main) is unchanged (design §6.0). */
+  .x-shell { display: grid; grid-template-columns: 184px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+  .x-shell::before { content: ""; grid-column: 1; grid-row: 1; background: var(--x-surface); border-right: 1px solid var(--x-divider); }
+  .x-frame { grid-column: 1; grid-row: 1; align-self: start; border-bottom: 0; background: transparent; }
+  .x-shell > .x-health { grid-column: 1; grid-row: 1; align-self: end; position: sticky; bottom: 0; z-index: var(--x-z-sticky); margin-right: 1px; background: var(--x-surface); }
+  .x-main { grid-column: 2; grid-row: 1; }
   .x-nav { align-items: stretch; flex-direction: column; padding: var(--x-space-6) var(--x-space-4); }
   .x-mark { margin-bottom: var(--x-space-6); }
   .x-band { padding: var(--x-space-4); }
@@ -331,13 +335,13 @@ summary:hover { background: var(--x-tint); }
 [hidden] { display: none !important; }
 .x-frame { position: sticky; top: 0; z-index: var(--x-z-sticky); }
 @media (max-width: 1199px) { html { scroll-padding-top: calc(var(--x-chrome-height) + var(--x-space-6)); } } /* focus targets clear the sticky top bar */
-@media (min-width: 1200px) { .x-frame { height: 100vh; overflow-y: auto; } }
+@media (min-width: 1200px) { .x-frame { max-height: 100vh; overflow-y: auto; } }
 .x-shell.x-fixed { height: 100vh; overflow: hidden; }
 .x-shell.x-fixed .x-main { display: flex; flex-direction: column; min-height: 0; max-width: none; padding: var(--x-space-4) var(--x-space-6) var(--x-space-6); }
 @media (max-width: 1199px) {
   .x-shell.x-fixed { display: grid; grid-template-rows: auto auto minmax(0, 1fr); }
 }
-@media (min-width: 1200px) { .x-shell.x-fixed { grid-template-rows: auto minmax(0, 1fr); } }
+@media (min-width: 1200px) { .x-shell.x-fixed { grid-template-rows: minmax(0, 1fr); } }
 .x-session-area { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .x-area-head { display: flex; align-items: center; justify-content: space-between; gap: var(--x-space-3); margin-bottom: var(--x-space-4); }
 .x-main .x-area-head h1 { margin: 0; }
