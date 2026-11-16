@@ -2,8 +2,8 @@
 // default 50 rows, hard cap 100; rows by session key for the coalesced deltas the service pushes after commits.
 import type { DatabaseSync } from 'node:sqlite';
 import { IPC_VERSION } from '../shared/ipc.ts';
-import type { CoverageCode, Credits, Cursor, HistoryCursor, LiveStatus, Page, PortMessage, PortRequest, SessionRow, TCursor, TranscriptItem, UsageRecord, UsageScope } from '../shared/ipc.ts';
-import { MAX_ITEMS, MAX_RECORDS, MAX_SCOPES, PREVIEW_BYTES, SLICE_BYTES } from '../shared/ipc.ts';
+import type { ContextReading, CoverageCode, Credits, Cursor, HistoryCursor, LiveStatus, Page, PortMessage, PortRequest, SessionRow, TCursor, TranscriptItem, UsageRecord, UsageScope } from '../shared/ipc.ts';
+import { MAX_ITEMS, MAX_RECORDS, MAX_SCOPES, parseContext, PREVIEW_BYTES, SLICE_BYTES } from '../shared/ipc.ts';
 import type { FileItem, MCursor, ModelMarker, SubagentItem, ToolItem } from '../shared/ipc.ts';
 import { classifyItem, utf8Slice, type StoredRecord } from './transcript.ts';
 import { callApprovals, callDuration, claudeCallError, MAX_MODEL } from './session-detail.ts';
@@ -214,7 +214,16 @@ export function answerSession(db: DatabaseSync, req: PortRequest & { type: 'sess
     if (row.drift) coverage.push('drift');
     if (db.prepare(`SELECT 1 FROM source_files WHERE session_id = ? AND status = 'oversized' LIMIT 1`).get(r.id)) coverage.push('oversized');
     if (db.prepare('SELECT 1 FROM hook_gaps WHERE agent = ? AND native_session_id = ? LIMIT 1').get(r.agent, r.native_session_id)) coverage.push('hook-gap');
-    return { v: IPC_VERSION, type: 'session', id: req.id, detail: { row, coverage } };
+    // XAIBO-PROD-414: the newest generation's latest reading (same order as the writer's lastContext); a stored row
+    // outside the port contract, or one node:sqlite cannot read (an INTEGER above 2^53 - 1 throws), degrades to null
+    // rather than failing the whole detail.
+    let context: ContextReading | null = null;
+    try {
+      const ctx = db.prepare(`SELECT generation, used_tokens AS used, window_tokens AS window, window_basis AS basis, source, as_of AS asOf,
+        observed_at AS observedAt FROM context_snapshots WHERE session_id = ? ORDER BY generation DESC, id DESC LIMIT 1`).get(r.id);
+      context = ctx ? parseContext({ ...ctx }) ?? null : null;
+    } catch { context = null; }
+    return { v: IPC_VERSION, type: 'session', id: req.id, detail: { row, coverage, context } };
   } catch { return { v: IPC_VERSION, type: 'session', id: req.id, detail: null }; }
 }
 

@@ -212,10 +212,23 @@ test('session, transcript and slice requests: fields checked', () => {
 });
 
 test('session, transcript and slice replies: bounds and fixed codes validated', () => {
-  const detail = { row, coverage: ['compressed', 'hook-gap'] };
+  const detail = { row, coverage: ['compressed', 'hook-gap'], context: null };
   assert.deepEqual(parsePortMessage({ v: 1, type: 'session', id: 3, detail }), { v: 1, type: 'session', id: 3, detail });
   assert.deepEqual(parsePortMessage({ v: 1, type: 'session', id: 3, detail: null }), { v: 1, type: 'session', id: 3, detail: null });
-  assert.equal(parsePortMessage({ v: 1, type: 'session', id: 3, detail: { row, coverage: ['made-up'] } }), null);
+  assert.equal(parsePortMessage({ v: 1, type: 'session', id: 3, detail: { row, coverage: ['made-up'], context: null } }), null);
+  assert.equal(parsePortMessage({ v: 1, type: 'session', id: 3, detail: { row, coverage: [] } }), null); // context is required
+  // XAIBO-PROD-414 (P4-T06a): the newest context generation's latest reading, validated field by field.
+  const context = { generation: 2, used: 40000, window: 200000, basis: 'reported', source: 'statusline', asOf: null, observedAt: 9 };
+  const withCtx = { ...detail, context };
+  assert.deepEqual(parsePortMessage({ v: 1, type: 'session', id: 3, detail: withCtx }), { v: 1, type: 'session', id: 3, detail: withCtx });
+  const nulls = { ...context, used: null, window: null, basis: 'unavailable', source: 'compaction' };
+  assert.deepEqual(parsePortMessage({ v: 1, type: 'session', id: 3, detail: { ...detail, context: nulls } })?.type, 'session');
+  for (const bad of [
+    { ...context, generation: -1 }, { ...context, generation: 1.5 }, { ...context, used: -1 }, { ...context, used: 1.5 },
+    { ...context, window: -5 }, { ...context, basis: 'guessed' }, { ...context, source: 'model-list' }, { ...context, asOf: 'now' },
+    { ...context, observedAt: null }, { ...context, extra: 1 }, 'context',
+    { ...context, basis: 'unavailable' }, { ...context, window: null }, // review M1: window and basis must agree
+  ]) assert.equal(parsePortMessage({ v: 1, type: 'session', id: 3, detail: { ...detail, context: bad } }), null, JSON.stringify(bad));
   const item = { event: 12, seq: 4, ts: null, kind: 'response', preview: 'Done', length: 4, reasoning: true, callId: null };
   const page = { v: 1, type: 'transcript', id: 3, items: [item, { ...item, event: 13, kind: 'tool-call', preview: null, reasoning: false, callId: 'toolu_1' }], prev: null, next: { seq: 5, id: 13 } };
   assert.deepEqual(parsePortMessage(page), page);

@@ -130,7 +130,14 @@ export interface AgentStatus { agent: string; name: string; state: 'detected' | 
 // XAIBO-PROD-410 (P4-T05b1): one session's detail, transcript page and text slices (design §5.2, §6.3).
 export const COVERAGE_CODES = ['compressed', 'quarantined', 'drift', 'oversized', 'hook-gap'] as const;
 export type CoverageCode = (typeof COVERAGE_CODES)[number];
-export interface SessionDetail { row: SessionRow; coverage: CoverageCode[] }
+export const CONTEXT_SOURCES = ['transcript', 'statusline', 'compaction', 'rollout'] as const;
+export const WINDOW_BASES = ['reported', 'inferred', 'unavailable'] as const;
+/** XAIBO-PROD-414 (P4-T06a): the latest reading of the session's newest context generation (context_snapshots). */
+export interface ContextReading {
+  generation: number; used: number | null; window: number | null; basis: (typeof WINDOW_BASES)[number];
+  source: (typeof CONTEXT_SOURCES)[number]; asOf: number | null; observedAt: number;
+}
+export interface SessionDetail { row: SessionRow; coverage: CoverageCode[]; context: ContextReading | null }
 export const ITEM_KINDS = ['prompt', 'response', 'tool-call', 'tool-result', 'compaction', 'interrupted'] as const;
 export type ItemKind = (typeof ITEM_KINDS)[number];
 export interface TCursor { seq: number; id: number }
@@ -314,7 +321,16 @@ function parseDetail(x: unknown): SessionDetail | null | undefined { // undefine
   if (!isObj(x)) return undefined;
   const row = parseRow(x.row);
   const coverage = all(x.coverage, COVERAGE_CODES.length, (c) => (oneOf(COVERAGE_CODES, c) ? c : null));
-  return row && coverage ? { row, coverage } : undefined;
+  const context = x.context === null ? null : parseContext(x.context);
+  return row && coverage && context !== undefined ? { row, coverage, context } : undefined;
+}
+const CONTEXT_KEYS = ['generation', 'used', 'window', 'basis', 'source', 'asOf', 'observedAt'];
+export function parseContext(x: unknown): ContextReading | undefined {
+  if (!isObj(x) || Object.keys(x).length !== CONTEXT_KEYS.length || !CONTEXT_KEYS.every((k) => k in x)) return undefined;
+  if (!count(x.generation) || !(x.used === null || count(x.used)) || !(x.window === null || count(x.window))) return undefined;
+  if (!oneOf(WINDOW_BASES, x.basis) || !oneOf(CONTEXT_SOURCES, x.source) || !timeOrNull(x.asOf) || !Number.isFinite(x.observedAt)) return undefined;
+  if ((x.window === null) !== (x.basis === 'unavailable')) return undefined; // review M1: no meter for a window called unavailable
+  return { generation: x.generation, used: x.used, window: x.window, basis: x.basis, source: x.source, asOf: x.asOf, observedAt: x.observedAt as number };
 }
 
 const idOrNull = (x: unknown): x is number | null => x === null || positive(x);

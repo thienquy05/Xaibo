@@ -157,6 +157,30 @@ test('session detail: the row plus fixed coverage codes; unknown session null', 
   assert.equal(answerSession(db, { v: 1, type: 'session', id: 4, session: 99 }).detail, null);
 });
 
+// XAIBO-PROD-414 (P4-T06a; PRD FR-47; design §6.3.1): the detail carries the newest generation's latest reading, so an
+// older generation's numbers are never paired with a newer one; no reading is null (never zeros).
+test('session detail: context is the newest generation\'s latest reading; none is null', async () => {
+  const { db } = await store();
+  const put = db.prepare(`INSERT INTO context_snapshots (session_id, schema_version, source, generation, model_id, used_tokens, window_tokens,
+    window_basis, percentage, source_locator, as_of, observed_at) VALUES (1, 1, ?, ?, 'm', ?, ?, ?, NULL, 'loc', ?, ?)`);
+  put.run('statusline', 0, 150000, 200000, 'reported', T, T + 1);
+  put.run('statusline', 1, 9000, null, 'unavailable', null, T + 3); // newer generation (model change), window not reported yet
+  put.run('statusline', 0, 160000, 200000, 'reported', T + 4, T + 5); // a later id in the OLD generation never wins
+  assert.deepEqual(answerSession(db, { v: 1, type: 'session', id: 4, session: 1 }).detail?.context,
+    { generation: 1, used: 9000, window: null, basis: 'unavailable', source: 'statusline', asOf: null, observedAt: T + 3 });
+  put.run('compaction', 2, null, 200000, 'reported', T + 6, T + 7);
+  put.run('compaction', 2, null, 200000, 'reported', T + 8, T + 9);
+  assert.deepEqual(answerSession(db, { v: 1, type: 'session', id: 4, session: 1 }).detail?.context,
+    { generation: 2, used: null, window: 200000, basis: 'reported', source: 'compaction', asOf: T + 8, observedAt: T + 9 });
+  assert.equal(answerSession(db, { v: 1, type: 'session', id: 4, session: 2 }).detail?.context, null);
+  // re-review M: an INTEGER above 2^53 - 1 makes node:sqlite throw on read; only context degrades, the detail stays.
+  db.exec(`INSERT INTO context_snapshots (session_id, schema_version, source, generation, used_tokens, window_tokens, window_basis, observed_at)
+    VALUES (1, 1, 'rollout', 3, 9007199254740992, 200000, 'reported', ${T})`);
+  const big = answerSession(db, { v: 1, type: 'session', id: 4, session: 1 }).detail;
+  assert.equal(big?.row.id, 1);
+  assert.equal(big?.context, null);
+});
+
 // XAIBO-PROD-411 (P4-T05b2; design §6.3 Tools/Subagents/Files/Timeline): forward keyset pages of the session's tool
 // calls, subagents, files touched and model markers. Unknown stays null; only the session's own main-thread calls.
 const evidence = (db: Awaited<ReturnType<typeof store>>['db']) => {
