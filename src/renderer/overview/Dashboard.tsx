@@ -83,7 +83,7 @@ export function Dashboard(p: {
         <section id={`view-${view}`} aria-labelledby={`view-${view}-heading`} className="x-view-body">
           {view === 'live' ? <LiveView live={p.live} lastKnown={lastKnown} onOpen={p.onOpen} />
             : view === 'attention' ? <AttentionView queue={queue} lastKnown={lastKnown} name={name} onShowLive={showLive} />
-              : <UsageView api={p.api} tick={p.tick} name={name} />}
+              : <UsageView api={p.api} tick={p.tick} name={name} lastKnown={lastKnown} />}
         </section>
         {view === 'usage' ? <div className="x-dashboard-lower">
           <section className="x-panel" aria-labelledby="current-state-heading">
@@ -206,7 +206,7 @@ function AttentionView({ queue, lastKnown, name, onShowLive }: { queue: ReturnTy
   );
 }
 
-function UsageView({ api, tick, name }: { api: UsageApi; tick: number; name: (id: string) => string }) {
+function UsageView({ api, tick, name, lastKnown }: { api: UsageApi; tick: number; name: (id: string) => string; lastKnown: string | null }) {
   const now = useNow(1000);
   const [scopes, setScopes] = useState<UsageScope[] | null>(null);
   const [failed, setFailed] = useState(false);
@@ -240,15 +240,15 @@ function UsageView({ api, tick, name }: { api: UsageApi; tick: number; name: (id
           <section key={b.key} className="x-scope" aria-label={`${name(b.agent)} · ${visible(b.profile)}`}>
             <h3>{name(b.agent)} · {visible(b.profile)}</h3>
             {b.unverified ? <p className="x-tone-warning">Account scope unverified</p> : null}
-            {b.rows.map((s, i) => <ScopeRow key={`${s.stream ?? 'none'}-${i}`} s={s} now={now} api={api} selected={choice !== undefined && scopeKey(choice) === scopeKey(s)} onSelect={() => setSelected(scopeKey(s))} />)}
+            {b.rows.map((s, i) => <ScopeRow key={`${s.stream ?? 'none'}-${i}`} s={s} now={now} api={api} lastKnown={lastKnown} selected={choice !== undefined && scopeKey(choice) === scopeKey(s)} onSelect={() => setSelected(scopeKey(s))} />)}
           </section>
         ))}
     </>
   );
 }
 
-function ScopeRow({ s, now, api, selected, onSelect }: { s: UsageScope; now: number; api: UsageApi; selected: boolean; onSelect: () => void }) {
-  const v = usageView(s, now);
+function ScopeRow({ s, now, api, lastKnown, selected, onSelect }: { s: UsageScope; now: number; api: UsageApi; lastKnown: string | null; selected: boolean; onSelect: () => void }) {
+  const v = usageView(s, now, lastKnown);
   const [open, setOpen] = useState(true);
   const button = useRef<HTMLButtonElement>(null);
   const arc = quotaArc(v.percent);
@@ -263,6 +263,7 @@ function ScopeRow({ s, now, api, selected, onSelect }: { s: UsageScope; now: num
     </svg> : null}
     {selected && arc !== null ? <p className="x-chart-scale"><span>0%</span><span>100%</span></p> : null}
     {v.reset || v.countdown ? <p>{[v.reset, v.countdown].filter(Boolean).join(' · ')}</p> : null}
+    {v.lastKnown ? <p className="x-tone-warning">{v.lastKnown}</p> : null}
     {v.stale ? <p className="x-tone-warning">{v.stale}</p> : null}
     {v.plan || v.credits ? <p>{[v.plan, v.credits].filter(Boolean).join(' · ')}</p> : null}
     {v.freshness ? <p className="x-tone-muted">{v.freshness}</p> : null}

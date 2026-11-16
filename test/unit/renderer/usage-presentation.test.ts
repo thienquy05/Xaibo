@@ -53,7 +53,7 @@ test('reset passed replaces utilization and countdown', () => {
 test('agy: exactly "Unavailable from passive sources", no percentage, reset or countdown; Claude/Codex without a scope', () => {
   const agy = usageView(s({ scope: null, agent: 'agy', verified: null, stream: null, windowMinutes: null, usedPercent: null, resetsAt: null, firstObservedAt: null, measuredAt: null, unavailable: 'passive' }), NOW);
   assert.deepEqual(agy, { title: 'Quota', value: 'Unavailable from passive sources', percent: null, aboveScale: false, reset: null, countdown: null, stale: null,
-    freshness: null, unverified: false, plan: null, credits: null });
+    freshness: null, unverified: false, plan: null, credits: null, lastKnown: null });
   const blank = { scope: null, verified: null, stream: null, windowMinutes: null, usedPercent: null, resetsAt: null, firstObservedAt: null, measuredAt: null, unavailable: 'no-observation' as const };
   assert.equal(usageView(s({ ...blank }), NOW).value, 'Unavailable — no statusLine quota observation');
   assert.equal(usageView(s({ ...blank, agent: 'codex' }), NOW).value, 'Unavailable — no rate-limit observation');
@@ -101,4 +101,15 @@ test('day range: local midnight to next midnight; history bounds cover 45 elapse
   assert.equal(shiftDay(new Date(2026, 0, 2).getTime(), 1), new Date(2026, 0, 3).getTime());
   assert.deepEqual(historyBounds(at), { first: new Date(2025, 10, 19).getTime(), last: new Date(2026, 0, 2).getTime() });
   assert.equal(HISTORY_DAYS, 45);
+});
+
+// XAIBO-PROD-432 (P4-T14, EC-97, design §6.13 B4): with the collector lost, a reading is never presented as current.
+test('collector lost: a row with a reading says Last known with the collector label; unavailable phrases stay as they are', () => {
+  assert.equal(usageView(s(), NOW).lastKnown, null, 'collector running: no qualifier');
+  const lost = usageView(s(), NOW, 'since 2026-01-02 11:58');
+  assert.equal(lost.lastKnown, 'Last known · since 2026-01-02 11:58');
+  assert.equal(lost.value, '40%', 'the last reading stays readable');
+  assert.equal(usageView(s({ resetsAt: NOW - MIN }), NOW, 'since 11:58').lastKnown, 'Last known · since 11:58', 'reset passed is a reading state too');
+  assert.equal(usageView(s({ unavailable: 'no-observation' }), NOW, 'since 11:58').lastKnown, null);
+  assert.equal(usageView(s({ agent: 'agy', unavailable: 'passive' }), NOW, 'since 11:58').lastKnown, null);
 });

@@ -9,6 +9,8 @@ export const STALE_MS = 15 * 60_000;
 export interface UsageView {
   title: string; value: string; percent: number | null; aboveScale: boolean; reset: string | null; countdown: string | null;
   stale: string | null; freshness: string | null; unverified: boolean; plan: string | null; credits: string | null;
+  /** XAIBO-PROD-432 (design §6.13 B4): set while the collector is lost, for a row that shows a reading. */
+  lastKnown: string | null;
 }
 
 const UNAVAILABLE: Record<string, string> = {
@@ -41,16 +43,18 @@ function resetText(at: number, now: number): string {
   return new Date(at).toDateString() === new Date(now).toDateString() ? `Resets ${t.slice(11)}` : `Resets ${t}`;
 }
 
-export function usageView(s: UsageScope, now: number): UsageView {
+/** `lastKnown`: the collector-loss label the Dashboard shows (null while collecting); a reading then never reads as current. */
+export function usageView(s: UsageScope, now: number, lastKnown: string | null = null): UsageView {
   const empty: UsageView = { title: 'Quota', value: '', percent: null, aboveScale: false, reset: null, countdown: null, stale: null, freshness: null,
-    unverified: false, plan: null, credits: null };
+    unverified: false, plan: null, credits: null, lastKnown: null };
   if (s.unavailable === 'passive') return { ...empty, value: 'Unavailable from passive sources' };
   if (s.unavailable === 'no-observation') return { ...empty, value: UNAVAILABLE[s.agent] ?? 'Unavailable — no observation' };
   const credits = s.credits?.unlimited ? 'Unlimited credits' : s.credits?.balance !== null && s.credits?.balance !== undefined
     ? `Reported credits ${visible(s.credits.balance)}` : s.credits?.hasCredits === false ? 'No credits' : null;
   const freshness = s.firstObservedAt === null ? null
     : s.asOf !== null ? `Measured ${formatTime(s.asOf)} · observed ${formatTime(s.firstObservedAt)}` : `Source time unknown; observed ${formatTime(s.firstObservedAt)}`;
-  const base = { ...empty, title: windowTitle(s.windowMinutes, s.stream), freshness, unverified: s.verified === false, plan: s.plan ? `Plan ${visible(s.plan)}` : null, credits };
+  const base = { ...empty, title: windowTitle(s.windowMinutes, s.stream), freshness, unverified: s.verified === false, plan: s.plan ? `Plan ${visible(s.plan)}` : null, credits,
+    lastKnown: lastKnown === null ? null : `Last known · ${lastKnown}` };
   if (s.resetsAt !== null && now >= s.resetsAt) return { ...base, value: 'Reset passed; awaiting observation' };
   const measured = s.measuredAt ?? s.firstObservedAt; // review: a reading with no measured time ages from its first observation
   return {
