@@ -410,6 +410,7 @@ summary:hover { background: var(--x-tint); }
 .x-bubble { padding: var(--x-space-3) var(--x-space-4); background: var(--x-tint); border-radius: var(--x-radius-panel); }
 .x-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .x-more { margin-top: var(--x-space-1); }
+.x-more-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--x-space-2); margin: 0; }
 .x-long { display: grid; gap: var(--x-space-2); }
 .x-steps { display: grid; gap: 2px; }
 .x-step > summary { display: flex; align-items: center; gap: var(--x-space-2); min-height: 30px; padding: 2px var(--x-space-2); margin: 0 calc(-1 * var(--x-space-2)); color: var(--x-ink); list-style: none; }

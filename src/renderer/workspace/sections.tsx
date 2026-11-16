@@ -5,7 +5,8 @@ import { useEffect, useState, type ReactNode } from 'react';
 import type { FileItem, ModelMarker, SubagentItem, ToolItem, TranscriptItem } from '../../shared/ipc.ts';
 import { VirtualList } from '../components/VirtualList.tsx';
 import { Icon } from '../status/StatusBadge.tsx';
-import { visible } from '../text.ts';
+import { visible, visibleBlock } from '../text.ts';
+import { appendSlice, openWindow, prependSlice, previousAt } from './slice.ts';
 import { approvalText, durationLabel, FILE_KIND_TEXT, groupFiles, lifecycleText, resultText, toolTitle, type Entry } from './timeline.ts';
 import { argFor, clock, isoTime, sizeText, toolMeta, toolTone } from './view.ts';
 
@@ -13,29 +14,40 @@ import { argFor, clock, isoTime, sizeText, toolMeta, toolTone } from './view.ts'
 export type SliceFn = (event: number, part: 'text' | 'reasoning', offset: number) => Promise<{ text: string; next: number | null }>;
 export interface Paged<T> { items: T[]; more: boolean; loading: boolean; failed: boolean; loadMore: () => void }
 
-/** Text of one item, as slices fetched on demand from `offset` ("Load more text" until the end). ponytail: every
- *  fetched slice stays in memory while the item is mounted; evict past 4 slices (design §5.2) if long outputs hurt. */
+/** Text of one item, as slices fetched on demand (design §5.2): at most MAX_SLICES stay in memory and in the DOM; past
+ *  that the earliest is evicted and Load previous brings it back (slice.ts). Cursors are the service's, opaque here. */
 function Slices({ event, part, slice, start = '', from = 0, label }: { event: number; part: 'text' | 'reasoning'; slice: SliceFn; start?: string; from?: number | null; label?: string }) {
-  const [text, setText] = useState(start);
-  const [next, setNext] = useState<number | null>(from);
-  const [busy, setBusy] = useState(false);
-  const [failed, setFailed] = useState(false);
-  const more = () => {
-    if (next === null || busy) return;
-    setBusy(true);
-    slice(event, part, next).then((s) => { setText((t) => t + s.text); setNext(s.next); setFailed(false); setBusy(false); }, () => { setFailed(true); setBusy(false); });
+  const [win, setWin] = useState(() => openWindow(start, from));
+  const [busy, setBusy] = useState<'next' | 'prev' | null>(null);
+  const [failed, setFailed] = useState<'next' | 'prev' | null>(null);
+  const load = (dir: 'next' | 'prev') => {
+    const at = dir === 'next' ? win.next : previousAt(win);
+    if (at === null || busy) return;
+    setBusy(dir);
+    slice(event, part, at).then((s) => {
+      setWin((w) => (dir === 'next' ? appendSlice(w, at, s) : prependSlice(w, at, s)));
+      setFailed(null);
+      setBusy(null);
+    }, () => { setFailed(dir); setBusy(null); });
   };
   // An expanded input, result or reasoning fetches its first slice at once (it mounts only when opened).
-  useEffect(() => { if (start === '') more(); }, []); // once on mount
-  const empty = text === '' && next === null;
+  useEffect(() => { if (start === '') load('next'); }, []); // once on mount
+  const label2 = (dir: 'next' | 'prev', idle: string) => (failed === dir ? 'Retry loading text' : busy === dir ? 'Loading text' : idle);
   return (
     <>
       {label ? <span className="x-label">{label}</span> : null}
-      {text !== '' ? <pre className="x-code">{visible(text)}</pre> : empty ? <p className="x-label">No text recorded</p> : null}
-      {next !== null ? (
-        <button type="button" className="x-btn x-btn-secondary" aria-disabled={busy || undefined} onClick={more}>
-          {failed ? 'Retry loading text' : busy ? 'Loading text' : text === '' ? 'Load text' : 'Load more text'}
-        </button>
+      {previousAt(win) !== null ? (
+        <button type="button" className="x-btn x-btn-secondary" aria-disabled={busy !== null || undefined} onClick={() => load('prev')}>{label2('prev', 'Load previous')}</button>
+      ) : null}
+      {win.slices.length ? <pre className="x-code">{win.slices.map((s) => <span key={s.at}>{visibleBlock(s.text)}</span>)}</pre>
+        : win.next === null ? <p className="x-label">No text recorded</p> : null}
+      {win.next !== null ? (
+        <p className="x-more-row">
+          {win.slices.length ? <span className="x-label">More content available</span> : null}
+          <button type="button" className="x-btn x-btn-secondary" aria-disabled={busy !== null || undefined} onClick={() => load('next')}>
+            {label2('next', win.slices.length ? 'Load more text' : 'Load text')}
+          </button>
+        </p>
       ) : null}
     </>
   );
@@ -48,7 +60,7 @@ function MessageText({ item, slice }: { item: TranscriptItem; slice: SliceFn }) 
   if (!open || preview.length >= item.length) {
     return (
       <>
-        <p className="x-text">{visible(preview)}</p>
+        <p className="x-text">{visibleBlock(preview)}</p>
         {preview.length < item.length ? <button type="button" className="x-btn x-btn-quiet x-more" onClick={() => setOpen(true)}>Show more</button> : null}
       </>
     );
