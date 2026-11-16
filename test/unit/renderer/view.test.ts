@@ -2,8 +2,9 @@
 // never claim success without evidence; a live session opens on its latest page; coverage codes name what is missing.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { argFor, clock, compactStatus, countText, incompleteReasons, initialAt, isoTime, sizeText, toolMeta, toolTone, trimWindow, appendLive, WINDOW_MAX } from '../../../src/renderer/workspace/view.ts';
-import type { FileItem, LiveStatus, ToolItem, TranscriptItem } from '../../../src/shared/ipc.ts';
+import { argFor, clock, compactStatus, countText, incompleteReasons, initialAt, isoTime, liveAction, openChange, sizeText, toolMeta, toolTone, trimWindow, appendLive, WINDOW_MAX } from '../../../src/renderer/workspace/view.ts';
+import type { FileItem, LiveStatus, SessionRow, ToolItem, TranscriptItem } from '../../../src/shared/ipc.ts';
+import type { SessionChanges } from '../../../src/renderer/workspace/view.ts';
 
 const tool = (o: Partial<ToolItem> = {}): ToolItem => ({ call: 1, callId: 'toolu_1', tool: 'Read', sources: ['transcript'], argsEvent: 2, resultEvent: null,
   ts: null, durationMs: null, approval: null, error: null, ...o });
@@ -57,6 +58,25 @@ test('a tool row argument is the file it touched when known; counts mark a page 
 test('P4-T08b (EC-102): isoTime is the machine-readable time of a known instant, null when unknown or invalid', () => {
   assert.equal(isoTime(Date.UTC(2026, 0, 2, 9, 5, 7, 12)), '2026-01-02T09:05:07.012Z');
   for (const x of [null, Number.NaN, Number.POSITIVE_INFINITY, 8.65e15]) assert.equal(isoTime(x), null);
+});
+
+test('XAIBO-PROD-424: a change to the open session waits for a load, appends at the end, else offers New activity available', () => {
+  const w = (o: Partial<{ loaded: boolean; loading: boolean; next: unknown; items: number }>) => ({ loaded: true, loading: false, next: null, items: 3, ...o });
+  assert.equal(liveAction(w({ loaded: false })), 'later', 'not loaded yet: handled when the first load settles');
+  assert.equal(liveAction(w({ loading: true })), 'later', 'a load in flight: handled when it settles');
+  assert.equal(liveAction(w({})), 'append', 'the window reaches the end');
+  assert.equal(liveAction(w({ next: { seq: 1, id: 2 } })), 'notice', 'scrolled back: never moves the anchor');
+  assert.equal(liveAction(w({ items: 0 })), 'reload', 'an empty loaded window reloads its target');
+  assert.equal(liveAction({ ...w({}), appending: true }), 'later', 'review M2: an append in flight holds the change');
+});
+
+test('XAIBO-PROD-424 review H1/L5: only a frame after the one seen counts; a resync counts however frames interleave', () => {
+  const row = (id: number) => ({ id }) as unknown as SessionRow;
+  const c = (o: Partial<SessionChanges>): SessionChanges => ({ rows: [], resync: 0, n: 0, ...o });
+  assert.deepEqual(openChange(c({ rows: [row(7)], resync: 1, n: 3 }), { n: 3, resync: 1 }, 7), { row: null, bump: false }, 'the frame at mount is not a change');
+  assert.deepEqual(openChange(c({ rows: [row(7)], resync: 1, n: 4 }), { n: 3, resync: 1 }, 7), { row: row(7), bump: true });
+  assert.deepEqual(openChange(c({ rows: [row(8)], resync: 1, n: 4 }), { n: 3, resync: 1 }, 7), { row: null, bump: false }, 'another session');
+  assert.deepEqual(openChange(c({ rows: [row(8)], resync: 2, n: 5 }), { n: 3, resync: 1 }, 7), { row: null, bump: true }, 'a resync, even if a delta frame followed it');
 });
 
 test('P4-T09a (EC-56): sizeText names a large record in decimal KB or MB', () => {

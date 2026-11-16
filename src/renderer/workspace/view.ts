@@ -41,6 +41,27 @@ export function isoTime(ms: number | null): string | null {
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
+/** XAIBO-PROD-424 (design §5.2/§6.3): what the open conversation does when its session changed. A change during a load
+ *  waits for it; a window that reaches the end appends in place; a scrolled-back window offers New activity available
+ *  (the anchor never moves); an empty window reloads its initial target. */
+export function liveAction(w: { loaded: boolean; loading: boolean; next: unknown; items: number; appending?: boolean }): 'later' | 'append' | 'notice' | 'reload' {
+  if (!w.loaded || w.loading || w.appending) return 'later'; // review M2: one append at a time; a change during it reruns
+  if (w.next !== null) return 'notice';
+  return w.items ? 'append' : 'reload';
+}
+
+/** XAIBO-PROD-424: the rows of the last delta frame; `resync` counts list resyncs (anything may have changed) and `n`
+ *  counts frames. Both are counters, so a delta frame committed after a resync never hides it (review L5). */
+export interface SessionChanges { rows: SessionRow[]; resync: number; n: number }
+
+/** Whether the open session changed since the frame last seen (review H1: the frame current at mount is not a change),
+ *  and its row from the frame when the frame names it. */
+export function openChange(c: SessionChanges, seen: { n: number; resync: number }, id: number): { row: SessionRow | null; bump: boolean } {
+  if (c.n === seen.n) return { row: null, bump: false };
+  const row = c.rows.find((r) => r.id === id) ?? null;
+  return { row, bump: row !== null || c.resync !== seen.resync };
+}
+
 /** P4-T09a: a large record's UTF-8 size, decimal units, one decimal (e.g. "52.4 MB", "300.0 KB"). */
 export function sizeText(bytes: number): string {
   const kb = (bytes / 1e3).toFixed(1);

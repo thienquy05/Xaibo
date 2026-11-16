@@ -1,14 +1,14 @@
 // XAIBO-PROD-413 (P4-T05d; design §6.3 as amended by D-P4-06): the Session area. A compact session list (hideable)
 // beside the open session; the page itself does not scroll, each pane does. Below 800 px one region shows at a time.
 // Every transcript-derived string is a React text node through visible() (EC-55).
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { SessionRow } from '../../shared/ipc.ts';
 import { VirtualList } from '../components/VirtualList.tsx';
 import { findingBadges, formatTime, type ListState } from '../model.ts';
 import { Icon } from '../status/StatusBadge.tsx';
 import { visible } from '../text.ts';
 import { OpenSession, type WorkspaceApi } from './OpenSession.tsx';
-import { compactStatus } from './view.ts';
+import { compactStatus, openChange, type SessionChanges } from './view.ts';
 
 const keyOf = (r: SessionRow) => r.id;
 const show = (s: string | null, fallback: string) => (s ? visible(s) : fallback);
@@ -30,8 +30,10 @@ function Row({ row, open, lastKnown, onOpen }: { row: SessionRow; open: boolean;
   );
 }
 
-export function Workspace({ list, loading, onLoadMore, lastKnown, api, request, onRequestDone }: {
-  list: ListState; loading: boolean; onLoadMore: () => void; lastKnown: boolean; api: WorkspaceApi;
+export type { SessionChanges };
+
+export function Workspace({ list, changes, loading, onLoadMore, lastKnown, api, request, onRequestDone }: {
+  list: ListState; changes: SessionChanges; loading: boolean; onLoadMore: () => void; lastKnown: boolean; api: WorkspaceApi;
   /** A session to open, e.g. from a Dashboard record; it may be outside the loaded list. */
   request: SessionRow | null;
   /** Called once the request is open, so a later visit does not reopen it (review L9). */
@@ -40,7 +42,18 @@ export function Workspace({ list, loading, onLoadMore, lastKnown, api, request, 
   const [opened, setOpened] = useState<SessionRow | null>(request);
   const [showList, setShowList] = useState(true);
   useEffect(() => { if (request) { setOpened(request); onRequestDone(); } }, [request, onRequestDone]);
-  // The open session follows its list row (live deltas); outside the loaded list it keeps the row it was opened with.
+  // XAIBO-PROD-424: a delta naming the open session (any record timestamp) or a resync bumps its change generation, and
+  // its row follows the delta even outside the loaded list (Codex review).
+  const [gen, setGen] = useState(0);
+  const seen = useRef({ n: changes.n, resync: changes.resync }); // review H1: the frame current at mount is not a change
+  useEffect(() => {
+    const was = seen.current;
+    seen.current = { n: changes.n, resync: changes.resync };
+    if (!opened) return;
+    const c = openChange(changes, was, opened.id);
+    if (c.row) setOpened(c.row);
+    if (c.bump) setGen((g) => g + 1);
+  }, [changes]); // reacts to each delta frame only
   const row = opened ? (list.rows.find((r) => r.id === opened.id) ?? opened) : null;
   const back = () => {
     setOpened(null);
@@ -65,7 +78,7 @@ export function Workspace({ list, loading, onLoadMore, lastKnown, api, request, 
             </div>
           </section>
         ) : null}
-        {row ? <OpenSession key={row.id} row={row} api={api} lastKnown={lastKnown} listShown={showList} onShowList={() => setShowList(true)} onBack={back} />
+        {row ? <OpenSession key={row.id} row={row} changed={gen} api={api} lastKnown={lastKnown} listShown={showList} onShowList={() => setShowList(true)} onBack={back} />
           : <section className="x-pane x-choose" aria-label="Open session"><p>Choose a session to read its conversation</p></section>}
       </div>
     </section>

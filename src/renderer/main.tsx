@@ -13,7 +13,7 @@ import { reloadWindow } from './data/pages.ts';
 import { applyDelta, applyLiveDelta, applyPage, collectorStep, emptyCollector, emptyList, emptyLiveSet, lastKnownLabel, PAGE, type ListState, type LiveSetState } from './model.ts';
 import { Dashboard, type UsageApi } from './overview/Dashboard.tsx';
 import { firstUsablePage, LONG_FRAME, watchLongFrames } from './perf-marks.ts';
-import { Workspace } from './workspace/Workspace.tsx';
+import { Workspace, type SessionChanges } from './workspace/Workspace.tsx';
 import type { WorkspaceApi } from './workspace/OpenSession.tsx';
 import './styles/tokens.css';
 
@@ -39,6 +39,7 @@ function App() {
   const [liveFailed, setLiveFailed] = useState(false); // the live set could not be loaded: Retry
   const [request, setRequest] = useState<SessionRow | null>(null); // P4-T05d: a Dashboard record opened in the Session area
   const client = useRef<Client | null>(null);
+  const [changes, setChanges] = useState<SessionChanges>({ rows: [], resync: 0, n: 0 });
   const loadedRows = useRef(0); // rows the user has loaded: a resync refetches that many (P4-T03)
   loadedRows.current = list.rows.length;
 
@@ -51,13 +52,17 @@ function App() {
         () => { if (client.current === c) setLiveFailed(true); });
       reloadWindow(loadedRows.current, (cursor, limit) => c.listSessions(cursor, limit), PAGE)
         .then((page) => { if (client.current === c) setList((s) => applyPage(s, page, false)); }, () => undefined);
+      setChanges((x) => ({ rows: [], resync: x.resync + 1, n: x.n + 1 })); // a resync may hide any change: the open session refreshes
     };
     // P4-T02: deltas are coalesced per session and committed once per frame. P3-T10 perf trace: delta ids arrive only
     // under XAIBO_PERF_TRACE=1 and are acked after rAF plus one frame, so the ack follows the paint that shows them.
     const deltas = createCoalescer<SessionRow>({
       max: DELTA_MAX, schedule: (cb) => requestAnimationFrame(cb), resync: () => reload(client.current),
       flush: (rows, tags) => {
-        flushSync(() => { setList((s) => applyDelta(s, rows)); setLiveSet((s) => applyLiveDelta(s, rows)); setTick((t) => t + 1); });
+        flushSync(() => {
+          setList((s) => applyDelta(s, rows)); setLiveSet((s) => applyLiveDelta(s, rows)); setTick((t) => t + 1);
+          setChanges((c) => ({ ...c, rows, n: c.n + 1 })); // XAIBO-PROD-424: the open conversation follows these
+        });
         if (tags.length) requestAnimationFrame(() => requestAnimationFrame(() => { for (const t of tags) window.xaibo?.paintAck(t); }));
       },
     });
@@ -200,7 +205,7 @@ function App() {
         {area === 'dashboard'
           ? <Dashboard live={liveSet} liveFailed={liveFailed} onRetryLive={retryLive} lastKnown={lastKnown} agents={agents} banners={banners} api={api} tick={tick}
             onSetPath={(agent) => window.xaibo?.setAgentPath(agent)} onOpen={openSession} />
-          : <Workspace list={list} loading={loading} onLoadMore={loadMore} lastKnown={lastKnown !== null} api={workspaceApi} request={request} onRequestDone={clearRequest} />}
+          : <Workspace list={list} changes={changes} loading={loading} onLoadMore={loadMore} lastKnown={lastKnown !== null} api={workspaceApi} request={request} onRequestDone={clearRequest} />}
       </main>
     </div>
   );
