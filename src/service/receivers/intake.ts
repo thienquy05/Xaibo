@@ -171,12 +171,20 @@ export interface HooksOptions extends IntakeOptions {
   publishReport?: (e: Envelope, durable: boolean) => void;
   /** P3-T13b2: true for an agent outside the bundled catalog (its registration may create its own profile). */
   customAgent?: (agent: string) => boolean;
+  /** XAIBO-PROD-431: wait before retrying a listen that failed (default SOCKET_RETRY_MS). */
+  socketRetryMs?: number;
 }
-export interface Hooks { intake: Intake; socket: SocketServer | null; replay: Promise<ReplayResult>; close(): Promise<void> }
+/** socket: the listening server, null while none listens (a failed listen is retried). */
+export interface Hooks { intake: Intake; readonly socket: SocketServer | null; replay: Promise<ReplayResult>; close(): Promise<void> }
+
+// ponytail: a fixed retry interval while the socket cannot listen (a full disk cannot create it); back off if a long
+// outage ever shows the retries costing anything.
+const SOCKET_RETRY_MS = 5000;
 
 /** Service start (and each (re)listen): listen first, so hooks fired meanwhile are acked instead of spooling behind the
- *  replay, then replay the spool in the background (its cleanup waits a grace). A socket that cannot listen is logged;
- *  the replay still runs. */
+ *  replay, then replay the spool in the background (its cleanup waits a grace). A socket that cannot listen is logged
+ *  once and retried until it listens or the service closes (XAIBO-PROD-431); the replay still runs, and runs again
+ *  after a late listen (after the first one ends) for the hooks the forwarder spooled meanwhile. */
 export async function startHooks(o: HooksOptions): Promise<Hooks> {
   const intake = createIntake(o);
   let reports: SocketOptions['reports'];
@@ -187,21 +195,36 @@ export async function startHooks(o: HooksOptions): Promise<Hooks> {
     o.log?.log('report_intake_failed', { error: errorCode(e) });
   }
   let socket: SocketServer | null = null;
-  try {
-    socket = await startSocketServer({ dataDir: o.dataDir, onEnvelope: intake.deliver, ...(o.log ? { log: o.log } : {}), ...(reports ? { reports } : {}) });
-  } catch (e) {
-    o.log?.log('hook_socket_failed', { error: e instanceof SocketError ? e.code : errorCode(e) });
-  }
   let stopped = false; // set synchronously by close(): boot closes the store right after
+  let down = false; // a failure was logged and the socket has not listened since
+  let retry: NodeJS.Timeout | undefined;
+  const listen = async (): Promise<boolean> => {
+    try {
+      const s = await startSocketServer({ dataDir: o.dataDir, onEnvelope: intake.deliver, ...(o.log ? { log: o.log } : {}), ...(reports ? { reports } : {}) });
+      if (stopped) { await s.close(); return false; } // closed while it was starting
+      socket = s;
+      if (down) { down = false; o.log?.log('hook_socket_listening'); }
+      return true;
+    } catch (e) {
+      if (!down) { down = true; o.log?.log('hook_socket_failed', { error: e instanceof SocketError ? e.code : errorCode(e) }); }
+      if (!stopped) retry = setTimeout(() => { void listen().then((ok) => { if (ok) void replay.then(runReplay, runReplay); }); }, o.socketRetryMs ?? SOCKET_RETRY_MS);
+      return false;
+    }
+  };
+  await listen();
   const deliverReport = reports && ((id: string, frame: Record<string, unknown>, receivedTs: number): Promise<IntakeResult> => {
     const reg = reports.registry.current(id); // identity from the registry, never the record (P3-T13c)
     return reg ? reports.intake.deliver(reg, frame, receivedTs) : Promise.resolve({ status: 'rejected', code: 'auth' });
   });
-  const replay = replaySpool({ dataDir: o.dataDir, db: o.db, deliver: intake.deliver, stopped: () => stopped, ...(o.now ? { now: o.now } : {}),
-    ...(deliverReport ? { deliverReport } : {}) }).then((r) => {
-    o.log?.log('spool_replay', { delivered: r.delivered, torn: r.torn, skipped: r.skipped, deferred: r.deferred, dropped: r.dropped, complete: r.complete ? 1 : 0 });
+  const runReplay = () => {
+    const r = replaySpool({ dataDir: o.dataDir, db: o.db, deliver: intake.deliver, stopped: () => stopped, ...(o.now ? { now: o.now } : {}),
+      ...(deliverReport ? { deliverReport } : {}) }).then((x) => {
+      o.log?.log('spool_replay', { delivered: x.delivered, torn: x.torn, skipped: x.skipped, deferred: x.deferred, dropped: x.dropped, complete: x.complete ? 1 : 0 });
+      return x;
+    });
+    r.catch((e: unknown) => o.log?.log('spool_replay_failed', { error: errorCode(e) }));
     return r;
-  });
-  replay.catch((e: unknown) => o.log?.log('spool_replay_failed', { error: errorCode(e) }));
-  return { intake, socket, replay, close: async () => { stopped = true; await socket?.close(); } };
+  };
+  const replay = runReplay();
+  return { intake, get socket() { return socket; }, replay, close: async () => { stopped = true; clearTimeout(retry); await socket?.close(); } };
 }
