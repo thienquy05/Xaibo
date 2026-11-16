@@ -74,19 +74,26 @@ export function componentRows(g: CostGroup): ComponentRow[] {
   });
 }
 
+/** Review M1 (P4-T07b): revisions are unique by content, not label; a shared label names its revision id. */
+function revisionLabel(revisions: PriceRevisionInfo[], id: number): string | null {
+  const r = revisions.find((x) => x.id === id);
+  if (!r) return null;
+  return revisions.some((x) => x.id !== id && x.label === r.label) ? `${r.label} (revision ${id})` : r.label;
+}
+
 export function groupTitle(g: CostGroup, revisions: PriceRevisionInfo[]): string {
-  const rev = revisions.find((r) => r.id === g.revision)?.label ?? (g.revision === null ? 'unavailable' : `revision ${g.revision}`);
+  const rev = (g.revision === null ? null : revisionLabel(revisions, g.revision)) ?? (g.revision === null ? 'unavailable' : `revision ${g.revision}`);
   return `${g.model} · ${g.basis === 'owner_fallback' ? 'Owner-set fallback' : `Price table ${rev}`} · ${g.priced} of ${g.requests} requests priced`;
 }
 
-export interface RevisionRow { label: string; asOf: string; source: string; references: string[]; fallback: boolean; models: string; period: string }
+export interface RevisionRow { id: number; label: string; asOf: string; source: string; references: string[]; fallback: boolean; models: string; period: string }
 /** One row per applied immutable revision; multiple revisions stay separate (editing today's table never reprices). */
 export function revisionRows(d: CostDetail): RevisionRow[] {
   return d.revisions.map((r) => {
     const gs = d.groups.filter((g) => g.revision === r.id);
     const from = gs.map((g) => g.from).filter((x): x is number => x !== null), to = gs.map((g) => g.to).filter((x): x is number => x !== null);
     return {
-      label: r.label, asOf: `Prices as of ${r.pricesAsOf ?? 'unavailable'}`, source: r.source === 'bundled' ? 'Bundled price table' : 'Owner override',
+      id: r.id, label: revisionLabel(d.revisions, r.id) ?? r.label, asOf: `Prices as of ${r.pricesAsOf ?? 'unavailable'}`, source: r.source === 'bundled' ? 'Bundled price table' : 'Owner override',
       references: r.references, fallback: r.references.includes('Owner-set fallback') || gs.some((g) => g.basis === 'owner_fallback'),
       models: [...new Set(gs.map((g) => g.model))].join(', '),
       period: from.length && to.length ? `${formatTime(Math.min(...from))} – ${formatTime(Math.max(...to))}` : 'Period unavailable',

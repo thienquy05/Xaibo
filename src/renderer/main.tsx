@@ -125,6 +125,7 @@ function App() {
       subagents: async (id, cursor, limit) => c().subagents(id, cursor, limit),
       files: async (id, cursor, limit) => c().files(id, cursor, limit),
       markers: async (id, cursor, limit) => c().markers(id, cursor, limit),
+      cost: async (id) => c().cost(id),
     };
   }, []);
   const clearRequest = useCallback(() => setRequest(null), []);

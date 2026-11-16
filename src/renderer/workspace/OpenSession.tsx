@@ -3,17 +3,18 @@
 // A live session opens on its latest page, anything else at its first turn; later activity is appended at the end
 // without moving the reading position.
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import type { FileItem, ModelMarker, SessionDetail, SessionRow, SubagentItem, TCursor, ToolItem, TranscriptItem } from '../../shared/ipc.ts';
+import type { CostDetail, FileItem, ModelMarker, SessionDetail, SessionRow, SubagentItem, TCursor, ToolItem, TranscriptItem } from '../../shared/ipc.ts';
 import type { Client } from '../client.ts';
 import { contextText, costText, findingBadges, formatTime, markers as rowMarkers, originText, statusExtras } from '../model.ts';
 import { Icon, StatusBadge } from '../status/StatusBadge.tsx';
 import { visible } from '../text.ts';
 import { ContextPane } from './context/ContextSection.tsx';
+import { CostPane } from './cost/CostSection.tsx';
 import { Conversation, Files, Subagents, Timeline, Tools, type Paged, type SliceFn } from './sections.tsx';
 import { mergeTimeline } from './timeline.ts';
 import { appendLive, compactStatus, countText, incompleteReasons, initialAt, trimWindow } from './view.ts';
 
-export type WorkspaceApi = Pick<Client, 'session' | 'transcript' | 'slice' | 'tools' | 'subagents' | 'files' | 'markers'>;
+export type WorkspaceApi = Pick<Client, 'session' | 'transcript' | 'slice' | 'tools' | 'subagents' | 'files' | 'markers' | 'cost'>;
 const PAGE = 50;
 const LEDGER_PAGE = 100;
 // ponytail: tool records for the conversation come from the first 5 tool pages (500 calls); a longer session shows
@@ -68,9 +69,9 @@ function usePaged<T, C>(fetch: (c: C | null) => Promise<{ items: T[]; next: C | 
 }
 
 interface Window { items: TranscriptItem[]; prev: TCursor | null; next: TCursor | null; loading: boolean; failed: boolean; loaded: boolean }
-const SECTIONS = ['conversation', 'timeline', 'tools', 'subagents', 'files', 'context'] as const;
+const SECTIONS = ['conversation', 'timeline', 'tools', 'subagents', 'files', 'context', 'cost'] as const;
 type Section = (typeof SECTIONS)[number];
-const SECTION_TEXT: Record<Section, string> = { conversation: 'Conversation', timeline: 'Timeline', tools: 'Tools', subagents: 'Subagents', files: 'Files', context: 'Context' };
+const SECTION_TEXT: Record<Section, string> = { conversation: 'Conversation', timeline: 'Timeline', tools: 'Tools', subagents: 'Subagents', files: 'Files', context: 'Context', cost: 'Cost' };
 
 export function OpenSession({ row, api, lastKnown, listShown, onShowList, onBack }: {
   row: SessionRow; api: WorkspaceApi; lastKnown: boolean; listShown: boolean; onShowList: () => void; onBack: () => void;
@@ -93,6 +94,16 @@ export function OpenSession({ row, api, lastKnown, listShown, onShowList, onBack
     api.session(id).then((d) => { if (!on) return; if (d) setDetail(d); setDetailFailed(d === null); }, () => { if (on) setDetailFailed(true); });
     return () => { on = false; };
   }, [api, id, activity, detailRetry]);
+  // P4-T07b: the cost breakdown is fetched only while the Cost tab is shown, and again on activity or Retry.
+  const [cost, setCost] = useState<CostDetail | null | undefined>(undefined);
+  const [costFailed, setCostFailed] = useState(false);
+  const [costRetry, setCostRetry] = useState(0);
+  useEffect(() => {
+    if (section !== 'cost') return;
+    let on = true;
+    api.cost(id).then((c) => { if (on) { setCost(c); setCostFailed(false); } }, () => { if (on) setCostFailed(true); });
+    return () => { on = false; };
+  }, [api, id, activity, section, costRetry]);
 
   const tools = usePaged<ToolItem, number>((c) => api.tools(id, c, LEDGER_PAGE).then((r) => ({ items: r.calls, next: r.next })), TOOL_PAGES, activity);
   const files = usePaged<FileItem, number>((c) => api.files(id, c, LEDGER_PAGE).then((r) => ({ items: r.touches, next: r.next })), 1, activity);
@@ -189,7 +200,8 @@ export function OpenSession({ row, api, lastKnown, listShown, onShowList, onBack
                 : section === 'files' ? <div className="x-scroll"><Files files={files} tools={tools.items} /></div>
                   // ponytail: Stale is evaluated at render (detail reloads on activity); a quiet live session shows it
                   // only on its next render. Add a minute tick if a quiet session must flip to Stale on its own.
-                  : <div className="x-scroll"><ContextPane row={row} detail={detail} failed={detailFailed} onRetry={() => setDetailRetry((n) => n + 1)} now={Date.now()} /></div>}
+                  : section === 'context' ? <div className="x-scroll"><ContextPane row={row} detail={detail} failed={detailFailed} onRetry={() => setDetailRetry((n) => n + 1)} now={Date.now()} /></div>
+                    : <div className="x-scroll"><CostPane cost={cost} failed={costFailed} onRetry={() => { setCostFailed(false); setCostRetry((n) => n + 1); }} /></div>}
         {tr.failed && (section === 'conversation' || section === 'timeline') ? <p className="x-gap" role="alert">The transcript could not be loaded <button type="button" className="x-btn x-btn-secondary" onClick={() => loadAt(initial.current)}>Retry</button></p> : null}
       </div>
       <div className="x-foot" inert={drawer}>

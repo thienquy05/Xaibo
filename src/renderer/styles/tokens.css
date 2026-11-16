@@ -462,6 +462,11 @@ summary:hover { background: var(--x-tint); }
 .x-context-table { margin: 0; }
 .x-context-table caption { text-align: left; font-weight: var(--x-weight-strong); padding: var(--x-space-2) 0; }
 .x-context-table th { width: 50%; color: var(--x-ink); white-space: normal; }
+/* P4-T07b Cost section (design §6.3.2): four-column component tables and the Price provenance list. */
+.x-cost .x-context-table th[scope="row"], .x-cost .x-context-table thead th { width: auto; }
+.x-cost .x-context-table thead th { color: var(--x-muted); }
+.x-cost h4 { margin: var(--x-space-2) 0 0; font-size: var(--x-text-body); }
+.x-provenance { margin: 0; padding-left: var(--x-space-4); display: grid; gap: var(--x-space-2); font-size: var(--x-text-small); overflow-wrap: anywhere; }
 .x-status-cell { display: inline-flex; align-items: center; gap: 6px; }
 .x-mono { font-family: var(--x-font-mono); }
 .x-kinds { display: flex; flex-wrap: wrap; gap: var(--x-space-1); }
