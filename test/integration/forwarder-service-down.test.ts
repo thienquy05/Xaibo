@@ -102,7 +102,7 @@ test('the forwarder delivers to the real P3-T02 server: accepted ack, nothing sp
     }
     // Never lost: every delivery reached the service or the spool (a late ack spools the same delivery_id; replay dedups).
     const ids = new Set([...got.filter((e) => JSON.stringify(e.payload) === JSON.stringify(PAYLOAD)).map((e) => e.delivery_id),
-      ...lines(dir2).map((l) => (JSON.parse(l) as { envelope: Envelope }).envelope.delivery_id)]);
+      ...lines(dir2).map((l) => (JSON.parse(l) as Envelope).delivery_id)]); // a spool line is the envelope itself
     assert.equal(ids.size, 5);
     const own = median(runs) - base;
     t.diagnostic(`dev runtime, accepted path: own ~${own.toFixed(1)} ms; spooled ${lines(dir2).length}`);
