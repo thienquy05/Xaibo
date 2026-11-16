@@ -16,8 +16,10 @@ export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export interface Launched { app: ElectronApplication; page: Page; dataDir: string; root: string; created: number }
 
-/** P2-T14: optional Codex home and agy profile root; agy has no env override, so its root is linked under the temp HOME. */
-export async function launch(claudeDir: string, more: { codex?: string; agy?: string; env?: Record<string, string> } = {}): Promise<Launched> {
+/** P2-T14: optional Codex home and agy profile root; agy has no env override, so its root is linked under the temp HOME.
+ *  P4-T12b: `dataDir` places the data dir (a disk-image volume for the disk-full fault); the fake `claude` appends its
+ *  arguments to `<root>/agent-calls.log`, so a run can check no prohibited command was invoked (FR-44). */
+export async function launch(claudeDir: string, more: { codex?: string; agy?: string; env?: Record<string, string>; dataDir?: string } = {}): Promise<Launched> {
   const root = mkdtempSync(path.join(tmpdir(), 'xaibo-perf-'));
   const home = path.join(root, 'home');
   const bin = path.join(home, 'bin');
@@ -25,9 +27,9 @@ export async function launch(claudeDir: string, more: { codex?: string; agy?: st
   mkdirSync(path.join(root, 'tmp'));
   if (more.agy) { mkdirSync(path.join(home, '.gemini'), { recursive: true }); symlinkSync(more.agy, path.join(home, '.gemini', 'antigravity-cli')); }
   const script = (name: string, body: string) => { const f = path.join(bin, name); writeFileSync(f, `#!/bin/sh\n${body}\n`); chmodSync(f, 0o755); return f; };
-  script('claude', 'echo "2.1.319 (Claude Code)"');
+  script('claude', `echo "$*" >> '${path.join(root, 'agent-calls.log')}'\necho "2.1.319 (Claude Code)"`);
   const shell = script('fake-shell', 'while [ $# -gt 0 ]; do [ "$1" = -c ] && exec /bin/sh -c "$2"; shift; done');
-  const dataDir = path.join(root, 'data');
+  const dataDir = more.dataDir ?? path.join(root, 'data');
   const env = {
     HOME: home, PATH: `${bin}:/usr/bin:/bin`, SHELL: shell, TMPDIR: path.join(root, 'tmp'), LANG: 'en_US.UTF-8',
     CLAUDE_CONFIG_DIR: claudeDir, CODEX_HOME: more.codex ?? path.join(home, '.codex'), GEMINI_CLI_HOME: home, XAIBO_DATA_DIR: dataDir,
@@ -45,17 +47,20 @@ export async function launch(claudeDir: string, more: { codex?: string; agy?: st
 /** Quits the app; if it is still running after 15 s it is killed (P3-T16b: a hung quit left the app and the probe
  *  running) and `timedOut` says so. */
 export async function close(l: Launched): Promise<{ timedOut: boolean }> {
+  const proc = l.app.process(); // taken before close: Playwright disposes the app object on close
   const timedOut = await Promise.race([l.app.close().then(() => false, () => false), sleep(15_000).then(() => true)]);
+  // P4-T12b: a close that returns at once (the Playwright connection already broken) can leave the app running
+  if (!timedOut && proc.exitCode === null && proc.signalCode === null) { await sleep(2000); if (proc.exitCode === null && proc.signalCode === null) proc.kill('SIGKILL'); }
   if (timedOut) {
     // evidence for the not-yet-reproduced quit hang: a stack sample of main and its children (local, git-ignored)
     let children = '';
-    try { children = execFileSync('/usr/bin/pgrep', ['-P', String(l.app.process().pid)], { encoding: 'utf8' }); } catch { /* none (exit 1) */ }
-    const pids = [l.app.process().pid, ...children.split('\n').filter(Boolean).map(Number)];
+    try { children = execFileSync('/usr/bin/pgrep', ['-P', String(proc.pid)], { encoding: 'utf8' }); } catch { /* none (exit 1) */ }
+    const pids = [proc.pid, ...children.split('\n').filter(Boolean).map(Number)];
     mkdirSync(path.join(REPO, '.cache', 'perf'), { recursive: true });
     for (const pid of pids) {
       try { writeFileSync(path.join(REPO, '.cache', 'perf', `quit-hang-${Date.now()}-${pid}.txt`), execFileSync('/usr/bin/sample', [String(pid), '2', '-mayDie'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })); } catch { /* gone */ }
     }
-    l.app.process().kill('SIGKILL');
+    proc.kill('SIGKILL');
   }
   rmSync(l.root, { recursive: true, force: true });
   return { timedOut };
@@ -64,8 +69,13 @@ export async function close(l: Launched): Promise<{ timedOut: boolean }> {
 export function serviceLog(dataDir: string): { t: string; event: string }[] {
   const f = path.join(dataDir, 'logs', 'service', 'xaibo.log');
   if (!existsSync(f)) return [];
-  return readFileSync(f, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l) as { t: string; event: string });
+  // P4-T12b: a line cut by a full disk is skipped here and counted by tornLogLines
+  return readFileSync(f, 'utf8').trim().split('\n').filter(Boolean).flatMap((l) => { try { return [JSON.parse(l) as { t: string; event: string }]; } catch { return []; } });
 }
+export const tornLogLines = (dataDir: string) => {
+  const f = path.join(dataDir, 'logs', 'service', 'xaibo.log');
+  return existsSync(f) ? readFileSync(f, 'utf8').split('\n').filter((l) => { if (!l) return false; try { JSON.parse(l); return false; } catch { return true; } }).length : 0;
+};
 
 /** Polls the service log for an event; its time (ms since epoch), or null after timeoutMs. */
 export async function waitForEvent(dataDir: string, event: string, timeoutMs: number, onTick?: () => Promise<void>): Promise<number | null> {

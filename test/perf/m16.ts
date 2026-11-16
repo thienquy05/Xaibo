@@ -184,7 +184,7 @@ const M4_MB = 250;
 const M4_CPU = 1;
 
 /** The pids under `roots` (inclusive) with their RSS (KiB) and %CPU from one `ps` call. */
-function psTree(roots: number[]) {
+export function psTree(roots: number[]) {
   const rows = execFileSync('/bin/ps', ['-axo', 'pid=,ppid=,rss=,pcpu='], { encoding: 'utf8' }).split('\n').filter(Boolean)
     .map((l) => { const [pid, ppid, rss, cpu] = l.trim().split(/\s+/).map(Number); return { pid: pid!, ppid: ppid!, rss: rss!, cpu: cpu! }; });
   const mine = new Set(roots);
@@ -194,7 +194,7 @@ function psTree(roots: number[]) {
 
 /** Sum over pids of the first `Footprint:` figure `footprint <pid>` prints, in MiB (one pid per call: no total line
  *  to double-count); null if any cannot be read. */
-function footprintMiB(pids: number[]): number | null {
+export function footprintMiB(pids: number[]): number | null {
   const unit = { KB: 1 / 1024, MB: 1, GB: 1024 } as Record<string, number>;
   let sum = 0;
   for (const pid of pids) {

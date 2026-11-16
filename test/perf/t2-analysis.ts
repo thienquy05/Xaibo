@@ -12,7 +12,8 @@ export interface Window { from: bigint; to: bigint }
 
 const ms = (a: bigint, b: bigint) => Number(b - a) / 1e6;
 
-export function analyze(o: { emitted: Emitted[]; service: TraceLine[]; main: TraceLine[]; restart: Window | null; loadEnd: bigint }) {
+/** `faults` (P4-T12b): further windows (disk full) kept apart like the restart window; their samples join its bucket. */
+export function analyze(o: { emitted: Emitted[]; service: TraceLine[]; main: TraceLine[]; restart: Window | null; faults?: Window[]; loadEnd: bigint }) {
   // Indexes built once: per id its commits and deltas, per delta number its paints, each in time order.
   const by = <K>(lines: TraceLine[], keys: (l: TraceLine) => K[]) => {
     const m = new Map<K, bigint[]>();
@@ -48,7 +49,8 @@ export function analyze(o: { emitted: Emitted[]; service: TraceLine[]; main: Tra
   const t00 = o.emitted.reduce((m, e) => (m === null || e.t0 < m ? e.t0 : m), null as bigint | null) ?? 0n;
   const steadyMisses: { kind: Emitted['kind']; missing: Stage; atMs: number }[] = [];
 
-  const inRestart = (e: Emitted) => o.restart !== null && e.t0 >= o.restart.from && e.t0 <= o.restart.to;
+  const windows = [...(o.restart ? [o.restart] : []), ...(o.faults ?? [])];
+  const inRestart = (e: Emitted) => windows.some((w) => e.t0 >= w.from && e.t0 <= w.to);
   const buckets = { m1: { steady: [] as number[], restartWindow: [] as number[] }, m2: { steady: [] as number[], restartWindow: [] as number[] } };
   const hops = { dispatch: [] as number[], toCommit: [] as number[], commitToDelta: [] as number[], deltaToPaint: [] as number[] };
   const unpainted = { steady: 0, restart: 0 };

@@ -97,3 +97,15 @@ test('review L4: a commit carrying many ids joins each; an id committed twice us
   });
   assert.deepEqual([r.m2.steady.n, r.m2.steady.max, r.unpainted.steady], [3, 70, 0], 'c (emitted at 100) joins its commit at 150, not the earlier one');
 });
+
+test('P4-T12b: events in a fault window (disk full) are kept apart like the restart window; resyncs still split at the kill', () => {
+  const r = analyze({
+    emitted: [file('s', 0), file('full', 1000), hook(null, 1100), file('s2', 3000)],
+    service: [commit(50, 's'), delta(60, 1, 's'), commit(2500, 'full'), delta(2510, 2, 'full'), commit(3050, 's2'), delta(3060, 3, 's2')],
+    main: [paint(70, 1), paint(2600, 2), paint(3100, 3)],
+    restart: null, faults: [{ from: T(900), to: T(2800) }], loadEnd: T(3000),
+  });
+  assert.deepEqual([r.m2.steady.n, r.m2.steady.max], [2, 100], 'the 1.6 s disk-full wait is not a steady sample');
+  assert.deepEqual([r.m2.restartWindow.n, r.m1.restartWindow.n, r.unpainted.restart], [1, 1, 1], 'a hook lost while full is a fault-window miss');
+  assert.equal(r.drainMs, 100);
+});
