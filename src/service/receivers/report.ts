@@ -105,8 +105,11 @@ export function createReportIntake(o: ReportIntakeOptions): ReportIntake {
     };
     if (attributed) {
       batch.sessions.push({ nativeSessionId: x.session_id, lastActivity: at, ...(x.cwd ? { cwd: x.cwd } : {}) });
+      // P4-T08 (FR-51, §5.10): optional model/effort are session model evidence; turn.start with a turn_id times the turn
       batch.events.push({ nativeSessionId: x.session_id, source: 'report', confidence: 'confirmed', nativeId: e.delivery_id, kind: 'report',
-        sourceSeq: x.producer_seq, sourceTs: at, receivedTs: at, raw: JSON.stringify(lean) });
+        sourceSeq: x.producer_seq, sourceTs: at, receivedTs: at, raw: JSON.stringify(lean),
+        ...(x.model ? { model: { id: x.model.id, ...(x.effort ? { effort: x.effort } : {}), ...(x.turn_id ? { turn: x.turn_id } : {}) } } : {}),
+        ...(x.event === 'turn.start' && x.turn_id ? { turn: { id: x.turn_id, edge: 'start' as const } } : {}) });
     }
     try {
       o.writer.commitLive(batch);

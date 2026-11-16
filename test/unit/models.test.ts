@@ -29,6 +29,12 @@ test('label: effort beside the name only when exposed; agy (no Phase 2 evidence)
   assert.equal(modelLabel(displayName(models, null), null), 'Model unavailable');
 });
 
+test('P4-T08 (EC-102): one " · " separator, effort omitted when absent or empty, never blank', () => {
+  assert.equal(modelLabel(displayName(models, 'synthetic-unlisted'), 'low'), 'synthetic-unlisted · low', 'raw id keeps its effort');
+  assert.equal(modelLabel('Claude Opus 5.5', ''), 'Claude Opus 5.5');
+  assert.equal(displayName(models, ''), 'Model unavailable', 'an empty id is no evidence, never a blank label');
+});
+
 test('bundled models.json: sourced, dated, unique ids, observed models present, owner-verified (OQ-P2-05, D-P2-05)', () => {
   assert.deepEqual(validateModels(list), []);
   assert.equal(list.currency, 'USD');

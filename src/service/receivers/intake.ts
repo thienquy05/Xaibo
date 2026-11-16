@@ -12,7 +12,7 @@ import type { Envelope } from '../../shared/hook-protocol.ts';
 import type { Logger } from '../../shared/log.ts';
 import { isStatusline, lastSnapshots, statuslineRecord } from '../adapters/claude/statusline.ts';
 import { claudeReadings, statuslineContext, statuslineCost } from '../usage/snapshots.ts';
-import { isDiskFull, type Batch, type Writer } from '../store/writer.ts';
+import { isDiskFull, type Batch, type EventRow, type Writer } from '../store/writer.ts';
 import { openRegistry } from './registrations.ts';
 import { createReportIntake } from './report.ts';
 import { SocketError, startSocketServer, type IntakeResult, type SocketOptions, type SocketServer } from './socket.ts';
@@ -29,6 +29,21 @@ export interface Intake {
   deliver(e: Envelope): Promise<IntakeResult>;
   /** Writes the disk-full gaps held in memory; called once the store accepts writes again. */
   recovered(): void;
+}
+
+type Obj = Record<string, unknown>;
+const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
+const text = (v: unknown, max: number) => (typeof v === 'string' && v !== '' && v.length <= max && v.isWellFormed() ? v : null);
+const idOf = (v: unknown, key: string, max: number) => text(v, max) ?? (isObj(v) ? text(v[key], max) : null);
+
+/** P4-T08 (FR-51): hook `model` (string or {id}) and `effort` (string or {level}, else not exposed); a payload with an
+ *  `agent_id` belongs to a subagent and is never the session's model. The turn is the payload's `turn_id` (Codex). */
+export function hookModel(p: Obj): EventRow['model'] {
+  if (p['agent_id'] !== undefined && p['agent_id'] !== null) return undefined;
+  const id = idOf(p['model'], 'id', 256);
+  if (!id) return undefined;
+  const effort = idOf(p['effort'], 'level', 64), turn = text(p['turn_id'], 256);
+  return { id, ...(effort ? { effort } : {}), ...(turn ? { turn } : {}) };
 }
 
 const MAX_GAP_KEYS = 1000;
@@ -92,10 +107,11 @@ export function createIntake(o: IntakeOptions): Intake {
     const raw = JSON.stringify(s.record);
     if (!snapshots.differs(e.profile_key, s.session, raw)) return { status: 'accepted', code: 'unchanged' };
     const at = now(); // the service clock, never the sender's (review L7); no source time: statusLine stdin has none (S13)
+    const m = hookModel({ model: s.record['model'], effort: s.record['effort'] }); // P4-T08: model.id, effort.level, ordered by `at`
     try {
       o.writer.commitLive({ profileId: e.profile_key, agent: e.agent, sessions: [{ nativeSessionId: s.session }],
         events: [{ nativeSessionId: s.session, source: 'statusline', confidence: 'confirmed', nativeId: e.delivery_id, kind: 'statusline',
-          sourceSeq: at, receivedTs: at, raw, ...usageOf(s.record, e.delivery_id) }] });
+          sourceSeq: at, receivedTs: at, raw, ...usageOf(s.record, e.delivery_id), ...(m ? { model: { ...m, ts: at } } : {}) }] });
     } catch (err) {
       return { status: 'rejected', code: isDiskFull(err) ? 'disk-full' : 'store' };
     }
@@ -118,9 +134,17 @@ export function createIntake(o: IntakeOptions): Intake {
     };
     if (!unattributed) {
       const sid = e.session_id!;
+      const p = e.payload ?? {};
+      const model = hookModel(p);
+      // P4-T08: a prompt hook with a turn id (Codex) starts that turn at the hook's time, so a switch marker has a time;
+      // only the envelope's event counts and a subagent's prompt never starts a parent turn (review L4).
+      const turnId = e.event === 'UserPromptSubmit' && (p['agent_id'] === undefined || p['agent_id'] === null) ? text(p['turn_id'], 256) : null;
+      // Review M1/L6: the sender's clock, truncated and never later than the commit, so a future stamp cannot lock state.
+      const at = Math.min(Math.trunc(e.received_ts), batch.delivery!.committedTs);
       batch.sessions.push({ nativeSessionId: sid, lastActivity: e.received_ts, ...(e.cwd !== null ? { cwd: e.cwd } : {}) });
       batch.events.push({ nativeSessionId: sid, source: 'hook', confidence: 'confirmed', nativeId: e.delivery_id, kind: 'hook',
-        sourceSeq: e.received_ts, sourceTs: e.received_ts, receivedTs: batch.delivery!.committedTs, raw: JSON.stringify(e) });
+        sourceSeq: e.received_ts, sourceTs: at, receivedTs: batch.delivery!.committedTs, raw: JSON.stringify(e),
+        ...(model ? { model } : {}), ...(turnId ? { turn: { id: turnId, edge: 'start' as const } } : {}) });
     }
     try {
       o.writer.commitLive(batch);
