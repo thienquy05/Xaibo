@@ -324,3 +324,12 @@ test('P4-T10c1: the resync push carries nothing; extra fields are stripped', () 
   assert.deepEqual(parsePortMessage({ v: 1, type: 'resync', rows: [1], delta: 3, extra: 'x' }), { v: 1, type: 'resync' });
   assert.equal(parsePortMessage({ v: 2, type: 'resync' }), null);
 });
+
+test('P4-T10c2: metrics carry every known key as a safe non-negative integer; anything else is stripped or rejected', () => {
+  const metrics = { writerQueueAgeMs: 0, parseLagMs: 1500, walBytes: 1 << 20, watchHandles: 200, statusSessions: 500, deltaResyncs: 7, diskFull: 1 };
+  assert.deepEqual(parseServiceEvent({ v: 1, type: 'metrics', metrics: { ...metrics, path: '/tmp/x' }, extra: 'x' }), { v: 1, type: 'metrics', metrics });
+  for (const bad of [{ walBytes: -1 }, { walBytes: 1.5 }, { walBytes: '1' }, { walBytes: 2 ** 53 }, { diskFull: null }, { parseLagMs: undefined }]) {
+    assert.equal(parseServiceEvent({ v: 1, type: 'metrics', metrics: { ...metrics, ...bad } }), null, JSON.stringify(bad));
+  }
+  for (const bad of [null, [], 'x']) assert.equal(parseServiceEvent({ v: 1, type: 'metrics', metrics: bad }), null);
+});

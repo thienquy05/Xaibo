@@ -6,7 +6,7 @@ import { EventEmitter } from 'node:events';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildBundle, readLogTail, writeBundle } from '../../src/main/diagnostics.ts';
+import { buildBundle, foldMetrics, readLogTail, writeBundle } from '../../src/main/diagnostics.ts';
 import { errorCode, installCrashPolicy } from '../../src/shared/crash.ts';
 import { createLogger } from '../../src/shared/log.ts';
 import { sanitizeTree, saveArtifact } from '../e2e/artifacts.ts';
@@ -85,4 +85,20 @@ test('canary: test-artifacts', () => {
     if (f.endsWith('.md') || f.endsWith('.txt')) assert.deepEqual(hits(readFileSync(join(dir, f), 'utf8'), c), [], f);
   }
   assert.deepEqual([...readFileSync(join(dir, 'nested', 'image.png'))], [0x89, 0x50, 0x4e, 0x47], 'binary files untouched');
+});
+
+test('P4-T10c2: the bundle carries the latest service metrics as numbers, or null before the first report', () => {
+  const base = { app: {}, os: {}, health: { v: 1, type: 'health', state: 'running', attempt: 0, readOnly: null } as const, counters: {}, logTail: [] };
+  const serviceMetrics = { writerQueueAgeMs: 3, parseLagMs: 90, walBytes: 8192, watchHandles: 4, statusSessions: 6, deltaResyncs: 1, diskFull: 0 };
+  assert.deepEqual((JSON.parse(buildBundle({ ...base, serviceMetrics })) as { serviceMetrics: unknown }).serviceMetrics, serviceMetrics);
+  assert.equal((JSON.parse(buildBundle({ ...base, serviceMetrics: null })) as { serviceMetrics: unknown }).serviceMetrics, null);
+});
+
+// Review M1: reports arrive every 5 s with the peaks of that interval; main keeps the largest peak since the service
+// started, so a spike is still in a bundle saved later. Other values are the latest.
+test('P4-T10c2 review M1: foldMetrics keeps the max of the *Ms peaks and the latest of everything else', () => {
+  const a = { writerQueueAgeMs: 900, parseLagMs: 70_000, walBytes: 8192, watchHandles: 4, statusSessions: 6, deltaResyncs: 1, diskFull: 1 };
+  const b = { writerQueueAgeMs: 0, parseLagMs: 120, walBytes: 4096, watchHandles: 2, statusSessions: 3, deltaResyncs: 2, diskFull: 0 };
+  assert.deepEqual(foldMetrics(null, a), a);
+  assert.deepEqual(foldMetrics(a, b), { ...b, writerQueueAgeMs: 900, parseLagMs: 70_000 });
 });

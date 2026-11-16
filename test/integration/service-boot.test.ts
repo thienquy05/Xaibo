@@ -7,7 +7,7 @@ import { appendFileSync, chmodSync, cpSync, mkdirSync, mkdtempSync, realpathSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { boot } from '../../src/service/boot.ts';
+import { boot, parseLagOf } from '../../src/service/boot.ts';
 import { loadCatalog, type Catalog } from '../../src/service/catalog/validate.ts';
 import { count, FIXTURES, until } from '../helpers/claude-profile.ts';
 
@@ -99,4 +99,28 @@ test('H3: a failed detection leaves an empty agent list, not "detecting" forever
   assert.deepEqual(svc.agents(), []);
   assert.deepEqual(announced, [[]]);
   svc.stop();
+});
+
+// XAIBO-PROD-427 (P4-T10c2): content-free metrics from the running service (deltaResyncs is added by the service entry).
+test('P4-T10c2: metrics() reports WAL size, watch handles, cached status sessions and disk full as safe integers', async () => {
+  const s = setup();
+  const svc = await boot({ dataDir: s.dataDir, home: s.home, catalog, intervalMs: 60_000 });
+  try { // stopped even when an assertion fails, so open watchers never keep the test file alive
+    await svc.done;
+    const m = svc.metrics();
+    assert.deepEqual(Object.keys(m).sort(), ['diskFull', 'parseLagMs', 'statusSessions', 'walBytes', 'watchHandles', 'writerQueueAgeMs']);
+    for (const [k, v] of Object.entries(m)) assert.ok(Number.isSafeInteger(v) && v >= 0, k);
+    assert.ok(m.walBytes > 0, 'ingest wrote to the WAL');
+    assert.equal(m.diskFull, 0);
+  } finally { svc.stop(); }
+});
+
+// Review M2/L3: parse lag counts only files written within the live window; a future or old mtime is no lag.
+test('P4-T10c2 review: parseLagOf is commit time minus mtime, rounded, only within 10 min; otherwise null', () => {
+  const t = 1_800_000_000_000;
+  assert.equal(parseLagOf(t, t - 1500.4), 1500);
+  assert.equal(parseLagOf(t, t), 0);
+  assert.equal(parseLagOf(t, t + 5), null, 'a future mtime (clock skew) is not lag');
+  assert.equal(parseLagOf(t, t - 10 * 60_000 - 1), null, 'an older file is history import');
+  assert.equal(parseLagOf(t, 0), null);
 });

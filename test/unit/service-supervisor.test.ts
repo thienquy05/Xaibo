@@ -17,7 +17,7 @@ class FakeChild extends EventEmitter {
   die(code = 1) { this.emit('exit', code); }
 }
 
-function harness(onNotify?: (n: unknown) => void) {
+function harness(onNotify?: (n: unknown) => void, onMetrics?: (m: unknown) => void) {
   let t = 0;
   let ports = 0;
   const children: FakeChild[] = [];
@@ -35,6 +35,7 @@ function harness(onNotify?: (n: unknown) => void) {
     now: () => t,
     quitMs: 2_000,
     ...(onNotify ? { onNotify } : {}),
+    ...(onMetrics ? { onMetrics } : {}),
   });
   const fire = () => { // runs the single pending timer, returns its delay
     assert.equal(timers.size, 1, 'exactly one pending timer');
@@ -156,4 +157,17 @@ test('invalid messages from the service are dropped and counted', () => {
   h.last().emit('message', 'ready');
   assert.equal(h.sup.health.state, 'starting');
   assert.equal(h.sup.dropped, 2);
+});
+
+// XAIBO-PROD-427 (P4-T10c2): content-free service metrics reach main validated; they never change health.
+test('P4-T10c2: metrics events go to onMetrics, extra keys stripped; an invalid one is dropped', () => {
+  const got: unknown[] = [];
+  const h = harness(undefined, (m) => got.push(m));
+  h.sup.start();
+  const metrics = { writerQueueAgeMs: 12, parseLagMs: 40, walBytes: 4096, watchHandles: 3, statusSessions: 2, deltaResyncs: 0, diskFull: 0 };
+  h.last().emit('message', { v: 1, type: 'metrics', metrics: { ...metrics, cwd: 1 } });
+  h.last().emit('message', { v: 1, type: 'metrics', metrics: { ...metrics, walBytes: -1 } });
+  assert.deepEqual(got, [{ v: 1, type: 'metrics', metrics }]);
+  assert.equal(h.sup.dropped, 1);
+  assert.equal(h.sup.health.state, 'starting');
 });

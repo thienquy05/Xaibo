@@ -18,9 +18,14 @@ export type ServiceCommand = { v: 1; type: 'quit' | 'wake' | 'port' | 'reloadPri
 /** service -> main; notify (P3-T11, EC-59) carries only the agent display name, the approved project label (null until
  *  one exists, FR-10) and the wait state. */
 export type NotifyState = 'waiting-for-permission' | 'needs-input';
+/** P4-T10c2 (PRD §7.4): content-free service metrics, numbers only. `*Ms` peaks cover the interval since the previous
+ *  report; deltaResyncs counts since service start; diskFull is 0 or 1. */
+export const SERVICE_METRICS = ['writerQueueAgeMs', 'parseLagMs', 'walBytes', 'watchHandles', 'statusSessions', 'deltaResyncs', 'diskFull'] as const;
+export type ServiceMetrics = Record<(typeof SERVICE_METRICS)[number], number>;
 export type ServiceEvent =
   | { v: 1; type: 'ready'; readOnly: ReadOnlyReason | null }
-  | { v: 1; type: 'notify'; agent: string; label: string | null; state: NotifyState };
+  | { v: 1; type: 'notify'; agent: string; label: string | null; state: NotifyState }
+  | { v: 1; type: 'metrics'; metrics: ServiceMetrics };
 export type HealthState = 'starting' | 'running' | 'restarting' | 'stopped';
 /** main -> renderer; attempt counts consecutive restarts (0 unless restarting). */
 export interface Health { v: 1; type: 'health'; state: HealthState; attempt: number; readOnly: ReadOnlyReason | null }
@@ -55,6 +60,17 @@ export function parseServiceEvent(x: unknown): ServiceEvent | null {
   if (m?.type === 'notify') {
     if (!text(m.agent, 64) || !m.agent || !(m.label === null || text(m.label, 128))) return null;
     return oneOf(['waiting-for-permission', 'needs-input'] as const, m.state) ? { v: 1, type: 'notify', agent: m.agent, label: m.label, state: m.state } : null;
+  }
+  if (m?.type === 'metrics') { // every known key, a safe non-negative integer; anything else is dropped (never content)
+    const raw = m.metrics;
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+    const metrics = {} as ServiceMetrics;
+    for (const k of SERVICE_METRICS) {
+      const v = (raw as Msg)[k];
+      if (!Number.isSafeInteger(v) || (v as number) < 0) return null;
+      metrics[k] = v as number;
+    }
+    return { v: 1, type: 'metrics', metrics };
   }
   return m && m.type === 'ready' && readOnlyOk(m.readOnly) ? { v: 1, type: 'ready', readOnly: m.readOnly } : null;
 }

@@ -7,10 +7,10 @@ import { appendFileSync } from 'node:fs';
 import { release } from 'node:os';
 import path from 'node:path';
 import { installCrashPolicy } from '../shared/crash.ts';
-import { AGENT_ID, IPC_VERSION } from '../shared/ipc.ts';
+import { AGENT_ID, IPC_VERSION, type ServiceMetrics } from '../shared/ipc.ts';
 import { createLogger, loadInstallSecret } from '../shared/log.ts';
 import { initDataDir } from './app-paths.ts';
-import { buildBundle, readLogTail, writeBundle } from './diagnostics.ts';
+import { buildBundle, foldMetrics, readLogTail, writeBundle } from './diagnostics.ts';
 import { notificationText, showNotification } from './notifications.ts';
 import { forwardPower } from './power.ts';
 import { APP_ORIGIN, devOrigin } from './policy.ts';
@@ -42,6 +42,7 @@ function start(dataDir: string) {
   let quitting = false;
   let stopped = false;
   let blocked = 0;
+  let serviceMetrics: ServiceMetrics | null = null;
 
   const show = () => showWindow(win);
   let pageReady = false; // a port sent to a loading page is lost; did-finish-load sends one
@@ -57,13 +58,14 @@ function start(dataDir: string) {
     }),
     channel: () => new MessageChannelMain(),
     onHealth: (h) => win?.webContents.send('health', h),
-    onSpawn: sendPort,
+    onSpawn: () => { serviceMetrics = null; sendPort(); }, // a new service process: no stale metrics (review L1)
     setTimer: (fn, ms) => setTimeout(fn, ms),
     clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
     now: Date.now,
     quitMs: SERVICE_QUIT_MS,
     log: (event, fields) => log.log(event, fields),
     // P3-T11 (EC-59): the text is built from agent, label and state only; test mode records it with an hrtime stamp.
+    onMetrics: (m) => { serviceMetrics = foldMetrics(serviceMetrics, m.metrics); }, // P4-T10c2: for the diagnostics bundle
     onNotify: (n) => {
       const title = notificationText(n.agent, n.label, n.state);
       if (notifyStub) appendFileSync(notifyStub, `${JSON.stringify({ title, t: process.hrtime.bigint().toString() })}\n`);
@@ -92,6 +94,7 @@ function start(dataDir: string) {
       os: { platform: process.platform, release: release(), arch: process.arch },
       health: supervisor.health,
       counters: { requestsBlocked: blocked, ipcDropped: supervisor.dropped },
+      serviceMetrics,
       logTail: readLogTail(app.getPath('logs'), { lines: 200, bytes: 256 * 1024 }),
     }));
     log.log('diagnostics_saved');

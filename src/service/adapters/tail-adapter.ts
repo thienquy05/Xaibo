@@ -38,7 +38,7 @@ export interface TailAdapterOptions {
 
 type Stored = Checkpoint & { status: SourceFileCheckpoint['status'] };
 /** What boot holds of any adapter: its public lifecycle. */
-export type Ingester = Pick<TailAdapter<TailFile, TailRecord>, 'start' | 'watch' | 'backfill' | 'stop' | 'wake' | 'reads'>;
+export type Ingester = Pick<TailAdapter<TailFile, TailRecord>, 'start' | 'watch' | 'backfill' | 'stop' | 'wake' | 'reads' | 'watched'>;
 
 // In-memory parse cap (D-P1-13, OQ-P1-06 measured): an in-memory line costs about 7x its size in the service (bytes,
 // raw and parsed strings, SQLite binds and record build), so 64 MiB could not meet the EC-15 RSS bound; longer lines
@@ -75,6 +75,9 @@ export abstract class TailAdapter<F extends TailFile, R extends TailRecord> {
 
   /** Times a file was opened for reading (EC-19: unchanged files are never read). */
   reads(path: string): number { return this.#reads.get(path) ?? 0; }
+
+  /** Open fs.watch handles (P4-T10c2 metrics). */
+  watched(): number { return this.#watcher.watched(); }
 
   async start(): Promise<void> {
     await this.watch();

@@ -3,8 +3,9 @@
 // A read-only store (EC-45) is reported and skips ingest. P1-T12: commit and agent-status hooks for the renderer, and
 // a manual executable path ("Set path…") that re-detects that agent. P3-T04: once profiles are synced, the hook socket
 // listens and the spool replays, before the file backfill; a full disk is logged and its hook-only gap written on recovery.
+import { statSync } from 'node:fs';
 import path from 'node:path';
-import { OUTCOMES, REASONS, RULES, type AgentStatus, type Banner, type LiveStatus, type NotifyState } from '../shared/ipc.ts';
+import { OUTCOMES, REASONS, RULES, type AgentStatus, type Banner, type LiveStatus, type NotifyState, type ServiceMetrics } from '../shared/ipc.ts';
 import type { Logger } from '../shared/log.ts';
 import { AgyAdapter } from './adapters/agy/index.ts';
 import { ClaudeAdapter } from './adapters/claude/index.ts';
@@ -59,6 +60,8 @@ export interface Service {
   ticking(): string[];
   /** Current coverage banners (hook-only gaps, disk full, hooks blocked, awaiting trust). */
   coverage(): Banner[];
+  /** P4-T10c2: content-free metrics; the `*Ms` peaks reset on each call (the service entry adds deltaResyncs). */
+  metrics(): Omit<ServiceMetrics, 'deltaResyncs'>;
   /** Validates and stores a manual executable path, then re-detects that agent; false if refused. */
   setPath(agent: string, file: string): Promise<boolean>;
   /** P3-T12: the machine sleeps from `at` (main's clock); the status engine excludes the gap from R1/R5. */
@@ -70,6 +73,16 @@ export interface Service {
 
 /** The turn-settle interval (PRD §6.2/§6.3, Q8 default; a setting with the Settings screen after Gate D, Q3-14). */
 const SETTLE_MS = 4000;
+
+// P4-T10c2 parse lag: commit time minus a file's last write (its mtime at sync), for files written within LIVE_LAG_MS;
+// older files are history import and a future mtime is clock skew, so neither is lag. ponytail: mtime has the file
+// system's resolution and is the write time only for append-only transcripts; a backfill of files written while the
+// service was down counts as lag (review L3).
+const LIVE_LAG_MS = 10 * 60_000;
+export function parseLagOf(now: number, mtime: number): number | null {
+  const lag = now - mtime;
+  return mtime > 0 && lag >= 0 && lag <= LIVE_LAG_MS ? Math.round(lag) : null;
+}
 
 export async function boot(o: BootOptions): Promise<Service> {
   const store = await openStore({ file: path.join(o.dataDir, 'xaibo.db'), backupDir: path.join(o.dataDir, 'backups') });
@@ -161,8 +174,15 @@ export async function boot(o: BootOptions): Promise<Service> {
       for (const x of fileObservations(b, clock())) { engine.ingest(x); if (x.source === 'file') watch(b.agent, b.profileId, x.sessionId); }
     } catch (e) { o.log?.log('status_feed_failed', { error: errorCode(e) }); }
   };
+  // P4-T10c2: the peak parse lag (parseLagOf) over committed batches that carry records; the writer's queue age uses its
+  // own monotonic clock (review L2).
+  let parseLag = 0;
   const writer = new Writer(db, {
-    onCommit: (b) => { price(); feed(b); o.onCommit?.(b); },
+    onCommit: (b) => {
+      const lag = b.file && b.events.length ? parseLagOf(clock(), b.file.mtime) : null;
+      if (lag !== null) parseLag = Math.max(parseLag, lag);
+      price(); feed(b); o.onCommit?.(b);
+    },
     onDiskFull: (full) => { o.log?.log('disk_full', { full }); if (!full) hooks?.intake.recovered(); },
   });
   const detections: Detection[] = [];
@@ -252,6 +272,16 @@ export async function boot(o: BootOptions): Promise<Service> {
     coverage: () => {
       if (readOnly || !db.isOpen) return [];
       try { return coverageBanners({ db, dataDir: o.dataDir, profiles, diskFull: writer.diskFull, now: clock() }); } catch { return []; }
+    },
+    metrics: () => {
+      const parseLagMs = parseLag;
+      parseLag = 0;
+      let walBytes = 0;
+      // The WAL file's size: without journal_size_limit it never shrinks after a checkpoint, so this is its high-water
+      // mark, not what waits to be checkpointed (review L4).
+      try { walBytes = statSync(path.join(o.dataDir, 'xaibo.db-wal')).size; } catch { /* no WAL yet */ }
+      return { writerQueueAgeMs: writer.takeQueueAgeMs(), parseLagMs, walBytes, watchHandles: adapters.reduce((n, a) => n + a.watched(), 0),
+        statusSessions: engine?.cached() ?? 0, diskFull: writer.diskFull ? 1 : 0 };
     },
     async setPath(agent, file) {
       await Promise.race([detection, done.catch(() => undefined)]); // detection, not the whole backfill

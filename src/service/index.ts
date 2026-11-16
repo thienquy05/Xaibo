@@ -37,10 +37,11 @@ const stamp = (line: object) => { if (trace) appendFileSync(trace, `${JSON.strin
 // P4-T10c1: a window with more changed sessions than this sends a resync instead of rows, so one flush is one bounded
 // query and message. ponytail: a fixed bound; raise it if the P4-T11 T2 run shows resyncs under normal load.
 const DELTA_KEYS_MAX = 200;
+let resyncs = 0; // P4-T10c2 metric: delta windows replaced by a resync since start
 const broadcast = (m: PortMessage) => hub.broadcast(m);
 const changed = coalesce((keys) => {
   if (!keys) { // review L1: a trace tells an overflow (no paint ack for that window's ids) from a lost delta
-    pendingIds.clear(); stamp({ ev: 'resync' });
+    pendingIds.clear(); stamp({ ev: 'resync' }); resyncs++;
     if (hub.anyLive()) hub.sessions({ v: IPC_VERSION, type: 'resync' });
     return;
   }
@@ -125,6 +126,11 @@ async function main(dataDir: string, log: Logger) {
   resolveBooted(svc);
   setInterval(() => { for (const k of svc?.ticking() ?? []) changed(k); }, TICK_MS);
   setInterval(coverage, COVERAGE_MS);
+  // P4-T10c2: content-free metrics for main's diagnostics bundle, at the coverage cadence (peaks cover the interval).
+  setInterval(() => { // a failing metric is logged, never an uncaught exception (the crash policy would restart us; review L5)
+    try { parent.postMessage({ v: IPC_VERSION, type: 'metrics', metrics: { ...svc!.metrics(), deltaResyncs: resyncs } } satisfies ServiceEvent); }
+    catch (e) { log.log('metrics_failed', { error: errorCode(e) }); }
+  }, COVERAGE_MS);
   svc.done.then(coverage, coverage); // profiles are synced by then; a spool replay still running is caught by the interval
   const ready: ServiceEvent = { v: IPC_VERSION, type: 'ready', readOnly: svc.store.reason ?? null };
   parent.postMessage(ready);

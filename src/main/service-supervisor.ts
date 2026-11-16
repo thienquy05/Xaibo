@@ -26,11 +26,17 @@ export interface SupervisorDeps<P> {
   log?(event: string, fields?: Record<string, number>): void;
   /** P3-T11: a validated notify intent from the service. */
   onNotify?(n: Extract<ServiceEvent, { type: 'notify' }>): void;
+  /** P4-T10c2: validated content-free service metrics (every 5 s). */
+  onMetrics?(m: Extract<ServiceEvent, { type: 'metrics' }>): void;
 }
 
 export class Supervisor<P> {
   readonly #d: SupervisorDeps<P>;
-  readonly #receive = accept(parseServiceEvent, (m) => { if (m.type === 'ready') this.#ready(m.readOnly); else this.#d.onNotify?.(m); });
+  readonly #receive = accept(parseServiceEvent, (m) => {
+    if (m.type === 'ready') this.#ready(m.readOnly);
+    else if (m.type === 'metrics') this.#d.onMetrics?.(m);
+    else this.#d.onNotify?.(m);
+  });
   #child: Child<P> | null = null;
   #attempt = 0;
   #readyAt: number | undefined;

@@ -441,6 +441,8 @@ interface Pending { batch: Batch; resolve: () => void; reject: (e: unknown) => v
 export interface WriterOptions {
   maxRows?: number; maxBytes?: number; maxDelayMs?: number;
   setTimer?: (fn: () => void, ms: number) => void;
+  /** Clock for the queue-age metric (P4-T10c2). */
+  now?: () => number;
   onCommit?: (batch: Batch) => void;
   /** EC-44: called when the store becomes full and again when a commit succeeds after that, outside any transaction. */
   onDiskFull?: (full: boolean) => void;
@@ -460,11 +462,17 @@ export class Writer {
   #rows = 0;
   #bytes = 0;
   #timerSet = false;
+  /** P4-T10c2: when the oldest queued batch was enqueued, and the peak enqueue-to-flush wait since the last take. */
+  #since: number | undefined;
+  #peak = 0;
 
   constructor(db: DatabaseSync, o: WriterOptions = {}) {
     this.#db = db;
-    this.#o = { maxRows: 100, maxBytes: 1 << 20, maxDelayMs: 50, setTimer: (fn, ms) => void setTimeout(fn, ms), commit: commitBatch, ...o };
+    this.#o = { maxRows: 100, maxBytes: 1 << 20, maxDelayMs: 50, setTimer: (fn, ms) => void setTimeout(fn, ms), commit: commitBatch, now: () => performance.now(), ...o }; // monotonic: a wall-clock step is no queue age
   }
+
+  /** The peak queue age (ms) since the previous call; resets it. A live commit bypasses the queue and adds nothing. */
+  takeQueueAgeMs(): number { const p = this.#peak; this.#peak = 0; return p; }
 
   /** True from a disk-full commit until the next commit succeeds (EC-44). */
   get diskFull(): boolean { return this.#full; }
@@ -490,6 +498,7 @@ export class Writer {
   enqueue(batch: Batch, live: boolean): Promise<void> {
     return new Promise((resolve, reject) => {
       (live ? this.#live : this.#backfill).push({ batch, resolve, reject });
+      this.#since ??= this.#o.now();
       this.#rows += batch.events.length;
       this.#bytes += batchBytes(batch);
       if (this.#rows >= this.#o.maxRows || this.#bytes >= this.#o.maxBytes) this.flush();
@@ -502,6 +511,7 @@ export class Writer {
 
   flush(): void {
     const jobs = [...this.#live, ...this.#backfill];
+    if (this.#since !== undefined) { this.#peak = Math.max(this.#peak, Math.round(this.#o.now() - this.#since)); this.#since = undefined; }
     this.#live = [];
     this.#backfill = [];
     this.#rows = 0;
