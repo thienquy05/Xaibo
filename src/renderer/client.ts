@@ -99,7 +99,9 @@ export function createClient(port: PortLike, push: Pushes) {
     /** P4-T02: live session deltas while the window is visible; paused while hidden (resync by cursor on show). */
     setLive(on: boolean): void { port.postMessage({ v: IPC_VERSION, type: 'live', on } satisfies PortRequest); },
     get dropped() { return receive.dropped; },
-    close() { port.onmessage = null; pending.clear(); port.close(); },
+    // XAIBO-PROD-434: a request still waiting on this port settles now (a restarted service answers on its new port);
+    // left unsettled, the section that asked would stay loading and never refetch
+    close() { port.onmessage = null; for (const p of pending.values()) p.reject(new Error('closed')); pending.clear(); port.close(); },
   };
 }
 export type Client = ReturnType<typeof createClient>;

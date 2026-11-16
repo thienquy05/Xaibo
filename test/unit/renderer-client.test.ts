@@ -153,3 +153,20 @@ test('session workspace calls post their requests and resolve their own replies;
     await assert.rejects(p, /invalid reply/, reply.type);
   }
 });
+
+// XAIBO-PROD-434 (P4-T14, EC-97): a restarted service brings a new port and main.tsx closes the old client; a request
+// still waiting on the dead port must settle, or the section that asked stays loading and never refetches.
+test('close() rejects every pending request; a reply after close changes nothing; answered requests keep their result', async () => {
+  const f = fakePort();
+  const c = createClient(f.port, { sessions() {}, agents() {} });
+  const answered = c.listSessions(null, 50);
+  f.deliver({ v: 1, type: 'page', id: 1, rows: [row], next: null });
+  const waiting = c.listSessions(null, 50);
+  const settled = waiting.then(() => 'resolved', (e: Error) => e.message);
+  c.close();
+  assert.equal(f.port.closed, true);
+  const outcome = await Promise.race([settled, new Promise((r) => setTimeout(() => r('pending'), 200))]); // bounded: a hang must fail, not stall the suite
+  assert.equal(outcome, 'closed', 'the waiting request is rejected, not left hanging');
+  f.deliver({ v: 1, type: 'page', id: 2, rows: [row], next: null }); // too late: the client is closed
+  assert.deepEqual(await answered, { rows: [row], next: null });
+});
