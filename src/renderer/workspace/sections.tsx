@@ -200,6 +200,8 @@ export function Timeline({ entries, next, onNext, loading }: { entries: Entry[];
 
 function More({ p }: { p: Paged<unknown> }) {
   if (p.failed) return <p className="x-earlier">Records could not be loaded <button type="button" className="x-btn x-btn-secondary" onClick={p.loadMore}>Retry</button></p>;
+  // XAIBO-PROD-433 (design §6.13 B2): a pending first page says so; no empty table stands in for "none"
+  if (p.loading && !p.items.length && !p.more) return <p className="x-earlier">Loading records</p>;
   if (p.more) return <p className="x-earlier">More records available <button type="button" className="x-btn x-btn-secondary" aria-disabled={p.loading || undefined} onClick={() => { if (!p.loading) p.loadMore(); }}>{p.loading ? 'Loading next page' : 'Load more'}</button></p>;
   return p.items.length ? <p className="x-earlier">End of available records</p> : null;
 }
@@ -207,7 +209,7 @@ function More({ p }: { p: Paged<unknown> }) {
 export function Tools({ tools, touches }: { tools: Paged<ToolItem>; touches: FileItem[] }) {
   return (
     <div className="x-section-pad">
-      {tools.items.length === 0 && !tools.loading && !tools.more ? <p className="x-empty-note">No tool calls recorded.</p> : (
+      {tools.items.length === 0 ? (tools.loading || tools.more || tools.failed ? null : <p className="x-empty-note">No tool calls recorded.</p>) : (
         <table className="x-table" aria-label="Tool ledger">
           <thead><tr><th scope="col">Tool</th><th scope="col">Approval</th><th scope="col">Started</th><th scope="col">Duration</th><th scope="col">Result</th><th scope="col">Seen by</th></tr></thead>
           <tbody>
@@ -232,7 +234,7 @@ export function Tools({ tools, touches }: { tools: Paged<ToolItem>; touches: Fil
 export function Subagents({ subagents }: { subagents: Paged<SubagentItem> }) {
   return (
     <div className="x-section-pad">
-      {subagents.items.length === 0 && !subagents.loading && !subagents.more ? <p className="x-empty-note">No subagents recorded.</p> : (
+      {subagents.items.length === 0 ? (subagents.loading || subagents.more || subagents.failed ? null : <p className="x-empty-note">No subagents recorded.</p>) : (
         <table className="x-table" aria-label="Subagent records">
           <thead><tr><th scope="col">Subagent</th><th scope="col">Lifecycle</th><th scope="col">Model</th><th scope="col">Started</th><th scope="col">Last record</th><th scope="col">Records</th></tr></thead>
           <tbody>
@@ -254,7 +256,7 @@ export function Files({ files, tools }: { files: Paged<FileItem>; tools: ToolIte
   const name = (callId: string | null) => (callId === null ? 'Unknown call' : (tools.find((t) => t.callId === callId)?.tool ?? 'Tool call'));
   return (
     <div className="x-section-pad">
-      {files.items.length === 0 && !files.loading && !files.more ? <p className="x-empty-note">No file touches recorded.</p> : (
+      {files.items.length === 0 ? (files.loading || files.more || files.failed ? null : <p className="x-empty-note">No file touches recorded.</p>) : (
         <table className="x-table" aria-label="Files touched">
           <thead><tr><th scope="col">File</th><th scope="col">Touches</th><th scope="col">Evidence</th></tr></thead>
           <tbody>
