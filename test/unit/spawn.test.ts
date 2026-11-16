@@ -5,6 +5,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { externallyKilled, run } from '../../src/service/spawn.ts';
 
+// Children are `node -e`, not `/bin/sh -c`: a shell + `-c` call through run() makes CodeQL treat every argv passed to
+// run() as shell-interpreted (js/shell-command-injection-from-environment, alert #2), although spawn never uses a shell.
+const node = (code: string) => [process.execPath, ['-e', code]] as const;
+
 const recorder = () => {
   const logged: [string, Record<string, unknown> | undefined][] = [];
   return { logged, log: { log: (event: string, fields?: Record<string, string | number | boolean | undefined>) => { logged.push([event, fields]); } } };
@@ -12,7 +16,7 @@ const recorder = () => {
 
 test('H5: a child killed by an outside signal is reported and logged as child_killed', async () => {
   const { logged, log } = recorder();
-  const r = await run('/bin/sh', ['-c', 'kill -9 $$'], { timeoutMs: 5_000, maxBytes: 1024, log });
+  const r = await run(...node("process.kill(process.pid, 'SIGKILL')"), { timeoutMs: 5_000, maxBytes: 1024, log });
   assert.equal(r.signal, 'SIGKILL');
   assert.equal(externallyKilled(r), true);
   assert.deepEqual(logged, [['child_killed', { error: 'SIGKILL' }]]);
@@ -23,7 +27,7 @@ test('H5: our own timeout kill and a normal exit are not reported as external', 
   const slow = await run('/bin/sleep', ['5'], { timeoutMs: 100, maxBytes: 1024, log });
   assert.equal(slow.timedOut, true);
   assert.equal(externallyKilled(slow), false);
-  const ok = await run('/bin/sh', ['-c', 'exit 3'], { timeoutMs: 5_000, maxBytes: 1024, log });
+  const ok = await run(...node('process.exit(3)'), { timeoutMs: 5_000, maxBytes: 1024, log });
   assert.deepEqual([ok.code, ok.signal, externallyKilled(ok)], [3, null, false]);
   assert.deepEqual(logged, []);
 });
