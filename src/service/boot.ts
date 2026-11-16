@@ -91,13 +91,37 @@ export async function boot(o: BootOptions): Promise<Service> {
   // P2-T10/T14: after each commit price only usage rows above the high-water mark; after a price load, every pending row.
   let pricedUpTo = 0;
   const topUsage = readOnly ? undefined : db.prepare('SELECT coalesce(max(id), 0) AS id FROM usage');
+  // P4-T12a (EC-100): pricing runs in slices of PRICE_SLICE rows, the first now (a small store prices at once) and the
+  // rest on later event-loop turns, so a large reprice (an owner price added for a common model) never holds live
+  // dispatch (one pass of 100,000 rows held the loop ~1 s). One job at a time: a request during a job reruns after it
+  // from the lowest cursor asked for. ponytail: a fixed slice, ~20 ms at the measured ~10 us/row; give each slice a time
+  // budget if rows get costlier.
+  const PRICE_SLICE = 2000;
+  let pricing = false;
+  let rerunFrom: number | null = null;
+  const priceFrom = (from: number) => {
+    pricing = true;
+    let top = from;
+    try { top = Number((topUsage!.get() as { id: number }).id); } catch { /* the slice below logs the store error */ }
+    const step = (cursor: number) => {
+      if (!db.isOpen || !prices) { pricing = false; return; } // stop() closes the store (the first slice runs before `stopped` exists)
+      let next: number | null = null;
+      try {
+        const r = priceUsage(db, prices, { afterUsageId: cursor, limit: PRICE_SLICE });
+        if (r.more) next = r.lastId;
+        else pricedUpTo = Math.max(pricedUpTo, top, r.lastId);
+      } catch (e) { o.log?.log('pricing_failed', { error: errorCode(e) }); }
+      if (next !== null) { const at = next; setImmediate(() => step(at)); return; }
+      pricing = false;
+      if (rerunFrom !== null) { const f = rerunFrom; rerunFrom = null; priceFrom(f); }
+    };
+    step(from);
+  };
   const price = (full = false) => {
     if (readOnly || !prices) return;
-    try {
-      const top = Number((topUsage!.get() as { id: number }).id);
-      priceUsage(db, prices, full ? {} : { afterUsageId: pricedUpTo });
-      pricedUpTo = top;
-    } catch (e) { o.log?.log('pricing_failed', { error: errorCode(e) }); }
+    const from = full ? 0 : pricedUpTo;
+    if (pricing) { rerunFrom = Math.min(rerunFrom ?? from, from); return; }
+    priceFrom(from);
   };
   let hooks: Hooks | undefined;
   // P3-T10: the status engine (P3-T08/T09) over durable hook deliveries and live-window file records.
