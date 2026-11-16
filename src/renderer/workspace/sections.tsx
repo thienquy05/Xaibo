@@ -7,7 +7,7 @@ import { VirtualList } from '../components/VirtualList.tsx';
 import { Icon } from '../status/StatusBadge.tsx';
 import { visible } from '../text.ts';
 import { approvalText, durationLabel, FILE_KIND_TEXT, groupFiles, lifecycleText, resultText, toolTitle, type Entry } from './timeline.ts';
-import { argFor, clock, toolMeta, toolTone } from './view.ts';
+import { argFor, clock, isoTime, toolMeta, toolTone } from './view.ts';
 
 /** Fetches one bounded slice of an item's text or reasoning. */
 export type SliceFn = (event: number, part: 'text' | 'reasoning', offset: number) => Promise<{ text: string; next: number | null }>;
@@ -96,6 +96,12 @@ function SubagentStep({ s }: { s: SubagentItem }) {
     meta={<><span>{visible(s.model)}</span><span>{lifecycleText(s.lifecycle)}</span><span>{s.records} record{s.records === 1 ? '' : 's'}</span></>} />;
 }
 
+/** HH:MM text; a <time> with the exact instant when it is known (P4-T08b: a switch marker carries its time). */
+function When({ ms }: { ms: number | null }) {
+  const iso = isoTime(ms);
+  return iso ? <time dateTime={iso}>{clock(ms)}</time> : <>{clock(ms)}</>;
+}
+
 const Marker = ({ icon, children }: { icon: 'information' | 'settle' | 'error'; children: ReactNode }) => <p className="x-marker"><Icon id={icon} />{children}</p>;
 
 /** One Conversation entry (chat/terminal geometry, D-P4-06). */
@@ -120,7 +126,7 @@ function ConversationEntry({ e, touches, slice }: { e: Entry; touches: FileItem[
       return <div className="x-steps"><ToolStep tool={e.kind === 'tool' ? e.tool : null} item={e.item} touches={touches} slice={slice} /></div>;
     case 'compaction': return <Marker icon="settle">Compaction · {clock(e.item.ts)}</Marker>;
     case 'interrupted': return <Marker icon="error">Interrupted · {clock(e.item.ts)}</Marker>;
-    case 'model': return <Marker icon="information">Model {visible(e.marker.model)} · {clock(e.marker.ts)}</Marker>;
+    case 'model': return <Marker icon="information">Model {visible(e.marker.model)} · <When ms={e.marker.ts} /></Marker>;
     case 'subagent-start': return <div className="x-steps"><SubagentStep s={e.subagent} /></div>;
     case 'subagent-end': return <Marker icon="information">Subagent ended · {visible(e.subagent.agentType ?? e.subagent.nativeId)} · {clock(e.subagent.end)}</Marker>;
   }
@@ -168,7 +174,7 @@ export function Timeline({ entries, next, onNext, loading }: { entries: Entry[];
             <div className="x-ledger-row">
               <span className={`x-glyph${l.tone ? ` x-glyph-${l.tone}` : ''}`}><Icon id={l.icon} /></span>
               <div className="x-l-main"><div className="x-l-title">{l.title}</div>{l.detail ? <div className="x-l-detail">{l.detail}</div> : null}</div>
-              <span className="x-l-time">{clock(l.ts)}</span>
+              <span className="x-l-time"><When ms={l.ts} /></span>
             </div>
           );
         }} />

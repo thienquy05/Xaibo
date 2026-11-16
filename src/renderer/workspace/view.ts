@@ -36,6 +36,12 @@ export const argFor = (callId: string | null, touches: readonly FileItem[]): str
 export const countText = (n: number, more: boolean): string => `${n}${more ? '+' : ''}`;
 const two = (n: number) => String(n).padStart(2, '0');
 /** Local HH:mm (design §7.1 clock time); unknown is said, never blank. */
+/** P4-T08b: the machine-readable form of a known instant (a <time> dateTime); null when unknown or out of Date range. */
+export function isoTime(ms: number | null): string | null {
+  const d = new Date(ms ?? Number.NaN);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
 export function clock(ms: number | null): string {
   if (ms === null) return 'Time unknown';
   const d = new Date(ms);

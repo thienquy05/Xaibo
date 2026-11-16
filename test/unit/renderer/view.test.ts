@@ -2,7 +2,7 @@
 // never claim success without evidence; a live session opens on its latest page; coverage codes name what is missing.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { argFor, clock, compactStatus, countText, incompleteReasons, initialAt, toolMeta, toolTone, trimWindow, appendLive, WINDOW_MAX } from '../../../src/renderer/workspace/view.ts';
+import { argFor, clock, compactStatus, countText, incompleteReasons, initialAt, isoTime, toolMeta, toolTone, trimWindow, appendLive, WINDOW_MAX } from '../../../src/renderer/workspace/view.ts';
 import type { FileItem, LiveStatus, ToolItem, TranscriptItem } from '../../../src/shared/ipc.ts';
 
 const tool = (o: Partial<ToolItem> = {}): ToolItem => ({ call: 1, callId: 'toolu_1', tool: 'Read', sources: ['transcript'], argsEvent: 2, resultEvent: null,
@@ -52,6 +52,11 @@ test('a tool row argument is the file it touched when known; counts mark a page 
   const at = new Date(2026, 0, 2, 9, 5).getTime();
   assert.equal(clock(at), '09:05');
   assert.equal(clock(null), 'Time unknown');
+});
+
+test('P4-T08b (EC-102): isoTime is the machine-readable time of a known instant, null when unknown or invalid', () => {
+  assert.equal(isoTime(Date.UTC(2026, 0, 2, 9, 5, 7, 12)), '2026-01-02T09:05:07.012Z');
+  for (const x of [null, Number.NaN, Number.POSITIVE_INFINITY, 8.65e15]) assert.equal(isoTime(x), null);
 });
 
 test('workspace components emphasise with <strong>, never <b> (the untrusted-content E2E treats any <b> in main as injected)', async () => {
