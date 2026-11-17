@@ -1,6 +1,6 @@
 // XAIBO-PROD-409 (P4-T05a2): read-time derivations for the session workspace port. Stored rows stay as they are; the
 // raw record, timestamps and status evidence already hold what the workspace shows. Unknown stays null or absent.
-import type { Ev } from './status/engine.ts';
+import type { Confidence, Ev } from './status/engine.ts';
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -49,17 +49,20 @@ export function callDuration(args: Stamp | undefined, result: Stamp | undefined)
 }
 
 export type Approval = 'not_requested' | 'requested' | 'approved' | 'denied';
+/** Status evidence with its stored confidence (absent = confirmed). */
+export type ConfEv = Ev & { conf?: Confidence };
 /** Per-call approval state from normalized status evidence in source order, mirroring the status engine: a duplicate
  *  start or a start of an ended call is ignored, subagent (child) starts are never a join target, and only a call still
  *  in flight changes state. An id-less permission request joins the latest started call still in flight (Claude
  *  PermissionRequest has no tool_use_id). Unseen calls stay absent. Amortized O(1) per event (review M2). */
-export function callApprovals(evs: Ev[]): Map<string, Approval> {
+export function callApprovals(evs: ConfEv[]): Map<string, Approval> {
   const state = new Map<string, Approval>();
   const inflight = new Set<string>();
   const stack: string[] = []; // start order of in-flight join targets; ended ids are popped lazily
   const ended = new Set<string>();
-  // Re-review N1: an end that sorts before its start (engine.ts tool.end) still ends the call, as the engine's done set.
-  const land = (id: string) => { inflight.delete(id); ended.add(id); };
+  // Re-review N1: an end that sorts before its start (engine.ts tool.end) still ends the call, as the engine's done set;
+  // XAIBO-PROD-444: as there, only a confirmed end does (an inferred one only ends the flight).
+  const land = (id: string, done = true) => { inflight.delete(id); if (done) ended.add(id); };
   for (const e of evs) {
     switch (e.k) {
       case 'tool.start':
@@ -77,13 +80,14 @@ export function callApprovals(evs: Ev[]): Map<string, Approval> {
       }
       case 'tool.end':
         if (inflight.has(e.id) && state.get(e.id) === 'requested') state.set(e.id, 'approved');
-        land(e.id);
+        land(e.id, e.conf !== 'inferred');
         break;
       case 'resolve':
         if (e.outcome === 'denied' && inflight.has(e.id) && state.get(e.id) === 'requested') { state.set(e.id, 'denied'); land(e.id); }
         break;
       case 'tool.rejected':
-        if (inflight.has(e.id) && state.get(e.id) === 'requested') state.set(e.id, 'denied');
+        if (!inflight.has(e.id)) break; // XAIBO-PROD-444: as the engine, only a call in flight is denied or interrupted
+        if (state.get(e.id) === 'requested') state.set(e.id, 'denied');
         land(e.id);
         break;
       default:

@@ -184,9 +184,9 @@ test('session detail: context is the newest generation\'s latest reading; none i
 // XAIBO-PROD-411 (P4-T05b2; design §6.3 Tools/Subagents/Files/Timeline): forward keyset pages of the session's tool
 // calls, subagents, files touched and model markers. Unknown stays null; only the session's own main-thread calls.
 const evidence = (db: Awaited<ReturnType<typeof store>>['db']) => {
-  const ins = db.prepare(`INSERT INTO status_evidence (agent, profile_id, native_session_id, dedup, ts, rank, seq, confidence, ev) VALUES ('claude', ?, ?, ?, ?, 0, ?, 'confirmed', ?)`);
+  const ins = db.prepare(`INSERT INTO status_evidence (agent, profile_id, native_session_id, dedup, ts, rank, seq, confidence, ev) VALUES ('claude', ?, ?, ?, ?, 0, ?, ?, ?)`);
   let k = 0;
-  return (ts: number, evs: unknown[], profile = 'p1', sid = 'sess-1') => ins.run(profile, sid, `d${++k}`, ts, k, JSON.stringify(evs));
+  return (ts: number, evs: unknown[], profile = 'p1', sid = 'sess-1', conf = 'confirmed') => ins.run(profile, sid, `d${++k}`, ts, k, conf, JSON.stringify(evs));
 };
 const page = <T extends 'tools' | 'subagents' | 'files'>(type: T, cursor: number | null, limit = 50, session = 1) => ({ v: 1, type, id: 6, session, cursor, limit }) as PortRequest & { type: T };
 const use = (id: string, name: string, input: unknown = {}) => cl('assistant', [{ type: 'tool_use', id, name, input }]);
@@ -234,6 +234,14 @@ test('tools: approval from status evidence, single-source duration, error flag, 
   const at4 = (l?: () => LiveStatus) => answerTools(db, page('tools', c3), l, T + 200).calls.map((c) => [c.callId, c.approval]);
   assert.deepEqual(at4(), [['toolu_4', null]]);
   assert.deepEqual(at4(live), [['toolu_4', 'requested']]);
+  // XAIBO-PROD-444 (G4a-2): the stored confidence reaches the derivation: a transcript end sorted before the hook start
+  // does not close the call, so the id-less request is shown as the engine shows it.
+  const a5 = put({ seq: 77, role: 'assistant', raw: use('toolu_5', 'Write') });
+  call(db, { callId: 'toolu_5', tool: 'Write', args: a5 });
+  ev(T + 77, [{ k: 'tool.end', id: 'toolu_5' }], 'p1', 'sess-1', 'inferred');
+  ev(T + 78, [{ k: 'tool.start', id: 'toolu_5' }]);
+  ev(T + 79, [{ k: 'request', kind: 'permission', id: null }]);
+  assert.deepEqual(answerTools(db, page('tools', c3), live, T + 200).calls.map((c) => [c.callId, c.approval]), [['toolu_4', 'requested'], ['toolu_5', 'requested']]);
   assert.ok(answerTools(db, page('tools', null, 10_000)).calls.length <= 100);
   assert.deepEqual(answerTools(db, page('tools', null, 50, 99)).calls, []);
 });

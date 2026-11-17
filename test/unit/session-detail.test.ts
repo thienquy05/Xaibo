@@ -84,6 +84,19 @@ test('re-review N1/N2: an end before its start stays ended; a child takes an exp
     { k: 'tool.end', id: 'c' }])), { c: 'approved' });
 });
 
+// XAIBO-PROD-444 (G4a-2): as the engine, only a confirmed end closes a call, and a rejection counts only in flight.
+test('XAIBO-PROD-444: an inferred end or a rejection outside flight never closes a call; a confirmed end before its start does', () => {
+  assert.deepEqual(Object.fromEntries(callApprovals([{ k: 'tool.end', id: 'a', conf: 'inferred' }, { k: 'tool.start', id: 'a' },
+    { k: 'request', kind: 'permission', id: null }])), { a: 'requested' });
+  assert.deepEqual(Object.fromEntries(callApprovals([{ k: 'tool.rejected', id: 'b' }, { k: 'tool.start', id: 'b' },
+    { k: 'request', kind: 'permission', id: null }])), { b: 'requested' });
+  assert.deepEqual(Object.fromEntries(callApprovals([{ k: 'tool.end', id: 'c', conf: 'confirmed' }, { k: 'tool.start', id: 'c' },
+    { k: 'request', kind: 'permission', id: null }])), { c: 'not_requested' });
+  // an inferred end still ends the flight: a later id-less request does not join it
+  assert.deepEqual(Object.fromEntries(callApprovals([{ k: 'tool.start', id: 'd' }, { k: 'tool.end', id: 'd', conf: 'inferred' },
+    { k: 'request', kind: 'permission', id: null }])), { d: 'not_requested' });
+});
+
 test('prototype-like call ids stay ordinary keys', () => {
   const m = callApprovals([{ k: 'tool.start', id: '__proto__' }, { k: 'tool.start', id: 'constructor' }, { k: 'request', kind: 'permission', id: null }]);
   assert.equal(m.get('__proto__'), 'not_requested');

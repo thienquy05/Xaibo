@@ -8,9 +8,9 @@ import { COST_CODE, COST_COMPONENTS, MAX_COST_CODES, MAX_COST_GROUPS, MAX_ITEMS,
 import type { CostDetail, CostGroup, PriceRevisionInfo } from '../shared/ipc.ts';
 import type { FileItem, MCursor, ModelMarker, SubagentItem, ToolItem } from '../shared/ipc.ts';
 import { classifyItem, utf8Slice, type StoredRecord } from './transcript.ts';
-import { callApprovals, callDuration, claudeCallError, MAX_MODEL } from './session-detail.ts';
+import { callApprovals, callDuration, claudeCallError, MAX_MODEL, type ConfEv } from './session-detail.ts';
 import { deriveFileTouches, FILE_TOOLS } from './filetouch.ts';
-import type { Ev } from './status/engine.ts';
+import type { Confidence, Ev } from './status/engine.ts';
 import type { SessionKind } from './catalog/validate.ts';
 import { sessionKind } from './resume.ts';
 import { LIVE_WINDOW_MS } from './status/feed.ts'; // D-P3-09 feed eligibility
@@ -382,19 +382,20 @@ const callIdOf = (id: string) => (id !== '' && id.length <= 256 ? id : null);
  *  history could show a stale state (e.g. `requested` whose answer lies beyond the cut), so callers report unknown.
  *  Review M2: the size is checked before the sorted read, so an oversized history is never sorted.
  *  ponytail: re-read per page request; reuse the engine's in-memory entries if Tools paging over long sessions is slow. */
-function sessionEvidence(db: DatabaseSync, s: Sess): Ev[] | null {
+function sessionEvidence(db: DatabaseSync, s: Sess): ConfEv[] | null {
   const WHERE = 'agent = ? AND profile_id = ? AND native_session_id = ?';
   const size = db.prepare(`SELECT count(*) AS n, total(octet_length(ev)) AS bytes FROM (SELECT ev FROM status_evidence WHERE ${WHERE} LIMIT ${EVIDENCE_MAX + 1})`)
     .get(s.agent, s.profile_id, s.native_session_id) as { n: number; bytes: number };
   if (size.n > EVIDENCE_MAX || size.bytes > RAW_BUDGET) return null;
-  const evs: Ev[] = [];
+  const evs: ConfEv[] = [];
   let rows = 0, read = 0;
-  for (const r of db.prepare(`SELECT ev FROM status_evidence WHERE ${WHERE} ORDER BY ts, rank, seq, coalesce(producer_seq, 0), id`)
-    .iterate(s.agent, s.profile_id, s.native_session_id) as Iterable<{ ev: string }>) {
+  for (const r of db.prepare(`SELECT ev, confidence FROM status_evidence WHERE ${WHERE} ORDER BY ts, rank, seq, coalesce(producer_seq, 0), id`)
+    .iterate(s.agent, s.profile_id, s.native_session_id) as Iterable<{ ev: string; confidence: Confidence }>) {
     if (++rows > EVIDENCE_MAX || (read += r.ev.length) > RAW_BUDGET) return null; // rows added since the size check
     try {
       const a: unknown = JSON.parse(r.ev);
-      if (Array.isArray(a) && a.every((e) => isObj(e) && typeof e.k === 'string')) evs.push(...(a as Ev[])); // a malformed row is skipped, as the engine does
+      // a malformed row is skipped, as the engine does; XAIBO-PROD-444: each keeps its row's confidence
+      if (Array.isArray(a) && a.every((e) => isObj(e) && typeof e.k === 'string')) for (const e of a as Ev[]) evs.push({ ...e, conf: r.confidence });
     } catch { /* corrupt row skipped */ }
   }
   return evs;
