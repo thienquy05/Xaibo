@@ -14,7 +14,7 @@ import { isStatusline, lastSnapshots, statuslineRecord } from '../adapters/claud
 import { claudeReadings, statuslineContext, statuslineCost } from '../usage/snapshots.ts';
 import { isDiskFull, type Batch, type EventRow, type Writer } from '../store/writer.ts';
 import { openRegistry } from './registrations.ts';
-import { createReportIntake } from './report.ts';
+import { createReportIntake, type ReportIntake } from './report.ts';
 import { SocketError, startSocketServer, type IntakeResult, type SocketOptions, type SocketServer } from './socket.ts';
 import { replaySpool, type ReplayResult } from './spool-replay.ts';
 
@@ -187,20 +187,51 @@ const SOCKET_RETRY_MS = 5000;
  *  after a late listen (after the first one ends) for the hooks the forwarder spooled meanwhile. */
 export async function startHooks(o: HooksOptions): Promise<Hooks> {
   const intake = createIntake(o);
-  let reports: SocketOptions['reports'];
-  try { // a chunk dir that is not ours disables report intake only; hooks still run
-    reports = { registry: openRegistry(o.dataDir), intake: createReportIntake({ db: o.db, writer: o.writer, dataDir: o.dataDir,
-      ...(o.now ? { now: o.now } : {}), ...(o.publishReport ? { publish: o.publishReport } : {}), ...(o.customAgent ? { customAgent: o.customAgent } : {}) }) };
-  } catch (e) {
-    o.log?.log('report_intake_failed', { error: errorCode(e) });
-  }
+  // XAIBO-PROD-443: a chunk dir that cannot be opened (not ours, a full disk) holds report intake only, and only until a
+  // report delivery finds it usable: each one retries, answering the retryable 'store' meanwhile; hooks still run. The
+  // first success after a failure replays the spool once (reports and the hooks spooled behind them).
+  let live: ReportIntake | undefined;
+  let failed = false;
+  let lastReplay: Promise<unknown> = Promise.resolve(); // the latest replay started; a recovery replay runs after it
+  const open = (): ReportIntake | undefined => {
+    if (live) return live;
+    try {
+      live = createReportIntake({ db: o.db, writer: o.writer, dataDir: o.dataDir,
+        ...(o.now ? { now: o.now } : {}), ...(o.publishReport ? { publish: o.publishReport } : {}), ...(o.customAgent ? { customAgent: o.customAgent } : {}) });
+    } catch (e) {
+      if (!failed) o.log?.log('report_intake_failed', { error: errorCode(e) });
+      failed = true;
+      return undefined;
+    }
+    if (failed) { failed = false; o.log?.log('report_intake_ready'); void lastReplay.then(runReplay, runReplay); }
+    return live;
+  };
+  open();
+  const reports: NonNullable<SocketOptions['reports']> = { registry: openRegistry(o.dataDir), intake: {
+    deliver: (reg, frame, receivedTs) => open()?.deliver(reg, frame, receivedTs) ?? Promise.resolve({ status: 'rejected', code: 'store' }),
+    rejected: (reg, code) => { open()?.rejected(reg, code); },
+  } };
   let socket: SocketServer | null = null;
   let stopped = false; // set synchronously by close(): boot closes the store right after
   let down = false; // a failure was logged and the socket has not listened since
   let retry: NodeJS.Timeout | undefined;
+  const deliverReport = (id: string, frame: Record<string, unknown>, receivedTs: number): Promise<IntakeResult> => {
+    const reg = reports.registry.current(id); // identity from the registry, never the record (P3-T13c)
+    return reg ? reports.intake.deliver(reg, frame, receivedTs) : Promise.resolve({ status: 'rejected', code: 'auth' });
+  };
+  const runReplay = () => {
+    const r = replaySpool({ dataDir: o.dataDir, db: o.db, deliver: intake.deliver, stopped: () => stopped, ...(o.now ? { now: o.now } : {}),
+      deliverReport }).then((x) => {
+      o.log?.log('spool_replay', { delivered: x.delivered, torn: x.torn, skipped: x.skipped, deferred: x.deferred, dropped: x.dropped, complete: x.complete ? 1 : 0 });
+      return x;
+    });
+    r.catch((e: unknown) => o.log?.log('spool_replay_failed', { error: errorCode(e) }));
+    lastReplay = r;
+    return r;
+  };
   const listen = async (): Promise<boolean> => {
     try {
-      const s = await startSocketServer({ dataDir: o.dataDir, onEnvelope: intake.deliver, ...(o.log ? { log: o.log } : {}), ...(reports ? { reports } : {}) });
+      const s = await startSocketServer({ dataDir: o.dataDir, onEnvelope: intake.deliver, ...(o.log ? { log: o.log } : {}), reports });
       if (stopped) { await s.close(); return false; } // closed while it was starting
       socket = s;
       if (down) { down = false; o.log?.log('hook_socket_listening'); }
@@ -212,19 +243,6 @@ export async function startHooks(o: HooksOptions): Promise<Hooks> {
     }
   };
   await listen();
-  const deliverReport = reports && ((id: string, frame: Record<string, unknown>, receivedTs: number): Promise<IntakeResult> => {
-    const reg = reports.registry.current(id); // identity from the registry, never the record (P3-T13c)
-    return reg ? reports.intake.deliver(reg, frame, receivedTs) : Promise.resolve({ status: 'rejected', code: 'auth' });
-  });
-  const runReplay = () => {
-    const r = replaySpool({ dataDir: o.dataDir, db: o.db, deliver: intake.deliver, stopped: () => stopped, ...(o.now ? { now: o.now } : {}),
-      ...(deliverReport ? { deliverReport } : {}) }).then((x) => {
-      o.log?.log('spool_replay', { delivered: x.delivered, torn: x.torn, skipped: x.skipped, deferred: x.deferred, dropped: x.dropped, complete: x.complete ? 1 : 0 });
-      return x;
-    });
-    r.catch((e: unknown) => o.log?.log('spool_replay_failed', { error: errorCode(e) }));
-    return r;
-  };
   const replay = runReplay();
   return { intake, get socket() { return socket; }, replay, close: async () => { stopped = true; clearTimeout(retry); await socket?.close(); } };
 }

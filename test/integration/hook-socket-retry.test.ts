@@ -5,10 +5,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import net from 'node:net';
 import { join } from 'node:path';
+import { createDecoder, encodeFrame } from '../../src/shared/hook-protocol.ts';
 import { startHooks } from '../../src/service/receivers/intake.ts';
+import { addRegistration } from '../../src/service/receivers/registrations.ts';
 import { count } from '../helpers/claude-profile.ts';
-import { envelope, hookStore } from '../helpers/hook-store.ts';
+import { envelope, hookStore, SESSION, T0 } from '../helpers/hook-store.ts';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function until(f: () => boolean, ms: number) {
@@ -46,4 +49,38 @@ test('close() during the outage stops the retry: nothing listens afterwards', as
   await sleep(200);
   assert.equal(svc.socket, null);
   assert.equal(existsSync(join(h.dir, 'run', 'xaibo.sock')), false);
+});
+
+// XAIBO-PROD-443 (G4b-3): report intake that could not open content-chunks at start was off until a restart: a
+// registration hello was refused as a token hello, and the spool replay stopped at the first report record, holding the
+// hooks spooled behind it. It is now retried on each report delivery; the spool replays once when it first works.
+test('XAIBO-PROD-443: a report intake that fails at start recovers without a restart; spooled report and hook behind it are stored', async () => {
+  const h = await hookStore();
+  const { registration, token } = addRegistration(h.dir, { agent: 'claude', profileKey: 'p1' });
+  writeFileSync(join(h.dir, 'content-chunks'), ''); // the chunk store cannot be opened (a full disk fails the same way)
+  let n = 0;
+  const report = () => ({ v: 1, delivery_id: `d-${++n}`, session_id: SESSION, producer_id: 'fixture-producer', producer_seq: n, event: 'turn.start',
+    source_ts: '2026-01-01T00:00:00.000Z', payload: {} });
+  mkdirSync(join(h.dir, 'spool'), { mode: 0o700 });
+  writeFileSync(join(h.dir, 'spool', '2026-01-01.jsonl'), [JSON.stringify({ v: 1, kind: 'report', registration: registration.id, received_ts: T0, frame: report() }),
+    JSON.stringify(envelope({ received_ts: T0 + 1 }))].join('\n') + '\n', { mode: 0o600 });
+  const svc = await startHooks({ dataDir: h.dir, db: h.db, writer: h.writer, socketRetryMs: 50 });
+  try {
+    await svc.replay;
+    assert.deepEqual([count(h.db, 'SELECT count(*) FROM report_delivery'), count(h.db, 'SELECT count(*) FROM hook_delivery')], [0, 0], 'held behind the report');
+    rmSync(join(h.dir, 'content-chunks'));
+    const live = report();
+    const acks = await new Promise<unknown[]>((resolve, reject) => {
+      const c = net.connect(svc.socket!.path);
+      const push = createDecoder();
+      const got: unknown[] = [];
+      c.on('error', reject);
+      c.on('connect', () => c.write(Buffer.concat([encodeFrame({ v: 1, registration: registration.id, token }), encodeFrame(live)])));
+      c.on('data', (b: Buffer) => { got.push(...push(b)); if (got.length) { c.destroy(); resolve(got); } });
+      c.on('close', () => resolve(got));
+    });
+    assert.deepEqual(acks, [{ v: 1, delivery_id: live.delivery_id, status: 'accepted', code: 'ok' }], 'the registration hello is verified, the frame stored');
+    assert.ok(await until(() => count(h.db, 'SELECT count(*) FROM report_delivery') === 2 && count(h.db, 'SELECT count(*) FROM hook_delivery') === 1, 3000),
+      'the spooled report and the hook behind it are stored without a restart');
+  } finally { await svc.close(); }
 });
