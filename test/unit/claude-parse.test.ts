@@ -125,6 +125,19 @@ test('injected content is flagged and never a prompt', () => {
   }
 });
 
+test('XAIBO-PROD-441 (G4b-N1): only string content or a first text block makes a record injected', () => {
+  const rec = (content: unknown) => {
+    const r = parseLine(line({ type: 'user', uuid: '00000000-0000-4000-8000-000000009931', message: { role: 'user', content } }), { ...ctx, offset: 0 });
+    assert.ok(r?.ok);
+    return r.record;
+  };
+  const withResult = rec([{ type: 'tool_result', tool_use_id: 't1', content: 'tool output' }, { type: 'text', text: '<system-reminder>n</system-reminder>' }]);
+  assert.equal(withResult.injected, false);
+  assert.equal(withResult.content, 'tool output\n<system-reminder>n</system-reminder>');
+  assert.equal(rec([{ type: 'text', text: 'typed' }, { type: 'text', text: '<system-reminder>n' }]).injected, false);
+  assert.equal(rec([{ type: 'text', text: '<system-reminder>n' }, { type: 'text', text: 'more' }]).injected, true);
+});
+
 test('content from text, tool_use, tool_result and thinking blocks', () => {
   const r = parseLine(line({ type: 'assistant', uuid: '00000000-0000-4000-8000-000000009940', message: { role: 'assistant', id: 'm', content: [
     { type: 'thinking', thinking: 'hmm' }, { type: 'text', text: 'hello' }, { type: 'tool_use', name: 'Read', input: { file_path: 'a.ts' } },

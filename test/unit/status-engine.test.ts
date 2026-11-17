@@ -384,3 +384,27 @@ test('P4-T10b review M1: a session last read busy or heuristic stays cached abov
   assert.equal(st(S(2))!.lifecycle, 'busy');
   assert.equal(h.e().cached(), 1, 'the settled session left');
 });
+
+// XAIBO-PROD-441 (G4b-1): an injected Claude record (string content with a shared injected prefix) is no prompt: an
+// idle session stays idle and its turn count is unchanged, file-only and with hooks.
+test('XAIBO-PROD-441: injected Claude string records never start a turn (file-only and with hooks)', async () => {
+  const injected = ['<command-name>/clear</command-name>', '<local-command-caveat>c</local-command-caveat>', '<local-command-stdout>ok</local-command-stdout>',
+    '  <system-reminder>synthetic note</system-reminder>', '<task-notification>\n<task-id>t1</task-id>'];
+  const user = (content: unknown, ms: number) => fileObs('claude', { type: 'user', message: { role: 'user', content } }, { at: ms });
+  const f = await harness();
+  f.feed(user('p', 0), 0);
+  f.feed(fileObs('claude', { type: 'assistant', message: { id: 'm1', content: [{ type: 'text', text: 'r' }], stop_reason: 'end_turn' } }, { at: 10 }), 10);
+  f.at(10_000);
+  assert.deepEqual([f.st()!.lifecycle, f.st()!.turns], ['idle', 1]);
+  injected.forEach((c, i) => f.feed(user(c, 20_000 + i), 20_000 + i));
+  assert.deepEqual([f.st()!.lifecycle, f.st()!.turns], ['idle', 1], 'file-only: still idle, one turn');
+  f.at(40_000);
+  assert.deepEqual([f.st()!.lifecycle, f.st()!.turns], ['idle', 1]);
+  const h = await harness();
+  h.feed(H('UserPromptSubmit', { prompt: 'p' }), 0);
+  h.feed(user('p', 5), 5);
+  h.feed(H('Stop', {}, 10), 10);
+  h.at(10_000);
+  injected.forEach((c, i) => h.feed(user(c, 20_000 + i), 20_000 + i));
+  assert.deepEqual([h.st()!.lifecycle, h.st()!.turns], ['idle', 1], 'with hooks: one turn');
+});

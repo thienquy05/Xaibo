@@ -83,3 +83,12 @@ test('ElicitationResult with a prototype-named action resolves with a null outco
     assert.deepEqual(hook('ElicitationResult', { mcp_server_name: 's', action }), [{ k: 'resolve', id: 'elicit:s', outcome: null }], action);
   }
 });
+
+test('XAIBO-PROD-441 (G4b-1): an injected string record carries no evidence; a reminder block after a tool_result keeps its tool.end', () => {
+  for (const content of ['<command-name>/x</command-name>', '<local-command-caveat>c', '<local-command-stdout>o', '\n <system-reminder>n', '<task-notification>t']) {
+    assert.deepEqual(line({ type: 'user', message: { role: 'user', content } }), [], content);
+  }
+  assert.deepEqual(line({ type: 'user', message: { role: 'user', content: 'plain <system-reminder>' } }), [{ k: 'turn.start', typed: true }]);
+  assert.deepEqual(line({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' },
+    { type: 'text', text: '<system-reminder>n</system-reminder>' }] } }), [{ k: 'tool.end', id: 't1' }]);
+});

@@ -73,6 +73,13 @@ test('injected content is flagged on the head', () => {
   assert.equal(run('{"type":"user","uuid":"U4c","message":{"role":"user","content":"plain words"}}', 4).head.injected, false);
 });
 
+test('XAIBO-PROD-441 (G4b-N1): only string content or a first text block makes the head injected', () => {
+  const head = (content: unknown) => run(JSON.stringify({ type: 'user', uuid: 'U4d', message: { role: 'user', content } }), 3).head.injected;
+  assert.equal(head([{ type: 'tool_result', tool_use_id: 't1', content: 'tool output' }, { type: 'text', text: '<system-reminder>n</system-reminder>' }]), false);
+  assert.equal(head([{ type: 'text', text: 'typed' }, { type: 'text', text: '<system-reminder>n' }]), false);
+  assert.equal(head([{ type: 'text', text: '<system-reminder>n' }, { type: 'text', text: 'more' }]), true);
+});
+
 test('a syntax error leaves a gap: content read before it is kept, raw is kept in full', () => {
   const bad = '{"type":"user","uuid":"U5","message":{"role":"user","content":"good part"}, oops "more":"lost"}';
   const r = run(bad, 6);

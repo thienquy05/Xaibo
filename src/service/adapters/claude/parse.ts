@@ -67,10 +67,11 @@ function messageText(content: unknown): string | undefined {
   return Array.isArray(content) ? joined(content.map(blockText)) : undefined;
 }
 
+/** String content, or content[0] when it is a text block (XAIBO-PROD-441: a later reminder block never hides a tool_result). */
 function firstText(content: unknown): string {
   if (typeof content === 'string') return content;
-  const first = Array.isArray(content) ? content.find((b) => isObj(b) && b.type === 'text') : undefined;
-  return isObj(first) ? str(first.text) ?? '' : '';
+  const first: unknown = Array.isArray(content) ? content[0] : undefined;
+  return isObj(first) && first.type === 'text' ? str(first.text) ?? '' : '';
 }
 
 function toolCalls(content: unknown): NonNullable<ClaudeRecord['toolCalls']> {
