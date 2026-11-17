@@ -32,7 +32,7 @@ const FULL_HOLD_MS = 20_000;
 const VOLUME_GIB = 4; // the data dir's sparse image: room for the t1mix import and the live stream
 const TOKEN_EVERY = 5; // a Codex session's every 5th record is a token_count, every 50th of those malformed
 const PROHIBITED = /(^|\s)(-p|--print|exec)(\s|$)|\/context|count_tokens/; // FR-44, as the P4-T12a runtime audit
-const CWD = '/tmp/xaibo-fixture/perf-live';
+export const CWD = '/tmp/xaibo-fixture/perf-live';
 const sidOf = (prefix: number, i: number) => `00000000-0000-4000-8000-${String(prefix).padStart(4, '0')}${String(i).padStart(8, '0')}`;
 
 function mulberry32(a: number) {
@@ -44,7 +44,7 @@ const sizer = (rand: () => number) => () => {
   return Math.min(256 * 1024, Math.max(200, Math.round(1950 * Math.exp(1.2 * z))));
 };
 const pad = (n: number) => 'synthetic perf text '.repeat(Math.ceil(n / 20)).slice(0, n);
-const claudeLine = (sid: string, uuid: string, bytes: number, n: number) => {
+export const claudeLine = (sid: string, uuid: string, bytes: number, n: number) => {
   const base = { parentUuid: null, isSidechain: false, uuid, timestamp: new Date().toISOString(), userType: 'external', entrypoint: 'cli', cwd: `${CWD}-${sid}`,
     sessionId: sid, version: '2.1.319' };
   return `${JSON.stringify(n % 2
@@ -53,8 +53,29 @@ const claudeLine = (sid: string, uuid: string, bytes: number, n: number) => {
       usage: { input_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 100, output_tokens: 20, service_tier: 'standard', speed: 'standard' } } }
     : { ...base, type: 'user', message: { role: 'user', content: pad(bytes) } })}\n`;
 };
-const codexLine = (bytes: number) => `${JSON.stringify({ timestamp: new Date().toISOString(), type: 'response_item',
+export const codexLine = (bytes: number) => `${JSON.stringify({ timestamp: new Date().toISOString(), type: 'response_item',
   payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: pad(bytes) }] } })}\n`;
+
+/** Seeded live-session files under `home` (Claude first, the last `codexShare` Codex), each with its first record. */
+export function seedSessions(home: string, count: number, codexShare: number) {
+  const project = path.join(home, '.claude', 'projects', '-tmp-xaibo-fixture-perf-live');
+  mkdirSync(project, { recursive: true });
+  const codexCount = Math.round(count * codexShare);
+  return Array.from({ length: count }, (_, i) => {
+    const sid = sidOf(9, i);
+    if (i >= count - codexCount) {
+      const file = path.join(home, '.codex', 'sessions', '2026', '01', '01', `rollout-2026-01-01T00-00-00-${sid}.jsonl`);
+      mkdirSync(path.dirname(file), { recursive: true });
+      const meta = JSON.stringify({ timestamp: new Date().toISOString(), type: 'session_meta', payload: { id: sid, timestamp: new Date().toISOString(),
+        cwd: `${CWD}-${sid}`, originator: 'codex-tui', cli_version: '0.160.0', source: 'cli' } });
+      writeFileSync(file, `${meta}\n${JSON.stringify({ timestamp: new Date().toISOString(), type: 'turn_context', payload: { turn_id: sidOf(10, i), cwd: `${CWD}-${sid}`, model: 'gpt-6.1-sol' } })}\n`);
+      return { sid, agent: 'codex' as const, file, identity: createHash('sha256').update(meta).digest('hex').slice(0, 16) };
+    }
+    const file = path.join(project, `${sid}.jsonl`);
+    writeFileSync(file, claudeLine(sid, randomUUID(), 200, 0));
+    return { sid, agent: 'claude' as const, file, identity: '' };
+  });
+}
 
 async function until<T>(f: () => T | null | false | undefined, ms: number): Promise<T> {
   const end = Date.now() + ms;
@@ -87,23 +108,7 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
     cpSync(path.join(corpus, 'home'), home, { recursive: true, mode: constants.COPYFILE_FICLONE_FORCE, preserveTimestamps: true });
     const claude = path.join(home, '.claude');
     const codex = path.join(home, '.codex');
-    const project = path.join(claude, 'projects', '-tmp-xaibo-fixture-perf-live');
-    mkdirSync(project, { recursive: true });
-    const codexCount = Math.round(p.sessions * p.codexShare);
-    const sessions = Array.from({ length: p.sessions }, (_, i) => {
-      const sid = sidOf(9, i);
-      if (i >= p.sessions - codexCount) {
-        const file = path.join(codex, 'sessions', '2026', '01', '01', `rollout-2026-01-01T00-00-00-${sid}.jsonl`);
-        mkdirSync(path.dirname(file), { recursive: true });
-        const meta = JSON.stringify({ timestamp: new Date().toISOString(), type: 'session_meta', payload: { id: sid, timestamp: new Date().toISOString(),
-          cwd: `${CWD}-${sid}`, originator: 'codex-tui', cli_version: '0.160.0', source: 'cli' } });
-        writeFileSync(file, `${meta}\n${JSON.stringify({ timestamp: new Date().toISOString(), type: 'turn_context', payload: { turn_id: sidOf(10, i), cwd: `${CWD}-${sid}`, model: 'gpt-6.1-sol' } })}\n`);
-        return { sid, agent: 'codex' as const, file, identity: createHash('sha256').update(meta).digest('hex').slice(0, 16) };
-      }
-      const file = path.join(project, `${sid}.jsonl`);
-      writeFileSync(file, claudeLine(sid, randomUUID(), 200, 0));
-      return { sid, agent: 'claude' as const, file, identity: '' };
-    });
+    const sessions = seedSessions(home, p.sessions, p.codexShare);
 
     // --usage: the data dir on its own volume, so the disk-full fault fills the store's disk and nothing else
     let ownDataDir: string | undefined;
