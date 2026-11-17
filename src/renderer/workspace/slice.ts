@@ -30,3 +30,18 @@ export function prependSlice(w: SliceWindow, at: number, s: Slice): SliceWindow 
   const next = slices.length > MAX_SLICES ? slices.pop()!.at : w.next;
   return { slices, next, earlier };
 }
+
+export type SliceDir = 'next' | 'prev';
+/** XAIBO-PROD-435 (FR-50): after a load from the `dir` button, focus stays on that button while it still shows; once it
+ *  unmounts (nothing more in that direction) focus moves to the text, never to the page body. */
+export const focusAfter = (w: SliceWindow, dir: SliceDir): 'button' | 'text' => ((dir === 'next' ? w.next : previousAt(w)) !== null ? 'button' : 'text');
+
+/** XAIBO-PROD-435: the polite live-region text for a slice load's state. */
+export function sliceAnnouncement(phase: 'idle' | 'loading' | 'loaded' | 'failed', dir: SliceDir): string {
+  switch (phase) {
+    case 'idle': return '';
+    case 'loading': return 'Loading text';
+    case 'loaded': return dir === 'prev' ? 'Earlier text loaded' : 'Text loaded';
+    case 'failed': return 'Text could not be loaded';
+  }
+}

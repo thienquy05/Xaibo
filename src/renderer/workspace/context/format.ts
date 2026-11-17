@@ -11,7 +11,9 @@ export interface ContextView {
   value: string; qualifier: string | null;
   /** Used share 0–100 for the meter; null replaces the meter with meterNote. */
   meter: number | null; meterNote: string | null; warning: string | null; unoccupied: string | null;
-  source: string; freshness: string; stale: string | null; generation: string;
+  source: string; freshness: string; stale: string | null;
+  /** XAIBO-PROD-435 (design C20): the spoken form of `stale`. */
+  staleLabel: string | null; generation: string;
   /** Accessible text: exact integers, percent, estimate state, source and generation. */
   label: string;
 }
@@ -29,18 +31,20 @@ export const percentWords = (p: number) => percentText(p).replace('<', 'less tha
 
 function unavailable(reason: string): ContextView {
   return { value: 'Context unavailable', qualifier: null, meter: null, meterNote: `Context meter unavailable — ${reason}`, warning: null, unoccupied: null,
-    source: 'Source unavailable', freshness: 'No observation', stale: null, generation: 'Generation unavailable', label: `Context unavailable: ${reason}` };
+    source: 'Source unavailable', freshness: 'No observation', stale: null, staleLabel: null, generation: 'Generation unavailable', label: `Context unavailable: ${reason}` };
 }
 
 export function contextView(agent: string, live: boolean, r: ContextReading | null, now: number): ContextView {
   if (agent === 'agy') return unavailable('Antigravity CLI context inputs and window are unverified');
   if (r === null) return unavailable('no context reading from this source');
   const at = r.asOf ?? r.observedAt;
+  const stale = live && now - at > STALE_MS;
   const base = {
     qualifier: null, meter: null, meterNote: null, warning: null, unoccupied: null,
     source: `Source: ${SOURCE[r.source]}`,
     freshness: r.asOf !== null ? `Measured ${formatTime(r.asOf)} · observed ${formatTime(r.observedAt)}` : `Source time unknown; observed ${formatTime(r.observedAt)}`,
-    stale: live && now - at > STALE_MS ? `Stale · ${formatTime(at)}` : null,
+    stale: stale ? `Stale · ${formatTime(at)}` : null,
+    staleLabel: stale ? `Stale, last ${r.asOf !== null ? 'measurement' : 'observation'} ${formatTime(at)}` : null,
     generation: `Generation ${r.generation + 1}`,
   };
   const est = r.basis === 'inferred' ? '~est ' : '';
@@ -75,14 +79,14 @@ export function contextView(agent: string, live: boolean, r: ContextReading | nu
 }
 
 export interface CategoryRow { group: string; name: string; value: string; label: string }
-const V1B = 'unavailable — composition estimates arrive in v1-B';
-const cat = (group: string, name: string, label = `${name}: ${V1B}`): CategoryRow => ({ group, name, value: 'Unavailable', label });
+// XAIBO-PROD-435: the spoken value only; the row header already reads the name
+const cat = (group: string, name: string, label = 'Unavailable — composition estimates arrive in v1-B'): CategoryRow => ({ group, name, value: 'Unavailable', label });
 /** §6.3.1 D2: rows always present; composition estimates are v1-B, so every value is unavailable in the MVP. */
 export const CATEGORY_ROWS: CategoryRow[] = [
   ...['Messages', 'System prompt', 'Memory files', 'Skills', 'MCP server instructions', 'System tool definitions', 'MCP tool definitions',
     'Custom agents'].map((n) => cat('Used context', n)),
   cat('Outside used context', 'Compaction buffer'),
-  cat('Outside used context', 'Free space', 'Free space: unavailable — compaction buffer unavailable'),
+  cat('Outside used context', 'Free space', 'Unavailable — compaction buffer unavailable'),
   cat('Deferred definitions', 'Deferred MCP tool definitions'),
   cat('Deferred definitions', 'Deferred system tool definitions'),
 ];

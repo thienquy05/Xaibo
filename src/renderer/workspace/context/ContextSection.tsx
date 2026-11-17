@@ -38,7 +38,7 @@ export function ContextSection({ row, reading, now }: { row: SessionRow; reading
       {v.warning ? <p className="x-gap"><Icon id="finding" />{v.warning}</p> : null}
       <p className="x-context-meta">
         <span>{v.source}</span><span>{v.freshness}</span>
-        {v.stale ? <span className="x-tone-warning"><Icon id="clock-gap" />{v.stale}</span> : null}
+        {v.stale ? <span className="x-tone-warning"><Icon id="clock-gap" /><span aria-hidden="true">{v.stale}</span><span className="x-sr-only">{v.staleLabel}</span></span> : null}
         <span>{v.generation}</span>
       </p>
       <p className="x-context-note">Composition estimates arrive in v1-B; until then every category is unavailable.</p>

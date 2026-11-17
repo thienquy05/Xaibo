@@ -1,12 +1,12 @@
 // XAIBO-PROD-413 (P4-T05d; design §6.3 as amended by D-P4-06): the open session's section bodies. Untrusted text is
 // React text through visible(), in pre-wrap blocks; tool inputs/results and reasoning stay collapsed and are fetched as
 // bounded slices only when expanded (design §5.2).
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import type { FileItem, ModelMarker, SubagentItem, ToolItem, TranscriptItem } from '../../shared/ipc.ts';
 import { VirtualList } from '../components/VirtualList.tsx';
 import { Icon } from '../status/StatusBadge.tsx';
 import { visible, visibleBlock } from '../text.ts';
-import { appendSlice, openWindow, prependSlice, previousAt } from './slice.ts';
+import { appendSlice, focusAfter, openWindow, prependSlice, previousAt, sliceAnnouncement, type SliceDir } from './slice.ts';
 import { approvalText, durationLabel, FILE_KIND_TEXT, groupFiles, lifecycleText, resultText, toolTitle, type Entry } from './timeline.ts';
 import { argFor, clock, isoTime, sizeText, toolMeta, toolTone } from './view.ts';
 
@@ -18,33 +18,50 @@ export interface Paged<T> { items: T[]; more: boolean; loading: boolean; failed:
  *  that the earliest is evicted and Load previous brings it back (slice.ts). Cursors are the service's, opaque here. */
 function Slices({ event, part, slice, start = '', from = 0, label }: { event: number; part: 'text' | 'reasoning'; slice: SliceFn; start?: string; from?: number | null; label?: string }) {
   const [win, setWin] = useState(() => openWindow(start, from));
-  const [busy, setBusy] = useState<'next' | 'prev' | null>(null);
-  const [failed, setFailed] = useState<'next' | 'prev' | null>(null);
-  const load = (dir: 'next' | 'prev') => {
+  const [busy, setBusy] = useState<SliceDir | null>(null);
+  const [failed, setFailed] = useState<SliceDir | null>(null);
+  const [said, setSaid] = useState(''); // XAIBO-PROD-435: the live region's text
+  const inFlight = useRef(false); // XAIBO-PROD-435: a same-tick double activation or StrictMode remount fetches once
+  const moved = useRef<SliceDir | null>(null); // the direction just loaded: focus follows if its button unmounted
+  const textRef = useRef<HTMLElement>(null);
+  /** `focused`: started from its button while that button had focus (only then may focus follow the text). */
+  const load = (dir: SliceDir, focused = false) => {
     const at = dir === 'next' ? win.next : previousAt(win);
-    if (at === null || busy) return;
+    // review M: the ref covers the same tick, `busy` the time until the render that brings the new window
+    if (at === null || busy !== null || inFlight.current) return;
+    inFlight.current = true;
     setBusy(dir);
+    setSaid(sliceAnnouncement('loading', dir));
     slice(event, part, at).then((s) => {
       setWin((w) => (dir === 'next' ? appendSlice(w, at, s) : prependSlice(w, at, s)));
       setFailed(null);
-      setBusy(null);
-    }, () => { setFailed(dir); setBusy(null); });
+      setSaid(sliceAnnouncement('loaded', dir));
+      if (focused) moved.current = dir; // review L: never for the mount auto-load or a click that left focus elsewhere
+    }, () => { setFailed(dir); setSaid(sliceAnnouncement('failed', dir)); }).finally(() => { inFlight.current = false; setBusy(null); });
   };
   // An expanded input, result or reasoning fetches its first slice at once (it mounts only when opened).
   useEffect(() => { if (start === '') load('next'); }, []); // once on mount
+  // XAIBO-PROD-435: a button that unmounted after its load took focus with it; the text receives it instead of the body
+  useEffect(() => {
+    const dir = moved.current;
+    moved.current = null;
+    const lost = document.activeElement === null || document.activeElement === document.body;
+    if (dir && lost && focusAfter(win, dir) === 'text') textRef.current?.focus();
+  }, [win]);
   const label2 = (dir: 'next' | 'prev', idle: string) => (failed === dir ? 'Retry loading text' : busy === dir ? 'Loading text' : idle);
   return (
     <>
       {label ? <span className="x-label">{label}</span> : null}
       {previousAt(win) !== null ? (
-        <button type="button" className="x-btn x-btn-secondary" aria-disabled={busy !== null || undefined} onClick={() => load('prev')}>{label2('prev', 'Load previous')}</button>
+        <button type="button" className="x-btn x-btn-secondary" aria-disabled={busy !== null || undefined} onClick={(e) => load('prev', document.activeElement === e.currentTarget)}>{label2('prev', 'Load previous')}</button>
       ) : null}
-      {win.slices.length ? <pre className="x-code">{win.slices.map((s) => <span key={s.at}>{visibleBlock(s.text)}</span>)}</pre>
-        : win.next === null ? <p className="x-label">No text recorded</p> : null}
+      {win.slices.length ? <pre className="x-code" ref={textRef as RefObject<HTMLPreElement>} tabIndex={-1}>{win.slices.map((s) => <span key={s.at}>{visibleBlock(s.text)}</span>)}</pre>
+        : win.next === null ? <p className="x-label" ref={textRef as RefObject<HTMLParagraphElement>} tabIndex={-1}>No text recorded</p> : null}
+      <span className="x-sr-only" aria-live="polite">{said}</span>
       {win.next !== null ? (
         <p className="x-more-row">
           {win.slices.length ? <span className="x-label">More content available</span> : null}
-          <button type="button" className="x-btn x-btn-secondary" aria-disabled={busy !== null || undefined} onClick={() => load('next')}>
+          <button type="button" className="x-btn x-btn-secondary" aria-disabled={busy !== null || undefined} onClick={(e) => load('next', document.activeElement === e.currentTarget)}>
             {label2('next', win.slices.length ? 'Load more text' : 'Load text')}
           </button>
         </p>
@@ -198,7 +215,11 @@ export function Timeline({ entries, next, onNext, loading }: { entries: Entry[];
   );
 }
 
+/** XAIBO-PROD-435 (review L of -433): record loading states are announced, from a region present at every state. */
 function More({ p }: { p: Paged<unknown> }) {
+  return <><span className="x-sr-only" aria-live="polite">{p.failed ? 'Records could not be loaded' : p.loading ? 'Loading records' : ''}</span><MoreRow p={p} /></>;
+}
+function MoreRow({ p }: { p: Paged<unknown> }) {
   if (p.failed) return <p className="x-earlier">Records could not be loaded <button type="button" className="x-btn x-btn-secondary" onClick={p.loadMore}>Retry</button></p>;
   // XAIBO-PROD-433 (design §6.13 B2): a pending first page says so; no empty table stands in for "none"
   if (p.loading && !p.items.length && !p.more) return <p className="x-earlier">Loading records</p>;

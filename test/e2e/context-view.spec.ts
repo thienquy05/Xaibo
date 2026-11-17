@@ -48,7 +48,8 @@ const openContext = async (page: Page, text: string) => {
 const tables = async (body: ReturnType<Page['getByRole']>) => {
   for (const name of ['Used context', 'Outside used context', 'Deferred definitions']) await expect(body.getByRole('table', { name, exact: true })).toBeVisible();
   await expect(body.getByRole('cell', { name: /v1-B/ })).toHaveCount(11);
-  await expect(body.getByRole('cell', { name: 'Free space: unavailable — compaction buffer unavailable' })).toBeVisible();
+  // XAIBO-PROD-435: the row header says the name once; the cell speaks only the value
+  await expect(body.getByRole('row', { name: 'Free space Unavailable — compaction buffer unavailable', exact: true })).toBeVisible();
   await expect(body).not.toContainText(/usable before compaction/i);
 };
 

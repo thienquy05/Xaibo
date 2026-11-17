@@ -8,7 +8,7 @@ import { visible } from '../text.ts';
 export const STALE_MS = 15 * 60_000;
 export interface UsageView {
   title: string; value: string; percent: number | null; aboveScale: boolean; reset: string | null; countdown: string | null;
-  stale: string | null; freshness: string | null; unverified: boolean; plan: string | null; credits: string | null;
+  stale: string | null; /** XAIBO-PROD-435 (design C20): the spoken form of `stale`. */ staleLabel: string | null; freshness: string | null; unverified: boolean; plan: string | null; credits: string | null;
   /** XAIBO-PROD-432 (design §6.13 B4): set while the collector is lost, for a row that shows a reading. */
   lastKnown: string | null;
 }
@@ -45,7 +45,7 @@ function resetText(at: number, now: number): string {
 
 /** `lastKnown`: the collector-loss label the Dashboard shows (null while collecting); a reading then never reads as current. */
 export function usageView(s: UsageScope, now: number, lastKnown: string | null = null): UsageView {
-  const empty: UsageView = { title: 'Quota', value: '', percent: null, aboveScale: false, reset: null, countdown: null, stale: null, freshness: null,
+  const empty: UsageView = { title: 'Quota', value: '', percent: null, aboveScale: false, reset: null, countdown: null, stale: null, staleLabel: null, freshness: null,
     unverified: false, plan: null, credits: null, lastKnown: null };
   if (s.unavailable === 'passive') return { ...empty, value: 'Unavailable from passive sources' };
   if (s.unavailable === 'no-observation') return { ...empty, value: UNAVAILABLE[s.agent] ?? 'Unavailable — no observation' };
@@ -57,13 +57,15 @@ export function usageView(s: UsageScope, now: number, lastKnown: string | null =
     lastKnown: lastKnown === null ? null : `Last known · ${lastKnown}` };
   if (s.resetsAt !== null && now >= s.resetsAt) return { ...base, value: 'Reset passed; awaiting observation' };
   const measured = s.measuredAt ?? s.firstObservedAt; // review: a reading with no measured time ages from its first observation
+  const stale = measured !== null && now - measured > STALE_MS;
   return {
     ...base,
     value: s.usedPercent === null ? 'Utilization unavailable' : pct(s.usedPercent),
     percent: s.usedPercent, aboveScale: s.usedPercent !== null && s.usedPercent > 100,
     reset: s.resetsAt === null ? null : resetText(s.resetsAt, now),
     countdown: s.resetsAt === null ? null : countdownText(s.resetsAt - now),
-    stale: measured !== null && now - measured > STALE_MS ? `Stale · ${formatTime(measured)}` : null,
+    stale: stale ? `Stale · ${formatTime(measured)}` : null,
+    staleLabel: stale ? `Stale, last ${s.asOf !== null ? 'measurement' : 'observation'} ${formatTime(measured)}` : null,
   };
 }
 

@@ -41,3 +41,14 @@ for (const s of sections) {
     assert.doesNotMatch(none, /Loading records/);
   });
 }
+
+// XAIBO-PROD-435 (P4-T14b; review L of -433): loading and failed record states are announced in a polite live region.
+for (const s of sections) {
+  test(`${s.name}: Loading records and a failed load are announced; idle announces nothing`, () => {
+    const live = (h: string) => /<span class="x-sr-only" aria-live="polite">([^<]*)<\/span>/.exec(h)?.[1];
+    assert.equal(live(s.render(page({ loading: true }))), 'Loading records');
+    assert.equal(live(s.render(page({ loading: true, more: true, items: [] }))), 'Loading records');
+    assert.equal(live(s.render(page({ failed: true }))), 'Records could not be loaded');
+    assert.equal(live(s.render(page())), '');
+  });
+}

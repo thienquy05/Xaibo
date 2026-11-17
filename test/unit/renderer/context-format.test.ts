@@ -104,7 +104,22 @@ test('category ledger: 12 rows in design order, all unavailable with the v1-B or
   assert.deepEqual([...new Set(CATEGORY_ROWS.map((r) => r.group))], ['Used context', 'Outside used context', 'Deferred definitions']);
   for (const r of CATEGORY_ROWS) {
     assert.equal(r.value, 'Unavailable');
-    assert.match(r.label, r.name === 'Free space' ? /^Free space: unavailable — compaction buffer unavailable$/ : /v1-B/);
+    assert.match(r.label, r.name === 'Free space' ? /^Unavailable — compaction buffer unavailable$/ : /v1-B/);
     assert.doesNotMatch(r.label, /usable before compaction/i);
   }
+});
+
+// XAIBO-PROD-435 (P4-T14b; design C20): Stale is spoken with what the time is; category rows do not repeat their name.
+test('Stale accessible text (C20): last measurement when the source time is known, else last observation', () => {
+  const late = T + 16 * 60_000;
+  assert.equal(contextView('claude', true, read(), late).staleLabel, `Stale, last measurement ${formatTime(T)}`);
+  assert.equal(contextView('claude', true, read({ asOf: null }), late).staleLabel, `Stale, last observation ${formatTime(T + 1)}`);
+  assert.equal(contextView('claude', true, read(), T).staleLabel, null);
+  assert.equal(contextView('claude', false, read(), late).staleLabel, null);
+});
+
+test('category rows: spoken value text does not repeat the row name (the row header already says it)', () => {
+  for (const r of CATEGORY_ROWS) assert.ok(!r.label.startsWith(r.name), `${r.name}: ${r.label}`);
+  assert.equal(CATEGORY_ROWS.find((r) => r.name === 'Free space')!.label, 'Unavailable — compaction buffer unavailable');
+  assert.equal(CATEGORY_ROWS[0]!.label, 'Unavailable — composition estimates arrive in v1-B');
 });

@@ -54,3 +54,26 @@ test('the end of the text leaves no next cursor; a prepend at the start leaves n
   w = prependSlice(w, 0, s(0, 10));
   assert.deepEqual([w.slices.map((x) => x.at), w.earlier, w.next], [[0, 10, 20, 30], [], 40]);
 });
+
+// XAIBO-PROD-435 (P4-T14b, FR-50): focus and announcements around a slice load.
+test('focus after a load stays on its button while it still shows, else moves to the text (the button unmounted)', async () => {
+  const { focusAfter } = await import('../../../src/renderer/workspace/slice.ts');
+  let w = appendSlice(openWindow('', 0), 0, s(0, 10));
+  assert.equal(focusAfter(w, 'next'), 'button', 'more text follows: Load more text stays');
+  w = appendSlice(w, 10, s(1, null));
+  assert.equal(focusAfter(w, 'next'), 'text', 'the last slice: Load more text unmounts');
+  for (let i = 2; i < 6; i++) w = appendSlice({ ...w, next: i * 10 }, i * 10, s(i, (i + 1) * 10));
+  assert.equal(focusAfter(w, 'prev'), 'button', 'earlier slices still evicted: Load previous stays');
+  while (previousAt(w) !== null) w = prependSlice(w, previousAt(w)!, s(9, 99));
+  assert.equal(focusAfter(w, 'prev'), 'text', 'nothing earlier: Load previous unmounts');
+});
+
+test('slice load states are announced in words: loading, loaded (earlier or more), failed; idle says nothing', async () => {
+  const { sliceAnnouncement } = await import('../../../src/renderer/workspace/slice.ts');
+  assert.equal(sliceAnnouncement('idle', 'next'), '');
+  assert.equal(sliceAnnouncement('loading', 'next'), 'Loading text');
+  assert.equal(sliceAnnouncement('loading', 'prev'), 'Loading text');
+  assert.equal(sliceAnnouncement('loaded', 'next'), 'Text loaded');
+  assert.equal(sliceAnnouncement('loaded', 'prev'), 'Earlier text loaded');
+  assert.equal(sliceAnnouncement('failed', 'next'), 'Text could not be loaded');
+});

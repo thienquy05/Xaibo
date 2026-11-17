@@ -264,7 +264,7 @@ function ScopeRow({ s, now, api, lastKnown, selected, onSelect }: { s: UsageScop
     {selected && arc !== null ? <p className="x-chart-scale"><span>0%</span><span>100%</span></p> : null}
     {v.reset || v.countdown ? <p>{[v.reset, v.countdown].filter(Boolean).join(' · ')}</p> : null}
     {v.lastKnown ? <p className="x-tone-warning">{v.lastKnown}</p> : null}
-    {v.stale ? <p className="x-tone-warning">{v.stale}</p> : null}
+    {v.stale ? <p className="x-tone-warning"><span aria-hidden="true">{v.stale}</span><span className="x-sr-only">{v.staleLabel}</span></p> : null}
     {v.plan || v.credits ? <p>{[v.plan, v.credits].filter(Boolean).join(' · ')}</p> : null}
     {v.freshness ? <p className="x-tone-muted">{v.freshness}</p> : null}
     <p className="x-chart-caption">{s.stream ? `Stream ${visible(s.stream)}` : 'Stream unavailable'} · {s.scope === null ? 'Scope unavailable' : `Scope ${s.scope}`} · local stored observation</p>

@@ -52,7 +52,7 @@ test('reset passed replaces utilization and countdown', () => {
 
 test('agy: exactly "Unavailable from passive sources", no percentage, reset or countdown; Claude/Codex without a scope', () => {
   const agy = usageView(s({ scope: null, agent: 'agy', verified: null, stream: null, windowMinutes: null, usedPercent: null, resetsAt: null, firstObservedAt: null, measuredAt: null, unavailable: 'passive' }), NOW);
-  assert.deepEqual(agy, { title: 'Quota', value: 'Unavailable from passive sources', percent: null, aboveScale: false, reset: null, countdown: null, stale: null,
+  assert.deepEqual(agy, { title: 'Quota', value: 'Unavailable from passive sources', percent: null, aboveScale: false, reset: null, countdown: null, stale: null, staleLabel: null,
     freshness: null, unverified: false, plan: null, credits: null, lastKnown: null });
   const blank = { scope: null, verified: null, stream: null, windowMinutes: null, usedPercent: null, resetsAt: null, firstObservedAt: null, measuredAt: null, unavailable: 'no-observation' as const };
   assert.equal(usageView(s({ ...blank }), NOW).value, 'Unavailable — no statusLine quota observation');
@@ -112,4 +112,12 @@ test('collector lost: a row with a reading says Last known with the collector la
   assert.equal(usageView(s({ resetsAt: NOW - MIN }), NOW, 'since 11:58').lastKnown, 'Last known · since 11:58', 'reset passed is a reading state too');
   assert.equal(usageView(s({ unavailable: 'no-observation' }), NOW, 'since 11:58').lastKnown, null);
   assert.equal(usageView(s({ agent: 'agy', unavailable: 'passive' }), NOW, 'since 11:58').lastKnown, null);
+});
+
+// XAIBO-PROD-435 (P4-T14b; design C20): Stale is spoken with what the time is.
+test('usage Stale accessible text: last measurement, or last observation when no measured time exists', () => {
+  // review HIGH: the service always stores measuredAt (source time, else first observation); only asOf says the source time is known
+  assert.equal(usageView(s({ asOf: NOW - 16 * MIN, measuredAt: NOW - 16 * MIN }), NOW).staleLabel, 'Stale, last measurement 2026-01-02 11:44');
+  assert.equal(usageView(s({ asOf: null, measuredAt: NOW - 20 * MIN, firstObservedAt: NOW - 20 * MIN }), NOW).staleLabel, 'Stale, last observation 2026-01-02 11:40');
+  assert.equal(usageView(s(), NOW).staleLabel, null);
 });

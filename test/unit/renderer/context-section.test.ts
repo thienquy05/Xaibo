@@ -46,7 +46,7 @@ test('category tables: three, in design order, every value Unavailable with the 
   assert.deepEqual([...html.matchAll(/<caption>([^<]+)<\/caption>/g)].map((m) => m[1]), ['Used context', 'Outside used context', 'Deferred definitions']);
   assert.equal([...html.matchAll(/aria-hidden="true">Unavailable</g)].length, 12);
   assert.match(html, /Composition estimates arrive in v1-B/);
-  assert.match(html, /Free space: unavailable — compaction buffer unavailable/);
+  assert.match(html, /<th scope="row">Free space<\/th><td><span aria-hidden="true">Unavailable<\/span><span class="x-sr-only">Unavailable — compaction buffer unavailable<\/span>/);
   assert.doesNotMatch(html, /usable before compaction/i);
 });
 
@@ -89,4 +89,10 @@ test('stale while live; untrusted model text stays escaped', () => {
   const html = renderToStaticMarkup(createElement(ContextSection, { row: row({ live, model: '<img src=x onerror=1>' }), reading: read(), now: T + 16 * 60_000 }));
   assert.match(html, /Stale · /);
   assert.doesNotMatch(html, /<img/);
+});
+
+test('XAIBO-PROD-435: Stale shows its short form and speaks the C20 text', () => {
+  const live: LiveStatus = { lifecycle: 'busy', confidence: 'confirmed', health: 'connected', reason: null, outcome: null, findings: [], since: null };
+  const html = renderToStaticMarkup(createElement(ContextSection, { row: row({ live }), reading: read(), now: T + 16 * 60_000 }));
+  assert.match(html, /<span aria-hidden="true">Stale · [^<]+<\/span><span class="x-sr-only">Stale, last measurement [^<]+<\/span>/);
 });

@@ -101,6 +101,13 @@ test('a 50 MB line and a control blob: keyboard slices, a 4-slice window, escape
   await page.keyboard.press('Enter');
   await expect.poll(window, { timeout: 10_000 }).toEqual(ids.slice(1, 5)); // the latest evicted slice is back; the last went
   await expect(previous).toHaveText('Load previous'); // one more evicted slice remains
+  // XAIBO-PROD-435: two activations in one tick fetch the slice once; the button then unmounts and focus moves to the
+  // text (not the page body); the state change is announced in the item's live region
+  await previous.evaluate((b: HTMLElement) => { b.click(); b.click(); });
+  await expect.poll(window, { timeout: 10_000 }).toEqual(ids.slice(0, 4));
+  await expect(previous).toHaveCount(0);
+  await expect(pre).toBeFocused();
+  await expect(step.locator('[aria-live="polite"]').first()).toHaveText('Earlier text loaded');
   expect(await pre.textContent()).not.toContain('�');
 
   const longest = await page.evaluate(() => (window as unknown as { __longest: number }).__longest);
