@@ -14,7 +14,8 @@ const GROUPS = ['Used context', 'Outside used context', 'Deferred definitions'];
 export function ContextPane({ row, detail, failed, onRetry, now, retry = { ...retryIdle, failures: 1 } }: {
   row: SessionRow; detail: SessionDetail | null; failed: boolean; onRetry: () => void; now: number; retry?: Retry;
 }) {
-  if (detail) return <ContextSection row={row} reading={detail.context} now={now} />;
+  // XAIBO-PROD-452 (G4d-5): a failed refresh keeps the last reading and still offers Retry
+  if (detail) return <>{failed ? <RetryNotice thing="context" retry={retry} onRetry={onRetry} /> : null}<ContextSection row={row} reading={detail.context} now={now} /></>;
   if (!failed) return <LoadingLine text="Loading context…" className="x-context-note" />;
   return <RetryNotice thing="context" retry={retry} onRetry={onRetry} />; // XAIBO-PROD-438 (D-P4-10)
 }

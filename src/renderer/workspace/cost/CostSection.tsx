@@ -23,8 +23,8 @@ export function CostSection({ cost }: { cost: CostDetail }) {
     <div className="x-context x-cost">
       <h3>Estimated cost</h3>
       <p className="x-context-value"><span aria-hidden="true">{h.value}</span><span className="x-sr-only">{h.label}</span></p>
-      {/* review L2: coverage is already spoken in the headline's text */}
-      <p className="x-context-meta"><span>{h.basis}</span><span aria-hidden="true">{h.coverage}</span></p>
+      {/* review L2 / XAIBO-PROD-452 (G4d-6): hidden only where the headline's text already speaks the coverage */}
+      <p className="x-context-meta"><span>{h.basis}</span><span aria-hidden={h.label.includes(h.coverage) || undefined}>{h.coverage}</span></p>
       {h.notes.map((n) => <p key={n} className="x-context-note">{n}</p>)}
       {cost.groups.map((g) => {
         const title = visible(groupTitle(g, cost.revisions));

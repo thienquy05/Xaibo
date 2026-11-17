@@ -66,6 +66,8 @@ test('Claude session: conversation, reasoning, tools, subagent, files, timeline,
   const page = await xaibo.window(run);
   await openSessions(page);
   await expect(list(page).getByRole('button').filter({ hasText: CWD })).toHaveCount(1, { timeout: 20_000 });
+  // XAIBO-PROD-452 (G4d-1): with no session open the list cannot be hidden (nothing would bring it back)
+  await expect(page.getByRole('button', { name: 'Hide session list' })).toHaveCount(0);
   await open(page, CWD);
 
   const convo = page.getByRole('list', { name: 'Conversation' });
@@ -132,6 +134,12 @@ test('Claude session: conversation, reasoning, tools, subagent, files, timeline,
   await expect(list(page)).toHaveCount(0);
   await page.getByRole('button', { name: 'Show session list' }).click();
   await expect(list(page)).toBeVisible();
+  // XAIBO-PROD-452 (G4d-1): hidden, then Back (narrow) closes the session and shows the list again
+  await page.getByRole('button', { name: 'Hide session list' }).click();
+  await run.app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(640, 560));
+  await page.getByRole('button', { name: 'Back to session list' }).click();
+  await expect(list(page)).toBeVisible();
+  await expect(page.locator('#open-session-title')).toHaveCount(0);
 });
 
 test('Codex and Antigravity sessions: turns and tools with results', async ({ xaibo }) => {

@@ -189,3 +189,12 @@ test('a live append keeps an empty page continuation cursor; a window whose end 
   assert.deepEqual(liveAppend(w, w.items[1]!, { items: [item(3)], next: null }).items.map((i) => i.event), [1, 2, 3]);
   assert.equal(liveAppend(w, item(7), { items: [item(3)], next: cur }), w, 'the window changed since the append started');
 });
+
+// XAIBO-PROD-452 (G4d-N1; design §6.3): Retry repeats the request that failed; a failed page keeps the window it grew.
+test('the transcript Retry repeats the failed request', async () => {
+  const { retryRequest } = await import('../../../src/renderer/workspace/view.ts');
+  assert.deepEqual(retryRequest('first'), { load: 'first' });
+  assert.deepEqual(retryRequest('latest'), { load: 'latest' });
+  assert.deepEqual(retryRequest('after'), { grow: 'after' });
+  assert.deepEqual(retryRequest('before'), { grow: 'before' });
+});

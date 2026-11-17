@@ -72,7 +72,8 @@ export function Workspace({ list, changes, loading, onLoadMore, lastKnown, api, 
           <section className="x-pane x-list-pane" aria-labelledby="session-list-heading">
             <div className="x-pane-head">
               <h2 id="session-list-heading">Session list</h2>
-              <button type="button" className="x-btn x-btn-quiet x-icon-btn x-wide-only" aria-label="Hide session list" onClick={() => setShowList(false)}><Icon id="back" /></button>
+              {/* XAIBO-PROD-452 (G4d-1): only while a session is open, whose header offers Show session list */}
+              {row ? <button type="button" className="x-btn x-btn-quiet x-icon-btn x-wide-only" aria-label="Hide session list" onClick={() => setShowList(false)}><Icon id="back" /></button> : null}
             </div>
             <div className="x-section-list">
               {list.loaded && list.rows.length === 0 ? <p className="x-empty-note">No sessions yet.</p> : (

@@ -110,3 +110,9 @@ test('review HIGH (XAIBO-PROD-438): the alert wraps only the notice text; the Re
   assert.doesNotMatch(failed, /<p[^>]*role="alert"/);
   assert.match(pane({}), /class="x-context-note x-loading-line"/);
 });
+
+// XAIBO-PROD-452 (G4d-5): a refresh that fails after a success keeps the last reading and still offers Retry.
+test('a failed refresh with a retained reading shows Retry above the reading', () => {
+  const html = renderToStaticMarkup(createElement(ContextPane, { row: row(), detail: { row: row(), coverage: [], context: read() }, failed: true, onRetry() {}, now: T }));
+  assert.match(html, /Couldn&#x27;t load context[\s\S]*<button[^>]*>Retry<\/button>[\s\S]*Current context/);
+});

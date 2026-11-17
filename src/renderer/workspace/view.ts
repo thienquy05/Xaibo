@@ -21,6 +21,10 @@ export function toolMeta(t: ToolItem | null): string[] {
 export const initialAt = (row: Pick<SessionRow, 'live'>): 'first' | 'latest' => (row.live && row.live.lifecycle !== 'ended' ? 'latest' : 'first');
 /** XAIBO-PROD-450 (G4d-2; design §6.3): where the list anchors after a transcript load. A replacing load anchors at the
  *  loaded range's start (first) or end (latest); paging keeps the reading position. */
+/** XAIBO-PROD-452 (G4d-N1; design §6.3): what the transcript Retry repeats: the request that failed, so a failed page
+ *  keeps the window it would have grown and a failed Go to first turn does not load the latest page. */
+export const retryRequest = (r: 'first' | 'latest' | 'after' | 'before'): { load: 'first' | 'latest' } | { grow: 'after' | 'before' } =>
+  (r === 'first' || r === 'latest' ? { load: r } : { grow: r });
 export const loadAnchor = (at: 'first' | 'latest' | 'after' | 'before'): 'start' | 'end' | null => (at === 'first' ? 'start' : at === 'latest' ? 'end' : null);
 
 const MISSING: Partial<Record<CoverageCode, string>> = {

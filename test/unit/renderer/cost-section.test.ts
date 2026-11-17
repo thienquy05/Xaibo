@@ -97,3 +97,14 @@ test('review M1: revisions sharing a label stay distinguishable (id shown) and k
 test('XAIBO-PROD-438 (D-P4-10): a Retry in progress is disabled and reads Retrying…', () => {
   assert.match(render({ cost: undefined, failed: true, retry: { failures: 1, at: null, busy: true } }), /aria-busy="true"[^>]*>.*Retrying…<\/button>/);
 });
+
+// XAIBO-PROD-452 (G4d-6): coverage is hidden from assistive tech only where the headline label already speaks it.
+test('coverage is spoken in the agent-reported and unavailable states', () => {
+  const spoken = (html: string) => html.replace(/<span aria-hidden="true">[^<]*<\/span>/g, '').replace(/<[^>]+>/g, ' ');
+  const rep = render({ cost: { ...detail, amountUsd: 0.5, basis: 'agent_reported', coverage: 'full', reportedUsd: 0.5 } });
+  assert.match(spoken(rep), /3 of 3 requests priced; missing: cache write/);
+  const none = render({ cost: { ...detail, amountUsd: null, coverage: 'unavailable', priced: 0 } });
+  assert.match(spoken(none), /0 of 3 requests priced; missing: cache write/);
+  const calc = render({});
+  assert.equal(spoken(calc).match(/3 of 3 requests priced/g)?.length, 1, 'the calculated headline speaks it once');
+});

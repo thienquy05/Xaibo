@@ -15,7 +15,7 @@ import { ContextPane } from './context/ContextSection.tsx';
 import { CostPane } from './cost/CostSection.tsx';
 import { Conversation, Files, Subagents, Timeline, Tools, type Anchor, type Paged, type SliceFn } from './sections.tsx';
 import { mergeTimeline } from './timeline.ts';
-import { compactStatus, countText, incompleteReasons, initialAt, liveAction, liveAppend, loadAnchor, loadPages, MARKER_PAGES, settled, trimWindow, WINDOW_MAX } from './view.ts';
+import { compactStatus, countText, incompleteReasons, initialAt, liveAction, liveAppend, loadAnchor, loadPages, MARKER_PAGES, retryRequest, settled, trimWindow, WINDOW_MAX } from './view.ts';
 
 export type WorkspaceApi = Pick<Client, 'session' | 'transcript' | 'slice' | 'tools' | 'subagents' | 'files' | 'markers' | 'cost'>;
 const PAGE = 50;
@@ -140,8 +140,10 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
   const latestRef = useRef<HTMLButtonElement>(null);
   const autoReloaded = useRef(false); // XAIBO-PROD-436: the failed window already reloaded itself once
   const [anchor, setAnchor] = useState<Anchor>(null); // XAIBO-PROD-450: first/latest land at the range's start/end
+  const lastReq = useRef<'first' | 'latest' | 'after' | 'before'>('first'); // XAIBO-PROD-452: what Retry repeats
   const loadAt = (at: 'first' | 'latest') => {
     const g = ++trGen.current;
+    lastReq.current = at;
     setFresh(false);
     if (trRef.current.failed) trRtDo({ type: 'start' }); // a (re)load after a failure: the notice shows Retrying…
     setTr((s) => ({ ...s, loading: true }));
@@ -153,6 +155,8 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
     const c = dir === 'after' ? s.next : s.prev;
     if (!c || s.loading) return;
     const g = trGen.current;
+    lastReq.current = dir;
+    if (s.failed) trRtDo({ type: 'start' });
     setTr((x) => ({ ...x, loading: true }));
     api.transcript(id, dir === 'after' ? { after: c } : { before: c }, PAGE).then((p) => {
       if (trGen.current !== g) return;
@@ -268,7 +272,7 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
           <p className="x-earlier">New activity available <button type="button" className="x-btn x-btn-secondary"
             onClick={() => { loadAt('latest'); latestRef.current?.focus(); }}>Go to latest</button></p>
         ) : null}
-        {tr.failed && (section === 'conversation' || section === 'timeline') ? <RetryNotice thing="transcript" retry={trRt} onRetry={() => loadAt(initial.current)} /> : null}
+        {tr.failed && (section === 'conversation' || section === 'timeline') ? <RetryNotice thing="transcript" retry={trRt} onRetry={() => { const r = retryRequest(lastReq.current); if ('load' in r) loadAt(r.load); else grow(r.grow); }} /> : null}
         {/* XAIBO-PROD-451 (G4d-3): a failed marker load is said, never silent */}
         {markers.failed && (section === 'conversation' || section === 'timeline')
           ? <RetryNotice thing="model markers" retry={{ ...markers.retry, busy: markers.retry.busy || markers.loading }} onRetry={markers.loadMore} /> : null}
