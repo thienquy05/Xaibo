@@ -152,6 +152,7 @@ CREATE TABLE report_delivery (
   unattributed TEXT CHECK (unattributed IN ('unknown-profile')),
   PRIMARY KEY (registration_id, delivery_id)
 );
+CREATE INDEX report_delivery_seq ON report_delivery (registration_id, producer_id, native_session_id, producer_seq);
 CREATE TABLE report_rejects (
   registration_id TEXT NOT NULL,
   code TEXT NOT NULL,

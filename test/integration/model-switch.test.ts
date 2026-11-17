@@ -12,7 +12,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { CodexAdapter } from '../../src/service/adapters/codex/index.ts';
 import { answerCost, answerMarkers, sessionsByKey } from '../../src/service/api.ts';
 import { addRegistration } from '../../src/service/receivers/registrations.ts';
-import { createReportIntake } from '../../src/service/receivers/report.ts';
+import { createReportIntake, NEWEST_SEQ } from '../../src/service/receivers/report.ts';
 import { priceUsage } from '../../src/service/usage/cost.ts';
 import { loadModels } from '../../src/service/usage/models.ts';
 import { loadPrices } from '../../src/service/usage/prices.ts';
@@ -188,6 +188,36 @@ test('report v1: model, effort and turn_id on turn.start; a switch without effor
   await reports.deliver(registration, frame({ turn_id: RB, model: { id: 'claude-sonnet-5-5' } }));
   assert.deepEqual(current(h.db, S4), { model: 'claude-sonnet-5-5', effort: null });
   assert.deepEqual(markers(h.db, S4), [[T0 + 1000, 'Claude Opus 5.5 · high'], [T0 + 5000, 'Claude Sonnet 5.5']]);
+});
+
+// XAIBO-PROD-442 (G4b-2, FR-51): a report frame with a lower producer_seq arriving after a newer one is delayed evidence:
+// it never reverts the session's current model or effort, but its own turn keeps its model.
+test('XAIBO-PROD-442: reversed report delivery keeps the newer model current; the older turn keeps its own model', async () => {
+  const h = await hookStore();
+  const { registration } = addRegistration(h.dir, { agent: 'claude', profileKey: 'p1' });
+  let now = T0 + 1000;
+  const reports = createReportIntake({ db: h.db, writer: h.writer, dataDir: h.dir, now: () => now });
+  const S5 = S('0005'), RA = S('1005'), RB = S('2005');
+  const frame = (seq: number, o: Record<string, unknown>) => ({ v: 1, delivery_id: `r-${seq}`, session_id: S5, producer_id: 'fixture-producer', producer_seq: seq,
+    event: 'turn.start', source_ts: iso(0), payload: {}, ...o });
+  assert.equal((await reports.deliver(registration, frame(2, { turn_id: RB, model: { id: 'claude-sonnet-5-5' } }))).status, 'accepted');
+  now = T0 + 5000;
+  assert.equal((await reports.deliver(registration, frame(1, { turn_id: RA, model: { id: 'claude-opus-5-5' }, effort: 'high' }))).status, 'accepted');
+  assert.deepEqual(current(h.db, S5), { model: 'claude-sonnet-5-5', effort: null }, 'the delayed frame does not revert the current model');
+  assert.deepEqual({ model: (turn(h.db, RA) as { model: string }).model, effort: (turn(h.db, RA) as { effort: string }).effort }, { model: 'claude-opus-5-5', effort: 'high' });
+  assert.deepEqual({ model: (turn(h.db, RB) as { model: string }).model }, { model: 'claude-sonnet-5-5' });
+  // in-order evidence still switches
+  now = T0 + 9000;
+  await reports.deliver(registration, frame(3, { turn_id: S('3005'), model: { id: 'claude-opus-5-5' }, effort: 'low' }));
+  assert.deepEqual(current(h.db, S5), { model: 'claude-opus-5-5', effort: 'low' });
+  // review M1: the newest-seq read is one index lookup, not a walk of the registration's deliveries
+  const plan = h.db.prepare(`EXPLAIN QUERY PLAN ${NEWEST_SEQ}`).all(registration.id, 'fixture-producer', S5).map((r) => String((r as { detail: string }).detail)).join(' ');
+  assert.match(plan, /report_delivery_seq/);
+  // review L2: a delayed frame after a newer one without a model still fills an unknown model (never replaces one)
+  const S6 = S('0006');
+  await reports.deliver(registration, { ...frame(5, { event: 'tool.start', item_id: 'i1' }), session_id: S6, delivery_id: 'r6-5' });
+  await reports.deliver(registration, { ...frame(4, { turn_id: S('1006'), model: { id: 'claude-sonnet-5-5' } }), session_id: S6, delivery_id: 'r6-4' });
+  assert.deepEqual(current(h.db, S6), { model: 'claude-sonnet-5-5', effort: null });
 });
 
 test('statusLine tee: model.id and effort.level at the service clock replace older evidence', async () => {

@@ -34,11 +34,15 @@ export interface ReportIntake {
   rejected(reg: Registration, code: string): void;
 }
 
+/** XAIBO-PROD-442: the producer's newest stored sequence number for one session (index report_delivery_seq, 012). */
+export const NEWEST_SEQ = 'SELECT max(producer_seq) AS seq FROM report_delivery WHERE registration_id = ? AND producer_id = ? AND native_session_id = ?';
+
 export function createReportIntake(o: ReportIntakeOptions): ReportIntake {
   const now = o.now ?? Date.now;
   const chunks = openChunks(path.join(o.dataDir, 'content-chunks'), o.chunks);
   const profileOf = o.db.prepare('SELECT agent, origin FROM profiles WHERE id = ?');
   const stored = o.db.prepare('SELECT 1 FROM report_delivery WHERE registration_id = ? AND delivery_id = ?');
+  const newestSeq = o.db.prepare(NEWEST_SEQ);
   const itemState = o.db.prepare('SELECT state FROM report_content WHERE registration_id = ? AND native_session_id = ? AND item_id = ? AND revision = ?');
   const putReject = o.db.prepare(`INSERT INTO report_rejects (registration_id, code, count, first_ts, last_ts) VALUES (?, ?, 1, ?, ?)
     ON CONFLICT DO UPDATE SET count = count + 1, last_ts = excluded.last_ts`);
@@ -103,12 +107,14 @@ export function createReportIntake(o: ReportIntakeOptions): ReportIntake {
         event: x.event, producerId: x.producer_id, producerSeq: x.producer_seq, receivedTs: at, committedTs: committed,
         unattributed: attributed ? null : 'unknown-profile', ...(content ? { content } : {}) },
     };
+    // FR-51: model evidence from a frame older than one already stored for this producer never replaces newer state
+    const stale = x.model ? x.producer_seq < ((newestSeq.get(reg.id, x.producer_id, x.session_id) as { seq: number | null } | undefined)?.seq ?? -Infinity) : false;
     if (attributed) {
       batch.sessions.push({ nativeSessionId: x.session_id, lastActivity: at, ...(x.cwd ? { cwd: x.cwd } : {}) });
       // P4-T08 (FR-51, §5.10): optional model/effort are session model evidence; turn.start with a turn_id times the turn
       batch.events.push({ nativeSessionId: x.session_id, source: 'report', confidence: 'confirmed', nativeId: e.delivery_id, kind: 'report',
         sourceSeq: x.producer_seq, sourceTs: at, receivedTs: at, raw: JSON.stringify(lean),
-        ...(x.model ? { model: { id: x.model.id, ...(x.effort ? { effort: x.effort } : {}), ...(x.turn_id ? { turn: x.turn_id } : {}) } } : {}),
+        ...(x.model ? { model: { id: x.model.id, ...(x.effort ? { effort: x.effort } : {}), ...(x.turn_id ? { turn: x.turn_id } : {}), ...(stale ? { stale: true as const } : {}) } } : {}),
         ...(x.event === 'turn.start' && x.turn_id ? { turn: { id: x.turn_id, edge: 'start' as const } } : {}) });
     }
     try {

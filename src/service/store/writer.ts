@@ -38,8 +38,9 @@ export interface EventRow {
   /** P2-T06: raw usage this record carries; normalized and written by usage() below. */
   usage?: UsageObs;
   /** P2-T08: model evidence (effort undefined = not exposed); `turn` names the turn it belongs to when the record says;
-   *  `ts` orders it when the event has no source time (P4-T08: statusLine tee, service clock). */
-  model?: { id: string; effort?: string | null; turn?: string; ts?: number };
+   *  `ts` orders it when the event has no source time (P4-T08: statusLine tee, service clock); `stale` (XAIBO-PROD-442):
+   *  older than evidence already stored from the same producer, so it only fills its own turn. */
+  model?: { id: string; effort?: string | null; turn?: string; ts?: number; stale?: true };
   /** P2-T07: a context observation; a Codex one with model null takes the session's current model at write time. */
   context?: ContextObs;
   /** P2-T11 (EC-80, agy): apply in source order by sourceSeq: current rows of the session with seq >= this one become
@@ -397,12 +398,12 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
       if (e.usage) usage(st, batch, sid, row.id, e, e.usage);
       if (e.model) {
         const effort = e.model.effort ?? null, exposed = e.model.effort !== undefined ? 1 : 0;
-        const ts = e.model.ts ?? e.sourceTs;
-        if (ts !== undefined) st.currentModel.run(exposed, effort, e.model.id, ts, sid);
-        else st.firstModel.run(e.model.id, effort, sid); // no source time: only fills an unknown model, never replaces one
-        if (effort !== null) st.fillEffort.run(effort, sid, e.model.id, ts ?? null); // older evidence still names the effort it only now knows
+        const ts = e.model.ts ?? e.sourceTs, fresh = !e.model.stale;
+        if (fresh && ts !== undefined) st.currentModel.run(exposed, effort, e.model.id, ts, sid);
+        else st.firstModel.run(e.model.id, effort, sid); // only fills an unknown model, never replaces one (stale too: review L2)
+        if (fresh && effort !== null) st.fillEffort.run(effort, sid, e.model.id, ts ?? null); // older evidence still names the effort it only now knows
         if (e.model.turn) (RELAYED.has(e.source) ? st.turnModelFill : st.turnModel).run(sid, SCHEMA_VERSION, e.source, e.model.turn, e.model.id, effort, exposed);
-        else if (ts !== undefined) st.latestTurnModel.run(e.model.id, effort, sid, ts);
+        else if (fresh && ts !== undefined) st.latestTurnModel.run(e.model.id, effort, sid, ts);
       }
       if (e.context) context(st, sid, e, e.context);
       if (e.quota) history(st, batch, sid, e, e.quota);
