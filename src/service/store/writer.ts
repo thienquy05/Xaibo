@@ -73,6 +73,8 @@ export interface Batch {
 export interface ReportDelivery {
   registrationId: string; deliveryId: string; agent: string; profileKey: string; nativeSessionId: string; event: string;
   producerId: string; producerSeq: number; receivedTs: number; committedTs: number; unattributed: 'unknown-profile' | null;
+  /** XAIBO-PROD-453: the delivery committed model evidence (only these make a lower producer_seq model frame stale). */
+  hasModel?: boolean;
   /** The content.upsert item this delivery advanced; a settled (complete or incomplete) item is never changed. */
   content?: { itemId: string; revision: number; role: string; kind: string; state: 'pending' | 'complete' | 'incomplete'; chunks: number; bytes: number; text: string | null };
 }
@@ -137,7 +139,7 @@ function prepare(db: DatabaseSync) {
     delivery: db.prepare(`INSERT INTO hook_delivery (delivery_id, agent, profile_key, native_session_id, event, received_ts, committed_ts, unattributed)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (delivery_id) DO NOTHING RETURNING delivery_id`),
     report: db.prepare(`INSERT INTO report_delivery (registration_id, delivery_id, agent, profile_key, native_session_id, event, producer_id, producer_seq,
-        received_ts, committed_ts, unattributed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING delivery_id`),
+        received_ts, committed_ts, unattributed, has_model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING delivery_id`),
     newProfile: db.prepare('INSERT INTO profiles (id, agent, root, origin) VALUES (?, ?, ?, ?)'), // a conflict fails the commit, never skips
     reportContent: db.prepare(`INSERT INTO report_content (registration_id, native_session_id, item_id, revision, role, kind, state, chunks, bytes, content, updated_ts)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -339,7 +341,7 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
     const r = batch.report;
     if (r) {
       if (!st.report.get(r.registrationId, r.deliveryId, r.agent, r.profileKey, r.nativeSessionId, r.event, r.producerId, r.producerSeq, r.receivedTs,
-        r.committedTs, r.unattributed)) { db.exec('COMMIT'); return; }
+        r.committedTs, r.unattributed, r.hasModel ? 1 : 0)) { db.exec('COMMIT'); return; }
       const c = r.content;
       if (c) st.reportContent.run(r.registrationId, r.nativeSessionId, c.itemId, c.revision, c.role, c.kind, c.state, c.chunks, c.bytes, c.text, r.committedTs);
     }

@@ -80,6 +80,14 @@ test('XAIBO-PROD-441 (G4b-N1): only string content or a first text block makes t
   assert.equal(head([{ type: 'text', text: '<system-reminder>n' }, { type: 'text', text: 'more' }]), true);
 });
 
+test('XAIBO-PROD-453 (G4b-N1): a first non-text block carrying a text property is not injected, in either key order', () => {
+  const raw = (blocks: string) => run(`{"type":"user","uuid":"U4e","message":{"role":"user","content":${blocks}}}`, 3).head.injected;
+  assert.equal(raw('[{"text":"<system-reminder>x","type":"tool_result"}]'), false);
+  assert.equal(raw('[{"type":"tool_result","text":"<system-reminder>x"}]'), false);
+  assert.equal(raw('[{"text":"<system-reminder>x"}]'), false, 'a block without a type is not a text block');
+  assert.equal(raw('[{"text":"<system-reminder>x","type":"text"}]'), true, 'type after text still counts');
+});
+
 test('a syntax error leaves a gap: content read before it is kept, raw is kept in full', () => {
   const bad = '{"type":"user","uuid":"U5","message":{"role":"user","content":"good part"}, oops "more":"lost"}';
   const r = run(bad, 6);

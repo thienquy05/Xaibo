@@ -34,8 +34,10 @@ export interface ReportIntake {
   rejected(reg: Registration, code: string): void;
 }
 
-/** XAIBO-PROD-442: the producer's newest stored sequence number for one session (index report_delivery_seq, 012). */
-export const NEWEST_SEQ = 'SELECT max(producer_seq) AS seq FROM report_delivery WHERE registration_id = ? AND producer_id = ? AND native_session_id = ?';
+/** XAIBO-PROD-442/453: the producer's newest stored model-bearing sequence number for one session (partial index
+ *  report_delivery_seq, 013); a frame without a model never makes model evidence stale. */
+export const NEWEST_SEQ = `SELECT max(producer_seq) AS seq FROM report_delivery
+  WHERE registration_id = ? AND producer_id = ? AND native_session_id = ? AND has_model = 1`;
 
 export function createReportIntake(o: ReportIntakeOptions): ReportIntake {
   const now = o.now ?? Date.now;
@@ -105,9 +107,9 @@ export function createReportIntake(o: ReportIntakeOptions): ReportIntake {
       ...(create ? { profile: { id: reg.profile_key, agent: reg.agent, root: `registration:${reg.id}`, origin: 'registration' as const } } : {}),
       report: { registrationId: reg.id, deliveryId: x.delivery_id, agent: reg.agent, profileKey: reg.profile_key, nativeSessionId: x.session_id,
         event: x.event, producerId: x.producer_id, producerSeq: x.producer_seq, receivedTs: at, committedTs: committed,
-        unattributed: attributed ? null : 'unknown-profile', ...(content ? { content } : {}) },
+        unattributed: attributed ? null : 'unknown-profile', hasModel: attributed && !!x.model, ...(content ? { content } : {}) },
     };
-    // FR-51: model evidence from a frame older than one already stored for this producer never replaces newer state
+    // FR-51: model evidence from a frame older than model evidence already stored for this producer never replaces newer state
     const stale = x.model ? x.producer_seq < ((newestSeq.get(reg.id, x.producer_id, x.session_id) as { seq: number | null } | undefined)?.seq ?? -Infinity) : false;
     if (attributed) {
       batch.sessions.push({ nativeSessionId: x.session_id, lastActivity: at, ...(x.cwd ? { cwd: x.cwd } : {}) });

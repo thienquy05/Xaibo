@@ -13,6 +13,7 @@ import { CodexAdapter } from '../../src/service/adapters/codex/index.ts';
 import { answerCost, answerMarkers, sessionsByKey } from '../../src/service/api.ts';
 import { addRegistration } from '../../src/service/receivers/registrations.ts';
 import { createReportIntake, NEWEST_SEQ } from '../../src/service/receivers/report.ts';
+import { loadMigrations } from '../../src/service/store/db.ts';
 import { priceUsage } from '../../src/service/usage/cost.ts';
 import { loadModels } from '../../src/service/usage/models.ts';
 import { loadPrices } from '../../src/service/usage/prices.ts';
@@ -218,6 +219,47 @@ test('XAIBO-PROD-442: reversed report delivery keeps the newer model current; th
   await reports.deliver(registration, { ...frame(5, { event: 'tool.start', item_id: 'i1' }), session_id: S6, delivery_id: 'r6-5' });
   await reports.deliver(registration, { ...frame(4, { turn_id: S('1006'), model: { id: 'claude-sonnet-5-5' } }), session_id: S6, delivery_id: 'r6-4' });
   assert.deepEqual(current(h.db, S6), { model: 'claude-sonnet-5-5', effort: null });
+});
+
+// XAIBO-PROD-453 (G4b-2 follow-up): only model-bearing deliveries make model evidence stale. A newer frame without a model
+// says nothing about the model, so a delayed frame that is still the newest model evidence becomes current.
+test('XAIBO-PROD-453: a delayed model frame newer than every stored model frame wins over a newer frame without a model', async () => {
+  const h = await hookStore();
+  const { registration } = addRegistration(h.dir, { agent: 'claude', profileKey: 'p1' });
+  let now = T0 + 1000;
+  const reports = createReportIntake({ db: h.db, writer: h.writer, dataDir: h.dir, now: () => now });
+  const S7 = S('0007');
+  const frame = (seq: number, o: Record<string, unknown>) => ({ v: 1, delivery_id: `m-${seq}`, session_id: S7, producer_id: 'fixture-producer', producer_seq: seq,
+    event: 'turn.start', source_ts: iso(0), payload: {}, ...o });
+  await reports.deliver(registration, frame(1, { turn_id: S('1007'), model: { id: 'claude-opus-5-5' } }));
+  now = T0 + 2000;
+  await reports.deliver(registration, frame(3, { event: 'tool.start', item_id: 'i1' }));
+  now = T0 + 3000;
+  await reports.deliver(registration, frame(2, { turn_id: S('2007'), model: { id: 'claude-sonnet-5-5' } }));
+  assert.deepEqual(current(h.db, S7), { model: 'claude-sonnet-5-5', effort: null });
+  // the model-seq read stays one index lookup (review M1)
+  const plan = h.db.prepare(`EXPLAIN QUERY PLAN ${NEWEST_SEQ}`).all(registration.id, 'fixture-producer', S7).map((r) => String((r as { detail: string }).detail)).join(' ');
+  assert.match(plan, /USING (COVERING )?INDEX report_delivery_seq/);
+});
+
+test('XAIBO-PROD-453: migration 013 marks stored model-bearing report deliveries', async () => {
+  const h = await hookStore();
+  const { registration } = addRegistration(h.dir, { agent: 'claude', profileKey: 'p1' });
+  const reports = createReportIntake({ db: h.db, writer: h.writer, dataDir: h.dir, now: () => T0 + 1000 });
+  const S8 = S('0008');
+  const frame = (seq: number, o: Record<string, unknown>) => ({ v: 1, delivery_id: `b-${seq}`, session_id: S8, producer_id: 'fixture-producer', producer_seq: seq,
+    event: 'turn.start', source_ts: iso(0), payload: {}, ...o });
+  await reports.deliver(registration, frame(1, { turn_id: S('1008'), model: { id: 'claude-opus-5-5' } }));
+  await reports.deliver(registration, frame(2, { event: 'tool.start', item_id: 'i1' }));
+  // review L1: another source's raw that is not JSON (an oversized record's raw chunk) never fails the backfill
+  h.db.prepare(`INSERT INTO events (session_id, schema_version, source, confidence, native_id, kind, source_seq, received_ts, raw)
+    VALUES (?, 1, 'claude', 'confirmed', 'U1#r000001', 'raw-chunk', 1, ?, '{"type":"user","mess')`).run(sid(h.db, S8), T0);
+  // back to the 012 shape, then run 013 as the store upgrade does
+  h.db.exec(`DROP INDEX report_delivery_seq; ALTER TABLE report_delivery DROP COLUMN has_model;
+    CREATE INDEX report_delivery_seq ON report_delivery (registration_id, producer_id, native_session_id, producer_seq)`);
+  h.db.exec(loadMigrations().find((m) => m.version === 13)!.sql);
+  assert.deepEqual(h.db.prepare('SELECT delivery_id AS id, has_model AS m FROM report_delivery ORDER BY delivery_id').all().map((r) => ({ ...r })),
+    [{ id: 'b-1', m: 1 }, { id: 'b-2', m: 0 }]);
 });
 
 test('statusLine tee: model.id and effort.level at the service clock replace older evidence', async () => {
