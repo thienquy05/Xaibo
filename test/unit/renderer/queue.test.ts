@@ -51,3 +51,12 @@ test('durations per §7.1: floor units, never zero for data', () => {
   const cases: [number, string][] = [[500, '<1 s'], [45_000, '45 s'], [302_000, '5 min 2 s'], [7_380_000, '2 h 3 min'], [104_400_000, '1 d 5 h']];
   for (const [ms, s] of cases) assert.equal(durationText(ms), s, String(ms));
 });
+
+// XAIBO-PROD-437 review M1: the Open session order Return restores against comes from data, not from mounted rows.
+test('openOrder: the live set order, the attention queue order (groups flattened), none for usage', async () => {
+  const { openOrder } = await import('../../../src/renderer/overview/queue.ts');
+  const rows = [r(1, live('busy')), r(2, live('waiting-for-permission')), r(3, live('needs-input'))];
+  assert.deepEqual(openOrder('live', rows), [1, 2, 3]);
+  assert.deepEqual(openOrder('attention', rows), attentionQueue(rows).flatMap((g) => g.rows.map((r) => r.id)));
+  assert.deepEqual(openOrder('usage', rows), []);
+});

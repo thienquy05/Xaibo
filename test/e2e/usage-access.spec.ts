@@ -170,7 +170,14 @@ for (const layout of Object.keys(LAYOUTS) as (keyof typeof LAYOUTS)[]) {
         { message: 'opening a session moves focus to its title' }).toBe('title');
       if (layout === 'narrow') await expect(page.getByRole('button', { name: 'Back to session list' })).toBeVisible();
       const section = (name: string) => page.getByRole('group', { name: 'Session section' }).getByRole('button', { name: new RegExp(`^${name}`) });
-      const open = async (name: string) => { await tabTo(page, section(name)); await page.keyboard.press('Enter'); return page.getByRole('region', { name, exact: true }); };
+      // XAIBO-PROD-437 (design §8.1): the section group is one tab stop; Home and Right reach the others
+      const open = async (name: string) => {
+        await tabTo(page, page.getByRole('group', { name: 'Session section' }).getByRole('button', { pressed: true }));
+        await page.keyboard.press('Home');
+        for (let i = 0; i < 7 && !(await section(name).evaluate((el) => el === document.activeElement)); i++) await page.keyboard.press('ArrowRight');
+        await page.keyboard.press('Enter');
+        return page.getByRole('region', { name, exact: true });
+      };
 
       // During collector loss a section either shows what it has or says it is loading (never blank, never zero); once the
       // collector runs again the content arrives without a restart (EC-97: content access preserved).

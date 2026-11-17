@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import type { CostDetail, FileItem, ModelMarker, SessionDetail, SessionRow, SubagentItem, TCursor, ToolItem, TranscriptItem } from '../../shared/ipc.ts';
 import type { Client } from '../client.ts';
 import { contextText, costText, findingBadges, formatTime, markers as rowMarkers, originText, statusExtras } from '../model.ts';
+import { nextFocus } from '../components/virtual-list-model.ts';
 import { Icon, StatusBadge } from '../status/StatusBadge.tsx';
 import { visible } from '../text.ts';
 import { ContextPane } from './context/ContextSection.tsx';
@@ -85,8 +86,10 @@ const SECTIONS = ['conversation', 'timeline', 'tools', 'subagents', 'files', 'co
 type Section = (typeof SECTIONS)[number];
 const SECTION_TEXT: Record<Section, string> = { conversation: 'Conversation', timeline: 'Timeline', tools: 'Tools', subagents: 'Subagents', files: 'Files', context: 'Context', cost: 'Cost' };
 
-export function OpenSession({ row, changed, api, lastKnown, listShown, onShowList, onBack }: {
+export function OpenSession({ row, changed, api, lastKnown, listShown, onShowList, onBack, onReturn }: {
   row: SessionRow; changed: number; api: WorkspaceApi; lastKnown: boolean; listShown: boolean; onShowList: () => void; onBack: () => void;
+  /** XAIBO-PROD-437 (design §6.3 Return to source): set when the session was opened from the Dashboard. */
+  onReturn?: () => void;
 }) {
   const id = row.id;
   // XAIBO-PROD-424: the session's change generation (deltas naming it, resyncs); a lastActivity bucket missed records
@@ -200,6 +203,13 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
     requestAnimationFrame(() => (on ? closeRef.current : detailsRef.current)?.focus());
   };
   const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && drawer) { e.stopPropagation(); openDrawer(false); } };
+  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const onTabKey = (e: KeyboardEvent, i: number) => {
+    const n = nextFocus(i, e.key, SECTIONS.length, 'horizontal');
+    if (n === null || n < 0) return;
+    e.preventDefault();
+    tabRefs.current[n]?.focus();
+  };
   const count = (s: Section) => (s === 'tools' ? tools : s === 'subagents' ? subagents : s === 'files' ? files : null);
   const title = row.title ? visible(row.title) : 'Untitled';
   const status = compactStatus(row.live);
@@ -210,6 +220,7 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
         <div className="x-open-title">
           <button type="button" className="x-btn x-btn-quiet x-icon-btn x-narrow-only" aria-label="Back to session list" onClick={onBack}><Icon id="back" /></button>
           {!listShown ? <button type="button" className="x-btn x-btn-quiet x-icon-btn x-wide-only" aria-label="Show session list" onClick={onShowList}><Icon id="session" /></button> : null}
+          {onReturn ? <button type="button" className="x-btn x-btn-quiet x-return" onClick={onReturn}><Icon id="back" />Return to Dashboard</button> : null}
           <h2 id="open-session-title" ref={titleRef} tabIndex={-1}>{title}</h2>
         </div>
         <div className="x-actions">
@@ -224,10 +235,12 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
         </div>
       </div>
       <div className="x-tabs" role="group" aria-label="Session section" inert={drawer}>
-        {SECTIONS.map((s) => {
+        {SECTIONS.map((s, i) => {
           const p = count(s);
           return (
-            <button key={s} type="button" aria-pressed={section === s} aria-controls="session-section-body" onClick={() => setSection(s)}>
+            // XAIBO-PROD-437 (design §8.1): one tab stop; Left/Right/Home/End move in DOM order, Enter/Space activate
+            <button key={s} ref={(el) => { tabRefs.current[i] = el; }} type="button" aria-pressed={section === s} aria-controls="session-section-body"
+              tabIndex={section === s ? 0 : -1} onKeyDown={(e) => onTabKey(e, i)} onClick={() => setSection(s)}>
               {SECTION_TEXT[s]}{p && (p.items.length || p.more) ? <span className="x-count">{countText(s === 'files' ? new Set(p.items.map((f) => (f as FileItem).path)).size : p.items.length, p.more)}</span> : null}
             </button>
           );

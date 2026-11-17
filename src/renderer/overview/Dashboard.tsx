@@ -9,7 +9,7 @@ import { VirtualList } from '../components/VirtualList.tsx';
 import { nextFocus } from '../components/virtual-list-model.ts';
 import { Coverage } from '../Coverage.tsx';
 import { AgentStrip } from '../Health.tsx';
-import { costText, findingBadges, formatTime, statusExtras, type LiveSetState } from '../model.ts';
+import { capText, costText, findingBadges, formatTime, openSessionLabels, recordLabel, statusExtras, type LiveSetState } from '../model.ts';
 import { Record as SessionRecord } from '../SessionList.tsx';
 import { StatusBadge } from '../status/StatusBadge.tsx';
 import { visible } from '../text.ts';
@@ -22,7 +22,7 @@ export interface UsageApi {
   usage(): Promise<UsageScope[]>;
   history(scope: number, stream: string, from: number, to: number, cursor: HistoryCursor | null): Promise<{ records: UsageRecord[]; next: HistoryCursor | null }>;
 }
-type View = 'live' | 'attention' | 'usage';
+export type View = 'live' | 'attention' | 'usage';
 const VIEWS: View[] = ['live', 'attention', 'usage'];
 
 /** The local clock, re-read every `ms` while mounted (countdowns, Since); never a request to anything. */
@@ -37,8 +37,12 @@ export function Dashboard(p: {
   api: UsageApi; tick: number; onSetPath: (agent: string) => void;
   /** P4-T05d: a live record's Open session button opens it in the Session area. */
   onOpen?: (row: SessionRow) => void;
+  /** XAIBO-PROD-437: the selected view lives in the app, so it survives an area switch and Return to Dashboard. */
+  view: View; onView: (v: View) => void;
+  /** XAIBO-PROD-437 review M1: the record Return to Dashboard restores (its row stays mounted in the Live list). */
+  focusId: number | null;
 }) {
-  const [view, setView] = useState<View>('live');
+  const { view, onView: setView } = p;
   const lastKnown = p.lastKnown ?? (p.live.loaded && p.liveFailed ? 'refresh unavailable' : null);
   const buttons = useRef<(HTMLButtonElement | null)[]>([]);
   const summary = liveSetSummary(p.live.rows, p.live.more);
@@ -81,8 +85,8 @@ export function Dashboard(p: {
       )}
       <div className="x-dashboard-panels">
         <section id={`view-${view}`} aria-labelledby={`view-${view}-heading`} className="x-view-body">
-          {view === 'live' ? <LiveView live={p.live} lastKnown={lastKnown} onOpen={p.onOpen} />
-            : view === 'attention' ? <AttentionView queue={queue} lastKnown={lastKnown} name={name} onShowLive={showLive} />
+          {view === 'live' ? <LiveView live={p.live} lastKnown={lastKnown} focusId={p.focusId} onOpen={p.onOpen} />
+            : view === 'attention' ? <AttentionView queue={queue} lastKnown={lastKnown} name={name} onShowLive={showLive} onOpen={p.onOpen} />
               : <UsageView api={p.api} tick={p.tick} name={name} lastKnown={lastKnown} />}
         </section>
         {view === 'usage' ? <div className="x-dashboard-lower">
@@ -163,21 +167,30 @@ function Microchart({ title, unit, data }: { title: string; unit: string; data: 
 }
 
 const keyOf = (r: SessionRow) => r.id;
-function LiveView({ live, lastKnown, onOpen }: { live: LiveSetState; lastKnown: string | null; onOpen?: (row: SessionRow) => void }) {
+/** XAIBO-PROD-437 (design §8.1): Open session names per record, keyed by session id. */
+// review L4: each list names the agent as it shows it (Live: the agent id; Needs attention: its display name)
+const openNames = (rows: readonly SessionRow[], agent: (id: string) => string) => {
+  const labels = openSessionLabels(rows.map((r) => ({ agent: agent(r.agent), place: r.cwd ? capText(r.cwd, 120) : 'Unknown folder' })));
+  return new Map(rows.map((r, i) => [r.id, labels[i]!]));
+};
+
+function LiveView({ live, lastKnown, focusId, onOpen }: { live: LiveSetState; lastKnown: string | null; focusId: number | null; onOpen?: (row: SessionRow) => void }) {
+  const labels = openNames(live.rows, (id) => capText(id, 60));
   return (
     <>
       <h2 id="view-live-heading" tabIndex={-1}>{lastKnown ? 'Last known live sessions' : 'Live sessions'}</h2>
       {live.more ? <p>Showing the {live.rows.length} most recently active live sessions; more are tracked.</p> : null}
       {!live.loaded ? <p>Loading live sessions…</p> : live.rows.length === 0 ? <p>No live sessions.</p> : (
-        <VirtualList items={live.rows} getKey={keyOf} label="Live sessions" estimateSize={132} hasMore={false} loading={false} onLoadMore={() => undefined}
-          render={(row) => <SessionRecord row={row} lastKnown={lastKnown !== null} onOpen={onOpen} />} />
+        <VirtualList items={live.rows} getKey={keyOf} label="Live sessions" itemLabel={recordLabel} initialFocusKey={focusId} estimateSize={132} hasMore={false} loading={false} onLoadMore={() => undefined}
+          render={(row) => <SessionRecord row={row} lastKnown={lastKnown !== null} onOpen={onOpen} openLabel={labels.get(row.id)} />} />
       )}
     </>
   );
 }
 
-function AttentionView({ queue, lastKnown, name, onShowLive }: { queue: ReturnType<typeof attentionQueue>; lastKnown: string | null; name: (id: string) => string; onShowLive: () => void }) {
+function AttentionView({ queue, lastKnown, name, onShowLive, onOpen }: { queue: ReturnType<typeof attentionQueue>; lastKnown: string | null; name: (id: string) => string; onShowLive: () => void; onOpen?: (row: SessionRow) => void }) {
   const now = useNow(1000);
+  const labels = openNames(queue.flatMap((g) => g.rows), name);
   return (
     <>
       <h2 id="view-attention-heading" tabIndex={-1}>{lastKnown ? `Last known needs attention · ${lastKnown}` : 'Needs attention'}</h2>
@@ -197,6 +210,8 @@ function AttentionView({ queue, lastKnown, name, onShowLive }: { queue: ReturnTy
                   {findingBadges(r.live).map((b) => <span key={b.text}> · {b.text}</span>)}
                 </p>
                 <p data-field="since">{sinceText(r.live?.since ?? null, now)}</p>
+                {/* XAIBO-PROD-437 (design §6.2): each record opens its session */}
+                {onOpen ? <button type="button" className="x-btn x-btn-primary x-record-open" data-open-id={r.id} aria-label={labels.get(r.id)} onClick={() => onOpen(r)}>Open session</button> : null}
               </li>
             ))}
           </ul>

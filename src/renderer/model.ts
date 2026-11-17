@@ -148,3 +148,42 @@ export function bannerText(b: Banner, name: (agent: string) => string): string {
     case 'awaiting-trust': return `${visible(name(b.agent))}: hooks installed, awaiting trust`;
   }
 }
+
+/** XAIBO-PROD-437 (design §8.1): names for repeated Open session actions, naming each record by agent and folder; an
+ *  ordinal ("k of n") only where two records would otherwise read the same. */
+export function openSessionLabels(items: readonly { agent: string; place: string }[]): string[] {
+  const base = items.map((x) => `Open session: ${x.agent} · ${x.place}`);
+  const total = new Map<string, number>();
+  for (const b of base) total.set(b, (total.get(b) ?? 0) + 1);
+  const seen = new Map<string, number>();
+  return base.map((b) => {
+    const n = total.get(b)!;
+    if (n === 1) return b;
+    const k = (seen.get(b) ?? 0) + 1;
+    seen.set(b, k);
+    return `${b} (${k} of ${n})`;
+  });
+}
+
+/** XAIBO-PROD-437 (design §5.3/§5.4): the record Return restores: the same one, else the nearest following one (in the
+ *  order shown when the user left), else the nearest previous one; null for the view heading. */
+export function restoreFocus(current: readonly number[], before: readonly number[], id: number): number | null {
+  const here = new Set(current);
+  if (here.has(id)) return id;
+  const at = before.indexOf(id);
+  if (at < 0) return null;
+  return before.slice(at + 1).find((x) => here.has(x)) ?? before.slice(0, at).reverse().find((x) => here.has(x)) ?? null;
+}
+
+/** XAIBO-PROD-437 (design §8.1): the name of a focusable record row: title · agent · folder, the title cut at 80
+ *  characters so a first-prompt title never becomes a whole prompt in a label. */
+export function recordLabel(r: Pick<SessionRow, 'title' | 'agent' | 'cwd'>): string {
+  return `${r.title ? capText(r.title, 80) : 'Untitled'} · ${capText(r.agent, 60)} · ${r.cwd ? capText(r.cwd, 120) : 'Unknown folder'}`;
+}
+
+/** XAIBO-PROD-437 review L4: untrusted text for a label, at most `n` code points (cut before escaping, so never inside
+ *  an escape or a surrogate pair; an ellipsis marks the cut), then visible(). */
+export function capText(s: string, n: number): string {
+  const a = Array.from(s);
+  return a.length > n ? `${visible(a.slice(0, n - 1).join(''))}…` : visible(s);
+}

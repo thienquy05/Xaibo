@@ -1,8 +1,8 @@
 // XAIBO-PROD-413 (P4-T05d; design §6.3 as amended by D-P4-06): pure helpers behind the Session workspace components.
 import type { CoverageCode, FileItem, LiveStatus, SessionRow, TCursor, ToolItem, TranscriptItem } from '../../shared/ipc.ts';
-import { statusExtras } from '../model.ts';
+import { capText, statusExtras } from '../model.ts';
 import { statusPresentation, type Tone } from '../status/presentation.ts';
-import { approvalText, durationLabel } from './timeline.ts';
+import { approvalText, durationLabel, type Entry } from './timeline.ts';
 
 export type StepTone = 'ok' | 'warn' | 'bad' | 'muted';
 /** Status dot of a compact tool row: never ok without evidence of a result. */
@@ -109,4 +109,21 @@ export function appendLive<W extends { items: TranscriptItem[]; next: TCursor | 
   if (w.items.length + page.items.length <= max) return { ...w, items: [...w.items, ...page.items], next: page.next };
   const last = w.items.at(-1);
   return last ? { ...w, next: { seq: last.seq, id: last.event } } : w;
+}
+
+/** XAIBO-PROD-437 (design §8.1): the name of a focusable Conversation/Activity entry: its kind and clock time, never its
+ *  content. */
+export function entryLabel(e: Entry): string {
+  switch (e.kind) {
+    case 'prompt': return `Owner prompt · ${clock(e.item.ts)}`;
+    case 'response': return `Agent response · ${clock(e.item.ts)}`;
+    case 'tool': return `${e.tool?.tool ? `Tool ${capText(e.tool.tool, 60)}` : 'Unknown tool'} · ${clock(e.item?.ts ?? e.tool?.ts ?? null)}`;
+    case 'tool-result': return `Tool result · ${clock(e.item.ts)}`;
+    case 'large': return `Large record · ${clock(e.item.ts)}`;
+    case 'compaction': return `Compaction · ${clock(e.item.ts)}`;
+    case 'interrupted': return `Interrupted · ${clock(e.item.ts)}`;
+    case 'model': return `Model ${capText(e.marker.model, 60)} · ${clock(e.marker.ts)}`;
+    case 'subagent-start': return `Subagent started · ${capText(e.subagent.agentType ?? e.subagent.nativeId, 60)} · ${clock(e.subagent.start)}`;
+    case 'subagent-end': return `Subagent ended · ${capText(e.subagent.agentType ?? e.subagent.nativeId, 60)} · ${clock(e.subagent.end)}`;
+  }
 }

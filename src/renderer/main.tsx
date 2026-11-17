@@ -10,8 +10,9 @@ import { HealthStatus } from './Health.tsx';
 import { Icon } from './status/StatusBadge.tsx';
 import { createCoalescer } from './data/coalesce.ts';
 import { reloadWindow, singleFlight } from './data/pages.ts';
-import { applyDelta, applyLiveDelta, applyPage, bandText, collectorStep, emptyCollector, emptyList, emptyLiveSet, lastKnownLabel, PAGE, type ListState, type LiveSetState } from './model.ts';
-import { Dashboard, type UsageApi } from './overview/Dashboard.tsx';
+import { applyDelta, applyLiveDelta, applyPage, bandText, collectorStep, restoreFocus, emptyCollector, emptyList, emptyLiveSet, lastKnownLabel, PAGE, type ListState, type LiveSetState } from './model.ts';
+import { Dashboard, type UsageApi, type View } from './overview/Dashboard.tsx';
+import { openOrder } from './overview/queue.ts';
 import { firstUsablePage, LONG_FRAME, watchLongFrames } from './perf-marks.ts';
 import { Workspace, type SessionChanges } from './workspace/Workspace.tsx';
 import type { WorkspaceApi } from './workspace/OpenSession.tsx';
@@ -135,10 +136,33 @@ function App() {
     };
   }, []);
   const clearRequest = useCallback(() => setRequest(null), []);
+  // XAIBO-PROD-437 (design §5.3/§5.4, §6.3): the Dashboard view survives area switches; a session opened from it
+  // remembers its record and the order shown, so Return to Dashboard restores that record (or its neighbour).
+  const [dashView, setDashView] = useState<View>('live');
+  const origin = useRef<{ id: number; view: View; order: number[] } | null>(null);
+  const [returnFor, setReturnFor] = useState<number | null>(null);
+  const [focusId, setFocusId] = useState<number | null>(null);
+  const liveRows = useRef(liveSet.rows);
+  liveRows.current = liveSet.rows;
+  // review M1: the order comes from data (a virtual list mounts only rows near the viewport)
   const openSession = (row: SessionRow) => {
+    origin.current = { id: row.id, view: dashView, order: openOrder(dashView, liveRows.current) };
+    setReturnFor(row.id);
     setRequest(row);
     setArea('session');
   };
+  const returnToDashboard = useCallback(() => {
+    const o = origin.current;
+    if (!o) return;
+    const id = restoreFocus(openOrder(o.view, liveRows.current), o.order, o.id);
+    setFocusId(id); // the Live list mounts that row as its tab stop
+    setDashView(o.view);
+    setArea('dashboard');
+    requestAnimationFrame(() => requestAnimationFrame(() => { // after the list's first layout
+      const target = id === null ? null : document.querySelector<HTMLElement>(`#view-${o.view} [data-open-id="${id}"]`);
+      (target ?? document.getElementById(`view-${o.view}-heading`))?.focus();
+    }));
+  }, []);
   // Design §6.0: no unqualified live indicator while the collector is not running (starting, restarting, stopped, and
   // paused on a full disk: D-P4-09). Stepped before paint, so no frame shows a pause without its time.
   const band = bandText(health, banners).state;
@@ -150,8 +174,11 @@ function App() {
     setLiveFailed(false);
     c.liveSet().then((set) => { if (client.current === c) setLiveSet({ ...set, loaded: true }); }, () => { if (client.current === c) setLiveFailed(true); });
   };
+  // review L3: leaving through the Areas links or opening from the Session list ends the Dashboard's Return
+  const clearReturn = useCallback(() => { origin.current = null; setReturnFor(null); }, []);
   const go = (to: 'dashboard' | 'session') => (e: MouseEvent) => {
     e.preventDefault();
+    clearReturn();
     setArea(to);
     requestAnimationFrame(() => document.getElementById(to === 'dashboard' ? 'dashboard-heading' : 'sessions-heading')?.focus());
   };
@@ -208,8 +235,9 @@ function App() {
       <main id="main" className="x-main" tabIndex={-1}>
         {area === 'dashboard'
           ? <Dashboard live={liveSet} liveFailed={liveFailed} onRetryLive={retryLive} lastKnown={lastKnown} agents={agents} banners={banners} api={api} tick={tick}
-            onSetPath={(agent) => window.xaibo?.setAgentPath(agent)} onOpen={openSession} />
-          : <Workspace list={list} changes={changes} loading={loading} onLoadMore={loadMore} lastKnown={lastKnown !== null} api={workspaceApi} request={request} onRequestDone={clearRequest} />}
+            onSetPath={(agent) => window.xaibo?.setAgentPath(agent)} onOpen={openSession} view={dashView} onView={setDashView} focusId={focusId} />
+          : <Workspace list={list} changes={changes} loading={loading} onLoadMore={loadMore} lastKnown={lastKnown !== null} api={workspaceApi} request={request} onRequestDone={clearRequest}
+            returnFor={returnFor} onReturn={returnToDashboard} onListOpen={clearReturn} />}
       </main>
     </div>
   );

@@ -14,6 +14,10 @@ export interface VirtualListProps<T> {
   getKey: (item: T) => string | number;
   render: (item: T, index: number) => ReactNode;
   label: string;
+  /** XAIBO-PROD-437 (design §8.1): each focusable row's short, stable name (never its whole content). */
+  itemLabel: (item: T) => string;
+  /** XAIBO-PROD-437 review M1: the row that starts as the tab stop (kept mounted, so focus can be restored to it). */
+  initialFocusKey?: Key | null;
   estimateSize: number;
   hasMore: boolean;
   loading: boolean;
@@ -22,7 +26,7 @@ export interface VirtualListProps<T> {
 
 const OVERSCAN = 3;
 
-export function VirtualList<T>({ items, getKey, render, label, estimateSize, hasMore, loading, onLoadMore }: VirtualListProps<T>) {
+export function VirtualList<T>({ items, getKey, render, label, itemLabel, initialFocusKey = null, estimateSize, hasMore, loading, onLoadMore }: VirtualListProps<T>) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
   const endRef = useRef<HTMLParagraphElement>(null);
@@ -30,7 +34,7 @@ export function VirtualList<T>({ items, getKey, render, label, estimateSize, has
   const count = items.length;
 
   // Focus follows its record by key (review M1); a removed record hands focus to its neighbour (L1).
-  const [focusedKey, setFocusedKey] = useState<Key | null>(null);
+  const [focusedKey, setFocusedKey] = useState<Key | null>(initialFocusKey);
   const lastIndex = useRef(-1);
   const focused = focusIndex(keys, focusedKey, lastIndex.current);
   lastIndex.current = focused;
@@ -117,7 +121,7 @@ export function VirtualList<T>({ items, getKey, render, label, estimateSize, has
           {v.getVirtualItems().map((vi) => (
             <li
               key={vi.key} data-index={vi.index} ref={v.measureElement} className="x-vlist-item"
-              tabIndex={vi.index === tabStop ? 0 : -1} aria-posinset={vi.index + 1} aria-setsize={hasMore ? -1 : count}
+              tabIndex={vi.index === tabStop ? 0 : -1} aria-posinset={vi.index + 1} aria-setsize={hasMore ? -1 : count} aria-label={itemLabel(items[vi.index]!)}
               onFocus={() => setFocusedKey(keys[vi.index]!)} style={{ transform: `translateY(${vi.start}px)` }}
             >
               {render(items[vi.index]!, vi.index)}

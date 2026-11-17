@@ -8,7 +8,7 @@ import { Icon } from '../status/StatusBadge.tsx';
 import { visible, visibleBlock } from '../text.ts';
 import { appendSlice, focusAfter, openWindow, prependSlice, previousAt, sliceAnnouncement, type SliceDir } from './slice.ts';
 import { approvalText, durationLabel, FILE_KIND_TEXT, groupFiles, lifecycleText, resultText, toolTitle, type Entry } from './timeline.ts';
-import { argFor, clock, isoTime, sizeText, toolMeta, toolTone } from './view.ts';
+import { argFor, clock, entryLabel, isoTime, sizeText, toolMeta, toolTone } from './view.ts';
 
 /** Fetches one bounded slice of an item's text or reasoning. */
 export type SliceFn = (event: number, part: 'text' | 'reasoning', offset: number) => Promise<{ text: string; next: number | null }>;
@@ -173,7 +173,7 @@ export function Conversation({ entries, touches, slice, gaps, prev, onPrev, next
       {gaps.length ? <p className="x-gap"><Icon id="finding" /><span><strong>Content incomplete</strong> · {gaps.join('; ')}</span></p> : null}
       {prev ? <p className="x-earlier">More records before these <button type="button" className="x-btn x-btn-secondary" aria-disabled={loading || undefined} onClick={() => { if (!loading) onPrev(); }}>Load earlier</button></p> : null}
       {entries.length === 0 && !loading ? <p className="x-empty-note">No conversation records in this range.</p> : null}
-      <VirtualList items={entries} getKey={keyOf} label="Conversation" estimateSize={72} hasMore={next} loading={loading} onLoadMore={onNext}
+      <VirtualList items={entries} getKey={keyOf} label="Conversation" itemLabel={entryLabel} estimateSize={72} hasMore={next} loading={loading} onLoadMore={onNext}
         render={(e) => <ConversationEntry e={e} touches={touches} slice={slice} />} />
     </div>
   );
@@ -200,7 +200,7 @@ function ledgerOf(e: Entry): { icon: Parameters<typeof Icon>[0]['id']; tone?: st
 export function Timeline({ entries, next, onNext, loading }: { entries: Entry[]; next: boolean; onNext: () => void; loading: boolean }) {
   return (
     <div className="x-section-list x-ledger">
-      <VirtualList items={entries} getKey={keyOf} label="Activity sequence" estimateSize={44} hasMore={next} loading={loading} onLoadMore={onNext}
+      <VirtualList items={entries} getKey={keyOf} label="Activity sequence" itemLabel={entryLabel} estimateSize={44} hasMore={next} loading={loading} onLoadMore={onNext}
         render={(e) => {
           const l = ledgerOf(e);
           return (

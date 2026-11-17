@@ -10,7 +10,8 @@ import { visible } from './text.ts';
 const show = (s: string | null, fallback: string) => (s ? visible(s) : fallback);
 
 /** One session record; `lastKnown` qualifies its status while the collector is not running (design §3.2, §6.0). */
-export function Record({ row, lastKnown = false, onOpen }: { row: SessionRow; lastKnown?: boolean; onOpen?: (row: SessionRow) => void }) {
+/** `openLabel` (XAIBO-PROD-437): the Open session button's name, naming this record among repeated actions. */
+export function Record({ row, lastKnown = false, onOpen, openLabel }: { row: SessionRow; lastKnown?: boolean; onOpen?: (row: SessionRow) => void; openLabel?: string }) {
   const m = markers(row);
   return (
     <article className="x-record">
@@ -33,7 +34,7 @@ export function Record({ row, lastKnown = false, onOpen }: { row: SessionRow; la
         <div><dt>Context</dt><dd data-field="context">{contextText(row.contextPct)}</dd></div>
         <div><dt>Cost</dt><dd data-field="cost">{costText(row.costUsd, row.costCoverage)}</dd></div>
       </dl>
-      {onOpen ? <button type="button" className="x-btn x-btn-primary x-record-open" onClick={() => onOpen(row)}>Open session</button> : null}
+      {onOpen ? <button type="button" className="x-btn x-btn-primary x-record-open" data-open-id={row.id} aria-label={openLabel} onClick={() => onOpen(row)}>Open session</button> : null}
     </article>
   );
 }

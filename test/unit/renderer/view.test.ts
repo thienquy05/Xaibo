@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { argFor, clock, compactStatus, countText, incompleteReasons, initialAt, isoTime, liveAction, openChange, sizeText, toolMeta, toolTone, trimWindow, appendLive, WINDOW_MAX } from '../../../src/renderer/workspace/view.ts';
-import type { FileItem, LiveStatus, SessionRow, ToolItem, TranscriptItem } from '../../../src/shared/ipc.ts';
+import type { FileItem, LiveStatus, ModelMarker, SessionRow, SubagentItem, ToolItem, TranscriptItem } from '../../../src/shared/ipc.ts';
 import type { SessionChanges } from '../../../src/renderer/workspace/view.ts';
 
 const tool = (o: Partial<ToolItem> = {}): ToolItem => ({ call: 1, callId: 'toolu_1', tool: 'Read', sources: ['transcript'], argsEvent: 2, resultEvent: null,
@@ -140,4 +140,28 @@ test('a failed window with no records reloads on the next change; with records i
   // a change held during a load runs once the load settles, whether it loaded or failed
   assert.deepEqual([settled(w({ loaded: false, loading: true })), settled(w({ loaded: false, failed: true })), settled(w({})), settled(w({ loaded: false }))],
     [false, true, true, false]);
+});
+
+// XAIBO-PROD-437 (design §8.1): a focusable Conversation/Activity entry is named by its kind and clock time, never by
+// its content.
+test('entryLabel: kind and time per entry; tool by its name; no message content', async () => {
+  const { entryLabel } = await import('../../../src/renderer/workspace/view.ts');
+  const ts = new Date(2026, 0, 2, 9, 5).getTime();
+  const item = (kind: TranscriptItem['kind'], extra: Partial<TranscriptItem> = {}) => ({ seq: 1, event: 1, ts, kind, preview: 'secret prompt text', length: 18, callId: null, reasoning: false, ...extra }) as TranscriptItem;
+  assert.equal(entryLabel({ key: 'a', kind: 'prompt', item: item('prompt') }), 'Owner prompt · 09:05');
+  assert.equal(entryLabel({ key: 'b', kind: 'response', item: item('response') }), 'Agent response · 09:05');
+  assert.equal(entryLabel({ key: 'c', kind: 'tool', item: null, tool: { tool: 'Write', ts } as ToolItem }), 'Tool Write · 09:05');
+  assert.equal(entryLabel({ key: 'd', kind: 'tool', item: null, tool: null }), 'Unknown tool · Time unknown');
+  assert.equal(entryLabel({ key: 'e', kind: 'compaction', item: item('compaction') }), 'Compaction · 09:05');
+  assert.equal(entryLabel({ key: 'f', kind: 'model', marker: { model: 'Opus', ts } as ModelMarker }), 'Model Opus · 09:05');
+  assert.equal(entryLabel({ key: 'g', kind: 'subagent-start', subagent: { agentType: 'explorer', nativeId: 'n1', start: ts } as SubagentItem }), 'Subagent started · explorer · 09:05');
+  for (const e of [entryLabel({ key: 'a', kind: 'prompt', item: item('prompt') })]) assert.doesNotMatch(e, /secret/);
+});
+
+test('XAIBO-PROD-437 review L4: entryLabel bounds tool, model and subagent names', async () => {
+  const { entryLabel } = await import('../../../src/renderer/workspace/view.ts');
+  const ts = new Date(2026, 0, 2, 9, 5).getTime();
+  const name = entryLabel({ key: 'c', kind: 'tool', item: null, tool: { tool: 'W'.repeat(500), ts } as ToolItem }).split(' · ')[0]!;
+  assert.equal(Array.from(name).length, 'Tool '.length + 60);
+  assert.equal(Array.from(entryLabel({ key: 'f', kind: 'model', marker: { model: 'M'.repeat(500), ts } as ModelMarker }).split(' · ')[0]!).length, 'Model '.length + 60);
 });

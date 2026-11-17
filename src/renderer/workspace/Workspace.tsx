@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { SessionRow } from '../../shared/ipc.ts';
 import { VirtualList } from '../components/VirtualList.tsx';
-import { findingBadges, formatTime, type ListState } from '../model.ts';
+import { findingBadges, formatTime, recordLabel, type ListState } from '../model.ts';
 import { Icon } from '../status/StatusBadge.tsx';
 import { visible } from '../text.ts';
 import { OpenSession, type WorkspaceApi } from './OpenSession.tsx';
@@ -32,12 +32,16 @@ function Row({ row, open, lastKnown, onOpen }: { row: SessionRow; open: boolean;
 
 export type { SessionChanges };
 
-export function Workspace({ list, changes, loading, onLoadMore, lastKnown, api, request, onRequestDone }: {
+export function Workspace({ list, changes, loading, onLoadMore, lastKnown, api, request, onRequestDone, returnFor, onReturn, onListOpen }: {
   list: ListState; changes: SessionChanges; loading: boolean; onLoadMore: () => void; lastKnown: boolean; api: WorkspaceApi;
   /** A session to open, e.g. from a Dashboard record; it may be outside the loaded list. */
   request: SessionRow | null;
   /** Called once the request is open, so a later visit does not reopen it (review L9). */
   onRequestDone: () => void;
+  /** XAIBO-PROD-437: the session opened from the Dashboard, whose header offers Return to Dashboard. */
+  returnFor: number | null; onReturn: () => void;
+  /** review L3: a session chosen from this list is not one the Dashboard opened. */
+  onListOpen: () => void;
 }) {
   const [opened, setOpened] = useState<SessionRow | null>(request);
   const [showList, setShowList] = useState(true);
@@ -72,13 +76,14 @@ export function Workspace({ list, changes, loading, onLoadMore, lastKnown, api, 
             </div>
             <div className="x-section-list">
               {list.loaded && list.rows.length === 0 ? <p className="x-empty-note">No sessions yet.</p> : (
-                <VirtualList items={list.rows} getKey={keyOf} label="Sessions" estimateSize={76} hasMore={list.next !== null} loading={loading} onLoadMore={onLoadMore}
-                  render={(r) => <Row row={r} open={r.id === row?.id} lastKnown={lastKnown} onOpen={setOpened} />} />
+                <VirtualList items={list.rows} getKey={keyOf} label="Sessions" itemLabel={recordLabel} estimateSize={76} hasMore={list.next !== null} loading={loading} onLoadMore={onLoadMore}
+                  render={(r) => <Row row={r} open={r.id === row?.id} lastKnown={lastKnown} onOpen={(r) => { setOpened(r); onListOpen(); }} />} />
               )}
             </div>
           </section>
         ) : null}
-        {row ? <OpenSession key={row.id} row={row} changed={gen} api={api} lastKnown={lastKnown} listShown={showList} onShowList={() => setShowList(true)} onBack={back} />
+        {row ? <OpenSession key={row.id} row={row} changed={gen} api={api} lastKnown={lastKnown} listShown={showList} onShowList={() => setShowList(true)} onBack={back}
+          onReturn={row.id === returnFor ? onReturn : undefined} />
           : <section className="x-pane x-choose" aria-label="Open session"><p>Choose a session to read its conversation</p></section>}
       </div>
     </section>

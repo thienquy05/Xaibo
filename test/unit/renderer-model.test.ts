@@ -173,3 +173,52 @@ test('review L: a pause before any Running health (disk already full at start) s
   const c = collectorStep(emptyCollector, 'paused', new Date(2026, 0, 2, 9, 8).getTime());
   assert.equal(lastKnownLabel(c, 'paused'), 'since 2026-01-02 09:08');
 });
+
+// XAIBO-PROD-437 (P4-T15; design §8.1): repeated Open session actions name their record; an ordinal only where two
+// records would otherwise read the same. The visible text stays "Open session" (its name starts with it).
+test('Open session names: agent and folder per record; exact duplicates get "k of n"', async () => {
+  const { openSessionLabels } = await import('../../src/renderer/model.ts');
+  assert.deepEqual(openSessionLabels([{ agent: 'Claude Code', place: '/tmp/a' }, { agent: 'Claude Code', place: '/tmp/b' }]),
+    ['Open session: Claude Code · /tmp/a', 'Open session: Claude Code · /tmp/b']);
+  assert.deepEqual(openSessionLabels([{ agent: 'Codex', place: '/tmp/a' }, { agent: 'Codex', place: '/tmp/b' }, { agent: 'Codex', place: '/tmp/a' }]),
+    ['Open session: Codex · /tmp/a (1 of 2)', 'Open session: Codex · /tmp/b', 'Open session: Codex · /tmp/a (2 of 2)']);
+  assert.deepEqual(openSessionLabels([]), []);
+});
+
+// XAIBO-PROD-437 (design §5.3/§5.4): Return to Dashboard restores the same record, else the following one, else the
+// previous one (in the order shown when the user left), else null (the view heading).
+test('restoreFocus: same record, then following, then previous, else none', async () => {
+  const { restoreFocus } = await import('../../src/renderer/model.ts');
+  assert.equal(restoreFocus([1, 2, 3], [1, 2, 3], 2), 2);
+  assert.equal(restoreFocus([1, 3], [1, 2, 3], 2), 3, 'following');
+  assert.equal(restoreFocus([1, 4], [1, 2, 3], 2), 1, 'no following left: previous');
+  assert.equal(restoreFocus([7], [1, 2, 3], 2), null, 'neither neighbour remains');
+  assert.equal(restoreFocus([], [1, 2], 1), null);
+  assert.equal(restoreFocus([5, 6], [], 9), null, 'unknown origin');
+});
+
+// XAIBO-PROD-437 (design §8.1): a focusable record row is named title · agent · folder, short and stable; a long title
+// is cut (never a whole prompt in a label); untrusted text through visible().
+test('recordLabel: title (capped at 80 characters), agent and folder; fallbacks spelled out', async () => {
+  const { recordLabel } = await import('../../src/renderer/model.ts');
+  assert.equal(recordLabel(r(1, 5, { title: 'Fix the build', cwd: '/tmp/x' })), 'Fix the build · claude · /tmp/x');
+  assert.equal(recordLabel(r(1, 5, { title: null, cwd: null })), 'Untitled · claude · Unknown folder');
+  const long = recordLabel(r(1, 5, { title: 'a'.repeat(200) }));
+  assert.equal(long.split(' · ')[0], `${'a'.repeat(79)}…`);
+  assert.doesNotMatch(recordLabel(r(1, 5, { title: 'x‮y' })), /‮/, 'bidi controls are escaped');
+});
+
+// XAIBO-PROD-437 review L4: label parts are cut by code points before escaping (never mid-escape or mid-pair) and every
+// transcript-controlled part is bounded.
+test('capText: code-point cut with an ellipsis, then visible(); short text unchanged', async () => {
+  const { capText } = await import('../../src/renderer/model.ts');
+  assert.equal(capText('short', 10), 'short');
+  assert.equal(capText(`${'a'.repeat(8)}‮bb`, 10), `${'a'.repeat(8)}\\u202E…`, 'the control survives as an escape, then the ellipsis');
+  assert.equal(capText('😀'.repeat(12), 10), `${'😀'.repeat(9)}…`, 'no broken surrogate pair');
+});
+
+test('recordLabel bounds the folder too', async () => {
+  const { recordLabel } = await import('../../src/renderer/model.ts');
+  const parts = recordLabel(r(1, 5, { title: 't', cwd: `/${'d'.repeat(300)}` })).split(' · ');
+  assert.equal(Array.from(parts[2]!).length, 120);
+});

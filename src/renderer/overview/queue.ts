@@ -52,3 +52,10 @@ export function sinceText(since: number | null, now: number): string {
   const clock = sameDay(since, now) ? formatTime(since).slice(11) : formatTime(since);
   return `Since ${clock} · ${durationText(now - since)}`;
 }
+
+/** XAIBO-PROD-437 review M1: the session ids in the order a Dashboard view lists their Open session buttons (from data,
+ *  so rows a virtual list has not mounted still count). */
+export function openOrder(view: 'live' | 'attention' | 'usage', rows: SessionRow[]): number[] {
+  if (view === 'live') return rows.map((r) => r.id);
+  return view === 'attention' ? attentionQueue(rows).flatMap((g) => g.rows.map((r) => r.id)) : [];
+}
