@@ -36,6 +36,9 @@ export interface BootOptions {
   onNotify?: (n: { agent: string; label: string | null; state: NotifyState }) => void;
   /** P3-T16e: watched sessions whose status changed at a settle deadline (the service also re-reads on its tick). */
   onTick?: (keys: string[]) => void;
+  /** XAIBO-PROD-445: a pricing job that ran in more than one slice, or had a rerun queued, finished: commits it overlapped
+   *  went out before their usage was priced, so open rows need one re-read. */
+  onPriced?: () => void;
 }
 export interface Service {
   store: Store;
@@ -101,11 +104,13 @@ export async function boot(o: BootOptions): Promise<Service> {
   let rerunFrom: number | null = null;
   const priceFrom = (from: number) => {
     pricing = true;
+    let slices = 0;
     let top = from;
     try { top = Number((topUsage!.get() as { id: number }).id); } catch { /* the slice below logs the store error */ }
     const step = (cursor: number) => {
       if (!db.isOpen || !prices) { pricing = false; return; } // stop() closes the store (the first slice runs before `stopped` exists)
       let next: number | null = null;
+      slices++;
       try {
         const r = priceUsage(db, prices, { afterUsageId: cursor, limit: PRICE_SLICE });
         if (r.more) next = r.lastId;
@@ -113,7 +118,9 @@ export async function boot(o: BootOptions): Promise<Service> {
       } catch (e) { o.log?.log('pricing_failed', { error: errorCode(e) }); }
       if (next !== null) { const at = next; setImmediate(() => step(at)); return; }
       pricing = false;
-      if (rerunFrom !== null) { const f = rerunFrom; rerunFrom = null; priceFrom(f); }
+      const resync = slices > 1 || rerunFrom !== null;
+      if (rerunFrom !== null) { const f = rerunFrom; rerunFrom = null; priceFrom(f); } // a one-slice rerun is done before the resync
+      if (resync) o.onPriced?.();
     };
     step(from);
   };

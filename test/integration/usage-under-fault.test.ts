@@ -42,7 +42,10 @@ function home(prefix: string) {
 
 test('EC-100: repricing 100,000 usage rows never holds the service loop past the bound; every row ends priced once', async () => {
   const t = home('xusage-fault-');
-  const svc = await boot({ dataDir: t.dataDir, home: t.home, catalog, intervalMs: 60_000 });
+  // XAIBO-PROD-445 (G4a-3): a sliced job ends with one onPriced, after its last row is priced (the service resyncs then)
+  const onPriced: number[] = [];
+  let priced = () => -1;
+  const svc = await boot({ dataDir: t.dataDir, home: t.home, catalog, intervalMs: 60_000, onPriced: () => onPriced.push(priced()) });
   const lates: number[] = [];
   let timer: NodeJS.Timeout | undefined;
   try {
@@ -59,7 +62,8 @@ test('EC-100: repricing 100,000 usage rows never holds the service loop past the
     let expect = performance.now() + 5;
     timer = setInterval(() => { const now = performance.now(); lates.push(now - expect); expect = now + 5; }, 5);
     svc.reloadPrices();
-    const priced = () => Number((db.prepare('SELECT count(*) AS n FROM cost_estimates WHERE amount_usd IS NOT NULL').get() as { n: number }).n);
+    assert.deepEqual(onPriced, [], 'single-slice jobs (the backfill) end without one');
+    priced = () => Number((db.prepare('SELECT count(*) AS n FROM cost_estimates WHERE amount_usd IS NOT NULL').get() as { n: number }).n);
     for (const end = Date.now() + 60_000; priced() < total && Date.now() < end;) await new Promise((r) => setTimeout(r, 100)); // the count itself costs loop time: poll seldom
     // a blocked loop only shows in a tick that runs after it: keep sampling a little past the end of the reprice
     const seen = lates.length;
@@ -68,6 +72,7 @@ test('EC-100: repricing 100,000 usage rows never holds the service loop past the
     assert.ok(lates.length >= 3, 'the timer sampled the loop');
     const counts = db.prepare('SELECT count(*) AS rows, count(DISTINCT session_id || covered_scope) AS scopes, count(amount_usd) AS priced FROM cost_estimates').get() as Record<string, number>;
     assert.deepEqual({ ...counts }, { rows: total, scopes: total, priced: total }, 'every row priced exactly once');
+    assert.deepEqual(onPriced, [total], 'one onPriced, once every row is priced');
     const worst = Math.max(0, ...lates);
     assert.ok(worst < LAG_BOUND_MS, `the loop was held ${Math.round(worst)} ms during the reprice`);
   } finally { clearInterval(timer); svc.stop(); }
