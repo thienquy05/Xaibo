@@ -60,3 +60,16 @@ test('openOrder: the live set order, the attention queue order (groups flattened
   assert.deepEqual(openOrder('attention', rows), attentionQueue(rows).flatMap((g) => g.rows.map((r) => r.id)));
   assert.deepEqual(openOrder('usage', rows), []);
 });
+
+// XAIBO-PROD-448 (G4c-4; design §6.13 A2): before the live set first loads the queue is Loading, after its first load
+// fails it reads Couldn't load attention (the summary keeps the one Retry); Nothing needs attention only once loaded,
+// and records already loaded stay on a later failure.
+test('attentionState: loading or failed before the first load; empty or queue once loaded (a later failure keeps them)', async () => {
+  const { attentionState } = await import('../../../src/renderer/overview/queue.ts');
+  assert.equal(attentionState(false, false, 0), 'loading');
+  assert.equal(attentionState(false, true, 0), 'failed');
+  assert.equal(attentionState(true, false, 0), 'empty');
+  assert.equal(attentionState(true, false, 2), 'queue');
+  assert.equal(attentionState(true, true, 2), 'queue', 'existing records retained');
+  assert.equal(attentionState(true, true, 0), 'empty');
+});

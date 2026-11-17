@@ -10,7 +10,7 @@ import { HealthStatus } from './Health.tsx';
 import { Icon } from './status/StatusBadge.tsx';
 import { createCoalescer } from './data/coalesce.ts';
 import { createHolds, reloadWindow, singleFlight } from './data/pages.ts';
-import { applyDelta, applyLiveDelta, applyPage, bandText, collectorStep, restoreFocus, emptyCollector, emptyList, emptyLiveSet, lastKnownLabel, PAGE, type ListState, type LiveSetState } from './model.ts';
+import { applyDelta, applyLiveDelta, applyPage, bandText, collectorStep, restoreFocus, emptyCollector, emptyList, emptyLiveSet, lastKnownLabel, liveSetNeedsRefill, PAGE, type ListState, type LiveSetState } from './model.ts';
 import { Dashboard, type UsageApi, type View } from './overview/Dashboard.tsx';
 import { framePad } from './frame-pad.ts';
 import { openOrder } from './overview/queue.ts';
@@ -46,6 +46,12 @@ function App() {
   const [changes, setChanges] = useState<SessionChanges>({ rows: [], resync: 0, n: 0 });
   const loadedRows = useRef(0); // rows the user has loaded: a resync refetches that many (P4-T03)
   loadedRows.current = list.rows.length;
+  // The Dashboard's live set from the service (start, resync, Retry, refill); a failure shows the Retry notice.
+  const loadLive = (c: Client) => c.liveSet().then((s) => { if (client.current === c) { setLiveSet({ ...s, loaded: true }); setLiveFailed(false); liveRetryDo({ type: 'ok' }); } },
+    () => { if (client.current === c) { setLiveFailed(true); liveRetryDo({ type: 'fail', at: Date.now() }); } });
+  // XAIBO-PROD-448 (G4c-3): members left a capped set: fetch it again for the left-out ones, one request at a time
+  const liveRefresh = useMemo(() => singleFlight(() => (client.current ? loadLive(client.current) : Promise.resolve())), []);
+  useEffect(() => { if (liveSetNeedsRefill(liveSet)) liveRefresh(); }, [liveSet, liveRefresh]);
 
   useEffect(() => {
     const holds = createHolds<SessionRow>(DELTA_MAX, () => resync()); // XAIBO-PROD-447: past DELTA_MAX held rows, one more reload
@@ -53,8 +59,7 @@ function App() {
     const reload = (c: Client | null): Promise<unknown> => {
       if (!c) return Promise.resolve();
       // P4-T04c: the Dashboard's live set is resynced with the list (start, coalescer overflow, show).
-      const set = c.liveSet().then((s) => { if (client.current === c) { setLiveSet({ ...s, loaded: true }); setLiveFailed(false); liveRetryDo({ type: 'ok' }); } },
-        () => { if (client.current === c) { setLiveFailed(true); liveRetryDo({ type: 'fail', at: Date.now() }); } });
+      const set = loadLive(c);
       // XAIBO-PROD-447: deltas flushed while the pages load are replayed on them (page 1 may be older than a delta)
       const page = holds.hold(reloadWindow(loadedRows.current, (cursor, limit) => c.listSessions(cursor, limit), PAGE))
         .then((r) => { if (r && client.current === c) setList((s) => applyDelta(applyPage(s, r.value, false), r.held)); }, () => undefined);
@@ -191,8 +196,7 @@ function App() {
     const c = client.current;
     if (!c) return;
     liveRetryDo({ type: 'start' }); // the notice stays, its Retry disabled until the answer (D-P4-10)
-    c.liveSet().then((set) => { if (client.current === c) { setLiveSet({ ...set, loaded: true }); setLiveFailed(false); liveRetryDo({ type: 'ok' }); } },
-      () => { if (client.current === c) { setLiveFailed(true); liveRetryDo({ type: 'fail', at: Date.now() }); } });
+    void loadLive(c);
   };
   // review L3: leaving through the Areas links or opening from the Session list ends the Dashboard's Return
   const clearReturn = useCallback(() => { origin.current = null; setReturnFor(null); setFocusId(null); }, []);

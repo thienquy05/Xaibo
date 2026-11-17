@@ -16,7 +16,7 @@ import { Record as SessionRecord } from '../SessionList.tsx';
 import { Icon, StatusBadge } from '../status/StatusBadge.tsx';
 import { visible } from '../text.ts';
 import { dayRange, historyBounds, scopeBlocks, shiftDay, usageRefreshDue, usageView } from '../usage/presentation.ts';
-import { attentionQueue, sinceText } from './queue.ts';
+import { attentionQueue, attentionState, sinceText } from './queue.ts';
 import { barGeometry, historyGeometry, quotaArc, tileSeries, type Datum } from './charts.ts';
 import { abbreviate, liveSetSummary, type Summary } from './totals.ts';
 
@@ -91,7 +91,7 @@ export function Dashboard(p: {
       <div className="x-dashboard-panels">
         <section id={`view-${view}`} aria-labelledby={`view-${view}-heading`} className="x-view-body">
           {view === 'live' ? <LiveView live={p.live} lastKnown={lastKnown} focusId={p.focusId} onOpen={p.onOpen} />
-            : view === 'attention' ? <AttentionView queue={queue} lastKnown={lastKnown} name={name} onShowLive={showLive} onOpen={p.onOpen} />
+            : view === 'attention' ? <AttentionView queue={queue} loaded={p.live.loaded} failed={p.liveFailed} lastKnown={lastKnown} name={name} onShowLive={showLive} onOpen={p.onOpen} />
               : <UsageView api={p.api} tick={p.tick} name={name} lastKnown={lastKnown} />}
         </section>
         {view === 'usage' ? <div className="x-dashboard-lower">
@@ -193,13 +193,16 @@ function LiveView({ live, lastKnown, focusId, onOpen }: { live: LiveSetState; la
   );
 }
 
-function AttentionView({ queue, lastKnown, name, onShowLive, onOpen }: { queue: ReturnType<typeof attentionQueue>; lastKnown: string | null; name: (id: string) => string; onShowLive: () => void; onOpen?: (row: SessionRow) => void }) {
+function AttentionView({ queue, loaded, failed, lastKnown, name, onShowLive, onOpen }: { queue: ReturnType<typeof attentionQueue>; loaded: boolean; failed: boolean; lastKnown: string | null; name: (id: string) => string; onShowLive: () => void; onOpen?: (row: SessionRow) => void }) {
   const now = useNow(1000);
   const labels = openNames(queue.flatMap((g) => g.rows), name);
+  const state = attentionState(loaded, failed, queue.length); // XAIBO-PROD-448: the summary's notice keeps the one Retry
   return (
     <>
       <h2 id="view-attention-heading" tabIndex={-1}>{lastKnown ? `Last known needs attention · ${lastKnown}` : 'Needs attention'}</h2>
-      {queue.length === 0 ? (
+      {state === 'loading' ? <LoadingLine text="Loading attention records…" />
+        : state === 'failed' ? <p className="x-gap"><Icon id="finding" /><span>Couldn't load attention</span></p>
+        : state === 'empty' ? (
         <p>Nothing needs attention. View Live sessions to continue monitoring. <button type="button" className="x-button" onClick={onShowLive}>Live sessions</button></p>
       ) : queue.map((g) => (
         <section key={g.name} aria-labelledby={`queue-${g.name.replace(/ /g, '-')}`}>

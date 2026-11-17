@@ -222,3 +222,18 @@ test('recordLabel bounds the folder too', async () => {
   const parts = recordLabel(r(1, 5, { title: 't', cwd: `/${'d'.repeat(300)}` })).split(' · ');
   assert.equal(Array.from(parts[2]!).length, 120);
 });
+
+// XAIBO-PROD-448 (G4c-3): a capped live set (more) whose shown members ended must fetch the left-out ones, else a
+// waiting session past the cap never appears ("No live sessions", "Needs attention 0+"). The service sets more only at
+// exactly LIVE_SET_MAX rows, so a refill answer never asks again.
+test('live set: a loaded capped set below LIVE_SET_MAX needs a refill; full, uncapped or unloaded sets do not', async () => {
+  const { liveSetNeedsRefill, LIVE_SET_MAX } = await import('../../src/renderer/model.ts');
+  const rows = (n: number) => Array.from({ length: n }, (_, i) => r(i + 1, 100 - i, { live: L({ lifecycle: 'busy' }) }));
+  assert.equal(liveSetNeedsRefill({ rows: rows(LIVE_SET_MAX - 1), more: true, loaded: true }), true, 'a member left a capped set');
+  assert.equal(liveSetNeedsRefill({ rows: [], more: true, loaded: true }), true, 'every shown member ended');
+  assert.equal(liveSetNeedsRefill({ rows: rows(LIVE_SET_MAX), more: true, loaded: true }), false, 'full: what the service returns');
+  assert.equal(liveSetNeedsRefill({ rows: rows(3), more: false, loaded: true }), false, 'nothing was left out');
+  assert.equal(liveSetNeedsRefill({ rows: [], more: true, loaded: false }), false, 'not loaded yet');
+  const ended = applyLiveDelta({ rows: rows(LIVE_SET_MAX), more: true, loaded: true }, [r(1, 100, { live: L({ lifecycle: 'ended' }) })]);
+  assert.equal(liveSetNeedsRefill(ended), true, 'a delta ending a member of a capped set');
+});

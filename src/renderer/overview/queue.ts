@@ -34,6 +34,11 @@ export function attentionQueue(rows: SessionRow[]): Group[] {
   });
 }
 
+/** XAIBO-PROD-448 (G4c-4; design §6.13 A2): the attention view before the live set first loads is loading, or failed
+ *  after that load failed; once loaded it lists its groups, or the empty message, and keeps them on a later failure. */
+export const attentionState = (loaded: boolean, failed: boolean, groups: number): 'loading' | 'failed' | 'empty' | 'queue' =>
+  !loaded ? (failed ? 'failed' : 'loading') : groups ? 'queue' : 'empty';
+
 const S = 1000, M = 60 * S, H = 60 * M, D = 24 * H;
 /** §7.1 duration: floor units. */
 export function durationText(ms: number): string {

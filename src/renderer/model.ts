@@ -60,6 +60,9 @@ export function applyLiveDelta(s: LiveSetState, incoming: SessionRow[], max = LI
   const rows = [...byId.values()].sort(compareRows);
   return rows.length > max ? { ...s, rows: rows.slice(0, max), more: true } : { ...s, rows };
 }
+/** XAIBO-PROD-448 (G4c-3): members left a capped set (more) and it is below the cap: fetch the set again for the
+ *  left-out ones. Cannot loop: the service sets more only when it returns exactly LIVE_SET_MAX rows. */
+export const liveSetNeedsRefill = (s: LiveSetState): boolean => s.loaded && s.more && s.rows.length < LIVE_SET_MAX;
 
 /** P4-T04c (design §6.0): the collector's run history for the "Last known" qualifier. Nothing is last known before
  *  the collector first ran; after a loss, the time it stopped running is kept until it runs again. */
