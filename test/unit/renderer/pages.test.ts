@@ -65,3 +65,53 @@ test('singleFlight: one run at a time; calls during a run give exactly one more 
   gates.shift()!(); await tick();
   assert.equal(runs, 3);
 });
+
+// XAIBO-PROD-447 (G4c-1): a reload of several pages resolved after a delta flushed while a later page was pending, and
+// page 1's older copy of that row replaced it (Busy -> Needs input reverted to Busy). Each reload holds the delta rows
+// flushed during it (latest per id, bounded) and they are replayed on its result.
+test('createHolds: a delta flushed between page 1 and page 2 survives the reload; overflow drops the hold and resyncs once', async () => {
+  const { createHolds } = await import('../../../src/renderer/data/pages.ts');
+  const { applyDelta, applyPage, emptyList } = await import('../../../src/renderer/model.ts');
+  const busy = (id: number, lifecycle = 'busy') => ({ ...row(id), live: { lifecycle } }) as unknown as SessionRow;
+  let resyncs = 0;
+  const holds = createHolds<SessionRow>(2, () => { resyncs++; });
+  holds.push([busy(9, 'idle')]); // before the reload: not held
+  let page2!: () => void;
+  let page1Done!: () => void;
+  const page1Returned = new Promise<void>((r) => { page1Done = r; });
+  const fetchPage = async (cursor: Cursor | null, limit: number): Promise<Page> => {
+    const from = cursor ? cursor.id : 0;
+    if (from) await new Promise<void>((r) => { page2 = r; });
+    else setImmediate(page1Done);
+    const rows = Array.from({ length: limit }, (_, i) => busy(from + i + 1));
+    return { rows, next: { lastActivity: rows.at(-1)!.lastActivity, id: rows.at(-1)!.id } };
+  };
+  const pending = holds.hold(reloadWindow(100, fetchPage, 50));
+  await page1Returned;
+  await new Promise((r) => setImmediate(r));
+  holds.push([busy(1, 'waiting-for-permission')]);
+  holds.push([busy(1, 'needs-input')]); // latest per id
+  page2();
+  const r = await pending;
+  assert.ok(r);
+  assert.deepEqual(r.held.map((x) => x.id), [1]);
+  const list = applyDelta(applyPage(emptyList, r.value, false), r.held);
+  assert.equal(list.rows.length, 100);
+  assert.equal(list.rows.find((x) => x.id === 1)?.live?.lifecycle, 'needs-input', 'the delta wins over page 1');
+  holds.push([busy(2)]); // after the reload: nothing holds it
+  assert.equal(resyncs, 0);
+
+  let release!: () => void;
+  const over = holds.hold(new Promise<string>((res) => { release = () => res('page'); }));
+  holds.push([busy(1), busy(2)]);
+  holds.push([busy(3)]); // a third distinct id past max 2
+  assert.equal(resyncs, 1, 'overflow asks for one resync');
+  holds.push([busy(4)]);
+  assert.equal(resyncs, 1, 'the dropped hold no longer counts');
+  release();
+  assert.equal(await over, null, 'an overflowed reload is not applied (its resync follows)');
+
+  await assert.rejects(holds.hold(Promise.reject(new Error('down'))), /down/, 'a failed reload discards its hold');
+  holds.push([busy(5), busy(6), busy(7)]);
+  assert.equal(resyncs, 1, 'a failed reload holds nothing afterwards');
+});

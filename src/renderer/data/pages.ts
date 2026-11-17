@@ -29,3 +29,27 @@ export function singleFlight(run: () => Promise<unknown>): () => void {
   };
   return go;
 }
+
+/** XAIBO-PROD-447 (G4c-1): a reload of several pages can resolve after deltas flushed while a later page was pending;
+ *  page 1's older copy of such a row must not replace it. Each `hold` keeps the rows `push`ed while its load is in
+ *  flight (latest per id, at most `max`) and returns them to be replayed on the result. Past `max` the hold is dropped,
+ *  its result resolves to null (not applied) and `overflow` asks for a resync; a failed load discards its hold. */
+export function createHolds<V extends { id: number }>(max: number, overflow: () => void) {
+  const active = new Set<Map<number, V>>();
+  return {
+    push(rows: readonly V[]): void {
+      for (const h of [...active]) { // a copy: an overflow resync may start a new hold
+        for (const r of rows) { h.delete(r.id); h.set(r.id, r); }
+        if (h.size > max) { active.delete(h); h.clear(); overflow(); }
+      }
+    },
+    async hold<T>(load: Promise<T>): Promise<{ value: T; held: V[] } | null> {
+      const h = new Map<number, V>();
+      active.add(h);
+      try {
+        const value = await load;
+        return active.has(h) ? { value, held: [...h.values()] } : null;
+      } finally { active.delete(h); }
+    },
+  };
+}

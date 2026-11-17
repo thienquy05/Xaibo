@@ -9,7 +9,7 @@ import { createClient, parseVisible, type Client, type PortLike } from './client
 import { HealthStatus } from './Health.tsx';
 import { Icon } from './status/StatusBadge.tsx';
 import { createCoalescer } from './data/coalesce.ts';
-import { reloadWindow, singleFlight } from './data/pages.ts';
+import { createHolds, reloadWindow, singleFlight } from './data/pages.ts';
 import { applyDelta, applyLiveDelta, applyPage, bandText, collectorStep, restoreFocus, emptyCollector, emptyList, emptyLiveSet, lastKnownLabel, PAGE, type ListState, type LiveSetState } from './model.ts';
 import { Dashboard, type UsageApi, type View } from './overview/Dashboard.tsx';
 import { framePad } from './frame-pad.ts';
@@ -48,14 +48,16 @@ function App() {
   loadedRows.current = list.rows.length;
 
   useEffect(() => {
+    const holds = createHolds<SessionRow>(DELTA_MAX, () => resync()); // XAIBO-PROD-447: past DELTA_MAX held rows, one more reload
     // The loaded window again by cursor, replacing the list: after a (re)start, a coalescer overflow or showing the window.
     const reload = (c: Client | null): Promise<unknown> => {
       if (!c) return Promise.resolve();
       // P4-T04c: the Dashboard's live set is resynced with the list (start, coalescer overflow, show).
       const set = c.liveSet().then((s) => { if (client.current === c) { setLiveSet({ ...s, loaded: true }); setLiveFailed(false); liveRetryDo({ type: 'ok' }); } },
         () => { if (client.current === c) { setLiveFailed(true); liveRetryDo({ type: 'fail', at: Date.now() }); } });
-      const page = reloadWindow(loadedRows.current, (cursor, limit) => c.listSessions(cursor, limit), PAGE)
-        .then((p) => { if (client.current === c) setList((s) => applyPage(s, p, false)); }, () => undefined);
+      // XAIBO-PROD-447: deltas flushed while the pages load are replayed on them (page 1 may be older than a delta)
+      const page = holds.hold(reloadWindow(loadedRows.current, (cursor, limit) => c.listSessions(cursor, limit), PAGE))
+        .then((r) => { if (r && client.current === c) setList((s) => applyDelta(applyPage(s, r.value, false), r.held)); }, () => undefined);
       setChanges((x) => ({ rows: [], resync: x.resync + 1, n: x.n + 1 })); // a resync may hide any change: the open session refreshes
       setTick((t) => t + 1); // XAIBO-PROD-436: and the usage view (a read pending at a restart failed with the old port)
       return Promise.all([set, page]);
@@ -67,6 +69,7 @@ function App() {
     const deltas = createCoalescer<SessionRow>({
       max: DELTA_MAX, schedule: (cb) => requestAnimationFrame(cb), resync,
       flush: (rows, tags) => {
+        holds.push(rows);
         flushSync(() => {
           setList((s) => applyDelta(s, rows)); setLiveSet((s) => applyLiveDelta(s, rows)); setTick((t) => t + 1);
           setChanges((c) => ({ ...c, rows, n: c.n + 1 })); // XAIBO-PROD-424: the open conversation follows these
