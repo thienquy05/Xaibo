@@ -179,15 +179,11 @@ for (const layout of Object.keys(LAYOUTS) as (keyof typeof LAYOUTS)[]) {
         const conversation = await open('Conversation');
         if (gap) await expect(conversation).toContainText(loading(/Summarize the notes/));
         else {
-          // a transcript load that failed while the collector was lost offers the design's inline Retry (§6.13 A3 B3). The
-          // session was opened during the gap, so its first request went to the dead port: without XAIBO-PROD-434 it never
-          // settles and neither Retry nor the content can appear (a stuck "Loading" fails this check).
-          const retry = page.getByRole('alert').getByRole('button', { name: 'Retry' });
-          if (state === 'disconnected') {
-            await expect(retry.or(conversation.getByText('Summarize the notes'))).toBeVisible({ timeout: 20_000 });
-            if (await retry.isVisible()) { await tabTo(page, retry); await page.keyboard.press('Enter'); }
-          }
+          // The session was opened during the gap, so its first transcript request went to the dead port: it fails when the
+          // restarted service brings a new port (XAIBO-PROD-434), and the reconnect then reloads it by itself, with no Retry
+          // press (XAIBO-PROD-436, owner decision D-P4-09). A stuck "Loading" or a waiting Retry fails this check.
           await expect(conversation.getByRole('list', { name: 'Conversation' })).toContainText('Summarize the notes', { timeout: 20_000 });
+          await expect(page.getByRole('alert').getByRole('button', { name: 'Retry' })).toHaveCount(0);
         }
         const timeline = await open('Timeline');
         if (gap) await expect(timeline).toContainText(loading(/Activity|Summarize/));

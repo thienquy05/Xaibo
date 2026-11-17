@@ -13,7 +13,7 @@ import { costText, findingBadges, formatTime, statusExtras, type LiveSetState } 
 import { Record as SessionRecord } from '../SessionList.tsx';
 import { StatusBadge } from '../status/StatusBadge.tsx';
 import { visible } from '../text.ts';
-import { dayRange, historyBounds, scopeBlocks, shiftDay, usageView } from '../usage/presentation.ts';
+import { dayRange, historyBounds, scopeBlocks, shiftDay, usageRefreshDue, usageView } from '../usage/presentation.ts';
 import { attentionQueue, sinceText } from './queue.ts';
 import { barGeometry, historyGeometry, quotaArc, tileSeries, type Datum } from './charts.ts';
 import { abbreviate, liveSetSummary, type Summary } from './totals.ts';
@@ -213,16 +213,22 @@ function UsageView({ api, tick, name, lastKnown }: { api: UsageApi; tick: number
   const [selected, setSelected] = useState<string | null>(null);
   const last = useRef(0);
   const seq = useRef(0);
+  const failures = useRef(0); // consecutive failed reads
+  const retrying = useRef(false); // the one immediate retry after a first failure is pending
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
     // Refreshed on open and on new session activity (at most every 5 s): a local service read, never a quota request.
     // An answer is dropped only on unmount or when a newer request was sent (review M1), never by the throttle.
-    if (Date.now() - last.current < 5000) return;
+    // XAIBO-PROD-436: a first failure retries at the next tick, once (review M: not while that retry is pending)
+    if (!usageRefreshDue(last.current, Date.now(), failures.current, retrying.current)) return;
+    const retry = failures.current === 1 && Date.now() - last.current < 5000;
     last.current = Date.now();
+    retrying.current ||= retry;
     const n = ++seq.current;
-    api.usage().then((s) => { if (mounted.current && n === seq.current) { setScopes(s); setFailed(false); } },
-      () => { if (mounted.current && n === seq.current) setFailed(true); });
+    const done = () => { if (retry) retrying.current = false; };
+    api.usage().then((s) => { done(); failures.current = 0; if (mounted.current && n === seq.current) { setScopes(s); setFailed(false); } },
+      () => { done(); failures.current++; if (mounted.current && n === seq.current) setFailed(true); });
   }, [api, tick]);
   const scopeKey = (s: UsageScope) => JSON.stringify([s.scope, s.agent, s.profile, s.stream]);
   const choice = scopes?.find((s) => scopeKey(s) === selected) ?? scopes?.find((s) => s.scope !== null && s.stream !== null) ?? scopes?.[0];

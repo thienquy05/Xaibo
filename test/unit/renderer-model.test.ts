@@ -148,3 +148,28 @@ test('collector: starting before any run reads Collection starting; a later loss
   assert.deepEqual([c.lostAt, lastKnownLabel(c, 'running')], [null, null]);
   assert.equal(lastKnownLabel(emptyCollector, null), 'Collection starting', 'no health yet');
 });
+
+// XAIBO-PROD-436 (P4-T14b; owner decision D-P4-09): a full disk pauses collection; the band says so (not Running) and
+// live labels are qualified as last known while it lasts.
+test('band: a running service that reports disk full reads Paused (disk full); otherwise the health text', async () => {
+  const { bandText } = await import('../../src/renderer/model.ts');
+  const h = (state: 'starting' | 'running' | 'restarting' | 'stopped', attempt = 0) => ({ v: 1 as const, type: 'health' as const, state, attempt, readOnly: null });
+  const full = [{ kind: 'disk-full' as const }];
+  assert.deepEqual(bandText(null, full), { state: 'starting', text: 'Starting' });
+  assert.deepEqual(bandText(h('running'), []), { state: 'running', text: 'Running' });
+  assert.deepEqual(bandText(h('running'), full), { state: 'paused', text: 'Paused (disk full)' });
+  assert.deepEqual(bandText(h('restarting', 2), full), { state: 'restarting', text: 'Restarting (attempt 2)' }, 'a stale banner never hides a restart');
+  assert.deepEqual(bandText(h('running'), [{ kind: 'hooks-blocked' as const, agent: 'claude', state: 'blocked' as const }]), { state: 'running', text: 'Running' });
+});
+
+test('collector: a pause is a loss for the Last known qualifier; running again clears it', () => {
+  let c = collectorStep(collectorStep(emptyCollector, 'running', 100), 'paused', new Date(2026, 0, 2, 9, 7).getTime());
+  assert.equal(lastKnownLabel(c, 'paused'), 'since 2026-01-02 09:07');
+  c = collectorStep(c, 'running', 300);
+  assert.equal(lastKnownLabel(c, 'running'), null);
+});
+
+test('review L: a pause before any Running health (disk already full at start) still carries its time', () => {
+  const c = collectorStep(emptyCollector, 'paused', new Date(2026, 0, 2, 9, 8).getTime());
+  assert.equal(lastKnownLabel(c, 'paused'), 'since 2026-01-02 09:08');
+});

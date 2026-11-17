@@ -126,3 +126,18 @@ test('re-review: live activity never trims the window; a full window gets a curs
   assert.equal(after.items, full.items); // the records being read stay
   assert.deepEqual(after.next, { seq: WINDOW_MAX * 10, id: WINDOW_MAX }); // More records available
 });
+
+// XAIBO-PROD-436 (P4-T14b; owner decision D-P4-09): after a service restart a transcript that failed with nothing loaded
+// reloads by itself on the next change (the reconnect resync); one that still shows records keeps its anchor.
+test('a failed window with no records reloads on the next change; with records it keeps its anchor; a pending load waits', async () => {
+  const { settled } = await import('../../../src/renderer/workspace/view.ts');
+  const w = (o: Partial<{ loaded: boolean; loading: boolean; failed: boolean; next: unknown; items: number }>) => ({ loaded: true, loading: false, failed: false, next: null, items: 3, ...o });
+  assert.equal(liveAction(w({ loaded: false, failed: true, items: 0 })), 'reload', 'the first load failed: reload');
+  assert.equal(liveAction(w({ failed: true, items: 0 })), 'reload', 'a later replacing load failed on an empty window');
+  assert.equal(liveAction(w({ loaded: false, loading: true, failed: true, items: 0 })), 'later', 'a retry in flight');
+  assert.equal(liveAction(w({ failed: true, next: { seq: 1, id: 2 } })), 'notice', 'records shown: the anchor never moves');
+  assert.equal(liveAction(w({ failed: true })), 'append');
+  // a change held during a load runs once the load settles, whether it loaded or failed
+  assert.deepEqual([settled(w({ loaded: false, loading: true })), settled(w({ loaded: false, failed: true })), settled(w({})), settled(w({ loaded: false }))],
+    [false, true, true, false]);
+});

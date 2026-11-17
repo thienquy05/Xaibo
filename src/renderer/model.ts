@@ -1,7 +1,8 @@
 // Session list state (P1-T12): pages and live deltas merged by session id in the service's keyset order. The loaded
 // window holds `capacity` rows (a page per Load more); deltas update loaded rows and add new sessions only inside
 // that window, trimming from the bottom, so a large backfill never grows the DOM (virtualization is Phase 4).
-import type { Banner, CostCoverage, Cursor, HealthState, LiveStatus, Page, SessionRow } from '../shared/ipc.ts';
+import { healthText } from '../shared/ipc.ts';
+import type { Banner, CostCoverage, Cursor, Health, HealthState, LiveStatus, Page, SessionRow } from '../shared/ipc.ts';
 import { visible } from './text.ts';
 
 export const PAGE = 50;
@@ -64,12 +65,22 @@ export function applyLiveDelta(s: LiveSetState, incoming: SessionRow[], max = LI
  *  the collector first ran; after a loss, the time it stopped running is kept until it runs again. */
 export interface Collector { seenRunning: boolean; lostAt: number | null }
 export const emptyCollector: Collector = { seenRunning: false, lostAt: null };
-export function collectorStep(c: Collector, state: HealthState, now: number): Collector {
+/** XAIBO-PROD-436 (owner decision D-P4-09): `paused` is a running service that cannot store (disk full). */
+export type BandState = HealthState | 'paused';
+export function collectorStep(c: Collector, state: BandState, now: number): Collector {
   if (state === 'running') return { seenRunning: true, lostAt: null };
+  if (state === 'paused') return { seenRunning: true, lostAt: c.lostAt ?? now }; // review L: a paused service has run
   return c.seenRunning ? { ...c, lostAt: c.lostAt ?? now } : c;
 }
+/** The collection band (design §6.0, amended by D-P4-09): a running service that reports disk full reads Paused, never
+ *  Running; any other state reads as its health. */
+export function bandText(h: Health | null, banners: readonly Banner[]): { state: BandState; text: string } {
+  if (!h) return { state: 'starting', text: 'Starting' };
+  if (h.state === 'running' && banners.some((b) => b.kind === 'disk-full')) return { state: 'paused', text: 'Paused (disk full)' };
+  return { state: h.state, text: healthText(h) };
+}
 /** null while running (live labels unqualified); otherwise the qualifier text. */
-export function lastKnownLabel(c: Collector, state: HealthState | null): string | null {
+export function lastKnownLabel(c: Collector, state: BandState | null): string | null {
   if (state === 'running') return null;
   return c.seenRunning && c.lostAt !== null ? `since ${formatTime(c.lostAt)}` : 'Collection starting';
 }

@@ -44,11 +44,18 @@ export function isoTime(ms: number | null): string | null {
 /** XAIBO-PROD-424 (design §5.2/§6.3): what the open conversation does when its session changed. A change during a load
  *  waits for it; a window that reaches the end appends in place; a scrolled-back window offers New activity available
  *  (the anchor never moves); an empty window reloads its initial target. */
-export function liveAction(w: { loaded: boolean; loading: boolean; next: unknown; items: number; appending?: boolean }): 'later' | 'append' | 'notice' | 'reload' {
-  if (!w.loaded || w.loading || w.appending) return 'later'; // review M2: one append at a time; a change during it reruns
+export function liveAction(w: { loaded: boolean; loading: boolean; failed?: boolean; next: unknown; items: number; appending?: boolean }): 'later' | 'append' | 'notice' | 'reload' {
+  if (w.loading || w.appending) return 'later'; // review M2: one append at a time; a change during it reruns
+  // XAIBO-PROD-436 (D-P4-09): a failed window with nothing to show reloads (after a restart the change is the reconnect
+  // resync); one that still shows records keeps its anchor and its Retry
+  if (w.failed && !w.items) return 'reload';
+  if (!w.loaded) return 'later';
   if (w.next !== null) return 'notice';
   return w.items ? 'append' : 'reload';
 }
+
+/** XAIBO-PROD-436: a load has settled (loaded or failed); a change held during it runs then. */
+export const settled = (w: { loaded: boolean; loading: boolean; failed?: boolean }): boolean => !w.loading && (w.loaded || w.failed === true);
 
 /** XAIBO-PROD-424: the rows of the last delta frame; `resync` counts list resyncs (anything may have changed) and `n`
  *  counts frames. Both are counters, so a delta frame committed after a resync never hides it (review L5). */

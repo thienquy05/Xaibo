@@ -99,3 +99,9 @@ export function scopeBlocks(scopes: UsageScope[]): ScopeBlock[] {
   });
   return [...blocks.values()];
 }
+
+/** XAIBO-PROD-436: the usage view reads at most every 5 s, except once right after a first failure (a read pending when
+ *  the service restarted fails with its old port; the reconnect's tick retries it at once). Review M: `failures` counts
+ *  consecutive failed reads, so a read that keeps failing falls back to the throttle; the retry never overlaps itself. */
+export const usageRefreshDue = (last: number, now: number, failures: number, retrying: boolean): boolean =>
+  (failures === 1 && !retrying) || now - last >= 5000;

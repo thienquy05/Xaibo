@@ -1,19 +1,21 @@
 // Service health (P1-T06) and the agent status strip with "Set path…" (P1-T08), as text plus glyph. Logic and
-// validation live in src/shared/ipc.ts and text.ts.
-import { healthText, READ_ONLY_BANNER } from '../shared/ipc.ts';
-import type { AgentStatus, Health, HealthState } from '../shared/ipc.ts';
+// validation live in src/shared/ipc.ts, model.ts and text.ts.
+import { READ_ONLY_BANNER } from '../shared/ipc.ts';
+import type { AgentStatus, Banner, Health } from '../shared/ipc.ts';
+import { bandText, type BandState } from './model.ts';
 import { Icon } from './status/StatusBadge.tsx';
 import type { IconId } from './status/icons.ts';
 import { visible } from './text.ts';
 
-const GLYPH: Record<HealthState, IconId> = { starting: 'hourglass', running: 'link', restarting: 'restore', stopped: 'ended' };
-const TONE = { starting: 'muted', running: 'success', restarting: 'warning', stopped: 'danger' };
+// XAIBO-PROD-436 (D-P4-09): paused (disk full) takes the coverage banner's warning glyph and tone
+const GLYPH: Record<BandState, IconId> = { starting: 'hourglass', running: 'link', restarting: 'restore', stopped: 'ended', paused: 'finding' };
+const TONE: Record<BandState, string> = { starting: 'muted', running: 'success', restarting: 'warning', stopped: 'danger', paused: 'warning' };
 
-export function HealthStatus({ health }: { health: Health | null }) {
-  const state = health?.state ?? 'starting';
+export function HealthStatus({ health, banners }: { health: Health | null; banners: readonly Banner[] }) {
+  const band = bandText(health, banners);
   return (
     <>
-      <p role="status" aria-live="polite" className="x-band"><span className={`x-tone-${TONE[state]}`}><Icon id={GLYPH[state]} /></span> Collection: {health ? healthText(health) : 'Starting'}</p>
+      <p role="status" aria-live="polite" className="x-band"><span className={`x-tone-${TONE[band.state]}`}><Icon id={GLYPH[band.state]} /></span> Collection: {band.text}</p>
       {health?.readOnly ? <p role="alert">{READ_ONLY_BANNER[health.readOnly]}</p> : null}
     </>
   );

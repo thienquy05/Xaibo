@@ -121,3 +121,16 @@ test('usage Stale accessible text: last measurement, or last observation when no
   assert.equal(usageView(s({ asOf: null, measuredAt: NOW - 20 * MIN, firstObservedAt: NOW - 20 * MIN }), NOW).staleLabel, 'Stale, last observation 2026-01-02 11:40');
   assert.equal(usageView(s(), NOW).staleLabel, null);
 });
+
+// XAIBO-PROD-436 (P4-T14b): a read that failed (e.g. pending when the service restarted) retries at the next tick, once:
+// review M: a read that keeps failing falls back to the 5 s throttle, and the one retry never overlaps itself.
+test('usage refresh: at most every 5 s; right after a first failure once, never while that retry is in flight', async () => {
+  const { usageRefreshDue } = await import('../../../src/renderer/usage/presentation.ts');
+  assert.equal(usageRefreshDue(10_000, 14_999, 0, false), false);
+  assert.equal(usageRefreshDue(10_000, 15_000, 0, false), true);
+  assert.equal(usageRefreshDue(10_000, 10_001, 1, false), true, 'first failure: retry at once');
+  assert.equal(usageRefreshDue(10_000, 10_001, 1, true), false, 'that retry is still pending');
+  assert.equal(usageRefreshDue(10_000, 10_001, 2, false), false, 'the retry failed too: throttled');
+  assert.equal(usageRefreshDue(10_000, 15_000, 2, false), true);
+  assert.equal(usageRefreshDue(0, 10_000, 0, false), true, 'never read yet');
+});

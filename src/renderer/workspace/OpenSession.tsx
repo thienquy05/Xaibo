@@ -12,7 +12,7 @@ import { ContextPane } from './context/ContextSection.tsx';
 import { CostPane } from './cost/CostSection.tsx';
 import { Conversation, Files, Subagents, Timeline, Tools, type Paged, type SliceFn } from './sections.tsx';
 import { mergeTimeline } from './timeline.ts';
-import { appendLive, compactStatus, countText, incompleteReasons, initialAt, liveAction, trimWindow, WINDOW_MAX } from './view.ts';
+import { appendLive, compactStatus, countText, incompleteReasons, initialAt, liveAction, settled, trimWindow, WINDOW_MAX } from './view.ts';
 
 export type WorkspaceApi = Pick<Client, 'session' | 'transcript' | 'slice' | 'tools' | 'subagents' | 'files' | 'markers' | 'cost'>;
 const PAGE = 50;
@@ -132,11 +132,12 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
   const [fresh, setFresh] = useState(false); // New activity available
   const notice = fresh && tr.next !== null; // review L6: never once the window reaches the end again
   const latestRef = useRef<HTMLButtonElement>(null);
+  const autoReloaded = useRef(false); // XAIBO-PROD-436: the failed window already reloaded itself once
   const loadAt = (at: 'first' | 'latest') => {
     const g = ++trGen.current;
     setFresh(false);
     setTr((s) => ({ ...s, loading: true }));
-    api.transcript(id, at, PAGE).then((p) => { if (trGen.current === g) setTr({ items: p.items, prev: p.prev, next: p.next, loading: false, failed: false, loaded: true }); },
+    api.transcript(id, at, PAGE).then((p) => { if (trGen.current === g) { autoReloaded.current = false; setTr({ items: p.items, prev: p.prev, next: p.next, loading: false, failed: false, loaded: true }); } },
       () => { if (trGen.current === g) setTr((s) => ({ ...s, loading: false, failed: true })); });
   };
   const grow = (dir: 'after' | 'before') => {
@@ -161,10 +162,11 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
   const appending = useRef(false);
   const onChange = () => {
     const s = trRef.current;
-    switch (liveAction({ loaded: s.loaded, loading: s.loading, next: s.next, items: s.items.length, appending: appending.current })) {
+    // review L: one automatic reload per failure (a transcript the service keeps refusing waits for Retry)
+    switch (liveAction({ loaded: s.loaded, loading: s.loading, failed: s.failed && !autoReloaded.current, next: s.next, items: s.items.length, appending: appending.current })) {
       case 'later': pending.current = true; return;
       case 'notice': setFresh(true); return;
-      case 'reload': loadAt(initial.current); return;
+      case 'reload': autoReloaded.current ||= s.failed; loadAt(initial.current); return;
       case 'append': {
         const last = s.items.at(-1)!;
         const g = trGen.current;
@@ -183,7 +185,8 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
   };
   const seen = useRef(changed); // the generation at open is not a change (the open load already includes it)
   useEffect(() => { if (changed !== seen.current) { seen.current = changed; onChange(); } }, [changed]); // reacts to changes only
-  useEffect(() => { if (!tr.loading && tr.loaded && pending.current) { pending.current = false; onChange(); } }, [tr.loading, tr.loaded]);
+  // XAIBO-PROD-436: also after a failed load, so a change held during it (the reconnect resync) still reloads
+  useEffect(() => { if (settled(tr) && pending.current) { pending.current = false; onChange(); } }, [tr.loading, tr.loaded, tr.failed]);
 
   const entries = useMemo(() => mergeTimeline({ items: tr.items, tools: tools.items, markers: markers.items, subagents: subagents.items, moreBefore: tr.prev !== null, moreAfter: tr.next !== null }),
     [tr.items, tr.prev, tr.next, tools.items, markers.items, subagents.items]);

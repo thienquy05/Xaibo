@@ -1,6 +1,6 @@
 // Renderer entry (P1-T12): takes the brokered service port and main's health messages from the preload (window
 // messages from this window only, validated), keeps the list state (model.ts) and renders health, agents and sessions.
-import { StrictMode, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
+import { StrictMode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { parseHealth } from '../shared/ipc.ts';
@@ -10,7 +10,7 @@ import { HealthStatus } from './Health.tsx';
 import { Icon } from './status/StatusBadge.tsx';
 import { createCoalescer } from './data/coalesce.ts';
 import { reloadWindow, singleFlight } from './data/pages.ts';
-import { applyDelta, applyLiveDelta, applyPage, collectorStep, emptyCollector, emptyList, emptyLiveSet, lastKnownLabel, PAGE, type ListState, type LiveSetState } from './model.ts';
+import { applyDelta, applyLiveDelta, applyPage, bandText, collectorStep, emptyCollector, emptyList, emptyLiveSet, lastKnownLabel, PAGE, type ListState, type LiveSetState } from './model.ts';
 import { Dashboard, type UsageApi } from './overview/Dashboard.tsx';
 import { firstUsablePage, LONG_FRAME, watchLongFrames } from './perf-marks.ts';
 import { Workspace, type SessionChanges } from './workspace/Workspace.tsx';
@@ -53,6 +53,7 @@ function App() {
       const page = reloadWindow(loadedRows.current, (cursor, limit) => c.listSessions(cursor, limit), PAGE)
         .then((p) => { if (client.current === c) setList((s) => applyPage(s, p, false)); }, () => undefined);
       setChanges((x) => ({ rows: [], resync: x.resync + 1, n: x.n + 1 })); // a resync may hide any change: the open session refreshes
+      setTick((t) => t + 1); // XAIBO-PROD-436: and the usage view (a read pending at a restart failed with the old port)
       return Promise.all([set, page]);
     };
     // P4-T10c1 review M1: overflow resyncs (the service's or the frame coalescer's) run one reload at a time.
@@ -96,10 +97,7 @@ function App() {
       const v = parseVisible(e.data);
       if (v !== null) { onVisible(v); return; }
       const h = parseHealth(e.data);
-      if (h) {
-        setHealth(h);
-        setCollector((c) => collectorStep(c, h.state, Date.now()));
-      }
+      if (h) setHealth(h);
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
@@ -141,8 +139,11 @@ function App() {
     setRequest(row);
     setArea('session');
   };
-  // Design §6.0: no unqualified live indicator while the collector is not running (starting, restarting, stopped).
-  const lastKnown = lastKnownLabel(collector, health?.state ?? null);
+  // Design §6.0: no unqualified live indicator while the collector is not running (starting, restarting, stopped, and
+  // paused on a full disk: D-P4-09). Stepped before paint, so no frame shows a pause without its time.
+  const band = bandText(health, banners).state;
+  useLayoutEffect(() => { setCollector((c) => collectorStep(c, band, Date.now())); }, [band]);
+  const lastKnown = lastKnownLabel(collector, band);
   const retryLive = () => {
     const c = client.current;
     if (!c) return;
@@ -203,7 +204,7 @@ function App() {
           <a href="#session" aria-current={area === 'session' ? 'page' : undefined} onClick={go('session')}><Icon id="session" />Session</a>
         </nav>
       </header>
-      <div className="x-health"><HealthStatus health={health} /></div>
+      <div className="x-health"><HealthStatus health={health} banners={banners} /></div>
       <main id="main" className="x-main" tabIndex={-1}>
         {area === 'dashboard'
           ? <Dashboard live={liveSet} liveFailed={liveFailed} onRetryLive={retryLive} lastKnown={lastKnown} agents={agents} banners={banners} api={api} tick={tick}
