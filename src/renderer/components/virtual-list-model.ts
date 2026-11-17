@@ -59,3 +59,37 @@ export function pageAnnouncement(before: number, count: number, loading: boolean
   const added = count - before;
   return added > 0 ? `${added} more record${added === 1 ? '' : 's'} loaded` : '';
 }
+
+/** XAIBO-PROD-439 (design §2.3/§2.4): the scroll that brings an item fully inside a scrollport with `pad` px of room for
+ *  its focus ring; 0 when it is already inside; an item taller than the port shows its top. */
+export function revealDelta(item: { top: number; bottom: number }, port: { top: number; bottom: number }, pad = 8): number {
+  if (item.top - pad < port.top) return item.top - pad - port.top;
+  if (item.bottom + pad > port.bottom) return Math.min(item.bottom + pad - port.bottom, item.top - pad - port.top);
+  return 0;
+}
+
+/** XAIBO-PROD-439 review HIGH: only a layout change of the list (width or text metrics) with the same records brings the
+ *  focused record back; rows measured while the user scrolls, or a change of records, never move the scroll. */
+export const shouldReveal = <K>(focused: K | null, layoutChanged: boolean, recordsChanged: boolean): boolean =>
+  layoutChanged && !recordsChanged && focused !== null;
+
+/** What a re-measure caused by layout depends on: the list's width and its text metrics (text spacing, size, zoom). */
+export const layoutSignature = (m: { width: number; fontSize: string; lineHeight: string; letterSpacing: string; wordSpacing: string }): string =>
+  `${m.width}|${m.fontSize}|${m.lineHeight}|${m.letterSpacing}|${m.wordSpacing}`;
+
+/** XAIBO-PROD-439: rows re-measure over several commits after one layout change; a change opens a 500 ms window in which
+ *  every re-measure keeps the focused record in view. The first measurement (no previous signature) is no change. */
+export function revealDue(prevSig: string, sig: string, now: number, until: number): { due: boolean; until: number } {
+  if (prevSig !== '' && sig !== prevSig) return { due: true, until: now + 500 };
+  return { due: now < until, until };
+}
+
+/** XAIBO-PROD-439: the part of a scroller a focused record must sit in: the scroller clipped to the window, below the
+ *  sticky top frame's padding (`padTop`, from --x-frame-pad). */
+export const revealPort = (scroller: { top: number; bottom: number }, windowHeight: number, padTop: number): { top: number; bottom: number } =>
+  ({ top: Math.max(scroller.top, padTop), bottom: Math.min(scroller.bottom, windowHeight) });
+
+/** XAIBO-PROD-439: whether the window (or the sticky frame's padding) clips a list's scroller; only then does arrow-key
+ *  focus also move the page, otherwise the virtualizer's own scroll is left alone. */
+export const scrollerClipped = (scroller: { top: number; bottom: number }, windowHeight: number, padTop: number): boolean =>
+  scroller.top < padTop || scroller.bottom > windowHeight;

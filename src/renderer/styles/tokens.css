@@ -498,7 +498,7 @@ summary:hover { background: var(--x-tint); }
   .x-shell.x-fixed .x-main { padding: var(--x-space-3); }
   .x-area-head { margin-bottom: var(--x-space-2); }
   .x-main .x-area-head h1 { font-size: var(--x-text-section); line-height: var(--x-leading-section); }
-  .x-chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  /* XAIBO-PROD-439: chips wrap at narrow widths too; a sideways strip with a hidden scrollbar hid chips at 320 CSS px */
   .x-open-head { padding: var(--x-space-2) var(--x-space-3); }
   .x-tabs { padding: var(--x-space-1) var(--x-space-3); }
 }
@@ -516,3 +516,23 @@ summary:hover { background: var(--x-tint); }
 .x-btn[aria-busy="true"] { cursor: progress; }
 .x-loading-line { display: flex; align-items: center; gap: var(--x-space-2); }
 .x-gap > span { flex: 1 1 auto; min-width: 0; }
+
+/* XAIBO-PROD-439 (P4-T15b; design §2.3, §2.4): focus keeps its whole ring 4 px inside every scrollport and the window;
+   scrollers that take focus draw the ring inside; the fixed Session frame never collapses a pane at 200% text or
+   320 CSS px: panes keep a rem-scaled minimum and the window scrolls when the frame does not fit. */
+html, .x-main, .x-vlist, .x-scroll { scroll-padding: 8px; }
+html, .x-shell.x-fixed { scroll-padding-top: var(--x-frame-pad, 8px); } /* clear of the sticky top frame (set by main.tsx) */
+:where(a[href], button, summary, select, input, [tabindex]) { scroll-margin: 8px; }
+.x-vlist:focus-visible, .x-scroll:focus-visible, .x-open-body:focus-visible { outline-offset: -4px; }
+.x-shell.x-fixed { overflow-y: auto; }
+.x-shell.x-fixed .x-main { min-height: 28rem; }
+.x-open-body, .x-workspace .x-section-list { min-height: 8rem; }
+.x-pane { overflow: auto; scroll-padding: 8px; } /* a pane too short for its content scrolls as a whole instead of clipping it */
+.x-vlist, .x-scroll { scroll-margin: 8px; } /* scrollers that take focus themselves */
+.x-tabs { flex-wrap: wrap; overflow-x: visible; } /* the section index wraps (design §6.3) */
+.x-drawer { z-index: calc(var(--x-z-sticky) - 1); } /* above the pane, below the sticky top frame */
+/* a short viewport (320 CSS px reflow, 200% zoom): a sticky top frame would cover the content; it scrolls away instead */
+@media (max-height: 480px) and (max-width: 1199px) { .x-frame { position: static; } }
+/* the open session's footer actions wrap (and their words) before they overflow the pane at 320 CSS px */
+.x-foot-right { flex-wrap: wrap; min-width: 0; }
+.x-foot .x-btn { white-space: normal; }

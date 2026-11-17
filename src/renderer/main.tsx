@@ -12,6 +12,7 @@ import { createCoalescer } from './data/coalesce.ts';
 import { reloadWindow, singleFlight } from './data/pages.ts';
 import { applyDelta, applyLiveDelta, applyPage, bandText, collectorStep, restoreFocus, emptyCollector, emptyList, emptyLiveSet, lastKnownLabel, PAGE, type ListState, type LiveSetState } from './model.ts';
 import { Dashboard, type UsageApi, type View } from './overview/Dashboard.tsx';
+import { framePad } from './frame-pad.ts';
 import { openOrder } from './overview/queue.ts';
 import { retryIdle, retryStep } from './retry.ts';
 import { firstUsablePage, LONG_FRAME, watchLongFrames } from './perf-marks.ts';
@@ -107,6 +108,18 @@ function App() {
   }, []);
 
   useEffect(() => { onListCommit(list.rows.length); }, [list.rows.length]);
+  // XAIBO-PROD-439: focus scrolled into view never lands under the sticky top frame (its height varies with the nav
+  // wrapping and the text size)
+  useEffect(() => {
+    const frame = document.querySelector<HTMLElement>('.x-frame');
+    if (!frame) return;
+    const set = () => document.documentElement.style.setProperty('--x-frame-pad', `${framePad(frame.offsetHeight, innerWidth, getComputedStyle(frame).position === 'sticky')}px`);
+    const o = new ResizeObserver(set);
+    o.observe(frame);
+    addEventListener('resize', set);
+    set();
+    return () => { o.disconnect(); removeEventListener('resize', set); };
+  }, []);
 
   const loadMore = () => {
     const c = client.current;

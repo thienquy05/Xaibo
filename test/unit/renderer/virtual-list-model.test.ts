@@ -72,3 +72,57 @@ test('horizontal roving: Left/Right/Home/End within bounds; Up/Down are not navi
   assert.equal(nextFocus(1, 'ArrowDown', 3, 'horizontal'), null);
   assert.equal(nextFocus(1, 'ArrowRight', 3), null, 'vertical lists ignore Left/Right');
 });
+
+// XAIBO-PROD-439 (P4-T15b; design §2.3, §2.4): after rows re-measure, a focused record is scrolled back into view with
+// room for its focus ring; one already in view is left alone.
+test('revealDelta: 0 in view; else the scroll that brings the item inside the port with padding', async () => {
+  const { revealDelta } = await import('../../../src/renderer/components/virtual-list-model.ts');
+  const port = { top: 100, bottom: 500 };
+  assert.equal(revealDelta({ top: 200, bottom: 260 }, port), 0);
+  assert.equal(revealDelta({ top: 520, bottom: 580 }, port), 88, 'below: bottom + 8 px padding reaches the port bottom');
+  assert.equal(revealDelta({ top: 40, bottom: 100 }, port), -68, 'above: top - 8 px padding reaches the port top');
+  assert.equal(revealDelta({ top: 50, bottom: 600 }, port), -58, 'taller than the port: its top is shown');
+  assert.equal(revealDelta({ top: 96, bottom: 150 }, port, 0), -4, 'padding is configurable');
+});
+
+// XAIBO-PROD-439 review HIGH: only a layout change of the list (its width or text metrics: text spacing, text size, zoom)
+// brings the focused record back; measuring rows while the user scrolls, or a change of records, never moves the scroll.
+test('shouldReveal: a layout change with the same records and a focused record', async () => {
+  const { layoutSignature, shouldReveal } = await import('../../../src/renderer/components/virtual-list-model.ts');
+  assert.equal(shouldReveal(5, true, false), true);
+  assert.equal(shouldReveal(5, false, false), false, 'rows measured while scrolling: leave the scroll alone');
+  assert.equal(shouldReveal(5, true, true), false, 'records changed: never');
+  assert.equal(shouldReveal(null, true, false), false, 'nothing focused');
+  const sig = (o: object) => layoutSignature({ width: 300, fontSize: '14px', lineHeight: '22px', letterSpacing: 'normal', wordSpacing: '0px', ...o });
+  assert.equal(sig({}), sig({}));
+  for (const o of [{ width: 301 }, { fontSize: '28px' }, { lineHeight: '21px' }, { letterSpacing: '1.68px' }, { wordSpacing: '2.24px' }]) assert.notEqual(sig(o), sig({}), JSON.stringify(o));
+});
+
+// XAIBO-PROD-439: rows re-measure over several commits after one layout change; each of them keeps the focused record
+// in view for a short window, then measuring while the user scrolls is left alone again.
+test('revealDue: a layout change opens a 500 ms window; later re-measures inside it are due', async () => {
+  const { revealDue } = await import('../../../src/renderer/components/virtual-list-model.ts');
+  assert.deepEqual(revealDue('', 'a', 1000, 0), { due: false, until: 0 }, 'first measurement: nothing changed');
+  assert.deepEqual(revealDue('a', 'b', 1000, 0), { due: true, until: 1500 });
+  assert.deepEqual(revealDue('b', 'b', 1400, 1500), { due: true, until: 1500 }, 'a later commit in the window');
+  assert.deepEqual(revealDue('b', 'b', 1600, 1500), { due: false, until: 1500 }, 'after the window');
+});
+
+// XAIBO-PROD-439: the part of a list's scroller a focused record must sit in: the scroller clipped to the window and
+// below the sticky top frame's padding (arrow-key focus scrolled only the inner scroller, leaving the record below the
+// window when the page around the list scrolls).
+test('revealPort: scroller ∩ window, below the top padding', async () => {
+  const { revealPort } = await import('../../../src/renderer/components/virtual-list-model.ts');
+  assert.deepEqual(revealPort({ top: 595, bottom: 1133 }, 768, 64), { top: 595, bottom: 768 });
+  assert.deepEqual(revealPort({ top: -100, bottom: 400 }, 768, 64), { top: 64, bottom: 400 });
+  assert.deepEqual(revealPort({ top: 10, bottom: 900 }, 768, 8), { top: 10, bottom: 768 });
+});
+
+// XAIBO-PROD-439: arrow-key focus moves the page only when the window (or the sticky frame) clips the list's scroller;
+// a scroller that fits the window is left to the virtualizer (scrolling the record there fought scrollToIndex).
+test('scrollerClipped: the scroller extends past the window bottom or above the top padding', async () => {
+  const { scrollerClipped } = await import('../../../src/renderer/components/virtual-list-model.ts');
+  assert.equal(scrollerClipped({ top: 595, bottom: 1133 }, 768, 64), true, 'below the fold (Dashboard)');
+  assert.equal(scrollerClipped({ top: 30, bottom: 500 }, 768, 64), true, 'under the sticky frame');
+  assert.equal(scrollerClipped({ top: 120, bottom: 620 }, 768, 64), false, 'fits (Session area)');
+});

@@ -5,7 +5,7 @@
 // it in place. Offsets are CSSOM style properties, which the CSP allows (no inline style blocks).
 import { defaultRangeExtractor, useVirtualizer, type Range } from '@tanstack/react-virtual';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
-import { anchorShift, createEdgeFetch, focusIndex, nextFocus, pageAnnouncement, pickAnchor } from './virtual-list-model.ts';
+import { anchorShift, createEdgeFetch, focusIndex, layoutSignature, nextFocus, pageAnnouncement, pickAnchor, revealDelta, revealDue, revealPort, scrollerClipped, shouldReveal } from './virtual-list-model.ts';
 
 type Key = string | number; // our keys; the library's own key type also allows bigint
 
@@ -25,6 +25,12 @@ export interface VirtualListProps<T> {
 }
 
 const OVERSCAN = 3;
+
+/** A record outside its scroller's visible part (clipped to the window, below the sticky frame's padding). */
+const framePadPx = () => parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--x-frame-pad')) || 8;
+function outOfView(el: HTMLElement, scroller: HTMLElement): boolean {
+  return revealDelta(el.getBoundingClientRect(), revealPort(scroller.getBoundingClientRect(), innerHeight, framePadPx())) !== 0;
+}
 
 export function VirtualList<T>({ items, getKey, render, label, itemLabel, initialFocusKey = null, estimateSize, hasMore, loading, onLoadMore }: VirtualListProps<T>) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -49,6 +55,30 @@ export function VirtualList<T>({ items, getKey, render, label, itemLabel, initia
   }, [tabStop]);
   const getItemKey = useCallback((i: number) => keys[i]!, [keys]); // stable unless keys change (L5)
   const v = useVirtualizer({ count, getScrollElement: () => scrollRef.current, estimateSize: () => estimateSize, overscan: OVERSCAN, getItemKey, rangeExtractor });
+
+  // XAIBO-PROD-439 (design §2.4): rows re-measured with the same records (text spacing, text size, width) can push the
+  // focused record out of view; bring it back, but only one that was in view before (review HIGH: never fight the
+  // user's scrolling) and never for a change of records (live deltas, paging).
+  const total = v.getTotalSize();
+  const measuredKeys = useRef(keys);
+  const layoutSig = useRef('');
+  const revealUntil = useRef(0);
+  useLayoutEffect(() => {
+    const changed = measuredKeys.current !== keys;
+    measuredKeys.current = keys;
+    const list = listRef.current;
+    if (!list) return;
+    const cs = getComputedStyle(list);
+    const sig = layoutSignature({ width: list.clientWidth, fontSize: cs.fontSize, lineHeight: cs.lineHeight, letterSpacing: cs.letterSpacing, wordSpacing: cs.wordSpacing });
+    const due = revealDue(layoutSig.current, sig, performance.now(), revealUntil.current);
+    layoutSig.current = sig;
+    revealUntil.current = due.until;
+    if (!shouldReveal(focusedKey, due.due, changed)) return;
+    const el = document.activeElement as HTMLElement | null;
+    const sc = scrollRef.current;
+    if (!el || !sc || !listRef.current?.contains(el)) return;
+    if (outOfView(el, sc)) el.scrollIntoView({ block: 'nearest' });
+  }, [total, keys]);
 
   // Scroll anchor (M2): the keys in view and measured sizes as of the last render.
   // ponytail: O(loaded rows) per scroll frame (measurementsCache copy); fine while the window is a few pages, revisit
@@ -79,7 +109,15 @@ export function VirtualList<T>({ items, getKey, render, label, itemLabel, initia
     if (pendingFocus.current !== null) {
       const i = keys.indexOf(pendingFocus.current);
       const el = i >= 0 ? listRef.current?.querySelector<HTMLElement>(`[data-index="${i}"]`) : null;
-      if (el) { el.focus({ preventScroll: true }); pendingFocus.current = null; }
+      if (el) {
+        el.focus({ preventScroll: true });
+        pendingFocus.current = null;
+        // XAIBO-PROD-439: scrollToIndex moves only this list's scroller; a list inside a scrolling page (the Dashboard)
+        // also needs the page moved, or the focused record stays below the window
+        // (only when the page clips the scroller: inside a scroller that fits, scrolling here fought scrollToIndex)
+        const sc = scrollRef.current;
+        if (sc && scrollerClipped(sc.getBoundingClientRect(), innerHeight, framePadPx()) && outOfView(el, sc)) el.scrollIntoView({ block: 'nearest' });
+      }
     }
   });
 
