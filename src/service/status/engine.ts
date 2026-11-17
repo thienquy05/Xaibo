@@ -117,7 +117,7 @@ const MAX_SESSIONS = 500;
 const MAX_EVS = 256;
 /** Evidence a file record may never produce: only a hook or report confirms these (§6.1-§6.3). */
 const TURN_ENDS = new Set<Ev['k']>(['turn.end', 'turn.idle', 'turn.error', 'interrupt', 'session.end']);
-const CONFIRMED_ONLY = new Set<Ev['k']>(['session.start', 'session.end', 'request', 'resolve', 'turn.error', 'interrupt']);
+export const CONFIRMED_ONLY = new Set<Ev['k']>(['session.start', 'session.end', 'request', 'resolve', 'turn.error', 'interrupt']);
 
 /** pid/pseq: a report's producer_id and producer_seq; the last sort key, so a late report placed at its successor's
  *  (ts, rank, seq) sorts before it (G3c-3). */

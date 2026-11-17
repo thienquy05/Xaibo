@@ -78,6 +78,23 @@ test('EC-100: repricing 100,000 usage rows never holds the service loop past the
   } finally { clearInterval(timer); svc.stop(); }
 });
 
+// XAIBO-PROD-455 (G4a-3 follow-up): an explicit price reload ends with one onPriced even when it fits one slice, so a
+// mounted view refetches its cost; boot's own first price load stays silent.
+test('XAIBO-PROD-455: a small override reload fires onPriced once; boot does not', async () => {
+  const t = home('xusage-small-');
+  let onPriced = 0;
+  const svc = await boot({ dataDir: t.dataDir, home: t.home, catalog, intervalMs: 60_000, onPriced: () => { onPriced++; } });
+  try {
+    await svc.done;
+    assert.equal(onPriced, 0, 'boot prices without a notification');
+    writeFileSync(join(t.dataDir, 'models.override.json'), fallback);
+    svc.reloadPrices();
+    assert.equal(onPriced, 1);
+    const n = Number((svc.store.db.prepare('SELECT count(*) AS n FROM cost_estimates WHERE amount_usd IS NOT NULL').get() as { n: number }).n);
+    assert.ok(n > 0, 'the override priced the rows before the notification');
+  } finally { svc.stop(); }
+});
+
 // ---------------------------------------------------------------------------------------------------------------
 // Runtime audit (FR-44): what the running service executes and connects to.
 const PROHIBITED: [string, RegExp][] = [

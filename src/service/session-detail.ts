@@ -1,6 +1,6 @@
 // XAIBO-PROD-409 (P4-T05a2): read-time derivations for the session workspace port. Stored rows stay as they are; the
 // raw record, timestamps and status evidence already hold what the workspace shows. Unknown stays null or absent.
-import type { Confidence, Ev } from './status/engine.ts';
+import { CONFIRMED_ONLY, type Confidence, type Ev } from './status/engine.ts';
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -64,6 +64,7 @@ export function callApprovals(evs: ConfEv[]): Map<string, Approval> {
   // XAIBO-PROD-444: as there, only a confirmed end does (an inferred one only ends the flight).
   const land = (id: string, done = true) => { inflight.delete(id); if (done) ended.add(id); };
   for (const e of evs) {
+    if (e.conf === 'inferred' && CONFIRMED_ONLY.has(e.k)) continue; // XAIBO-PROD-455: the engine's filter (inferred request/resolve)
     switch (e.k) {
       case 'tool.start':
         if (!state.has(e.id)) state.set(e.id, 'not_requested');

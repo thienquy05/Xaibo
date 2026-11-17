@@ -120,3 +120,15 @@ test('subagentModel: latest reported model in the subagent records, else null', 
   assert.equal(subagentModel([msg([], { model: '' }), msg([], { model: 'x'.repeat(201) }), msg([], { model: 7 })]), null);
   assert.equal(subagentModel([]), null);
 });
+
+// XAIBO-PROD-455 (G4a-2 follow-up): as the status engine (CONFIRMED_ONLY), inferred request and resolve evidence never
+// changes a call's approval.
+test('callApprovals: an inferred permission request or an inferred denial changes nothing', () => {
+  const ev = (e: Ev, conf?: 'inferred' | 'confirmed') => (conf ? { ...e, conf } : e);
+  assert.deepEqual(Object.fromEntries(callApprovals([ev({ k: 'tool.start', id: 'a' }), ev({ k: 'request', kind: 'permission', id: 'a' }, 'inferred'),
+    ev({ k: 'tool.start', id: 'b' }), ev({ k: 'request', kind: 'permission', id: null }, 'inferred')])), { a: 'not_requested', b: 'not_requested' });
+  assert.deepEqual(Object.fromEntries(callApprovals([ev({ k: 'tool.start', id: 'c' }), ev({ k: 'request', kind: 'permission', id: 'c' }, 'confirmed'),
+    ev({ k: 'resolve', id: 'c', outcome: 'denied' }, 'inferred'), ev({ k: 'tool.end', id: 'c' })])), { c: 'approved' });
+  assert.deepEqual(Object.fromEntries(callApprovals([ev({ k: 'tool.start', id: 'd' }), ev({ k: 'request', kind: 'permission', id: 'd' }, 'confirmed'),
+    ev({ k: 'resolve', id: 'd', outcome: 'denied' }, 'confirmed')])), { d: 'denied' });
+});

@@ -102,7 +102,9 @@ export async function boot(o: BootOptions): Promise<Service> {
   const PRICE_SLICE = 2000;
   let pricing = false;
   let rerunFrom: number | null = null;
-  const priceFrom = (from: number) => {
+  // XAIBO-PROD-455 (G4a-3): notify = an explicit price reload, which always ends with one onPriced (a quiet mounted view
+  // still shows the old cost otherwise); commit-driven and boot pricing notify only for a sliced job or a rerun.
+  const priceFrom = (from: number, notify: boolean) => {
     pricing = true;
     let slices = 0;
     let top = from;
@@ -118,17 +120,17 @@ export async function boot(o: BootOptions): Promise<Service> {
       } catch (e) { o.log?.log('pricing_failed', { error: errorCode(e) }); }
       if (next !== null) { const at = next; setImmediate(() => step(at)); return; }
       pricing = false;
-      const resync = slices > 1 || rerunFrom !== null;
-      if (rerunFrom !== null) { const f = rerunFrom; rerunFrom = null; priceFrom(f); } // a one-slice rerun is done before the resync
+      const resync = notify || slices > 1 || rerunFrom !== null; // a rerun (an explicit reload during a job too) is covered here
+      if (rerunFrom !== null) { const f = rerunFrom; rerunFrom = null; priceFrom(f, false); } // a one-slice rerun is done before the resync
       if (resync) o.onPriced?.();
     };
     step(from);
   };
-  const price = (full = false) => {
+  const price = (full = false, notify = false) => {
     if (readOnly || !prices) return;
     const from = full ? 0 : pricedUpTo;
     if (pricing) { rerunFrom = Math.min(rerunFrom ?? from, from); return; }
-    priceFrom(from);
+    priceFrom(from, notify);
   };
   let hooks: Hooks | undefined;
   // P3-T10: the status engine (P3-T08/T09) over durable hook deliveries and live-window file records.
@@ -217,14 +219,14 @@ export async function boot(o: BootOptions): Promise<Service> {
     onDiskFull: (full) => { o.log?.log('disk_full', { full }); if (!full) hooks?.intake.recovered(); },
   });
   const detections: Detection[] = [];
-  const reloadPrices = () => {
+  const reloadPrices = (explicit = true) => {
     try {
       prices = loadPrices({ db: readOnly ? null : db, overridePath: path.join(o.dataDir, 'models.override.json'), previous: prices, ...(o.log ? { log: o.log } : {}) });
     } catch { o.log?.log('models_invalid', {}); }
-    price(true);
+    price(true, explicit);
     return prices;
   };
-  reloadPrices();
+  reloadPrices(false);
   const adapters: Ingester[] = [];
   let profiles: Profile[] = [];
   let stopped = false;
@@ -297,7 +299,7 @@ export async function boot(o: BootOptions): Promise<Service> {
     kinds: () => catalog?.sessionKinds ?? [],
     models: () => prices?.table.models ?? [],
     prices: () => prices,
-    reloadPrices,
+    reloadPrices: () => reloadPrices(),
     status,
     ticking,
     coverage: () => {
