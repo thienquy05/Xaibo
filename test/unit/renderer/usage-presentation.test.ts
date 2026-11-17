@@ -134,3 +134,16 @@ test('usage refresh: at most every 5 s; right after a first failure once, never 
   assert.equal(usageRefreshDue(10_000, 15_000, 2, false), true);
   assert.equal(usageRefreshDue(0, 10_000, 0, false), true, 'never read yet');
 });
+
+// XAIBO-PROD-449 (G4c-2): a tick throttled by the 5 s rule scheduled nothing, so the last reading of a burst waited for
+// new activity. A throttled refresh wakes when the 5 s window ends; a clock moved back never waits longer than 5 s.
+test('usage wake: the ms until the 5 s window ends, never negative, never above 5 s', async () => {
+  const { usageRefreshDue, usageWakeIn } = await import('../../../src/renderer/usage/presentation.ts');
+  assert.equal(usageWakeIn(10_000, 12_000), 3000);
+  assert.equal(usageWakeIn(10_000, 14_999), 1);
+  assert.equal(usageWakeIn(10_000, 15_000), 0);
+  assert.equal(usageWakeIn(10_000, 30_000), 0);
+  assert.equal(usageWakeIn(10_000, 9_000), 5000, 'clock moved back');
+  const last = 10_000, now = 12_000;
+  assert.equal(usageRefreshDue(last, now + usageWakeIn(last, now), 0, false), true, 'the wake lands on a due refresh');
+});

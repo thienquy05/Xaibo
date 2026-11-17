@@ -105,3 +105,6 @@ export function scopeBlocks(scopes: UsageScope[]): ScopeBlock[] {
  *  consecutive failed reads, so a read that keeps failing falls back to the throttle; the retry never overlaps itself. */
 export const usageRefreshDue = (last: number, now: number, failures: number, retrying: boolean): boolean =>
   (failures === 1 && !retrying) || now - last >= 5000;
+/** XAIBO-PROD-449 (G4c-2): a throttled refresh wakes when the 5 s window ends (the last reading of a burst is fetched
+ *  without new activity); a clock moved back never waits longer than 5 s. */
+export const usageWakeIn = (last: number, now: number): number => Math.min(5000, Math.max(0, 5000 - (now - last)));

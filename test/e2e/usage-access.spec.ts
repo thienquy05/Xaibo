@@ -85,7 +85,7 @@ async function start(xaibo: Xaibo, state: State, layout: keyof typeof LAYOUTS) {
       context_window: { context_window_size: 200000, current_usage: { input_tokens: 1200, output_tokens: 50, cache_creation_input_tokens: 800, cache_read_input_tokens: 8000 } },
       rate_limits: { five_hour: { used_percentage: 42, resets_at: Math.floor(Date.now() / 1000) + 3600 }, seven_day: { used_percentage: 9, resets_at: Math.floor(Date.now() / 1000) + 5 * 86400 } } }, null);
   }
-  return { run, page };
+  return { run, page, send };
 }
 
 /** Kills the service until the supervisor's backoff leaves a gap of several seconds; returns when it is down. */
@@ -229,3 +229,19 @@ for (const layout of Object.keys(LAYOUTS) as (keyof typeof LAYOUTS)[]) {
     });
   }
 }
+
+// XAIBO-PROD-449 (G4c-2): a usage reading stored within 5 s of the view's first read, with no later activity, is fetched
+// when the throttle window ends; before, the throttled tick scheduled nothing and the reading waited for new activity.
+test('a usage reading stored right after the first read appears without later activity', async ({ xaibo }) => {
+  test.setTimeout(90_000);
+  const { page, send } = await start(xaibo, 'missing', 'wide'); // no statusLine reading yet
+  await expect(page.getByRole('region', { name: /live-session set/i })).toContainText('1 currently tracked', { timeout: 20_000 });
+  await page.getByRole('group', { name: 'Dashboard view' }).getByRole('button', { name: 'Usage and history' }).click();
+  const claude = page.getByRole('region', { name: /^Claude Code · / }).first();
+  await expect(claude).toContainText('Unavailable — no statusLine quota observation', { timeout: 15_000 }); // the first read
+  const sent = Date.now();
+  await send('statusline', { session_id: SID, model: { id: 'claude-opus-5-5', display_name: 'Synthetic Opus' },
+    rate_limits: { five_hour: { used_percentage: 42, resets_at: Math.floor(Date.now() / 1000) + 3600 } } }, null);
+  await expect(claude.locator('[data-field="usage-value"]').first()).toHaveText(/^42%/, { timeout: 6500 });
+  expect(Date.now() - sent).toBeLessThan(6500);
+});
