@@ -73,11 +73,19 @@ const consoleErrors: string[] = [];
 test.beforeEach(() => { consoleErrors.length = 0; });
 test.afterEach(() => { expect(consoleErrors, 'renderer console errors').toEqual([]); });
 
+/** A fixed-offset zone where now is local midday, so "today" formatting (Resets HH:MM rather than a date, for a reset an
+ *  hour ahead) never flips at a day boundary during a run (gate 4 clean-clone run near midnight UTC). Etc/GMT signs are
+ *  inverted: Etc/GMT-5 is UTC+5. */
+function middayZone(): string {
+  const offset = 12 - new Date().getUTCHours(); // -11..+12
+  return offset === 0 ? 'UTC' : `Etc/GMT${offset > 0 ? '-' : '+'}${Math.abs(offset)}`;
+}
+
 /** live: seed and hook the two sessions; statusLine: also send SID's statusLine reading; kills: service kills the run expects. */
 async function start(xaibo: Xaibo, { live = true, statusLine = true, kills = 0 } = {}) {
   if (live) xaibo.touchStore(() => seed(xaibo.home));
   const dataDir = path.join(path.dirname(xaibo.home), 'data-vis'); // short: the socket path
-  const run = await xaibo.launch({ dataDir, env: { TZ: 'UTC' }, serviceKills: kills });
+  const run = await xaibo.launch({ dataDir, env: { TZ: middayZone() }, serviceKills: kills });
   const page = await xaibo.window(run);
   page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
   page.on('pageerror', (e) => consoleErrors.push(e.message));
@@ -192,10 +200,12 @@ async function dashboardShots(page: Page, name: (view: string) => string, ready:
   }
 }
 
-/** Opens the session whose list row shows exactly `cwd` (focus lands on its title). */
-async function openSession(page: Page, cwd: string) {
+/** Opens the session whose list row shows exactly `cwd` (focus lands on its title). `status`: wait for the row's live
+ *  status first, since a session opened before its status is known opens at its first turn, not its latest (design §6.3). */
+async function openSession(page: Page, cwd: string, status?: RegExp) {
   await openSessions(page);
   const row = page.getByRole('list', { name: 'Sessions' }).getByRole('button').filter({ hasText: cwd }).filter({ hasNotText: `${cwd}-` }).first();
+  if (status) await expect(row).toContainText(status, { timeout: 20_000 });
   await row.click({ timeout: 20_000 });
   await expect(page.locator('#open-session-title')).toBeFocused();
 }
@@ -226,7 +236,7 @@ for (const size of SIZES) {
     test.setTimeout(240_000);
     const { page, app } = await start(xaibo);
     await resize(app, page, size);
-    await openSession(page, CWD);
+    await openSession(page, CWD, /Waiting for permission/);
     for (const section of SECTIONS) {
       const body = await showSection(page, section);
       // the transcript's context reading shows (Stale) until the statusLine reading is ingested

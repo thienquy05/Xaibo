@@ -23,8 +23,9 @@ test('close hides the same window, collection continues while hidden, show resto
   const page = await xaibo.window(run);
   const app = run.app!;
   const windows = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => ({ id: w.id, visible: w.isVisible() })));
+  // the window shows once its first paint is ready, which may follow the page load (gate 4 clean-clone run)
+  await expect.poll(async () => (await windows())[0]?.visible).toBe(true);
   const [first] = await windows();
-  expect(first?.visible).toBe(true);
   await expect.poll(() => events(run.dataDir)).toBe(9);
 
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.close()); // the close button's path
