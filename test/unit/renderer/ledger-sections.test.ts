@@ -15,7 +15,7 @@ const loader = registerHooks({ load(url, context, nextLoad) {
     compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2024 },
   }).outputText };
 } });
-const { Files, Tools, Subagents } = await import(new URL('../../../src/renderer/workspace/sections.tsx', import.meta.url).href);
+const { Files, Tools, Subagents, MarkerNotice } = await import(new URL('../../../src/renderer/workspace/sections.tsx', import.meta.url).href);
 loader.deregister();
 
 const page = (o: { items?: unknown[]; loading?: boolean; more?: boolean; failed?: boolean; retry?: { failures: number; at: number | null; busy: boolean } } = {}) =>
@@ -72,3 +72,26 @@ for (const s of sections) {
     assert.match(s.render(page({ failed: true, loading: true })), /aria-busy="true"[^>]*>.*Retrying…<\/button>/);
   });
 }
+
+// XAIBO-PROD-454 (G4d-3 follow-up): markers still paged past the MARKER_PAGES budget are said, with a bounded
+// continuation (one page per click) where the markers Retry appears; a failure keeps its Retry.
+test('MarkerNotice: more markers after the budget show Load more model markers; a click loads one page', () => {
+  let clicks = 0;
+  const p = { ...page({ more: true }), loadMore: () => { clicks++; } };
+  const out = html(createElement(MarkerNotice, { markers: p }));
+  assert.match(out, /Some model switches are not loaded yet/);
+  assert.match(out, /<button[^>]*>Load more model markers<\/button>/);
+  const button = (function find(n: unknown): { props: { onClick: () => void } } | null {
+    if (!n || typeof n !== 'object') return null;
+    const el = n as { type?: unknown; props?: { children?: unknown; onClick?: () => void } };
+    if (el.type === 'button') return el as { props: { onClick: () => void } };
+    const kids = el.props?.children;
+    for (const k of Array.isArray(kids) ? kids : [kids]) { const f = find(k); if (f) return f; }
+    return null;
+  })(MarkerNotice({ markers: p }));
+  button!.props.onClick();
+  assert.equal(clicks, 1);
+  assert.match(html(createElement(MarkerNotice, { markers: { ...p, loading: true } })), /aria-disabled="true"[^>]*>Loading model markers<\/button>/);
+  assert.match(html(createElement(MarkerNotice, { markers: page({ failed: true, more: true }) })), /Couldn&#x27;t load model markers[\s\S]*Retry/);
+  assert.equal(html(createElement(MarkerNotice, { markers: page({ items: [1] }) })), '', 'all markers loaded: nothing');
+});

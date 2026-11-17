@@ -237,6 +237,15 @@ function MoreRow({ p }: { p: Paged<unknown> }) {
   return p.items.length ? <p className="x-earlier">End of available records</p> : null;
 }
 
+/** XAIBO-PROD-451/454 (G4d-3): model markers are paged up to MARKER_PAGES at load; a failure says so with Retry, and markers
+ *  still left after that budget are said, with a bounded continuation (one page per click), never silently missing. */
+export function MarkerNotice({ markers: m }: { markers: Paged<unknown> }) {
+  if (m.failed) return <RetryNotice thing="model markers" retry={{ ...m.retry, busy: m.retry.busy || m.loading }} onRetry={m.loadMore} />;
+  if (!m.more) return null;
+  return <p className="x-earlier">Some model switches are not loaded yet <button type="button" className="x-btn x-btn-secondary" aria-disabled={m.loading || undefined} aria-busy={m.loading || undefined}
+    onClick={() => { if (!m.loading) m.loadMore(); }}>{m.loading ? 'Loading model markers' : 'Load more model markers'}</button></p>;
+}
+
 export function Tools({ tools, touches }: { tools: Paged<ToolItem>; touches: FileItem[] }) {
   return (
     <div className="x-section-pad">

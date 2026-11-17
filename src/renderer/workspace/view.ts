@@ -139,6 +139,14 @@ export async function loadPages<T, C>(fetch: (c: C | null) => Promise<{ items: T
 // ponytail: markers come from the first 10 pages; each page scans at most SCAN_MAX (1,000) turns, so ~10,000 turns.
 // Page the markers by the transcript window's range if sessions that long are common.
 export const MARKER_PAGES = 10;
+export const RELOAD_MAX = 5; // pages refetched per live reload (re-review)
+
+/** Pages a live reload refetches. ponytail: a ledger refetches at most RELOAD_MAX, so pages loaded beyond that drop back on
+ *  activity (refresh only the last loaded page if users page that far through busy sessions). A list whose own budget is
+ *  above the cap (model markers) keeps every loaded page (XAIBO-PROD-454 review M1), or Load more is undone at once. */
+export function reloadPages(pages: number, loaded: number): number {
+  return Math.max(pages, pages > RELOAD_MAX ? loaded : Math.min(loaded, RELOAD_MAX));
+}
 
 /** XAIBO-PROD-437 (design §8.1): the name of a focusable Conversation/Activity entry: its kind and clock time, never its
  *  content. */

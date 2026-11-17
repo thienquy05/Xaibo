@@ -229,7 +229,8 @@ export type PortMessage =
   | { v: 1; type: 'tools'; id: number; calls: ToolItem[]; next: number | null }
   | { v: 1; type: 'subagents'; id: number; subagents: SubagentItem[]; next: number | null }
   | { v: 1; type: 'files'; id: number; touches: FileItem[]; next: number | null }
-  | { v: 1; type: 'markers'; id: number; markers: ModelMarker[]; next: MCursor | null }
+  // XAIBO-PROD-454: failed = the store could not answer (the renderer shows Retry), never an empty page
+  | { v: 1; type: 'markers'; id: number; markers: ModelMarker[]; next: MCursor | null; failed?: true }
   | { v: 1; type: 'page'; id: number; rows: SessionRow[]; next: Cursor | null }
   | { v: 1; type: 'liveSet'; id: number; rows: SessionRow[]; more: boolean }
   | { v: 1; type: 'usage'; id: number; scopes: UsageScope[] }
@@ -510,7 +511,8 @@ export function parsePortMessage(x: unknown): PortMessage | null {
   if (m.type === 'markers') {
     const markers = all(m.markers, MAX_ITEMS, parseMarker);
     const next = parseMCursor(m.next);
-    return count(m.id) && markers && next !== undefined ? { v: 1, type: 'markers', id: m.id, markers, next } : null;
+    if (m.failed !== undefined && m.failed !== true) return null;
+    return count(m.id) && markers && next !== undefined ? { v: 1, type: 'markers', id: m.id, markers, next, ...(m.failed ? { failed: true as const } : {}) } : null;
   }
   if (m.type === 'page') {
     const rows = parseRows(m.rows);

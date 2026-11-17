@@ -419,3 +419,12 @@ test('markers: a 1,200-turn session with a switch at turn 1,100 yields both mark
   // a superseded load (live() false) gives nothing
   assert.equal(await loadPages(fetch, MARKER_PAGES, () => false), null);
 });
+
+// XAIBO-PROD-454 (answerMarkers honesty): a store error is a failed answer, never a successful empty page.
+test('markers: a store error answers failed; a readable store answers without the flag', async () => {
+  const { db } = await store();
+  const req = { v: 1, type: 'markers', id: 7, session: 1, cursor: null, limit: 50 } as const;
+  assert.equal('failed' in answerMarkers(db, req), false);
+  db.close();
+  assert.deepEqual(answerMarkers(db, req), { v: 1, type: 'markers', id: 7, markers: [], next: null, failed: true });
+});

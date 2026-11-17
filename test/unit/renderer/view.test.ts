@@ -2,7 +2,7 @@
 // never claim success without evidence; a live session opens on its latest page; coverage codes name what is missing.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { argFor, clock, compactStatus, countText, incompleteReasons, initialAt, isoTime, liveAction, openChange, sizeText, toolMeta, toolTone, trimWindow, appendLive, WINDOW_MAX } from '../../../src/renderer/workspace/view.ts';
+import { argFor, clock, compactStatus, countText, incompleteReasons, initialAt, isoTime, liveAction, openChange, sizeText, toolMeta, toolTone, trimWindow, appendLive, WINDOW_MAX, reloadPages, RELOAD_MAX, MARKER_PAGES } from '../../../src/renderer/workspace/view.ts';
 import type { FileItem, LiveStatus, ModelMarker, SessionRow, SubagentItem, ToolItem, TranscriptItem } from '../../../src/shared/ipc.ts';
 import type { SessionChanges } from '../../../src/renderer/workspace/view.ts';
 
@@ -197,4 +197,15 @@ test('the transcript Retry repeats the failed request', async () => {
   assert.deepEqual(retryRequest('latest'), { load: 'latest' });
   assert.deepEqual(retryRequest('after'), { grow: 'after' });
   assert.deepEqual(retryRequest('before'), { grow: 'before' });
+});
+
+// XAIBO-PROD-454 (review M1): a live reload never drops pages a list loaded beyond a budget already above the reload cap
+// (model markers: MARKER_PAGES > RELOAD_MAX), or "Load more model markers" is undone on the next activity.
+test('reloadPages: ledgers cap at RELOAD_MAX; a budget above the cap keeps every loaded page', () => {
+  assert.equal(reloadPages(1, 0), 1);
+  assert.equal(reloadPages(1, 8), RELOAD_MAX);
+  assert.equal(reloadPages(3, 2), 3);
+  assert.ok(MARKER_PAGES > RELOAD_MAX);
+  assert.equal(reloadPages(MARKER_PAGES, MARKER_PAGES), MARKER_PAGES);
+  assert.equal(reloadPages(MARKER_PAGES, MARKER_PAGES + 1), MARKER_PAGES + 1);
 });

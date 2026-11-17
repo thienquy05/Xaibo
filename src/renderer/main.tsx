@@ -18,6 +18,7 @@ import { retryIdle, retryStep } from './retry.ts';
 import { firstUsablePage, LONG_FRAME, watchLongFrames } from './perf-marks.ts';
 import { Workspace, type SessionChanges } from './workspace/Workspace.tsx';
 import type { WorkspaceApi } from './workspace/OpenSession.tsx';
+import { workspaceApiOf } from './workspace/workspace-api.ts';
 import './styles/tokens.css';
 
 declare global { interface Window { xaibo?: { setAgentPath(agent: string): void; paintAck(delta: number): void } } }
@@ -145,19 +146,7 @@ function App() {
     history: (scope, stream, from, to, cursor) => client.current?.usageHistory(scope, stream, from, to, cursor, PAGE) ?? Promise.reject(new Error('no service')),
   }), []);
   // P4-T05d: the Session workspace's page requests go to the current client (a restart brings a new one).
-  const workspaceApi = useMemo<WorkspaceApi>(() => {
-    const c = () => client.current ?? (() => { throw new Error('no service'); })();
-    return {
-      session: async (id) => c().session(id),
-      transcript: async (id, at, limit) => c().transcript(id, at, limit),
-      slice: async (id, event, part, offset) => c().slice(id, event, part, offset),
-      tools: async (id, cursor, limit) => c().tools(id, cursor, limit),
-      subagents: async (id, cursor, limit) => c().subagents(id, cursor, limit),
-      files: async (id, cursor, limit) => c().files(id, cursor, limit),
-      markers: async (id, cursor, limit) => c().markers(id, cursor, limit),
-      cost: async (id) => c().cost(id),
-    };
-  }, []);
+  const workspaceApi = useMemo<WorkspaceApi>(() => workspaceApiOf(() => client.current), []);
   const clearRequest = useCallback(() => setRequest(null), []);
   // XAIBO-PROD-437 (design §5.3/§5.4, §6.3): the Dashboard view survives area switches; a session opened from it
   // remembers its record and the order shown, so Return to Dashboard restores that record (or its neighbour).

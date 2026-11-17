@@ -13,11 +13,12 @@ import { Icon, StatusBadge } from '../status/StatusBadge.tsx';
 import { visible } from '../text.ts';
 import { ContextPane } from './context/ContextSection.tsx';
 import { CostPane } from './cost/CostSection.tsx';
-import { Conversation, Files, Subagents, Timeline, Tools, type Anchor, type Paged, type SliceFn } from './sections.tsx';
+import { Conversation, Files, MarkerNotice, Subagents, Timeline, Tools, type Anchor, type Paged, type SliceFn } from './sections.tsx';
 import { mergeTimeline } from './timeline.ts';
-import { compactStatus, countText, incompleteReasons, initialAt, liveAction, liveAppend, loadAnchor, loadPages, MARKER_PAGES, retryRequest, settled, trimWindow, WINDOW_MAX } from './view.ts';
+import { compactStatus, countText, incompleteReasons, initialAt, liveAction, liveAppend, loadAnchor, loadPages, MARKER_PAGES, reloadPages, retryRequest, settled, trimWindow, WINDOW_MAX } from './view.ts';
 
-export type WorkspaceApi = Pick<Client, 'session' | 'transcript' | 'slice' | 'tools' | 'subagents' | 'files' | 'markers' | 'cost'>;
+import type { WorkspaceApi } from './workspace-api.ts';
+export type { WorkspaceApi };
 const PAGE = 50;
 const SIDE_MS = 1_000; // review M3: refresh cadence of detail, cost and the lists under a burst of changes
 
@@ -37,7 +38,6 @@ const LEDGER_PAGE = 100;
 // later calls without their record until Tools > Load more reaches them. Page the tool records by transcript range if
 // sessions that long are common.
 const TOOL_PAGES = 5;
-const RELOAD_MAX = 5; // pages refetched per live reload (re-review)
 
 /** A forward-paged list loaded on mount (up to `pages` pages) and reloaded when `key` changes. Review M2: a reload
  *  fetches as many pages as were loaded, so live activity never drops pages the user loaded. Review L5: Retry after a
@@ -52,9 +52,7 @@ function usePaged<T, C>(fetch: (c: C | null) => Promise<{ items: T[]; next: C | 
   fetchRef.current = fetch;
   useEffect(() => {
     const g = ++gen.current;
-    // ponytail: a live reload refetches at most RELOAD_MAX pages; pages loaded beyond that drop back on activity.
-    // Refresh only the last loaded page if users page that far through busy sessions.
-    const want = Math.max(pages, Math.min(loaded.current, RELOAD_MAX));
+    const want = reloadPages(pages, loaded.current);
     setS((x) => ({ ...x, loading: true }));
     loadPages((c: C | null) => fetchRef.current(c), want, () => gen.current === g).then((r) => {
       if (!r) return;
@@ -273,9 +271,8 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
             onClick={() => { loadAt('latest'); latestRef.current?.focus(); }}>Go to latest</button></p>
         ) : null}
         {tr.failed && (section === 'conversation' || section === 'timeline') ? <RetryNotice thing="transcript" retry={trRt} onRetry={() => { const r = retryRequest(lastReq.current); if ('load' in r) loadAt(r.load); else grow(r.grow); }} /> : null}
-        {/* XAIBO-PROD-451 (G4d-3): a failed marker load is said, never silent */}
-        {markers.failed && (section === 'conversation' || section === 'timeline')
-          ? <RetryNotice thing="model markers" retry={{ ...markers.retry, busy: markers.retry.busy || markers.loading }} onRetry={markers.loadMore} /> : null}
+        {/* XAIBO-PROD-451/454 (G4d-3): a failed or unfinished marker load is said, never silent */}
+        {section === 'conversation' || section === 'timeline' ? <MarkerNotice markers={markers} /> : null}
       </div>
       <div className="x-foot" inert={drawer}>
         <span className="x-foot-left"><Icon id="external" />Read-only observation</span>

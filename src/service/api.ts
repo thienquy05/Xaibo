@@ -546,7 +546,8 @@ export function answerFiles(db: DatabaseSync, req: PortRequest & { type: 'files'
  *  reported effort (an effort that only becomes known is not a switch). State at a cursor is re-read from the turns at or
  *  before it, so pages agree with one scan. ponytail: at most SCAN_MAX turns per request; a longer run gives a short page. */
 export function answerMarkers(db: DatabaseSync, req: PortRequest & { type: 'markers' }, models: ModelEntry[] = []): PortMessage & { type: 'markers' } {
-  const empty = (): PortMessage & { type: 'markers' } => ({ v: IPC_VERSION, type: 'markers', id: req.id, markers: [], next: null });
+  // XAIBO-PROD-454: a store error is a failure the renderer shows with Retry, never a successful empty page
+  const failed = (): PortMessage & { type: 'markers' } => ({ v: IPC_VERSION, type: 'markers', id: req.id, markers: [], next: null, failed: true });
   try {
     const n = Math.min(req.limit, MAX_ITEMS);
     const TIMED = `session_id = ? AND typeof(started_at) = 'integer' AND started_at BETWEEN -${SAFE} AND ${SAFE} AND model_id IS NOT NULL`;
@@ -578,7 +579,7 @@ export function answerMarkers(db: DatabaseSync, req: PortRequest & { type: 'mark
       if (rows < n) { more = false; break; }
     }
     return { v: IPC_VERSION, type: 'markers', id: req.id, markers, next: more && scanned > 0 ? c : null };
-  } catch { return empty(); }
+  } catch { return failed(); }
 }
 
 /** Renderer ports (P4-T02): session deltas go only to live (visible) ports; every other push goes to all ports. */

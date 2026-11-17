@@ -3,6 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createClient, parseVisible, type PortLike } from '../../src/renderer/client.ts';
+import { workspaceApiOf } from '../../src/renderer/workspace/workspace-api.ts';
 
 test('P4-T02: main\'s window visibility message (via the preload) is a strict boolean; anything else is ignored', () => {
   assert.equal(parseVisible({ xaiboVisible: true }), true);
@@ -169,4 +170,35 @@ test('close() rejects every pending request; a reply after close changes nothing
   assert.equal(outcome, 'closed', 'the waiting request is rejected, not left hanging');
   f.deliver({ v: 1, type: 'page', id: 2, rows: [row], next: null }); // too late: the client is closed
   assert.deepEqual(await answered, { rows: [row], next: null });
+});
+
+// XAIBO-PROD-454 (G4a-1 follow-up): the workspace API main.tsx builds forwards a tool step's call id to the slice request.
+test('workspaceApiOf: slice forwards the optional call selector to the port; other pages go to the current client', async () => {
+  const f = fakePort();
+  const c = createClient(f.port, { sessions() {}, agents() {} });
+  const api = workspaceApiOf(() => c);
+  void api.slice(9, 12, 'text', 0, 'toolu_1');
+  void api.slice(9, 12, 'text', 0);
+  void api.markers(9, null, 50);
+  assert.deepEqual(f.sent, [
+    { v: 1, type: 'slice', id: 1, session: 9, event: 12, part: 'text', offset: 0, call: 'toolu_1' },
+    { v: 1, type: 'slice', id: 2, session: 9, event: 12, part: 'text', offset: 0 },
+    { v: 1, type: 'markers', id: 3, session: 9, cursor: null, limit: 50 },
+  ]);
+  await assert.rejects(workspaceApiOf(() => null).session(1), /no service/);
+});
+
+// XAIBO-PROD-454: a markers reply that says failed rejects, so the section shows its Retry, never an empty page.
+test('markers: a failed reply rejects; an ok reply without the flag resolves', async () => {
+  const f = fakePort();
+  const c = createClient(f.port, { sessions() {}, agents() {} });
+  const bad = c.markers(9, null, 50);
+  f.deliver({ v: 1, type: 'markers', id: 1, markers: [], next: null, failed: true });
+  await assert.rejects(bad, /markers unavailable/);
+  const ok = c.markers(9, null, 50);
+  f.deliver({ v: 1, type: 'markers', id: 2, markers: [], next: null });
+  assert.deepEqual(await ok, { markers: [], next: null });
+  const odd = c.markers(9, null, 50);
+  f.deliver({ v: 1, type: 'markers', id: 3, markers: [], next: null, failed: 'yes' });
+  await assert.rejects(odd, /invalid reply/);
 });

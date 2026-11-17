@@ -92,6 +92,7 @@ export function createClient(port: PortLike, push: Pushes) {
     },
     async markers(session: number, cursor: MCursor | null, limit: number): Promise<{ markers: ModelMarker[]; next: MCursor | null }> {
       const m = await ask({ v: IPC_VERSION, type: 'markers', id: nextId++, session, cursor, limit }, 'markers');
+      if (m.failed) throw new Error('markers unavailable');
       return { markers: m.markers, next: m.next };
     },
     /** P4-T07a: the session's cost breakdown; null for an unknown session. */
