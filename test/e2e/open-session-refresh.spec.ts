@@ -51,6 +51,12 @@ test('records stored after a conversation opened appear at its end; a scrolled-b
   await notice.getByRole('button', { name: 'Go to latest' }).click();
   await expect(notice).toHaveCount(0);
   await expect(page.locator('.x-foot').getByRole('button', { name: 'Go to latest' })).toBeFocused(); // review M4: focus kept on a stable control
-  await expect.poll(async () => convo.evaluate((el) => { const s = el.parentElement!; s.scrollTop = s.scrollHeight; return el.textContent ?? ''; }))
-    .toContain('Newest long prompt');
+  // XAIBO-PROD-450 (G4d-2; design §6.3): Go to latest lands at the loaded range's end and Go to first turn at its start,
+  // with no scrolling by the test
+  await expect(convo.getByText('Newest long prompt', { exact: true })).toBeInViewport();
+  await page.getByRole('button', { name: 'Load earlier' }).click(); // paging keeps the reading position (review note)
+  await expect(page.getByRole('button', { name: 'Load earlier' })).toHaveCount(0);
+  await expect(convo.getByText('Long prompt 69', { exact: true })).toBeInViewport();
+  await page.locator('.x-foot').getByRole('button', { name: 'Go to first turn' }).click();
+  await expect(convo.getByText('Long prompt 0', { exact: true })).toBeInViewport();
 });

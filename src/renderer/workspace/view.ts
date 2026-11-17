@@ -19,6 +19,9 @@ export function toolMeta(t: ToolItem | null): string[] {
 
 /** A live session opens on its latest page; anything else at its first turn (design §6.3). */
 export const initialAt = (row: Pick<SessionRow, 'live'>): 'first' | 'latest' => (row.live && row.live.lifecycle !== 'ended' ? 'latest' : 'first');
+/** XAIBO-PROD-450 (G4d-2; design §6.3): where the list anchors after a transcript load. A replacing load anchors at the
+ *  loaded range's start (first) or end (latest); paging keeps the reading position. */
+export const loadAnchor = (at: 'first' | 'latest' | 'after' | 'before'): 'start' | 'end' | null => (at === 'first' ? 'start' : at === 'latest' ? 'end' : null);
 
 const MISSING: Partial<Record<CoverageCode, string>> = {
   compressed: 'A transcript file is compressed and not imported',

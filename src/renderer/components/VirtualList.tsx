@@ -22,6 +22,9 @@ export interface VirtualListProps<T> {
   hasMore: boolean;
   loading: boolean;
   onLoadMore: () => void;
+  /** XAIBO-PROD-450 (G4d-2; design §6.3): a request to show the first or last item; each new `n` scrolls once, after
+   *  the items it came with render (a list mounted with a request applies it once it has items). */
+  anchor?: { to: 'start' | 'end'; n: number } | null;
 }
 
 const OVERSCAN = 3;
@@ -32,7 +35,7 @@ function outOfView(el: HTMLElement, scroller: HTMLElement): boolean {
   return revealDelta(el.getBoundingClientRect(), revealPort(scroller.getBoundingClientRect(), innerHeight, framePadPx())) !== 0;
 }
 
-export function VirtualList<T>({ items, getKey, render, label, itemLabel, initialFocusKey = null, estimateSize, hasMore, loading, onLoadMore }: VirtualListProps<T>) {
+export function VirtualList<T>({ items, getKey, render, label, itemLabel, initialFocusKey = null, estimateSize, hasMore, loading, onLoadMore, anchor = null }: VirtualListProps<T>) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
   const endRef = useRef<HTMLParagraphElement>(null);
@@ -100,6 +103,13 @@ export function VirtualList<T>({ items, getKey, render, label, itemLabel, initia
     const shift = anchorShift(p.keys, keys, anchor, (k) => p.sizes.get(k) ?? estimateSize);
     if (shift) el.scrollTop += shift;
   }, [keys, estimateSize]);
+  // XAIBO-PROD-450: after the record-keeping anchor above, so a replaced window lands at its requested edge
+  const anchored = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    if (!anchor || anchored.current === anchor.n || count === 0) return;
+    anchored.current = anchor.n;
+    v.scrollToIndex(anchor.to === 'end' ? count - 1 : 0, { align: anchor.to });
+  }, [anchor?.n, count]);
   useEffect(() => {
     record();
     if (focusedKey !== null && !keys.includes(focusedKey) && focused >= 0 && listHadFocus.current) { // L1: neighbour

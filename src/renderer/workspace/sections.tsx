@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import type { FileItem, ModelMarker, SubagentItem, ToolItem, TranscriptItem } from '../../shared/ipc.ts';
 import { LoadingLine, RetryNotice } from '../components/RetryNotice.tsx';
-import { VirtualList } from '../components/VirtualList.tsx';
+import { VirtualList, type VirtualListProps } from '../components/VirtualList.tsx';
 import { failText, type Retry } from '../retry.ts';
 import { Icon } from '../status/StatusBadge.tsx';
 import { visible, visibleBlock } from '../text.ts';
@@ -171,15 +171,17 @@ function ConversationEntry({ e, touches, slice }: { e: Entry; touches: FileItem[
 }
 
 const keyOf = (e: Entry) => e.key;
-export function Conversation({ entries, touches, slice, gaps, prev, onPrev, next, onNext, loading }: {
-  entries: Entry[]; touches: FileItem[]; slice: SliceFn; gaps: string[]; prev: boolean; onPrev: () => void; next: boolean; onNext: () => void; loading: boolean;
+/** XAIBO-PROD-450: the transcript list's anchor request (VirtualList). */
+export type Anchor = VirtualListProps<Entry>['anchor'];
+export function Conversation({ entries, touches, slice, gaps, prev, onPrev, next, onNext, loading, anchor }: {
+  entries: Entry[]; touches: FileItem[]; slice: SliceFn; gaps: string[]; prev: boolean; onPrev: () => void; next: boolean; onNext: () => void; loading: boolean; anchor?: Anchor;
 }) {
   return (
     <div className="x-section-list">
       {gaps.length ? <p className="x-gap"><Icon id="finding" /><span><strong>Content incomplete</strong> · {gaps.join('; ')}</span></p> : null}
       {prev ? <p className="x-earlier">More records before these <button type="button" className="x-btn x-btn-secondary" aria-disabled={loading || undefined} onClick={() => { if (!loading) onPrev(); }}>Load earlier</button></p> : null}
       {entries.length === 0 && !loading ? <p className="x-empty-note">No conversation records in this range.</p> : null}
-      <VirtualList items={entries} getKey={keyOf} label="Conversation" itemLabel={entryLabel} estimateSize={72} hasMore={next} loading={loading} onLoadMore={onNext}
+      <VirtualList items={entries} getKey={keyOf} label="Conversation" itemLabel={entryLabel} estimateSize={72} hasMore={next} loading={loading} onLoadMore={onNext} anchor={anchor}
         render={(e) => <ConversationEntry e={e} touches={touches} slice={slice} />} />
     </div>
   );
@@ -203,10 +205,10 @@ function ledgerOf(e: Entry): { icon: Parameters<typeof Icon>[0]['id']; tone?: st
     case 'subagent-end': return { icon: 'branch', title: `Subagent ended · ${visible(e.subagent.agentType ?? e.subagent.nativeId)}`, ts: e.subagent.end };
   }
 }
-export function Timeline({ entries, next, onNext, loading }: { entries: Entry[]; next: boolean; onNext: () => void; loading: boolean }) {
+export function Timeline({ entries, next, onNext, loading, anchor }: { entries: Entry[]; next: boolean; onNext: () => void; loading: boolean; anchor?: Anchor }) {
   return (
     <div className="x-section-list x-ledger">
-      <VirtualList items={entries} getKey={keyOf} label="Activity sequence" itemLabel={entryLabel} estimateSize={44} hasMore={next} loading={loading} onLoadMore={onNext}
+      <VirtualList items={entries} getKey={keyOf} label="Activity sequence" itemLabel={entryLabel} estimateSize={44} hasMore={next} loading={loading} onLoadMore={onNext} anchor={anchor}
         render={(e) => {
           const l = ledgerOf(e);
           return (

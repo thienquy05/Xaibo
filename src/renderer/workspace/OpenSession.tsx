@@ -13,9 +13,9 @@ import { Icon, StatusBadge } from '../status/StatusBadge.tsx';
 import { visible } from '../text.ts';
 import { ContextPane } from './context/ContextSection.tsx';
 import { CostPane } from './cost/CostSection.tsx';
-import { Conversation, Files, Subagents, Timeline, Tools, type Paged, type SliceFn } from './sections.tsx';
+import { Conversation, Files, Subagents, Timeline, Tools, type Anchor, type Paged, type SliceFn } from './sections.tsx';
 import { mergeTimeline } from './timeline.ts';
-import { appendLive, compactStatus, countText, incompleteReasons, initialAt, liveAction, settled, trimWindow, WINDOW_MAX } from './view.ts';
+import { appendLive, compactStatus, countText, incompleteReasons, initialAt, liveAction, loadAnchor, settled, trimWindow, WINDOW_MAX } from './view.ts';
 
 export type WorkspaceApi = Pick<Client, 'session' | 'transcript' | 'slice' | 'tools' | 'subagents' | 'files' | 'markers' | 'cost'>;
 const PAGE = 50;
@@ -146,12 +146,13 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
   const notice = fresh && tr.next !== null; // review L6: never once the window reaches the end again
   const latestRef = useRef<HTMLButtonElement>(null);
   const autoReloaded = useRef(false); // XAIBO-PROD-436: the failed window already reloaded itself once
+  const [anchor, setAnchor] = useState<Anchor>(null); // XAIBO-PROD-450: first/latest land at the range's start/end
   const loadAt = (at: 'first' | 'latest') => {
     const g = ++trGen.current;
     setFresh(false);
     if (trRef.current.failed) trRtDo({ type: 'start' }); // a (re)load after a failure: the notice shows Retrying…
     setTr((s) => ({ ...s, loading: true }));
-    api.transcript(id, at, PAGE).then((p) => { if (trGen.current === g) { autoReloaded.current = false; trRtDo({ type: 'ok' }); setTr({ items: p.items, prev: p.prev, next: p.next, loading: false, failed: false, loaded: true }); } },
+    api.transcript(id, at, PAGE).then((p) => { if (trGen.current === g) { autoReloaded.current = false; trRtDo({ type: 'ok' }); setTr({ items: p.items, prev: p.prev, next: p.next, loading: false, failed: false, loaded: true }); setAnchor((a) => ({ to: loadAnchor(at)!, n: (a?.n ?? 0) + 1 })); } },
       () => { if (trGen.current === g) { trRtDo({ type: 'fail', at: Date.now() }); setTr((s) => ({ ...s, loading: false, failed: true })); } });
   };
   const grow = (dir: 'after' | 'before') => {
@@ -259,8 +260,8 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
         })}
       </div>
       <div className="x-open-body" id="session-section-body" aria-label={SECTION_TEXT[section]} role="region" inert={drawer}>
-        {section === 'conversation' ? <Conversation entries={entries} touches={files.items} slice={slice} gaps={gaps} prev={tr.prev !== null} onPrev={() => grow('before')} next={tr.next !== null} onNext={() => grow('after')} loading={tr.loading} />
-          : section === 'timeline' ? <Timeline entries={entries} next={tr.next !== null} onNext={() => grow('after')} loading={tr.loading} />
+        {section === 'conversation' ? <Conversation entries={entries} touches={files.items} slice={slice} gaps={gaps} prev={tr.prev !== null} onPrev={() => grow('before')} next={tr.next !== null} onNext={() => grow('after')} loading={tr.loading} anchor={anchor} />
+          : section === 'timeline' ? <Timeline entries={entries} next={tr.next !== null} onNext={() => grow('after')} loading={tr.loading} anchor={anchor} />
             : section === 'tools' ? <div className="x-scroll"><Tools tools={tools} touches={files.items} /></div>
               : section === 'subagents' ? <div className="x-scroll"><Subagents subagents={subagents} /></div>
                 : section === 'files' ? <div className="x-scroll"><Files files={files} tools={tools.items} /></div>

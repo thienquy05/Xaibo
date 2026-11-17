@@ -165,3 +165,13 @@ test('XAIBO-PROD-437 review L4: entryLabel bounds tool, model and subagent names
   assert.equal(Array.from(name).length, 'Tool '.length + 60);
   assert.equal(Array.from(entryLabel({ key: 'f', kind: 'model', marker: { model: 'M'.repeat(500), ts } as ModelMarker }).split(' · ')[0]!).length, 'Model '.length + 60);
 });
+
+// XAIBO-PROD-450 (G4d-2; design §6.3): Go to first turn anchors the loaded range at its start, Go to latest (and a live
+// session's open) at its end; paging keeps the reading position (no anchor).
+test('the anchor after a transcript load: first at the start, latest at the end, paging none', async () => {
+  const { loadAnchor } = await import('../../../src/renderer/workspace/view.ts');
+  assert.equal(loadAnchor('first'), 'start');
+  assert.equal(loadAnchor('latest'), 'end');
+  assert.equal(loadAnchor('after'), null);
+  assert.equal(loadAnchor('before'), null);
+});
