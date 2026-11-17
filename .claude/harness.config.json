@@ -17,12 +17,6 @@
   "testCommands": [
     {
       "globs": [
-        "**/*.py"
-      ],
-      "command": "pytest"
-    },
-    {
-      "globs": [
         "**/*.ts",
         "**/*.tsx"
       ],

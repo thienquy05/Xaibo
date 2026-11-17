@@ -6,4 +6,6 @@ against unusual layouts — edit freely as the project evolves.
 
 - `architect`
 - `code-reviewer`
+- `react-reviewer`
 - `tdd-guide`
+- `typescript-reviewer`
