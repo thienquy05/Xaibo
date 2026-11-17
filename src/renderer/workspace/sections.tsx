@@ -13,14 +13,15 @@ import { approvalText, durationLabel, FILE_KIND_TEXT, groupFiles, lifecycleText,
 import { argFor, clock, entryLabel, isoTime, sizeText, toolMeta, toolTone } from './view.ts';
 
 /** Fetches one bounded slice of an item's text or reasoning. */
-export type SliceFn = (event: number, part: 'text' | 'reasoning', offset: number) => Promise<{ text: string; next: number | null }>;
+/** call (XAIBO-PROD-446): a tool step's own call id, so the slice is that call's block only. */
+export type SliceFn = (event: number, part: 'text' | 'reasoning', offset: number, call?: string) => Promise<{ text: string; next: number | null }>;
 export interface Paged<T> { items: T[]; more: boolean; loading: boolean; failed: boolean; loadMore: () => void;
   /** XAIBO-PROD-438: failures in a row, their time, and whether a Retry is running */
   retry: Retry }
 
 /** Text of one item, as slices fetched on demand (design §5.2): at most MAX_SLICES stay in memory and in the DOM; past
  *  that the earliest is evicted and Load previous brings it back (slice.ts). Cursors are the service's, opaque here. */
-function Slices({ event, part, slice, start = '', from = 0, label }: { event: number; part: 'text' | 'reasoning'; slice: SliceFn; start?: string; from?: number | null; label?: string }) {
+function Slices({ event, part, slice, start = '', from = 0, label, call }: { event: number; part: 'text' | 'reasoning'; slice: SliceFn; start?: string; from?: number | null; label?: string; call?: string | undefined }) {
   const [win, setWin] = useState(() => openWindow(start, from));
   const [busy, setBusy] = useState<SliceDir | null>(null);
   const [failed, setFailed] = useState<SliceDir | null>(null);
@@ -36,7 +37,7 @@ function Slices({ event, part, slice, start = '', from = 0, label }: { event: nu
     inFlight.current = true;
     setBusy(dir);
     setSaid(sliceAnnouncement('loading', dir));
-    slice(event, part, at).then((s) => {
+    slice(event, part, at, call).then((s) => {
       setWin((w) => (dir === 'next' ? appendSlice(w, at, s) : prependSlice(w, at, s)));
       setFailed(null);
       setSaid(sliceAnnouncement('loaded', dir));
@@ -107,6 +108,7 @@ function ToolStep({ tool, item, touches, slice }: { tool: ToolItem | null; item:
   // Review L8: the call's own sliceable args event; a call item only when no tool record is loaded.
   const args = tool ? tool.argsEvent : item?.kind === 'tool-call' ? item.event : null;
   const result = tool?.resultEvent ?? (item?.kind === 'tool-result' ? item.event : null);
+  const call = tool?.callId ?? item?.callId ?? undefined; // XAIBO-PROD-446: only this call's block of a shared record
   return (
     <Step
       lead={<Dot tone={tone} />} name={tool?.tool ? visible(tool.tool) : item?.kind === 'tool-result' && !tool ? 'Tool result' : 'Unknown tool'}
@@ -115,8 +117,8 @@ function ToolStep({ tool, item, touches, slice }: { tool: ToolItem | null; item:
     >
       {() => (
         <>
-          {args !== null ? <Slices event={args} part="text" slice={slice} label="Input" /> : <span className="x-label">Input unavailable from this source</span>}
-          {result !== null ? <Slices event={result} part="text" slice={slice} label={`Result · ${tool ? resultText(tool) : 'Result recorded'}`} />
+          {args !== null ? <Slices event={args} part="text" slice={slice} label="Input" call={call} /> : <span className="x-label">Input unavailable from this source</span>}
+          {result !== null ? <Slices event={result} part="text" slice={slice} label={`Result · ${tool ? resultText(tool) : 'Result recorded'}`} call={call} />
             : <span className="x-label">{tool ? resultText(tool) : 'Result unavailable'}</span>}
         </>
       )}

@@ -50,7 +50,7 @@ const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !
 const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
 const joined = (parts: (string | undefined)[]) => parts.filter((p) => p).join('\n') || undefined;
 
-function blockText(b: unknown): string | undefined {
+export function blockText(b: unknown): string | undefined {
   if (typeof b === 'string') return b;
   if (!isObj(b)) return undefined;
   switch (b.type) {

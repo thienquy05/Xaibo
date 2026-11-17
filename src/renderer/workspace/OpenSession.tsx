@@ -205,7 +205,7 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
 
   const entries = useMemo(() => mergeTimeline({ items: tr.items, tools: tools.items, markers: markers.items, subagents: subagents.items, moreBefore: tr.prev !== null, moreAfter: tr.next !== null }),
     [tr.items, tr.prev, tr.next, tools.items, markers.items, subagents.items]);
-  const slice: SliceFn = (event, part, offset) => api.slice(id, event, part, offset);
+  const slice: SliceFn = (event, part, offset, call) => api.slice(id, event, part, offset, call);
   const coverage = detail?.coverage ?? [];
   const gaps = incompleteReasons(coverage);
   const drift = coverage.includes('drift');

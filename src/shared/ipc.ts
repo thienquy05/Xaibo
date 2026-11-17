@@ -216,7 +216,8 @@ export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Curs
   | { v: 1; type: 'usageHistory'; id: number; scope: number; stream: string; from: number; to: number; cursor: HistoryCursor | null; limit: number }
   | { v: 1; type: 'session'; id: number; session: number }
   | { v: 1; type: 'transcript'; id: number; session: number; at: TranscriptAt; limit: number }
-  | { v: 1; type: 'slice'; id: number; session: number; event: number; part: 'text' | 'reasoning'; offset: number }
+  /** call (XAIBO-PROD-446): a tool step's own call id; the slice is then that call's tool_use or tool_result block. */
+  | { v: 1; type: 'slice'; id: number; session: number; event: number; part: 'text' | 'reasoning'; offset: number; call?: string }
   | IdPage<'tools'> | IdPage<'subagents'> | IdPage<'files'>
   | { v: 1; type: 'markers'; id: number; session: number; cursor: MCursor | null; limit: number }
   | { v: 1; type: 'cost'; id: number; session: number };
@@ -458,7 +459,8 @@ export function parsePortRequest(x: unknown): PortRequest | null {
   }
   if (m?.type === 'slice') {
     if (!count(m.id) || !positive(m.session) || !positive(m.event) || !oneOf(['text', 'reasoning'] as const, m.part) || !count(m.offset)) return null;
-    return { v: 1, type: 'slice', id: m.id, session: m.session, event: m.event, part: m.part, offset: m.offset };
+    if (m.call !== undefined && !(text(m.call, MAX_CALL_ID) && m.call !== '')) return null;
+    return { v: 1, type: 'slice', id: m.id, session: m.session, event: m.event, part: m.part, offset: m.offset, ...(m.call !== undefined ? { call: m.call } : {}) };
   }
   if (m?.type === 'live') return typeof m.on === 'boolean' ? { v: 1, type: 'live', on: m.on } : null;
   if (m?.type === 'liveSet') return count(m.id) ? { v: 1, type: 'liveSet', id: m.id } : null;

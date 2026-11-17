@@ -90,6 +90,27 @@ test('preview: at most 4 KiB of UTF-8 with the full length; slices continue in 1
   }
 });
 
+// XAIBO-PROD-446 (G4a-1): a tool step asks for its own call: only that tool_use (name and arguments) or tool_result.
+test('XAIBO-PROD-446: a slice with a call id serves only that call\'s block of a Claude record', async () => {
+  const { db, put } = await store();
+  const blocks = [{ type: 'text', text: 'narration' }, { type: 'tool_use', id: 'toolu_A', name: 'Read', input: { file_path: '/w/a' } },
+    { type: 'tool_use', id: 'toolu_B', name: 'Bash', input: { command: 'ls' } }];
+  const args = put({ seq: 1, role: 'assistant', content: 'narration\nRead {"file_path":"/w/a"}\nBash {"command":"ls"}', raw: cl('assistant', blocks) });
+  const result = put({ seq: 2, role: 'user', content: 'out A\nout B', raw: cl('user', [{ type: 'tool_result', tool_use_id: 'toolu_A', content: 'out A' },
+    { type: 'tool_result', tool_use_id: 'toolu_B', content: [{ type: 'text', text: 'out B' }] }]) });
+  const slice = (event: number, call?: string) => answerSlice(db, { v: 1, type: 'slice', id: 8, session: 1, event, part: 'text', offset: 0, ...(call ? { call } : {}) }).text;
+  assert.equal(slice(args, 'toolu_B'), 'Bash {"command":"ls"}');
+  assert.equal(slice(args, 'toolu_A'), 'Read {"file_path":"/w/a"}');
+  assert.equal(slice(result, 'toolu_B'), 'out B');
+  assert.equal(slice(result, 'toolu_A'), 'out A');
+  assert.equal(slice(args, 'toolu_none'), '', 'no matching block: nothing, never the narration');
+  assert.equal(slice(args), 'narration', 'without a call id the classified text is unchanged');
+  // review LOW 1: a record the transcript hides (isMeta) gives nothing, even for a matching call
+  const meta = put({ seq: 3, role: 'assistant', content: 'Bash {"command":"ls"}', raw: JSON.stringify({ type: 'assistant', isMeta: true,
+    message: { role: 'assistant', content: [blocks[2]] } }) });
+  assert.equal(slice(meta, 'toolu_B'), '');
+});
+
 test('review: more than SCAN_MAX skipped records give a short page whose cursor continues without gap or duplicate', async () => {
   const { db, put } = await store();
   const a = put({ seq: 1, role: 'user', raw: cl('user', 'first') });

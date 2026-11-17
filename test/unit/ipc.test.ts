@@ -201,6 +201,7 @@ test('session, transcript and slice requests: fields checked', () => {
   }
   const slice = { v: 1, type: 'slice', id: 3, session: 9, event: 12, part: 'reasoning', offset: 0 };
   assert.deepEqual(parsePortRequest(slice), slice);
+  assert.deepEqual(parsePortRequest({ ...slice, call: 'toolu_1' }), { ...slice, call: 'toolu_1' }); // XAIBO-PROD-446
   for (const bad of [
     { v: 1, type: 'session', id: 3, session: 0 }, { v: 1, type: 'session', id: 3 },
     { v: 1, type: 'transcript', id: 3, session: 9, at: 'middle', limit: 50 },
@@ -208,6 +209,7 @@ test('session, transcript and slice requests: fields checked', () => {
     { v: 1, type: 'transcript', id: 3, session: 9, at: { after: { seq: 1, id: 2 }, before: { seq: 1, id: 2 } }, limit: 50 },
     { v: 1, type: 'transcript', id: 3, session: 9, at: 'first', limit: 0 },
     { ...slice, part: 'raw' }, { ...slice, offset: -1 }, { ...slice, offset: 1.5 }, { ...slice, event: 0 },
+    { ...slice, call: '' }, { ...slice, call: 'c'.repeat(257) }, { ...slice, call: 7 }, { ...slice, call: null },
   ]) assert.equal(parsePortRequest(bad), null, JSON.stringify(bad));
 });
 

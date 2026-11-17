@@ -8,6 +8,7 @@ import { COST_CODE, COST_COMPONENTS, MAX_COST_CODES, MAX_COST_GROUPS, MAX_ITEMS,
 import type { CostDetail, CostGroup, PriceRevisionInfo } from '../shared/ipc.ts';
 import type { FileItem, MCursor, ModelMarker, SubagentItem, ToolItem } from '../shared/ipc.ts';
 import { classifyItem, utf8Slice, type StoredRecord } from './transcript.ts';
+import { blockText } from './adapters/claude/parse.ts';
 import { callApprovals, callDuration, claudeCallError, MAX_MODEL, type ConfEv } from './session-detail.ts';
 import { deriveFileTouches, FILE_TOOLS } from './filetouch.ts';
 import type { Confidence, Ev } from './status/engine.ts';
@@ -331,6 +332,17 @@ export function answerTranscript(db: DatabaseSync, req: PortRequest & { type: 't
   } catch { return empty(); }
 }
 
+/** A Claude record's tool_use block with id `call` (name and JSON input) or tool_result for it; null when none matches
+ *  (or for reasoning, which no tool block has). */
+function claudeCallText(raw: string | null, call: string, part: 'text' | 'reasoning'): string | null {
+  if (part !== 'text' || raw === null) return null;
+  let content: unknown;
+  try { const r: unknown = JSON.parse(raw); content = isObj(r) && isObj(r.message) ? r.message.content : undefined; } catch { return null; }
+  const b: unknown = Array.isArray(content)
+    ? content.find((x) => isObj(x) && ((x.type === 'tool_use' && x.id === call) || (x.type === 'tool_result' && x.tool_use_id === call))) : undefined;
+  return blockText(b) ?? null;
+}
+
 // Review 1: the last classified text per store, so reading a long record in 16 KiB steps parses it once. Visibility is
 // re-checked on every request; a cached entry is only text the same session and event already produced.
 const sliceCache = new WeakMap<DatabaseSync, { key: string; text: string | null }>();
@@ -342,17 +354,21 @@ export function answerSlice(db: DatabaseSync, req: PortRequest & { type: 'slice'
       .get(req.event, req.session) as { bare: number; ingest: string | null } | undefined;
     if (!head) return empty();
     const large = largeKey(head.bare === 1, head.ingest);
+    // ponytail: a large (chunked) record ignores `call` and serves its whole text (Claude writes one block per record, so
+    // a large record with several calls is not seen); select within the chunks if one shows up.
     if (large !== null) {
       const cut = req.part === 'text' ? largeSlice(db, req.session, large, req.offset) : null;
       return cut ? { v: IPC_VERSION, type: 'slice', id: req.id, text: cut.text, next: cut.next } : empty();
     }
-    const key = `${req.session}:${req.event}:${req.part}`;
+    const key = `${req.session}:${req.event}:${req.part}:${req.call ?? ''}`;
     let hit = sliceCache.get(db);
     if (hit?.key !== key) {
       const r = db.prepare(`SELECT s.agent, e.kind, e.role, e.content, e.raw FROM events e JOIN sessions s ON s.id = e.session_id WHERE e.id = ? AND ${VISIBLE}`)
         .get(req.event, req.session) as (Pick<TrRow, 'kind' | 'role' | 'content' | 'raw'> & { agent: string }) | undefined;
       const it = r ? classifyItem(stored(r.agent, r)) : null;
-      hit = { key, text: (req.part === 'text' ? it?.text : it?.reasoning) ?? null };
+      // XAIBO-PROD-446: a tool step's call in a Claude record the transcript shows is its own block, never the record's other text
+      const own = r && it && req.call !== undefined && r.agent === 'claude' ? claudeCallText(r.raw, req.call, req.part) : undefined;
+      hit = { key, text: own !== undefined ? own : (req.part === 'text' ? it?.text : it?.reasoning) ?? null };
       sliceCache.set(db, hit);
     }
     const full = hit.text;

@@ -74,8 +74,8 @@ export function createClient(port: PortLike, push: Pushes) {
       const m = await ask({ v: IPC_VERSION, type: 'transcript', id: nextId++, session, at, limit }, 'transcript');
       return { items: m.items, prev: m.prev, next: m.next };
     },
-    async slice(session: number, event: number, part: 'text' | 'reasoning', offset: number): Promise<{ text: string; next: number | null }> {
-      const m = await ask({ v: IPC_VERSION, type: 'slice', id: nextId++, session, event, part, offset }, 'slice');
+    async slice(session: number, event: number, part: 'text' | 'reasoning', offset: number, call?: string): Promise<{ text: string; next: number | null }> {
+      const m = await ask({ v: IPC_VERSION, type: 'slice', id: nextId++, session, event, part, offset, ...(call !== undefined ? { call } : {}) }, 'slice');
       return { text: m.text, next: m.next };
     },
     async tools(session: number, cursor: number | null, limit: number): Promise<{ calls: ToolItem[]; next: number | null }> {
