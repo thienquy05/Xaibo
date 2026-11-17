@@ -74,7 +74,7 @@ test('reported estimate notes; loading; failed with Retry; session gone; never 0
   assert.match(rep, /Component cost unavailable — agent estimate has no split/);
   assert.match(render({ cost: undefined }), />Loading estimated cost…</);
   const failed = render({ cost: undefined, failed: true });
-  assert.match(failed, /Estimated cost unavailable — cost details could not be loaded/);
+  assert.match(failed, /Couldn&#x27;t load cost/);
   assert.match(failed, /<button[^>]*>Retry<\/button>/);
   assert.match(render({ cost: null }), /Estimated cost unavailable — session not found/);
   const none = render({ cost: { ...detail, amountUsd: null, coverage: 'unavailable', priced: 0, groups: [], revisions: [], reasons: ['unpriced-model'] } });
@@ -92,4 +92,8 @@ test('review M1: revisions sharing a label stay distinguishable (id shown) and k
   assert.match(html, /<caption>Claude Opus 5\.5 · Price table owner-1 \(revision 4\) · 2 of 2 requests priced<\/caption>/);
   assert.equal([...html.matchAll(/<strong>owner-1 \(revision \d\)<\/strong>/g)].length, 2);
   assert.doesNotMatch(html, /\u202E/);
+});
+
+test('XAIBO-PROD-438 (D-P4-10): a Retry in progress is disabled and reads Retrying…', () => {
+  assert.match(render({ cost: undefined, failed: true, retry: { failures: 1, at: null, busy: true } }), /aria-busy="true"[^>]*>.*Retrying…<\/button>/);
 });

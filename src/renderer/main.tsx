@@ -1,6 +1,6 @@
 // Renderer entry (P1-T12): takes the brokered service port and main's health messages from the preload (window
 // messages from this window only, validated), keeps the list state (model.ts) and renders health, agents and sessions.
-import { StrictMode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
+import { StrictMode, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type MouseEvent } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { parseHealth } from '../shared/ipc.ts';
@@ -13,6 +13,7 @@ import { reloadWindow, singleFlight } from './data/pages.ts';
 import { applyDelta, applyLiveDelta, applyPage, bandText, collectorStep, restoreFocus, emptyCollector, emptyList, emptyLiveSet, lastKnownLabel, PAGE, type ListState, type LiveSetState } from './model.ts';
 import { Dashboard, type UsageApi, type View } from './overview/Dashboard.tsx';
 import { openOrder } from './overview/queue.ts';
+import { retryIdle, retryStep } from './retry.ts';
 import { firstUsablePage, LONG_FRAME, watchLongFrames } from './perf-marks.ts';
 import { Workspace, type SessionChanges } from './workspace/Workspace.tsx';
 import type { WorkspaceApi } from './workspace/OpenSession.tsx';
@@ -38,6 +39,7 @@ function App() {
   const [tick, setTick] = useState(0); // session activity: the usage view refreshes on it (throttled there)
   const [collector, setCollector] = useState(emptyCollector); // the Last known qualifier (design §6.0)
   const [liveFailed, setLiveFailed] = useState(false); // the live set could not be loaded: Retry
+  const [liveRetry, liveRetryDo] = useReducer(retryStep, retryIdle); // XAIBO-PROD-438: Retrying…, Still couldn't …
   const [request, setRequest] = useState<SessionRow | null>(null); // P4-T05d: a Dashboard record opened in the Session area
   const client = useRef<Client | null>(null);
   const [changes, setChanges] = useState<SessionChanges>({ rows: [], resync: 0, n: 0 });
@@ -49,8 +51,8 @@ function App() {
     const reload = (c: Client | null): Promise<unknown> => {
       if (!c) return Promise.resolve();
       // P4-T04c: the Dashboard's live set is resynced with the list (start, coalescer overflow, show).
-      const set = c.liveSet().then((s) => { if (client.current === c) { setLiveSet({ ...s, loaded: true }); setLiveFailed(false); } },
-        () => { if (client.current === c) setLiveFailed(true); });
+      const set = c.liveSet().then((s) => { if (client.current === c) { setLiveSet({ ...s, loaded: true }); setLiveFailed(false); liveRetryDo({ type: 'ok' }); } },
+        () => { if (client.current === c) { setLiveFailed(true); liveRetryDo({ type: 'fail', at: Date.now() }); } });
       const page = reloadWindow(loadedRows.current, (cursor, limit) => c.listSessions(cursor, limit), PAGE)
         .then((p) => { if (client.current === c) setList((s) => applyPage(s, p, false)); }, () => undefined);
       setChanges((x) => ({ rows: [], resync: x.resync + 1, n: x.n + 1 })); // a resync may hide any change: the open session refreshes
@@ -161,6 +163,7 @@ function App() {
     requestAnimationFrame(() => requestAnimationFrame(() => { // after the list's first layout
       const target = id === null ? null : document.querySelector<HTMLElement>(`#view-${o.view} [data-open-id="${id}"]`);
       (target ?? document.getElementById(`view-${o.view}-heading`))?.focus();
+      setFocusId(null); // used: a later visit starts the Live list at its first row (review LOW)
     }));
   }, []);
   // Design §6.0: no unqualified live indicator while the collector is not running (starting, restarting, stopped, and
@@ -171,11 +174,12 @@ function App() {
   const retryLive = () => {
     const c = client.current;
     if (!c) return;
-    setLiveFailed(false);
-    c.liveSet().then((set) => { if (client.current === c) setLiveSet({ ...set, loaded: true }); }, () => { if (client.current === c) setLiveFailed(true); });
+    liveRetryDo({ type: 'start' }); // the notice stays, its Retry disabled until the answer (D-P4-10)
+    c.liveSet().then((set) => { if (client.current === c) { setLiveSet({ ...set, loaded: true }); setLiveFailed(false); liveRetryDo({ type: 'ok' }); } },
+      () => { if (client.current === c) { setLiveFailed(true); liveRetryDo({ type: 'fail', at: Date.now() }); } });
   };
   // review L3: leaving through the Areas links or opening from the Session list ends the Dashboard's Return
-  const clearReturn = useCallback(() => { origin.current = null; setReturnFor(null); }, []);
+  const clearReturn = useCallback(() => { origin.current = null; setReturnFor(null); setFocusId(null); }, []);
   const go = (to: 'dashboard' | 'session') => (e: MouseEvent) => {
     e.preventDefault();
     clearReturn();
@@ -234,7 +238,7 @@ function App() {
       <div className="x-health"><HealthStatus health={health} banners={banners} /></div>
       <main id="main" className="x-main" tabIndex={-1}>
         {area === 'dashboard'
-          ? <Dashboard live={liveSet} liveFailed={liveFailed} onRetryLive={retryLive} lastKnown={lastKnown} agents={agents} banners={banners} api={api} tick={tick}
+          ? <Dashboard live={liveSet} liveFailed={liveFailed} liveRetry={liveRetry} onRetryLive={retryLive} lastKnown={lastKnown} agents={agents} banners={banners} api={api} tick={tick}
             onSetPath={(agent) => window.xaibo?.setAgentPath(agent)} onOpen={openSession} view={dashView} onView={setDashView} focusId={focusId} />
           : <Workspace list={list} changes={changes} loading={loading} onLoadMore={loadMore} lastKnown={lastKnown !== null} api={workspaceApi} request={request} onRequestDone={clearRequest}
             returnFor={returnFor} onReturn={returnToDashboard} onListOpen={clearReturn} />}

@@ -78,7 +78,7 @@ test('review M: the pane shows loading, then the section; a failed detail is una
   const pane = (o: object) => renderToStaticMarkup(createElement(ContextPane, { row: row(), detail: null, failed: false, onRetry() {}, now: T, ...o }));
   assert.match(pane({}), />Loading context…</);
   const failed = pane({ failed: true });
-  assert.match(failed, /Context unavailable — session detail could not be loaded/);
+  assert.match(failed, /Couldn&#x27;t load context/);
   assert.match(failed, /<button[^>]*>Retry<\/button>/);
   assert.doesNotMatch(failed, /Loading context/);
   assert.match(pane({ detail: { row: row(), coverage: [], context: read() } }), /Current context/);
@@ -95,4 +95,18 @@ test('XAIBO-PROD-435: Stale shows its short form and speaks the C20 text', () =>
   const live: LiveStatus = { lifecycle: 'busy', confidence: 'confirmed', health: 'connected', reason: null, outcome: null, findings: [], since: null };
   const html = renderToStaticMarkup(createElement(ContextSection, { row: row({ live }), reading: read(), now: T + 16 * 60_000 }));
   assert.match(html, /<span aria-hidden="true">Stale · [^<]+<\/span><span class="x-sr-only">Stale, last measurement [^<]+<\/span>/);
+});
+
+test('XAIBO-PROD-438 (D-P4-10): a Retry in progress is disabled and reads Retrying…; loading leads with the glyph', () => {
+  const pane = (o: object) => renderToStaticMarkup(createElement(ContextPane, { row: row(), detail: null, failed: false, onRetry() {}, now: T, ...o }));
+  assert.match(pane({ failed: true, retry: { failures: 1, at: null, busy: true } }), /aria-busy="true"[^>]*>.*Retrying…<\/button>/);
+  assert.match(pane({}), /class="x-icon x-loading"[\s\S]*Loading context…/);
+});
+
+test('review HIGH (XAIBO-PROD-438): the alert wraps only the notice text; the Retry button stays outside it; loading lines are flex rows', () => {
+  const pane = (o: object) => renderToStaticMarkup(createElement(ContextPane, { row: row(), detail: null, failed: false, onRetry() {}, now: T, ...o }));
+  const failed = pane({ failed: true });
+  assert.match(failed, /<span role="alert">[\s\S]*?Couldn&#x27;t load context<\/span><button/);
+  assert.doesNotMatch(failed, /<p[^>]*role="alert"/);
+  assert.match(pane({}), /class="x-context-note x-loading-line"/);
 });

@@ -24,6 +24,8 @@ test('closing the window hides it; main and service stay alive', async ({ xaibo 
   const run = await xaibo.launch();
   await xaibo.window(run);
   const svc = await servicePid(run.app!);
+  // the window is created hidden and shown on ready-to-show; close it once shown (a user can only close a shown window)
+  await expect.poll(() => run.app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isVisible())).toBe(true);
   await run.app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.close());
   const state = await run.app!.evaluate(({ BrowserWindow }) => {
     const all = BrowserWindow.getAllWindows();

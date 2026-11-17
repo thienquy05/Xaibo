@@ -3,15 +3,15 @@
 // one entry per applied revision. Every amount shows ~ visibly and is spoken from text starting "Estimated cost".
 // Source references are plain text: nothing here links out or fetches.
 import type { CostDetail } from '../../../shared/ipc.ts';
+import { LoadingLine, RetryNotice } from '../../components/RetryNotice.tsx';
+import { retryIdle, type Retry } from '../../retry.ts';
 import { visible } from '../../text.ts';
 import { componentRows, costHeadline, groupTitle, revisionRows } from './present.ts';
 
 /** undefined = loading; null = no such session; failed = the request failed (Retry). */
-export function CostPane({ cost, failed, onRetry }: { cost: CostDetail | null | undefined; failed: boolean; onRetry: () => void }) {
-  if (failed) {
-    return <p className="x-gap" role="alert">Estimated cost unavailable — cost details could not be loaded <button type="button" className="x-btn x-btn-secondary" onClick={onRetry}>Retry</button></p>;
-  }
-  if (cost === undefined) return <p className="x-context-note">Loading estimated cost…</p>;
+export function CostPane({ cost, failed, onRetry, retry = { ...retryIdle, failures: 1 } }: { cost: CostDetail | null | undefined; failed: boolean; onRetry: () => void; retry?: Retry }) {
+  if (failed) return <RetryNotice thing="cost" retry={retry} onRetry={onRetry} />; // XAIBO-PROD-438 (D-P4-10)
+  if (cost === undefined) return <LoadingLine text="Loading estimated cost…" className="x-context-note" />;
   if (cost === null) return <p className="x-context-note">Estimated cost unavailable — session not found</p>;
   return <CostSection cost={cost} />;
 }

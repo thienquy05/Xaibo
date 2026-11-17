@@ -6,7 +6,7 @@ import { statusPresentation } from './presentation.ts';
 
 export function Icon({ id }: { id: IconId }) {
   return (
-    <svg className="x-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+    <svg className={id === 'loading' ? 'x-icon x-loading' : 'x-icon'} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
       {ICONS[id].map((s, i) => {
         if (s.kind === 'circle') return <circle key={i} cx={s.cx} cy={s.cy} r={s.r} />;
         if (s.kind === 'rect') return <rect key={i} x={s.x} y={s.y} width={s.w} height={s.h} className={s.fill ? 'x-fill' : s.dash ? 'x-dash' : undefined} />;

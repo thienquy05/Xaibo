@@ -2,6 +2,8 @@
 // order: model · effort, value, meter (or its unavailable note), source/time/Stale, generation, category tables.
 // Every value comes from contextView; this component only lays it out.
 import type { ContextReading, SessionDetail, SessionRow } from '../../../shared/ipc.ts';
+import { LoadingLine, RetryNotice } from '../../components/RetryNotice.tsx';
+import { retryIdle, type Retry } from '../../retry.ts';
 import { Icon } from '../../status/StatusBadge.tsx';
 import { visible } from '../../text.ts';
 import { CATEGORY_ROWS, contextView, percentWords } from './format.ts';
@@ -9,10 +11,12 @@ import { CATEGORY_ROWS, contextView, percentWords } from './format.ts';
 const GROUPS = ['Used context', 'Outside used context', 'Deferred definitions'];
 
 /** Review M: loading until the detail arrives; a failed detail is unavailable with Retry, never endless loading. */
-export function ContextPane({ row, detail, failed, onRetry, now }: { row: SessionRow; detail: SessionDetail | null; failed: boolean; onRetry: () => void; now: number }) {
+export function ContextPane({ row, detail, failed, onRetry, now, retry = { ...retryIdle, failures: 1 } }: {
+  row: SessionRow; detail: SessionDetail | null; failed: boolean; onRetry: () => void; now: number; retry?: Retry;
+}) {
   if (detail) return <ContextSection row={row} reading={detail.context} now={now} />;
-  if (!failed) return <p className="x-context-note">Loading context…</p>;
-  return <p className="x-gap" role="alert">Context unavailable — session detail could not be loaded <button type="button" className="x-btn x-btn-secondary" onClick={onRetry}>Retry</button></p>;
+  if (!failed) return <LoadingLine text="Loading context…" className="x-context-note" />;
+  return <RetryNotice thing="context" retry={retry} onRetry={onRetry} />; // XAIBO-PROD-438 (D-P4-10)
 }
 
 export function ContextSection({ row, reading, now }: { row: SessionRow; reading: ContextReading | null; now: number }) {

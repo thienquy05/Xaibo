@@ -3,15 +3,17 @@
 // coverage notices, the live-set summary and the active view. Quantity semantics come from the pure modules
 // (totals.ts, queue.ts, usage/presentation.ts); while the collector is not running every live label reads "Last known".
 // Service-supplied strings go through visible() (EC-55).
-import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { useEffect, useReducer, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import type { AgentStatus, Banner, HistoryCursor, SessionRow, UsageRecord, UsageScope } from '../../shared/ipc.ts';
+import { LoadingLine, RetryNotice } from '../components/RetryNotice.tsx';
 import { VirtualList } from '../components/VirtualList.tsx';
+import { retryIdle, retryStep, type Retry } from '../retry.ts';
 import { nextFocus } from '../components/virtual-list-model.ts';
 import { Coverage } from '../Coverage.tsx';
 import { AgentStrip } from '../Health.tsx';
 import { capText, costText, findingBadges, formatTime, openSessionLabels, recordLabel, statusExtras, type LiveSetState } from '../model.ts';
 import { Record as SessionRecord } from '../SessionList.tsx';
-import { StatusBadge } from '../status/StatusBadge.tsx';
+import { Icon, StatusBadge } from '../status/StatusBadge.tsx';
 import { visible } from '../text.ts';
 import { dayRange, historyBounds, scopeBlocks, shiftDay, usageRefreshDue, usageView } from '../usage/presentation.ts';
 import { attentionQueue, sinceText } from './queue.ts';
@@ -33,7 +35,9 @@ function useNow(ms: number): number {
 }
 
 export function Dashboard(p: {
-  live: LiveSetState; liveFailed: boolean; onRetryLive: () => void; lastKnown: string | null; agents: AgentStatus[] | null; banners: Banner[];
+  live: LiveSetState; liveFailed: boolean; onRetryLive: () => void;
+  /** XAIBO-PROD-438: the live-set Retry state (Retrying…, Still couldn't … · HH:MM) */
+  liveRetry?: Retry; lastKnown: string | null; agents: AgentStatus[] | null; banners: Banner[];
   api: UsageApi; tick: number; onSetPath: (agent: string) => void;
   /** P4-T05d: a live record's Open session button opens it in the Session area. */
   onOpen?: (row: SessionRow) => void;
@@ -44,6 +48,7 @@ export function Dashboard(p: {
 }) {
   const { view, onView: setView } = p;
   const lastKnown = p.lastKnown ?? (p.live.loaded && p.liveFailed ? 'refresh unavailable' : null);
+  const liveRetry = p.liveRetry ?? { ...retryIdle, failures: 1 };
   const buttons = useRef<(HTMLButtonElement | null)[]>([]);
   const summary = liveSetSummary(p.live.rows, p.live.more);
   const queue = attentionQueue(p.live.rows);
@@ -76,11 +81,11 @@ export function Dashboard(p: {
         </div>
       </div>
       <Coverage banners={p.banners} agents={p.agents} />
-      {p.live.loaded && p.liveFailed ? <p>Could not refresh live sessions. Showing last known data. <button type="button" className="x-button" onClick={p.onRetryLive}>Retry</button></p> : null}
+      {p.live.loaded && p.liveFailed ? <RetryNotice thing="live sessions" verb="refresh" retry={liveRetry} onRetry={p.onRetryLive} /> : null}
       {p.live.loaded ? <LiveSummary s={summary} rows={p.live.rows} series={series} lastKnown={lastKnown} /> : (
         <section aria-labelledby="summary-heading" className="x-summary">
           <h2 id="summary-heading">Live-session set</h2>
-          {p.liveFailed ? <p>Could not load live sessions. <button type="button" className="x-button" onClick={p.onRetryLive}>Retry</button></p> : <p>Loading live sessions…</p>}
+          {p.liveFailed ? <RetryNotice thing="live sessions" retry={liveRetry} onRetry={p.onRetryLive} /> : <LoadingLine text="Loading live sessions…" />}
         </section>
       )}
       <div className="x-dashboard-panels">
@@ -180,7 +185,7 @@ function LiveView({ live, lastKnown, focusId, onOpen }: { live: LiveSetState; la
     <>
       <h2 id="view-live-heading" tabIndex={-1}>{lastKnown ? 'Last known live sessions' : 'Live sessions'}</h2>
       {live.more ? <p>Showing the {live.rows.length} most recently active live sessions; more are tracked.</p> : null}
-      {!live.loaded ? <p>Loading live sessions…</p> : live.rows.length === 0 ? <p>No live sessions.</p> : (
+      {!live.loaded ? <LoadingLine text="Loading live sessions…" /> : live.rows.length === 0 ? <p>No live sessions.</p> : (
         <VirtualList items={live.rows} getKey={keyOf} label="Live sessions" itemLabel={recordLabel} initialFocusKey={focusId} estimateSize={132} hasMore={false} loading={false} onLoadMore={() => undefined}
           render={(row) => <SessionRecord row={row} lastKnown={lastKnown !== null} onOpen={onOpen} openLabel={labels.get(row.id)} />} />
       )}
@@ -255,8 +260,9 @@ function UsageView({ api, tick, name, lastKnown }: { api: UsageApi; tick: number
           {scopes.map((s) => <option key={scopeKey(s)} value={scopeKey(s)}>{name(s.agent)} · {visible(s.profile)} · {s.scope === null ? 'Scope unavailable' : `Scope ${s.scope}`} · {usageView(s, now).title}{s.stream ? ` · ${visible(s.stream)}` : ''}</option>)}
         </select>
       </label> : null}
-      {failed && scopes !== null ? <p>Usage refresh unavailable; showing prior observations.</p> : null}
-      {failed && scopes === null ? <p>Usage unavailable: the service did not answer.</p> : scopes === null ? <p>Loading usage…</p>
+      {/* XAIBO-PROD-438 (D-P4-10): short notices; usage retries on its own at the next tick */}
+      {failed && scopes !== null ? <p className="x-gap"><Icon id="finding" /><span>Couldn't refresh usage · showing last known</span></p> : null}
+      {failed && scopes === null ? <p className="x-gap"><Icon id="finding" /><span>Couldn't load usage</span></p> : scopes === null ? <LoadingLine text="Loading usage…" />
         : scopes.length === 0 ? <p>No usage scopes yet.</p> : scopeBlocks(scopes).map((b) => (
           <section key={b.key} className="x-scope" aria-label={`${name(b.agent)} · ${visible(b.profile)}`}>
             <h3>{name(b.agent)} · {visible(b.profile)}</h3>
@@ -309,17 +315,20 @@ function History({ scope, stream, api, onClose }: { scope: number; stream: strin
   const [records, setRecords] = useState<UsageRecord[]>([]);
   const [next, setNext] = useState<HistoryCursor | null>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'failed'>('loading');
+  const [rt, rtDo] = useReducer(retryStep, retryIdle); // XAIBO-PROD-438
   const range = dayRange(day);
   const seq = useRef(0);
-  const load = (cursor: HistoryCursor | null) => {
+  const load = (cursor: HistoryCursor | null, retrying = false) => {
     const n = ++seq.current; // review L: an answer for an earlier day or page never lands under the current heading
+    if (retrying) rtDo({ type: 'start' });
     setState('loading');
     api.history(scope, stream, range.from, range.to, cursor).then((p) => {
       if (n !== seq.current) return;
       setRecords((r) => (cursor ? [...r, ...p.records] : p.records));
       setNext(p.next);
       setState('ready');
-    }, () => { if (n === seq.current) setState('failed'); }); // prior observations stay visible; Retry below
+      rtDo({ type: 'ok' });
+    }, () => { if (n === seq.current) { setState('failed'); rtDo({ type: 'fail', at: Date.now() }); } }); // prior observations stay visible; Retry below
   };
   // Review L: at a bound the button stays focusable (aria-disabled) so keyboard focus never drops to the body.
   const step = (days: number, blocked: boolean) => () => { if (!blocked) setDay((d) => shiftDay(d, days)); };
@@ -346,8 +355,8 @@ function History({ scope, stream, api, onClose }: { scope: number; stream: strin
       <HistoryChart records={records} />
       <div className="x-history-scroll">
         {records.length ? <ul>{records.map(row)}</ul> : state === 'ready' ? <p>No observations yet</p> : null}
-        {state === 'loading' ? <p>Loading observations…</p> : null}
-        {state === 'failed' ? <p>Observations unavailable. <button type="button" className="x-button" onClick={() => load(next)}>Retry</button></p> : null}
+        {state === 'loading' && !rt.busy ? <LoadingLine text="Loading observations…" /> : null}
+        {state === 'failed' || rt.busy ? <RetryNotice thing="history" retry={rt} onRetry={() => load(next, true)} /> : null}
         {state === 'ready' && next ? <button type="button" className="x-button" onClick={() => load(next)}>Load more</button> : null}
       </div>
     </div>

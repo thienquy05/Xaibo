@@ -41,13 +41,13 @@ test('L3: failed refresh retains cached summary/tiles with Last known and a fail
   assert.match(html, /Last known live-session set/);
   assert.match(html, /data-field="tokens"/);
   assert.match(html, /123 tokens/);
-  assert.match(html, /Could not refresh live sessions/);
+  assert.match(html, /Couldn&#x27;t refresh live sessions/);
   assert.match(html, /Retry/);
-  assert.doesNotMatch(html, /Could not load live sessions/);
+  assert.doesNotMatch(html, /Couldn&#x27;t load live sessions/);
 });
 
 test('L3: initial load failure has no cached values or fabricated Last known data', () => {
   const html = render([], true, false);
-  assert.match(html, /Could not load live sessions/);
+  assert.match(html, /Couldn&#x27;t load live sessions/);
   assert.doesNotMatch(html, /data-field="tokens"|Last known live-session set/);
 });

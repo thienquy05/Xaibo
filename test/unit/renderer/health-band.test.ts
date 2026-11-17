@@ -30,3 +30,15 @@ test('disk full: the band says Collection: Paused (disk full) in the warning ton
   assert.match(ok, /x-tone-success/);
   assert.match(ok, /Collection: Running/);
 });
+
+test('XAIBO-PROD-438 (D-P4-10): Starting and Restarting show the animated loading glyph; Running, Paused, Stopped do not', () => {
+  const at = (state: string, attempt = 0) => renderToStaticMarkup(createElement(HealthStatus, { health: { ...running, state, attempt }, banners: [] }));
+  assert.match(at('starting'), /class="x-icon x-loading"/);
+  assert.match(at('restarting', 2), /class="x-icon x-loading"[\s\S]*Collection: Restarting \(attempt 2\)/);
+  assert.match(renderToStaticMarkup(createElement(HealthStatus, { health: null, banners: [] })), /class="x-icon x-loading"/, 'no health yet: starting');
+  for (const h of [at('running'), band([{ kind: 'disk-full' }]), at('stopped')]) assert.doesNotMatch(h, /x-loading/);
+});
+
+test('XAIBO-PROD-438 visual check: the band text is its own shrinkable span, so it wraps beside the glyph (wide rail)', () => {
+  assert.match(band([]), /<\/span><span class="x-band-text">Collection: Running<\/span>/);
+});

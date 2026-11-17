@@ -502,3 +502,17 @@ summary:hover { background: var(--x-tint); }
   .x-open-head { padding: var(--x-space-2) var(--x-space-3); }
   .x-tabs { padding: var(--x-space-1) var(--x-space-3); }
 }
+
+/* XAIBO-PROD-438 (D-P4-10, design §2.3/§4): the one animated glyph, while something is in progress; still under
+   reduced motion. The band's tone span is a flex box so its glyph centers on the text line, not the baseline. */
+.x-loading { stroke-width: 2.25; }
+.x-loading path { transform-origin: 12px 12px; animation: x-spin 900ms linear infinite; }
+@keyframes x-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .x-loading path { animation: none; } }
+/* the glyph centers on the first text line (one line or wrapped in the narrow rail): half the leading less the 16 px icon */
+.x-band { align-items: flex-start; }
+.x-band > [class^="x-tone-"] { display: inline-flex; margin-top: calc((var(--x-leading-body) - 16px) / 2); }
+.x-band-text { flex: 1 1 0; min-width: 0; } /* wraps beside its glyph in the narrow rail instead of below it */
+.x-btn[aria-busy="true"] { cursor: progress; }
+.x-loading-line { display: flex; align-items: center; gap: var(--x-space-2); }
+.x-gap > span { flex: 1 1 auto; min-width: 0; }

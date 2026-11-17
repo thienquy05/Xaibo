@@ -3,7 +3,9 @@
 // bounded slices only when expanded (design §5.2).
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import type { FileItem, ModelMarker, SubagentItem, ToolItem, TranscriptItem } from '../../shared/ipc.ts';
+import { LoadingLine, RetryNotice } from '../components/RetryNotice.tsx';
 import { VirtualList } from '../components/VirtualList.tsx';
+import { failText, type Retry } from '../retry.ts';
 import { Icon } from '../status/StatusBadge.tsx';
 import { visible, visibleBlock } from '../text.ts';
 import { appendSlice, focusAfter, openWindow, prependSlice, previousAt, sliceAnnouncement, type SliceDir } from './slice.ts';
@@ -12,7 +14,9 @@ import { argFor, clock, entryLabel, isoTime, sizeText, toolMeta, toolTone } from
 
 /** Fetches one bounded slice of an item's text or reasoning. */
 export type SliceFn = (event: number, part: 'text' | 'reasoning', offset: number) => Promise<{ text: string; next: number | null }>;
-export interface Paged<T> { items: T[]; more: boolean; loading: boolean; failed: boolean; loadMore: () => void }
+export interface Paged<T> { items: T[]; more: boolean; loading: boolean; failed: boolean; loadMore: () => void;
+  /** XAIBO-PROD-438: failures in a row, their time, and whether a Retry is running */
+  retry: Retry }
 
 /** Text of one item, as slices fetched on demand (design §5.2): at most MAX_SLICES stay in memory and in the DOM; past
  *  that the earliest is evicted and Load previous brings it back (slice.ts). Cursors are the service's, opaque here. */
@@ -217,12 +221,14 @@ export function Timeline({ entries, next, onNext, loading }: { entries: Entry[];
 
 /** XAIBO-PROD-435 (review L of -433): record loading states are announced, from a region present at every state. */
 function More({ p }: { p: Paged<unknown> }) {
-  return <><span className="x-sr-only" aria-live="polite">{p.failed ? 'Records could not be loaded' : p.loading ? 'Loading records' : ''}</span><MoreRow p={p} /></>;
+  const said = p.retry.busy ? 'Retrying' : p.failed ? failText('records', p.retry.failures, p.retry.at) : p.loading ? 'Loading records' : '';
+  return <><span className="x-sr-only" aria-live="polite">{said}</span><MoreRow p={p} /></>;
 }
 function MoreRow({ p }: { p: Paged<unknown> }) {
-  if (p.failed) return <p className="x-earlier">Records could not be loaded <button type="button" className="x-btn x-btn-secondary" onClick={p.loadMore}>Retry</button></p>;
+  // review LOW: a reload in flight after a failure is a retry in progress too (its Retry would do nothing)
+  if (p.failed) return <RetryNotice thing="records" retry={{ ...p.retry, busy: p.retry.busy || p.loading }} onRetry={p.loadMore} className="x-earlier" alert={false} />;
   // XAIBO-PROD-433 (design §6.13 B2): a pending first page says so; no empty table stands in for "none"
-  if (p.loading && !p.items.length && !p.more) return <p className="x-earlier">Loading records</p>;
+  if (p.loading && !p.items.length && !p.more) return <LoadingLine text="Loading records" />;
   if (p.more) return <p className="x-earlier">More records available <button type="button" className="x-btn x-btn-secondary" aria-disabled={p.loading || undefined} onClick={() => { if (!p.loading) p.loadMore(); }}>{p.loading ? 'Loading next page' : 'Load more'}</button></p>;
   return p.items.length ? <p className="x-earlier">End of available records</p> : null;
 }

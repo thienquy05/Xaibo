@@ -18,7 +18,8 @@ const loader = registerHooks({ load(url, context, nextLoad) {
 const { Files, Tools, Subagents } = await import(new URL('../../../src/renderer/workspace/sections.tsx', import.meta.url).href);
 loader.deregister();
 
-const page = (o: { items?: unknown[]; loading?: boolean; more?: boolean; failed?: boolean } = {}) => ({ items: [], more: false, loading: false, failed: false, loadMore: () => {}, ...o });
+const page = (o: { items?: unknown[]; loading?: boolean; more?: boolean; failed?: boolean; retry?: { failures: number; at: number | null; busy: boolean } } = {}) =>
+  ({ items: [], more: false, loading: false, failed: false, loadMore: () => {}, retry: { failures: o.failed ? 1 : 0, at: null, busy: false }, ...o });
 const html = (el: unknown) => renderToStaticMarkup(el as Parameters<typeof renderToStaticMarkup>[0]);
 const sections = [
   { name: 'Files', render: (p: ReturnType<typeof page>) => html(createElement(Files, { files: p, tools: [] })), empty: 'No file touches recorded.' },
@@ -34,7 +35,7 @@ for (const s of sections) {
     assert.doesNotMatch(pending, new RegExp(s.empty), 'not "none" before the answer');
     // security review M: a failed first load is an error with Retry, never also "none"
     const failed = s.render({ ...page(), failed: true });
-    assert.match(failed, /Records could not be loaded/);
+    assert.match(failed, /Couldn&#x27;t load records/);
     assert.doesNotMatch(failed, new RegExp(s.empty), 'a failed load does not read as none');
     const none = s.render(page());
     assert.match(none, new RegExp(s.empty));
@@ -48,7 +49,26 @@ for (const s of sections) {
     const live = (h: string) => /<span class="x-sr-only" aria-live="polite">([^<]*)<\/span>/.exec(h)?.[1];
     assert.equal(live(s.render(page({ loading: true }))), 'Loading records');
     assert.equal(live(s.render(page({ loading: true, more: true, items: [] }))), 'Loading records');
-    assert.equal(live(s.render(page({ failed: true }))), 'Records could not be loaded');
+    assert.equal(live(s.render(page({ failed: true }))), 'Couldn&#x27;t load records'); // static markup escapes the apostrophe
     assert.equal(live(s.render(page())), '');
+  });
+}
+
+// XAIBO-PROD-438 (D-P4-10): Retry is disabled while it runs and reads Retrying…; a failed retry says Still … · HH:MM;
+// Loading records leads with the loading glyph.
+for (const s of sections) {
+  test(`${s.name}: Retrying state, repeated failure notice, loading glyph`, () => {
+    const busy = s.render(page({ failed: true, loading: true, retry: { failures: 1, at: null, busy: true } }));
+    assert.match(busy, /<button[^>]*aria-disabled="true"[^>]*aria-busy="true"[^>]*>.*Retrying…<\/button>/);
+    const at = new Date(2026, 0, 2, 14, 32).getTime();
+    assert.match(s.render(page({ failed: true, retry: { failures: 2, at, busy: false } })), /Still couldn&#x27;t load records · 14:32/);
+    assert.match(s.render(page({ loading: true })), /class="x-icon x-loading"[\s\S]*Loading records/);
+  });
+}
+
+// review LOW (XAIBO-PROD-438): a background reload after a failure shows Retrying… too (its Retry would do nothing)
+for (const s of sections) {
+  test(`${s.name}: a reload in flight after a failure reads Retrying…`, () => {
+    assert.match(s.render(page({ failed: true, loading: true })), /aria-busy="true"[^>]*>.*Retrying…<\/button>/);
   });
 }

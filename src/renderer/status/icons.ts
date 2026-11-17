@@ -36,6 +36,8 @@ const GEOMETRY = {
   external: [{ kind: 'rect', x: 4, y: 9, w: 11, h: 11 }, line([10, 14], [20, 4]), line([13, 4], [20, 4], [20, 11])],
   // P4-T06b: Stale (design §4)
   'clock-gap': [line([12, 3], [5, 3], [3, 10], [5, 18], [12, 21], [20, 17], [21, 10]), line([12, 7], [12, 12], [16, 12])],
+  // XAIBO-PROD-438 (D-P4-10): in progress; turns per design §2.3 (tokens.css .x-loading)
+  loading: [{ kind: 'path', d: 'M12 4 A8 8 0 1 1 4 12' }],
 } satisfies Record<string, Shape[]>;
 
 export type IconId = keyof typeof GEOMETRY;

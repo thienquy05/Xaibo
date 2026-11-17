@@ -2,11 +2,13 @@
 // fixed section tabs, a section body that scrolls on its own, a fixed bottom bar, and a Details drawer over the body.
 // A live session opens on its latest page, anything else at its first turn; later activity is appended at the end
 // without moving the reading position.
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useMemo, useReducer, useRef, useState, type KeyboardEvent } from 'react';
 import type { CostDetail, FileItem, ModelMarker, SessionDetail, SessionRow, SubagentItem, TCursor, ToolItem, TranscriptItem } from '../../shared/ipc.ts';
 import type { Client } from '../client.ts';
 import { contextText, costText, findingBadges, formatTime, markers as rowMarkers, originText, statusExtras } from '../model.ts';
+import { RetryNotice } from '../components/RetryNotice.tsx';
 import { nextFocus } from '../components/virtual-list-model.ts';
+import { retryIdle, retryStep } from '../retry.ts';
 import { Icon, StatusBadge } from '../status/StatusBadge.tsx';
 import { visible } from '../text.ts';
 import { ContextPane } from './context/ContextSection.tsx';
@@ -43,6 +45,7 @@ const RELOAD_MAX = 5; // pages refetched per live reload (re-review)
 function usePaged<T, C>(fetch: (c: C | null) => Promise<{ items: T[]; next: C | null }>, pages: number, key: unknown): Paged<T> {
   const [s, setS] = useState<{ items: T[]; next: C | null; loading: boolean; failed: boolean; reloadFailed: boolean }>({ items: [], next: null, loading: true, failed: false, reloadFailed: false });
   const [retry, setRetry] = useState(0);
+  const [rt, rtDo] = useReducer(retryStep, retryIdle); // XAIBO-PROD-438: Retry state for the notice
   const gen = useRef(0);
   const loaded = useRef(0); // pages currently shown
   const fetchRef = useRef(fetch);
@@ -62,12 +65,14 @@ function usePaged<T, C>(fetch: (c: C | null) => Promise<{ items: T[]; next: C | 
       if (p.next !== null && got < want) return step(p.next);
       loaded.current = got;
       setS({ items: acc, next: p.next, loading: false, failed: false, reloadFailed: false });
+      rtDo({ type: 'ok' });
       return undefined;
-    }, () => { if (gen.current === g) setS((x) => ({ ...x, loading: false, failed: true, reloadFailed: true })); });
+    }, () => { if (gen.current === g) { setS((x) => ({ ...x, loading: false, failed: true, reloadFailed: true })); rtDo({ type: 'fail', at: Date.now() }); } });
     void step(null);
   }, [key, pages, retry]);
   const loadMore = () => {
     if (s.loading) return;
+    if (s.failed) rtDo({ type: 'start' }); // a Retry: disabled until it settles
     if (s.reloadFailed) { setRetry((r) => r + 1); return; }
     if (s.next === null) return;
     const g = gen.current;
@@ -76,9 +81,10 @@ function usePaged<T, C>(fetch: (c: C | null) => Promise<{ items: T[]; next: C | 
       if (gen.current !== g) return;
       loaded.current++;
       setS((x) => ({ items: [...x.items, ...p.items], next: p.next, loading: false, failed: false, reloadFailed: false }));
-    }, () => { if (gen.current === g) setS((x) => ({ ...x, loading: false, failed: true })); });
+      rtDo({ type: 'ok' });
+    }, () => { if (gen.current === g) { setS((x) => ({ ...x, loading: false, failed: true })); rtDo({ type: 'fail', at: Date.now() }); } });
   };
-  return { items: s.items, more: s.next !== null, loading: s.loading, failed: s.failed, loadMore };
+  return { items: s.items, more: s.next !== null, loading: s.loading, failed: s.failed, loadMore, retry: rt };
 }
 
 interface Window { items: TranscriptItem[]; prev: TCursor | null; next: TCursor | null; loading: boolean; failed: boolean; loaded: boolean }
@@ -106,19 +112,22 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
   // Review M (P4-T06b): a rejected or null detail is a failure the Context tab shows with Retry; a later success clears it.
   const [detailFailed, setDetailFailed] = useState(false);
   const [detailRetry, setDetailRetry] = useState(0);
+  const [detailRt, detailRtDo] = useReducer(retryStep, retryIdle); // XAIBO-PROD-438
   useEffect(() => {
     let on = true;
-    api.session(id).then((d) => { if (!on) return; if (d) setDetail(d); setDetailFailed(d === null); }, () => { if (on) setDetailFailed(true); });
+    api.session(id).then((d) => { if (!on) return; if (d) setDetail(d); setDetailFailed(d === null); detailRtDo(d === null ? { type: 'fail', at: Date.now() } : { type: 'ok' }); },
+      () => { if (on) { setDetailFailed(true); detailRtDo({ type: 'fail', at: Date.now() }); } });
     return () => { on = false; };
   }, [api, id, activity, detailRetry]);
   // P4-T07b: the cost breakdown is fetched only while the Cost tab is shown, and again on activity or Retry.
   const [cost, setCost] = useState<CostDetail | null | undefined>(undefined);
   const [costFailed, setCostFailed] = useState(false);
   const [costRetry, setCostRetry] = useState(0);
+  const [costRt, costRtDo] = useReducer(retryStep, retryIdle); // XAIBO-PROD-438
   useEffect(() => {
     if (section !== 'cost') return;
     let on = true;
-    api.cost(id).then((c) => { if (on) { setCost(c); setCostFailed(false); } }, () => { if (on) setCostFailed(true); });
+    api.cost(id).then((c) => { if (on) { setCost(c); setCostFailed(false); costRtDo({ type: 'ok' }); } }, () => { if (on) { setCostFailed(true); costRtDo({ type: 'fail', at: Date.now() }); } });
     return () => { on = false; };
   }, [api, id, activity, section, costRetry]);
 
@@ -130,6 +139,7 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
   // The transcript window: replaced by Go to first turn / Go to latest, grown by Load earlier / Load more.
   const [tr, setTr] = useState<Window>({ items: [], prev: null, next: null, loading: true, failed: false, loaded: false });
   const trGen = useRef(0);
+  const [trRt, trRtDo] = useReducer(retryStep, retryIdle); // XAIBO-PROD-438
   const trRef = useRef(tr);
   trRef.current = tr;
   const [fresh, setFresh] = useState(false); // New activity available
@@ -139,9 +149,10 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
   const loadAt = (at: 'first' | 'latest') => {
     const g = ++trGen.current;
     setFresh(false);
+    if (trRef.current.failed) trRtDo({ type: 'start' }); // a (re)load after a failure: the notice shows Retrying…
     setTr((s) => ({ ...s, loading: true }));
-    api.transcript(id, at, PAGE).then((p) => { if (trGen.current === g) { autoReloaded.current = false; setTr({ items: p.items, prev: p.prev, next: p.next, loading: false, failed: false, loaded: true }); } },
-      () => { if (trGen.current === g) setTr((s) => ({ ...s, loading: false, failed: true })); });
+    api.transcript(id, at, PAGE).then((p) => { if (trGen.current === g) { autoReloaded.current = false; trRtDo({ type: 'ok' }); setTr({ items: p.items, prev: p.prev, next: p.next, loading: false, failed: false, loaded: true }); } },
+      () => { if (trGen.current === g) { trRtDo({ type: 'fail', at: Date.now() }); setTr((s) => ({ ...s, loading: false, failed: true })); } });
   };
   const grow = (dir: 'after' | 'before') => {
     const s = trRef.current;
@@ -153,7 +164,8 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
       if (trGen.current !== g) return;
       setTr((x) => (dir === 'after' ? trimWindow({ ...x, items: [...x.items, ...p.items], next: p.next, loading: false, failed: false }, 'end')
         : trimWindow({ ...x, items: [...p.items, ...x.items], prev: p.prev, loading: false, failed: false }, 'start')));
-    }, () => { if (trGen.current === g) setTr((x) => ({ ...x, loading: false, failed: true })); });
+      trRtDo({ type: 'ok' });
+    }, () => { if (trGen.current === g) { trRtDo({ type: 'fail', at: Date.now() }); setTr((x) => ({ ...x, loading: false, failed: true })); } });
   };
   const initial = useRef(initialAt(row));
   useEffect(() => { loadAt(initial.current); }, []); // once per opened session (the component is keyed by session id)
@@ -220,7 +232,7 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
         <div className="x-open-title">
           <button type="button" className="x-btn x-btn-quiet x-icon-btn x-narrow-only" aria-label="Back to session list" onClick={onBack}><Icon id="back" /></button>
           {!listShown ? <button type="button" className="x-btn x-btn-quiet x-icon-btn x-wide-only" aria-label="Show session list" onClick={onShowList}><Icon id="session" /></button> : null}
-          {onReturn ? <button type="button" className="x-btn x-btn-quiet x-return" onClick={onReturn}><Icon id="back" />Return to Dashboard</button> : null}
+          {onReturn ? <button type="button" className="x-btn x-btn-quiet x-return" onClick={onReturn}><Icon id="dashboard" />Return to Dashboard</button> : null}
           <h2 id="open-session-title" ref={titleRef} tabIndex={-1}>{title}</h2>
         </div>
         <div className="x-actions">
@@ -254,15 +266,15 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
                 : section === 'files' ? <div className="x-scroll"><Files files={files} tools={tools.items} /></div>
                   // ponytail: Stale is evaluated at render (detail reloads on activity); a quiet live session shows it
                   // only on its next render. Add a minute tick if a quiet session must flip to Stale on its own.
-                  : section === 'context' ? <div className="x-scroll"><ContextPane row={row} detail={detail} failed={detailFailed} onRetry={() => setDetailRetry((n) => n + 1)} now={Date.now()} /></div>
-                    : <div className="x-scroll"><CostPane cost={cost} failed={costFailed} onRetry={() => { setCostFailed(false); setCostRetry((n) => n + 1); }} /></div>}
+                  : section === 'context' ? <div className="x-scroll"><ContextPane row={row} detail={detail} failed={detailFailed} retry={detailRt} onRetry={() => { detailRtDo({ type: 'start' }); setDetailRetry((n) => n + 1); }} now={Date.now()} /></div>
+                    : <div className="x-scroll"><CostPane cost={cost} failed={costFailed} retry={costRt} onRetry={() => { costRtDo({ type: 'start' }); setCostRetry((n) => n + 1); }} /></div>}
         {/* review M4: a live region present from the start, so the notice is announced; review L6: only while more follows */}
         <p className="x-sr-only" aria-live="polite">{notice ? 'New activity available' : ''}</p>
         {notice && (section === 'conversation' || section === 'timeline') ? (
           <p className="x-earlier">New activity available <button type="button" className="x-btn x-btn-secondary"
             onClick={() => { loadAt('latest'); latestRef.current?.focus(); }}>Go to latest</button></p>
         ) : null}
-        {tr.failed && (section === 'conversation' || section === 'timeline') ? <p className="x-gap" role="alert">The transcript could not be loaded <button type="button" className="x-btn x-btn-secondary" onClick={() => loadAt(initial.current)}>Retry</button></p> : null}
+        {tr.failed && (section === 'conversation' || section === 'timeline') ? <RetryNotice thing="transcript" retry={trRt} onRetry={() => loadAt(initial.current)} /> : null}
       </div>
       <div className="x-foot" inert={drawer}>
         <span className="x-foot-left"><Icon id="external" />Read-only observation</span>

@@ -8,14 +8,15 @@ import type { IconId } from './status/icons.ts';
 import { visible } from './text.ts';
 
 // XAIBO-PROD-436 (D-P4-09): paused (disk full) takes the coverage banner's warning glyph and tone
-const GLYPH: Record<BandState, IconId> = { starting: 'hourglass', running: 'link', restarting: 'restore', stopped: 'ended', paused: 'finding' };
+// XAIBO-PROD-438 (D-P4-10): Starting and Restarting are in progress: the animated loading glyph
+const GLYPH: Record<BandState, IconId> = { starting: 'loading', running: 'link', restarting: 'loading', stopped: 'ended', paused: 'finding' };
 const TONE: Record<BandState, string> = { starting: 'muted', running: 'success', restarting: 'warning', stopped: 'danger', paused: 'warning' };
 
 export function HealthStatus({ health, banners }: { health: Health | null; banners: readonly Banner[] }) {
   const band = bandText(health, banners);
   return (
     <>
-      <p role="status" aria-live="polite" className="x-band"><span className={`x-tone-${TONE[band.state]}`}><Icon id={GLYPH[band.state]} /></span> Collection: {band.text}</p>
+      <p role="status" aria-live="polite" className="x-band"><span className={`x-tone-${TONE[band.state]}`}><Icon id={GLYPH[band.state]} /></span><span className="x-band-text">Collection: {band.text}</span></p>
       {health?.readOnly ? <p role="alert">{READ_ONLY_BANNER[health.readOnly]}</p> : null}
     </>
   );
