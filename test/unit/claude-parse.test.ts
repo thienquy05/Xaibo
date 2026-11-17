@@ -116,7 +116,9 @@ test('EC-16: cwd comes only from records and keeps Unicode, spaces and length', 
 });
 
 test('injected content is flagged and never a prompt', () => {
-  for (const content of ['<command-name>/clear</command-name>', [{ type: 'text', text: '<local-command-stdout>ok</local-command-stdout>' }]]) {
+  // XAIBO-PROD-440: agent-injected reminders and background-task notifications (Gate 4 facts, Claude 2.1.325)
+  for (const content of ['<command-name>/clear</command-name>', [{ type: 'text', text: '<local-command-stdout>ok</local-command-stdout>' }],
+    '<system-reminder>synthetic note</system-reminder>', [{ type: 'text', text: '<task-notification>\n<task-id>t1</task-id>' }]]) {
     const r = parseLine(line({ type: 'user', uuid: '00000000-0000-4000-8000-000000009930', message: { role: 'user', content } }), { ...ctx, offset: 0 });
     assert.ok(r?.ok);
     assert.equal(r.record.injected, true);

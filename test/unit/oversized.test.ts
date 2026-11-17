@@ -67,6 +67,10 @@ test('S9 large-payload fields and top-level content are readable; other strings 
 
 test('injected content is flagged on the head', () => {
   assert.equal(run('{"type":"user","uuid":"U4","message":{"role":"user","content":"<command-name>/x</command-name> rest"}}', 4).head.injected, true);
+  // XAIBO-PROD-440
+  assert.equal(run('{"type":"user","uuid":"U4a","message":{"role":"user","content":"<system-reminder>note</system-reminder>"}}', 4).head.injected, true);
+  assert.equal(run('{"type":"user","uuid":"U4b","message":{"role":"user","content":[{"type":"text","text":"<task-notification>x"}]}}', 4).head.injected, true);
+  assert.equal(run('{"type":"user","uuid":"U4c","message":{"role":"user","content":"plain words"}}', 4).head.injected, false);
 });
 
 test('a syntax error leaves a gap: content read before it is kept, raw is kept in full', () => {

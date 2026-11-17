@@ -10,7 +10,8 @@ export const KNOWN_TYPES = new Set(['api-request', 'api-request-blob', 'api-requ
   'agent-color', 'agent-name', 'ai-title', 'artifact-autoreact-ledger', 'artifact-comment-monitor', 'bridge-session', 'custom-title',
   'failed', 'file-history-delta', 'file-history-snapshot', 'frame-link', 'launched', 'permission-mode', 'pr-link', 'relocated',
   'result', 'started']);
-export const INJECTED_PREFIXES = ['<command-name>', '<local-command-caveat>', '<local-command-stdout>'];
+// XAIBO-PROD-440: agent-injected reminders and background-task notifications (Gate 4 facts) are not prompts either
+export const INJECTED_PREFIXES = ['<command-name>', '<local-command-caveat>', '<local-command-stdout>', '<system-reminder>', '<task-notification>'];
 
 export interface ParseContext { offset: number; fileMtime: number; receivedTs: number; subagentNativeId?: string }
 export interface ClaudeRecord {
