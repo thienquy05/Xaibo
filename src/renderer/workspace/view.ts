@@ -113,6 +113,28 @@ export function appendLive<W extends { items: TranscriptItem[]; next: TCursor | 
   const last = w.items.at(-1);
   return last ? { ...w, next: { seq: last.seq, id: last.event } } : w;
 }
+/** XAIBO-PROD-451 (G4d-4): a live page appended to a window still ending at `last` (else the window is left alone). An
+ *  empty page keeps its continuation cursor: the service returns one when its scan budget meets bookkeeping records. */
+export const liveAppend = <W extends { items: TranscriptItem[]; next: TCursor | null }>(w: W, last: TranscriptItem, page: { items: TranscriptItem[]; next: TCursor | null }): W =>
+  (w.items.at(-1) === last ? appendLive(w, page) : w);
+
+/** XAIBO-PROD-451 (G4d-3): forward pages from the start, up to `want` pages; null when `live()` turns false (a newer
+ *  load superseded it). A rejected page rejects the whole load. */
+export async function loadPages<T, C>(fetch: (c: C | null) => Promise<{ items: T[]; next: C | null }>, want: number, live: () => boolean = () => true):
+  Promise<{ items: T[]; next: C | null; pages: number } | null> {
+  let items: T[] = [];
+  let c: C | null = null;
+  for (let pages = 1; ; pages++) {
+    const p = await fetch(c);
+    if (!live()) return null;
+    items = [...items, ...p.items];
+    if (p.next === null || pages >= want) return { items, next: p.next, pages };
+    c = p.next;
+  }
+}
+// ponytail: markers come from the first 10 pages; each page scans at most SCAN_MAX (1,000) turns, so ~10,000 turns.
+// Page the markers by the transcript window's range if sessions that long are common.
+export const MARKER_PAGES = 10;
 
 /** XAIBO-PROD-437 (design §8.1): the name of a focusable Conversation/Activity entry: its kind and clock time, never its
  *  content. */

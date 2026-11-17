@@ -15,7 +15,7 @@ import { ContextPane } from './context/ContextSection.tsx';
 import { CostPane } from './cost/CostSection.tsx';
 import { Conversation, Files, Subagents, Timeline, Tools, type Anchor, type Paged, type SliceFn } from './sections.tsx';
 import { mergeTimeline } from './timeline.ts';
-import { appendLive, compactStatus, countText, incompleteReasons, initialAt, liveAction, loadAnchor, settled, trimWindow, WINDOW_MAX } from './view.ts';
+import { compactStatus, countText, incompleteReasons, initialAt, liveAction, liveAppend, loadAnchor, loadPages, MARKER_PAGES, settled, trimWindow, WINDOW_MAX } from './view.ts';
 
 export type WorkspaceApi = Pick<Client, 'session' | 'transcript' | 'slice' | 'tools' | 'subagents' | 'files' | 'markers' | 'cost'>;
 const PAGE = 50;
@@ -55,20 +55,13 @@ function usePaged<T, C>(fetch: (c: C | null) => Promise<{ items: T[]; next: C | 
     // ponytail: a live reload refetches at most RELOAD_MAX pages; pages loaded beyond that drop back on activity.
     // Refresh only the last loaded page if users page that far through busy sessions.
     const want = Math.max(pages, Math.min(loaded.current, RELOAD_MAX));
-    let acc: T[] = [];
-    let got = 0;
     setS((x) => ({ ...x, loading: true }));
-    const step = (c: C | null): Promise<void> => fetchRef.current(c).then((p) => {
-      if (gen.current !== g) return undefined;
-      acc = [...acc, ...p.items];
-      got++;
-      if (p.next !== null && got < want) return step(p.next);
-      loaded.current = got;
-      setS({ items: acc, next: p.next, loading: false, failed: false, reloadFailed: false });
+    loadPages((c: C | null) => fetchRef.current(c), want, () => gen.current === g).then((r) => {
+      if (!r) return;
+      loaded.current = r.pages;
+      setS({ items: r.items, next: r.next, loading: false, failed: false, reloadFailed: false });
       rtDo({ type: 'ok' });
-      return undefined;
     }, () => { if (gen.current === g) { setS((x) => ({ ...x, loading: false, failed: true, reloadFailed: true })); rtDo({ type: 'fail', at: Date.now() }); } });
-    void step(null);
   }, [key, pages, retry]);
   const loadMore = () => {
     if (s.loading) return;
@@ -134,7 +127,7 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
   const tools = usePaged<ToolItem, number>((c) => api.tools(id, c, LEDGER_PAGE).then((r) => ({ items: r.calls, next: r.next })), TOOL_PAGES, activity);
   const files = usePaged<FileItem, number>((c) => api.files(id, c, LEDGER_PAGE).then((r) => ({ items: r.touches, next: r.next })), 1, activity);
   const subagents = usePaged<SubagentItem, number>((c) => api.subagents(id, c, LEDGER_PAGE).then((r) => ({ items: r.subagents, next: r.next })), 1, activity);
-  const markers = usePaged((c: { ts: number; id: number } | null) => api.markers(id, c, LEDGER_PAGE).then((r) => ({ items: r.markers as ModelMarker[], next: r.next })), 1, activity);
+  const markers = usePaged((c: { ts: number; id: number } | null) => api.markers(id, c, LEDGER_PAGE).then((r) => ({ items: r.markers as ModelMarker[], next: r.next })), MARKER_PAGES, activity);
 
   // The transcript window: replaced by Go to first turn / Go to latest, grown by Load earlier / Load more.
   const [tr, setTr] = useState<Window>({ items: [], prev: null, next: null, loading: true, failed: false, loaded: false });
@@ -187,8 +180,8 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
         const last = s.items.at(-1)!;
         const g = trGen.current;
         api.transcript(id, { after: { seq: last.seq, id: last.event } }, PAGE).then((p) => {
-          if (trGen.current !== g || !p.items.length) return;
-          setTr((x) => (x.items.at(-1) === last ? appendLive(x, p) : x));
+          if (trGen.current !== g) return; // XAIBO-PROD-451: an empty page still carries its continuation cursor
+          setTr((x) => liveAppend(x, last, p));
           // More than one page arrived, or the window is full: the rest is offered, not pulled (review L6).
           if (p.next !== null || s.items.length + p.items.length > WINDOW_MAX) setFresh(true);
         }, () => undefined).finally(() => { // review M2: a change during the append (or a failed one) runs again
@@ -276,6 +269,9 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
             onClick={() => { loadAt('latest'); latestRef.current?.focus(); }}>Go to latest</button></p>
         ) : null}
         {tr.failed && (section === 'conversation' || section === 'timeline') ? <RetryNotice thing="transcript" retry={trRt} onRetry={() => loadAt(initial.current)} /> : null}
+        {/* XAIBO-PROD-451 (G4d-3): a failed marker load is said, never silent */}
+        {markers.failed && (section === 'conversation' || section === 'timeline')
+          ? <RetryNotice thing="model markers" retry={{ ...markers.retry, busy: markers.retry.busy || markers.loading }} onRetry={markers.loadMore} /> : null}
       </div>
       <div className="x-foot" inert={drawer}>
         <span className="x-foot-left"><Icon id="external" />Read-only observation</span>

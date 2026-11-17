@@ -393,3 +393,29 @@ test('markers: timed model/effort changes in turn order, across page boundaries;
   assert.equal(p2.next, null);
   assert.deepEqual(mk(null, 50).markers.map((x) => x.turn), [1, 3, 6]);
 });
+
+// XAIBO-PROD-451 (G4d-3; EC-102): a switch past the service's per-request scan budget still reaches the open session.
+// The renderer pages markers with loadPages up to MARKER_PAGES pages (the paging usePaged uses).
+test('markers: a 1,200-turn session with a switch at turn 1,100 yields both markers through the renderer paging', async () => {
+  const { loadPages, MARKER_PAGES } = await import('../../src/renderer/workspace/view.ts');
+  const { db } = await store();
+  const turn = db.prepare(`INSERT INTO turns (id, session_id, schema_version, source, native_turn_id, started_at, model_id, effort) VALUES (?, 1, 1, 'transcript', ?, ?, ?, NULL)`);
+  db.exec('BEGIN');
+  for (let i = 1; i <= 1200; i++) turn.run(i, `t${i}`, T + i, i < 1100 ? 'model-a' : 'model-b');
+  db.exec('COMMIT');
+  const fetch = async (cursor: { ts: number; id: number } | null) => {
+    const r = answerMarkers(db, { v: 1, type: 'markers', id: 7, session: 1, cursor, limit: 100 });
+    return { items: r.markers, next: r.next };
+  };
+  assert.ok(SCAN_MAX < 1100, 'the switch lies past one request');
+  const got = await loadPages(fetch, MARKER_PAGES);
+  assert.deepEqual(got!.items.map((m) => [m.turn, m.model]), [[1, 'model-a'], [1100, 'model-b']]);
+  assert.equal(got!.next, null);
+  assert.ok(got!.pages >= 2);
+  // the budget is a ceiling: one page stops with a cursor
+  const one = await loadPages(fetch, 1);
+  assert.deepEqual(one!.items.map((m) => m.turn), [1]);
+  assert.notEqual(one!.next, null);
+  // a superseded load (live() false) gives nothing
+  assert.equal(await loadPages(fetch, MARKER_PAGES, () => false), null);
+});

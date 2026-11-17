@@ -175,3 +175,17 @@ test('the anchor after a transcript load: first at the start, latest at the end,
   assert.equal(loadAnchor('after'), null);
   assert.equal(loadAnchor('before'), null);
 });
+
+// XAIBO-PROD-451 (G4d-4): a live continuation page can be empty with a cursor (the service's scan budget met bookkeeping
+// records); the window keeps that cursor, so paging continues and New activity available shows.
+test('a live append keeps an empty page continuation cursor; a window whose end moved is left alone', async () => {
+  const { liveAppend } = await import('../../../src/renderer/workspace/view.ts');
+  const item = (e: number): TranscriptItem => ({ event: e, seq: e * 10, ts: null, kind: 'prompt', preview: 'p', length: 1, reasoning: false, callId: null });
+  const w = { items: [item(1), item(2)], prev: null, next: null };
+  const cur = { seq: 990, id: 99 };
+  const empty = liveAppend(w, w.items[1]!, { items: [], next: cur });
+  assert.deepEqual(empty.items, w.items);
+  assert.deepEqual(empty.next, cur);
+  assert.deepEqual(liveAppend(w, w.items[1]!, { items: [item(3)], next: null }).items.map((i) => i.event), [1, 2, 3]);
+  assert.equal(liveAppend(w, item(7), { items: [item(3)], next: cur }), w, 'the window changed since the append started');
+});
