@@ -13,6 +13,14 @@ export interface Window { from: bigint; to: bigint }
 const ms = (a: bigint, b: bigint) => Number(b - a) / 1e6;
 
 /** `faults` (P4-T12b): further windows (disk full) kept apart like the restart window; their samples join its bucket. */
+/** G4f-2: events a full profile run emits (steady rate plus the bursts' extra), so an underloaded run cannot pass. */
+export function expectedEvents(p: { rate: number; burstRate: number; burstEverySec: number; burstSec: number; seconds: number }): number {
+  const bursts = p.burstEverySec > 0 ? Math.floor(p.seconds / p.burstEverySec) : 0;
+  return p.seconds * p.rate + bursts * p.burstSec * (p.burstRate - p.rate);
+}
+/** Load qualifies at >= 95 % of the expected events (serial emit loops drop slots after a stall). */
+export const loadQualifies = (emitted: number, p: Parameters<typeof expectedEvents>[0]) => emitted >= 0.95 * expectedEvents(p);
+
 export function analyze(o: { emitted: Emitted[]; service: TraceLine[]; main: TraceLine[]; restart: Window | null; faults?: Window[]; loadEnd: bigint }) {
   // Indexes built once: per id its commits and deltas, per delta number its paints, each in time order.
   const by = <K>(lines: TraceLine[], keys: (l: TraceLine) => K[]) => {

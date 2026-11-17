@@ -81,12 +81,13 @@ const assistant = (sid: string, uuid: string, n: number) => claudeLine(sid, uuid
 const compaction = (sid: string, uuid: string) => claudeLine(sid, uuid, { type: 'system', subtype: 'compact_boundary', content: 'synthetic compaction',
   isMeta: false, level: 'info', compactMetadata: { trigger: 'manual', preTokens: 1200 } });
 
-/** In-page wait for the row with this cwd to show `text` in its status cell; wall-clock ms when seen. */
+/** In-page wait for the Session area's compact row with this cwd to show `text` in its status; wall-clock ms when seen.
+ *  Gate 4: Phase 4 replaced the Phase 3 table (`tr`/`td`) with compact rows (`.x-srow`, data-field folder/status). */
 const rowShows = (page: Page, cwd: string, text: string, timeout: number) => page.evaluate(async ({ cwd, text, timeout }) => {
   const t0 = performance.now();
   while (performance.now() - t0 < timeout) {
-    const row = [...document.querySelectorAll('tr')].find((r) => r.querySelectorAll('td')[2]?.textContent === cwd);
-    if (row?.querySelectorAll('td')[7]?.textContent?.includes(text)) return performance.timeOrigin + performance.now();
+    const row = [...document.querySelectorAll('.x-srow')].find((r) => r.querySelector('[data-field="folder"]')?.textContent === cwd);
+    if (row?.querySelector('[data-field="status"]')?.textContent?.includes(text)) return performance.timeOrigin + performance.now();
     await new Promise((r) => requestAnimationFrame(r));
   }
   return null;
@@ -184,7 +185,21 @@ export async function liveProbe() {
         rate_limits: { limit_id: 'codex', primary: { used_percent: i, window_minutes: 300, resets_at: Math.floor(Date.now() / 1000) + 3600 } } } });
       m2.codexTokenCount!.push(await append(rollout, `${tc}\n`, `${codexIdentity}:${offset}`));
     }
-    const priced = await l.page.evaluate((cwd) => [...document.querySelectorAll('tr')].find((r) => r.querySelectorAll('td')[2]?.textContent === cwd)?.textContent?.includes('~$') ?? false, CWD);
+    // Gate 4: the estimated cost shows on the Dashboard's live records (the compact Session rows carry no cost); the
+    // live list is virtual, so it is scrolled until the record with this cwd is mounted
+    const areas = l.page.getByRole('navigation', { name: 'Areas' });
+    await areas.getByRole('link', { name: 'Dashboard', exact: true }).click();
+    const priced = await l.page.evaluate(async (cwd) => {
+      for (let i = 0; i < 60; i++) {
+        const rec = [...document.querySelectorAll('article.x-record')].find((r) => r.querySelector('[data-field="folder"]')?.textContent === cwd);
+        if (rec) return rec.querySelector('[data-field="cost"]')?.textContent?.includes('~$') ?? false;
+        const list = document.querySelector('[aria-label="Live sessions"]')?.parentElement;
+        if (list) list.scrollTop += 200;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return false;
+    }, CWD);
+    await areas.getByRole('link', { name: 'Session', exact: true }).click();
     const recovery: number[] = [];
     for (const s of stale) { const id = randomUUID(); recovery.push(await append(s.f, user(s.sid, id), id)); }
 
@@ -413,12 +428,13 @@ export async function coldStartProbe(corpus: string, runs: number) {
       } finally { await close(l); }
     }
     const s = { m12: stats(m12), show: stats(show), m13: stats(m13) };
-    // review M3: a source read that was tried and swallowed would log EACCES; every error code the service logged is reported
+    // review M3 / G4f-5: the tail adapter swallows read failures without logging, so log silence cannot prove that no read was
+    // attempted; this check says only that the service logged no EACCES (the render-from-store proof is rendersWithoutSource)
     const errors = serviceLog(dataDir).filter((e) => 'error' in e).map((e) => `${e.event}:${String((e as { error?: unknown }).error)}`);
     const checks = {
       runs: runs >= 20, m12: s.m12.n === runs && s.m12.p95 <= COLD.m12, show: s.show.n === runs && s.show.p95 <= COLD.show,
       m13: s.m13.n === runs && s.m13.p95 <= COLD.m13, sameWindow: sameWindow === runs, rendersWithoutSource: firstItemMissing === 0,
-      noSourceReadAttempt: !errors.some((x) => x.includes('EACCES')),
+      noEaccesLogged: !errors.some((x) => x.includes('EACCES')),
     };
     return { metric: 'cold-tray-huge', tier: 'T0', runs, budgetsMs: COLD, sessionBytes: statSync(transcript).size, importMs,
       storeBytes: statSync(path.join(dataDir, 'xaibo.db')).size, m12ColdToUsableListMs: s.m12, trayToPaintedMs: s.show, m13SelectToFirstPageMs: s.m13,

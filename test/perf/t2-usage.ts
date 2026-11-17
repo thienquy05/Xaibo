@@ -43,23 +43,27 @@ export function installTee(dataDir: string, profile: string): string {
   return command;
 }
 
-export interface Timed { t0: bigint; ms: number; out: number; err: number; code: number | null }
-/** Spawns `file` with `stdin`; wall time and the bytes it wrote. */
+export interface Timed { t0: bigint; ms: number; out: Buffer; err: Buffer; code: number | null }
+/** Spawns `file` with `stdin`; wall time and the bytes it wrote (G4f-3: the bytes themselves, not only their count). */
 export function timed(file: string, args: string[], stdin: string): Promise<Timed> {
   return new Promise((resolve, reject) => {
     const t0 = now();
     // review M6: a hung command is killed, so a loop always ends and cleanup runs
     const c = spawn(file, args, { stdio: ['pipe', 'pipe', 'pipe'], env: { PATH: '/usr/bin:/bin' }, timeout: 30_000 });
-    let out = 0;
-    let err = 0;
-    c.stdout.on('data', (d: Buffer) => { out += d.length; });
-    c.stderr.on('data', (d: Buffer) => { err += d.length; });
+    const out: Buffer[] = [];
+    const err: Buffer[] = [];
+    c.stdout.on('data', (d: Buffer) => { out.push(d); });
+    c.stderr.on('data', (d: Buffer) => { err.push(d); });
     c.stdin.on('error', () => undefined);
     c.on('error', reject);
-    c.on('close', (code) => resolve({ t0, ms: Number(now() - t0) / 1e6, out, err, code }));
+    c.on('close', (code) => resolve({ t0, ms: Number(now() - t0) / 1e6, out: Buffer.concat(out), err: Buffer.concat(err), code }));
     c.stdin.end(stdin);
   });
 }
+
+/** M7 / FR-45 per frame: the tee's stdout is byte for byte the original's, it writes no stderr and mirrors the exit code. */
+export const teeMatches = (tee: Pick<Timed, 'out' | 'err' | 'code'>, original: Pick<Timed, 'out' | 'code'>) =>
+  tee.out.equals(original.out) && tee.err.length === 0 && tee.code === original.code;
 export const sh = (command: string, stdin: string) => timed('/bin/sh', ['-c', command], stdin);
 
 /** A Codex token_count record (cumulative totals, last request, rate limits), or a malformed one of valid JSON (wrong
@@ -72,14 +76,15 @@ export function codexTokenCount(total: number, k: number, bad: boolean): string 
     rate_limits: { limit_name: null, primary: { used_percent: k % 100, window_minutes: 300, resets_at: 1767243600 }, secondary: { used_percent: 38, window_minutes: 10080, resets_at: 1767830400 } } } })}\n`;
 }
 
-/** A sparse HFS+ image of `gib` GiB mounted at `<root>/vol`; the undo detaches it and removes the image. */
+/** A sparse HFS+ image of `gib` GiB mounted at `<root>/vol`; the undo detaches it, then removes the image (G4f-1: a
+ *  failed detach throws and leaves the image, so the printed `hdiutil detach -force` recovery still has its file). */
 export function volume(root: string, gib: number): { mount: string; detach: () => void } {
   const img = path.join(root, 'vol.sparseimage');
   const mount = path.join(root, 'vol');
   execFileSync('/usr/bin/hdiutil', ['create', '-size', `${gib}g`, '-type', 'SPARSE', '-fs', 'HFS+', '-volname', 'xaibo-perf', img], { stdio: 'ignore' });
   mkdirSync(mount);
   execFileSync('/usr/bin/hdiutil', ['attach', '-nobrowse', '-mountpoint', mount, img], { stdio: 'ignore' });
-  return { mount, detach: () => { try { execFileSync('/usr/bin/hdiutil', ['detach', mount, '-force'], { stdio: 'ignore' }); } finally { rmSync(img, { force: true }); } } };
+  return { mount, detach: () => { execFileSync('/usr/bin/hdiutil', ['detach', mount, '-force'], { stdio: 'ignore' }); rmSync(img, { force: true }); } };
 }
 
 /** Fills the volume holding `file` to the byte in shrinking chunks (as m16.ts `full`, large chunks first); true when full. */

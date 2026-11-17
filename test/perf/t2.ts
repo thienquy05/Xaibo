@@ -13,9 +13,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { claudeProfile } from '../helpers/hook-socket.ts';
 import { close, environment, launch, serviceLog, sleep, stats, tornLogLines, type Launched } from './app.ts';
 import { emit, installHelpers, now } from './emitter.ts';
-import { analyze, type Emitted, type TraceLine, type Window } from './t2-analysis.ts';
+import { analyze, loadQualifies, type Emitted, type TraceLine, type Window } from './t2-analysis.ts';
 import { footprintMiB, psTree } from './m16.ts';
-import { codexTokenCount, fillVolume, FRAME_MS, frame, installTee, MALFORMED_EVERY, malformed, ORIGINAL, sh, timed, volume, type Timed } from './t2-usage.ts';
+import { codexTokenCount, fillVolume, FRAME_MS, frame, installTee, MALFORMED_EVERY, malformed, ORIGINAL, sh, teeMatches, timed, volume, type Timed } from './t2-usage.ts';
 
 type Profile = { sessions: number; codexShare: number; rate: number; burstRate: number; burstEverySec: number; burstSec: number; seconds: number };
 // TP (PRD §6.6): 5 live sessions at ~20 events/s with bursts to 50/s. T2: 50 live sessions at 200 events/s for 10 min.
@@ -101,7 +101,12 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
   let db: DatabaseSync | undefined;
   let vol: ReturnType<typeof volume> | undefined;
   // review M6: Ctrl-C must not leave the image mounted (up to 4 GiB of host disk)
-  const onSigint = () => { try { vol?.detach(); } finally { rmSync(root, { recursive: true, force: true }); process.exit(130); } };
+  // G4f-1: delete the root only after a successful detach (never through a still-mounted volume); always exit 130
+  const onSigint = () => {
+    let detached = true;
+    try { vol?.detach(); } catch { detached = false; }
+    try { if (detached) rmSync(root, { recursive: true, force: true }); } finally { process.exit(130); }
+  };
   try {
     const home = path.join(root, 'home');
     // concurrent backfill: the T1 mixed corpus, cloned copy-on-write with its timestamps (as in importProbe, P3-T16d)
@@ -248,7 +253,7 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
     // before the fill (as the kill's) and closes RESTART_SETTLE_MS after the free.
     const banner = () => launched.page.getByText('Disk full: collection paused').first().isVisible().catch(() => false);
     let full: Window | null = null;
-    const diskFull = { fillMs: null as number | null, bannerShown: false, bannerCleared: null as boolean | null, workspaceReopened: null as boolean | null,
+    const diskFull = { fillMs: null as number | null, bannerShown: false, bannerCleared: null as boolean | null, workspaceReopened: null as boolean | null, reopenMs: null as number | null,
       skipped: !vol }; // review L11: --no-disk-full passes diskFullFaulted by skipping it
     const fillFile = vol ? path.join(vol.mount, 'fill.bin') : '';
     const fault = async () => {
@@ -266,9 +271,14 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
       for (const end = Date.now() + 15_000; Date.now() < end && await banner();) await sleep(250);
       diskFull.bannerCleared = !(await banner());
       // review H1: back in the Session area with the workspace open again before the window can close
-      await area('Session');
-      diskFull.workspaceReopened = await launched.page.getByText(`${CWD}-${sessions[0]!.sid}`).first().click({ timeout: 10_000 }).then(() => true, () => false);
+      // G4f-4: the fault window ends at the clear plus settle, so a slow reopen is measured, not hidden; the reopen counts
+      // only when the open session's section group shows, and it is a diskFullFaulted condition
       full = { from, to: now() + BigInt(RESTART_SETTLE_MS * 1e6) };
+      const reopenAt = Date.now();
+      await area('Session');
+      diskFull.workspaceReopened = await launched.page.getByText(`${CWD}-${sessions[0]!.sid}`).first().click({ timeout: 10_000 })
+        .then(() => launched.page.getByRole('group', { name: 'Session section' }).waitFor({ timeout: 10_000 })).then(() => true, () => false);
+      diskFull.reopenMs = Date.now() - reopenAt;
     };
     // M5 under load: summed phys_footprint of the app tree every 10 s, window open (as m4Probe measures M4).
     const footprints: (number | null)[] = [];
@@ -300,7 +310,8 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
 
     // One session's workspace open in the Session area while the load runs (best effort: reported, not a check).
     await sleep(2000);
-    const workspaceOpen = await launched.page.getByText(`${CWD}-${sessions[0]!.sid}`).first().click({ timeout: 10_000 }).then(() => true, () => false);
+    const workspaceOpen = await launched.page.getByText(`${CWD}-${sessions[0]!.sid}`).first().click({ timeout: 10_000 })
+      .then(() => launched.page.getByRole('group', { name: 'Session section' }).waitFor({ timeout: 10_000 })).then(() => true, () => false);
 
     const stopOnFail = (e: unknown) => { stopped = true; throw e; };
     const settled = await Promise.allSettled([...sessions.map(run), kill().catch(stopOnFail),
@@ -348,6 +359,9 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
       // review M1: the load ran while the T1 corpus was still importing, with one session's workspace open
       backfillDuringLoad: backfillDone !== undefined && Date.parse(backfillDone.t) > start,
       workspaceOpen,
+      // G4f-2: a qualifying run is the full profile at its traffic; a shortened --seconds run is a wiring run and fails
+      fullProfile: p.seconds === PROFILES[tier].seconds,
+      loadRate: loadQualifies(emitted.length, p),
       ...(u ? u.checks : {}),
     };
     const sorted = [...sizes].sort((a, b) => a - b);
@@ -406,8 +420,8 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
           storableOutsideFaults: storable.filter(outside).length, storable: storable.length, stored: statusline, reportedCostNotLastValid: costMismatch },
         // M16 tee: tee wall - original wall, same stdin, paired; steady = outside the fault windows
         teeAddedWaitMs: { steady: stats(addedSteady), all: stats(added) }, originalMs: stats(frames.map((f) => f.original.ms)),
-        // M7: the tee adds 0 bytes (its stdout is the original's), writes no stderr, mirrors exit 0
-        teeOutput: { extraStdoutBytes: frames.reduce((n, f) => n + Math.abs(f.tee.out - f.original.out), 0), stderrBytes: frames.reduce((n, f) => n + f.tee.err, 0),
+        // M7: the tee adds 0 bytes (its stdout is byte for byte the original's), writes no stderr, mirrors exit 0 (G4f-3)
+        teeOutput: { mismatchedFrames: frames.filter((f) => !teeMatches(f.tee, f.original)).length, stderrBytes: frames.reduce((n, f) => n + f.tee.err.length, 0),
           nonZeroExit: frames.filter((f) => f.tee.code !== 0).length },
         // M16 hooks under load: shim dispatch vs a bare spawn of `true` the same way, interleaved every 4th hook
         hookDispatchMs: stats(dispatch), spawnBaselineMs: stats(baseline), hookAddedWaitP95: stats(dispatch).p95 - stats(baseline).p95,
@@ -429,13 +443,13 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
         statuslineStored: statusline >= report.statuslineFrames.storableOutsideFaults && statusline <= storable.length,
         malformedNeverReplacesCost: lastValidCost.size > 0 && costMismatch === 0,
         teeM16: addedSteady.length >= 100 && stats(addedSteady).p95 <= B.m16,
-        teeM7: report.teeOutput.extraStdoutBytes === 0 && report.teeOutput.stderrBytes === 0 && report.teeOutput.nonZeroExit === 0,
+        teeM7: report.teeOutput.mismatchedFrames === 0 && report.teeOutput.stderrBytes === 0 && report.teeOutput.nonZeroExit === 0,
         hookM16: baseline.length > 0 && report.hookAddedWaitP95 <= B.m16,
         codexUsage: tokenLines.valid > 0 && sessions.every((s, i) => s.agent !== 'codex' || (report.perSession.usageSnapshots[i]! > 0 && report.perSession.contextSnapshots[i]! > 0)),
         // Claude quota from the tee goes to usage_history (source statusline); context per session
         claudeUsage: report.statuslineQuotaHistory > 0 && sessions.every((s, i) => s.agent !== 'claude' || report.perSession.contextSnapshots[i]! > 0),
         livePriced: usageRows > 0 && left === 0,
-        diskFullFaulted: !vol || (full !== null && diskFull.bannerShown && diskFull.bannerCleared === true),
+        diskFullFaulted: !vol || (full !== null && diskFull.bannerShown && diskFull.bannerCleared === true && diskFull.workspaceReopened === true),
         // the kill restarts the service once; a disk-full or malformed-snapshot crash would add starts
         noCrash: readies() === 2,
         m5UnderLoad: fp !== null && fp.max <= B.m5MB * 1e6 / 2 ** 20,

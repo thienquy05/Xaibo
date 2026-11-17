@@ -109,3 +109,21 @@ test('P4-T12b: events in a fault window (disk full) are kept apart like the rest
   assert.deepEqual([r.m2.restartWindow.n, r.m1.restartWindow.n, r.unpainted.restart], [1, 1, 1], 'a hook lost while full is a fault-window miss');
   assert.equal(r.drainMs, 100);
 });
+
+test('G4f-2: a full TP run emits 13,500 events; a run under 95 % of the profile does not qualify', async () => {
+  const { expectedEvents, loadQualifies } = await import('../perf/t2-analysis.ts');
+  const TP = { rate: 20, burstRate: 50, burstEverySec: 60, burstSec: 5, seconds: 600 };
+  assert.equal(expectedEvents(TP), 13_500);
+  assert.equal(expectedEvents({ rate: 200, burstRate: 200, burstEverySec: 0, burstSec: 0, seconds: 600 }), 120_000);
+  assert.equal(loadQualifies(13_325, TP), true); // the P4-T11 run (98.7 %)
+  assert.equal(loadQualifies(6_750, TP), false);
+});
+
+test('G4f-3: the tee check compares bytes and exit code, not lengths', async () => {
+  const { teeMatches } = await import('../perf/t2-usage.ts');
+  const b = (s: string) => Buffer.from(s);
+  assert.equal(teeMatches({ out: b('synthetic status ok'), err: b(''), code: 0 }, { out: b('synthetic status ok'), code: 0 }), true);
+  assert.equal(teeMatches({ out: b('synthetic status no'), err: b(''), code: 0 }, { out: b('synthetic status ok'), code: 0 }), false);
+  assert.equal(teeMatches({ out: b('x'), err: b('e'), code: 0 }, { out: b('x'), code: 0 }), false);
+  assert.equal(teeMatches({ out: b('x'), err: b(''), code: 1 }, { out: b('x'), code: 0 }), false);
+});
