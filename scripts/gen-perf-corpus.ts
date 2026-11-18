@@ -7,6 +7,8 @@
 //     Codex and agy (closer byte shares); ~5% of rollouts under archived_sessions/; agy with a history.jsonl
 //   node scripts/gen-perf-corpus.ts --seed 1 --case ec15  20 MB file; 200 MB file with a 6 MiB and an 80 MiB record
 //     (below and above the 8 MiB parse cap, D-P1-13) and 120 small, newer sessions imported first, so paging overlaps the import
+//   node scripts/gen-perf-corpus.ts --seed 1 --case tp  P5-T11 (EC-99, PRD §6.6 TP): the t1mix files (same seed, same bytes) plus
+//     2 Codex quota streams x 45 days, one token_count per minute of one synthetic account, in one rollout per day
 import { closeSync, mkdirSync, openSync, rmSync, utimesSync, writeFileSync, writeSync } from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
@@ -152,8 +154,8 @@ function writeAgy(file: string, size: number, start: number): number {
   return w.close(t);
 }
 
-function t1mix() {
-  const dir = path.join(ROOT, `t1mix-${seed}`);
+function t1mix(name = 't1mix') {
+  const dir = path.join(ROOT, `${name}-${seed}`);
   const home = path.join(dir, 'home');
   const claude = path.join(home, '.claude', 'projects');
   const codex = path.join(home, '.codex');
@@ -202,9 +204,59 @@ function t1mix() {
   writeFileSync(path.join(agy, 'history.jsonl'), `${history.join('\n')}\n`);
   const totalBytes = files.reduce((a, c) => a + c, 0);
   const share = (x: number) => Math.round((1000 * x) / totalBytes) / 10;
-  return { dir, summary: { case: 't1mix', seed, sessions, files: files.length, subagents, hugeRecords, codexArchived: archived, bytes,
+  return { dir, summary: { case: name, seed, sessions, files: files.length, subagents, hugeRecords, codexArchived: archived, bytes,
     bytePercent: { claude: share(bytes.claude), codex: share(bytes.codex), agy: share(bytes.agy) }, totalBytes,
     medianBytes: quantile(files, 0.5), p99Bytes: quantile(files, 0.99), maxBytes: Math.max(...files) } };
+}
+
+/** P5-T11 (EC-99, PRD §6.6 TP): quota history at the personal profile. One Codex rollout per day for 45 days, all of one
+ *  synthetic account (one account-level scope), one token_count per minute carrying a 5 h primary and a 7 d secondary
+ *  window: 2 streams x 64,800 readings; each reset is a transition. The token usage carries the model and context window
+ *  (context projections, priced requests with their price revision). Percentages ramp through each window. */
+function quota(codex: string) {
+  const DAYS = 45, MIN = 60_000, PRIMARY = 300 * MIN, SECONDARY = 7 * 24 * 60 * MIN;
+  const resets = { primary: new Set<number>(), secondary: new Set<number>() };
+  let bytes = 0, readings = 0;
+  for (let d = 0; d < DAYS; d++) {
+    const start = BASE + d * 24 * 60 * MIN;
+    const date = stamp(start).slice(0, 10);
+    const [y, m, day] = date.split('-') as [string, string, string];
+    const sid = uuid(0x70000 + d);
+    const w = lineWriter(path.join(codex, 'sessions', y, m, day, `rollout-${date}T00-00-00-${sid}.jsonl`));
+    const line = (t: number, type: string, payload: object) => w.line({ timestamp: stamp(t), type, payload });
+    const cwd = '/tmp/xaibo-fixture/quota';
+    line(start, 'session_meta', { id: sid, timestamp: stamp(start), cwd, originator: 'codex-tui', cli_version: '0.160.0', source: 'cli', creator_account_id: 'synthetic-account-tp' });
+    const turnId = uuid(ids++);
+    line(start, 'turn_context', { turn_id: turnId, root_turn_id: turnId, cwd, current_date: date, approval_policy: 'synthetic-policy', sandbox_policy: { type: 'danger-full-access' },
+      model: 'gpt-6.1-sol', collaboration_mode: { mode: 'default', settings: { model: 'gpt-6.1-sol', reasoning_effort: null, developer_instructions: null } } });
+    const total = { input_tokens: 0, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 0 };
+    for (let i = 0; i < 24 * 60; i++) {
+      const t = start + i * MIN + 30_000;
+      const window = (len: number, peak: number) => {
+        const k = Math.floor((t - BASE) / len);
+        const resetSec = (BASE + (k + 1) * len) / 1000;
+        return { used: Math.round(10 * (peak * ((t - BASE) % len) / len + rand() * 2)) / 10, resetSec };
+      };
+      const p = window(PRIMARY, 95), s = window(SECONDARY, 80);
+      resets.primary.add(p.resetSec);
+      resets.secondary.add(s.resetSec);
+      const last = { input_tokens: 800 + Math.floor(rand() * 400), cached_input_tokens: 500, cache_write_input_tokens: 0, output_tokens: 150, reasoning_output_tokens: 40, total_tokens: 0 };
+      last.total_tokens = last.input_tokens + last.output_tokens;
+      for (const k of Object.keys(total) as (keyof typeof total)[]) total[k] += last[k];
+      line(t, 'event_msg', { type: 'token_count', info: { total_token_usage: { ...total }, last_token_usage: last, model_context_window: 200000 },
+        rate_limits: { limit_id: 'codex', plan_type: 'pro', primary: { used_percent: p.used, window_minutes: 300, resets_at: p.resetSec },
+          secondary: { used_percent: s.used, window_minutes: 10080, resets_at: s.resetSec } } });
+      readings++;
+    }
+    bytes += w.close(start + 24 * 60 * MIN - 1);
+  }
+  // the first reading of each stream opens its first window; every later reset is a transition
+  return { days: DAYS, streams: 2, files: DAYS, readingsPerStream: readings, transitions: { primary: resets.primary.size - 1, secondary: resets.secondary.size - 1 }, bytes };
+}
+
+function tp() {
+  const { dir, summary } = t1mix('tp');
+  return { dir, summary: { ...summary, quota: quota(path.join(dir, 'home', '.codex')) } };
 }
 
 function ec15() {
@@ -219,9 +271,9 @@ function ec15() {
   return { dir, summary: { case: 'ec15', seed, smallBytes: small.bytes, largeBytes: large.bytes, belowCapRecordBytes: 6 * MiB, aboveCapRecordBytes: 80 * MiB, extraSessions: 120 } };
 }
 
-const cases = { t1, t1mix, ec15 } as const;
+const cases = { t1, t1mix: () => t1mix(), tp, ec15 } as const;
 const which = (values.case ?? 't1') as keyof typeof cases;
-if (!cases[which]) throw new Error('--case t1 | t1mix | ec15');
+if (!cases[which]) throw new Error('--case t1 | t1mix | tp | ec15');
 rmSync(path.join(ROOT, `${which}-${seed}`), { recursive: true, force: true });
 const { dir, summary } = cases[which]();
 writeFileSync(path.join(dir, 'summary.json'), JSON.stringify(summary, null, 2));
