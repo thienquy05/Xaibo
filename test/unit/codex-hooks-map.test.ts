@@ -5,9 +5,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { CODEX_ASYNC_EVENTS, CODEX_HOOK_EVENTS, mapCodexHook } from '../../src/service/adapters/codex/hooks.ts';
+import { CODEX_ASYNC_EVENTS, CODEX_HOOK_EVENTS } from '../../src/service/adapters/codex/hooks.ts';
 import { codexHookOps } from '../../src/service/adapters/codex/setup.ts';
-import { TOOL_INPUT_PREVIEW } from '../../src/service/adapters/claude/hooks.ts';
 import { lintHooks } from '../../src/service/config/hook-lint.ts';
 
 const REPO = join(import.meta.dirname, '..', '..');
@@ -49,40 +48,4 @@ test('the fixtures carry exactly the key sets S5 recorded', () => {
     const want = Object.keys(reduced[ev]!.keys).filter((k) => !k.includes('.')).sort(); // top-level keys only
     assert.deepEqual(Object.keys(p).sort(), want, ev);
   }
-});
-
-test('mapping: evidence fields from every recorded event; the remainder raw; effort unavailable', () => {
-  const used = ['session_id', 'turn_id', 'transcript_path', 'cwd', 'hook_event_name', 'model', 'permission_mode', 'source', 'tool_name',
-    'tool_use_id', 'tool_input'];
-  for (const p of payloads) {
-    const m = mapCodexHook(p, 'ignored');
-    assert.equal(m.event, p['hook_event_name']);
-    assert.equal(m.sessionId, p['session_id']);
-    assert.equal(m.turnId, p['turn_id'] ?? null);
-    assert.equal(m.transcriptPath, p['transcript_path']);
-    assert.equal(m.cwd, p['cwd']);
-    assert.equal(m.model, p['model'] ?? null);
-    assert.equal(m.effort, null, 'Codex hooks carry no effort (FR-51)');
-    assert.equal(m.permissionMode, p['permission_mode'] ?? null);
-    assert.equal(m.source, p['source'] ?? null);
-    assert.equal(m.toolName, p['tool_name'] ?? null);
-    assert.equal(m.toolUseId, p['tool_use_id'] ?? null);
-    assert.equal(m.toolInputPreview, p['tool_input'] === undefined ? null : JSON.stringify(p['tool_input']));
-    assert.deepEqual(m.extra, Object.fromEntries(Object.entries(p).filter(([k]) => !used.includes(k))));
-  }
-  const pre = payloads.find((p) => p['hook_event_name'] === 'PreToolUse')!;
-  const big = mapCodexHook({ ...pre, tool_input: { command: 'é'.repeat(5000) } }, 'PreToolUse');
-  assert.equal([...big.toolInputPreview!].length, TOOL_INPUT_PREVIEW);
-});
-
-test('mapping: malformed or truncated delivery (null payload), wrong types and unknown events', () => {
-  const m = mapCodexHook(null, 'Stop');
-  assert.equal(m.event, 'Stop');
-  assert.equal(m.sessionId, null);
-  assert.deepEqual(m.extra, {});
-  const odd = mapCodexHook({ hook_event_name: 'PreModelRequest', session_id: 7, model: { id: 'x' }, future: [1] }, 'PreModelRequest');
-  assert.equal(odd.event, 'PreModelRequest');
-  assert.equal(odd.sessionId, null);
-  assert.equal(odd.model, null);
-  assert.deepEqual(odd.extra, { future: [1] });
 });

@@ -8,3 +8,9 @@ const hex = (c: string, width: number) => c.charCodeAt(0).toString(16).toUpperCa
 
 export const visible = (s: string): string =>
   s.replace(CONTROL, (c) => `\\x${hex(c, 2)}`).replace(BIDI, (c) => `\\u${hex(c, 4)}`);
+
+// P4-T09b (design §5.2): in a pre-wrap content block, newline and tab stay layout whitespace; every other control
+// (CR, NUL, ESC, C1, DEL) and bidi mark is escaped exactly as by visible().
+const BLOCK_CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
+export const visibleBlock = (s: string): string =>
+  s.replace(BLOCK_CONTROL, (c) => `\\x${hex(c, 2)}`).replace(BIDI, (c) => `\\u${hex(c, 4)}`);

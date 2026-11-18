@@ -28,6 +28,8 @@ const HEADER = 4;
 export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export const AGENT = /^[a-z0-9][a-z0-9-]{0,31}$/;
 export const PROFILE = /^[A-Za-z0-9._-]{1,128}$/; // may reach keys and paths downstream (security review 379 #9)
+/** A profile key that is safe as a path segment: PROFILE, never `.` or `..`. */
+export const isProfileKey = (k: string): boolean => PROFILE.test(k) && k !== '.' && k !== '..';
 const MAX_KEY = 128;
 const MAX_SESSION = 256;
 const MAX_CWD = 4096;

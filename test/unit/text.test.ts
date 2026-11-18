@@ -2,7 +2,12 @@
 // visible escapes so they can neither style nor reorder what is displayed. HTML stays literal text (React text nodes).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { visible } from '../../src/renderer/text.ts';
+import { visible, visibleBlock } from '../../src/renderer/text.ts';
+
+test('P4-T09b (design §5.2): a content block keeps newline and tab as layout; every other control and bidi mark is escaped', () => {
+  assert.equal(visibleBlock('a\nb\tc\rd\0e\u001b[31m‮f\u0085'), 'a\nb\tc\\x0Dd\\x00e\\x1B[31m\\u202Ef\\x85');
+  assert.equal(visibleBlock('plain <b>text</b> é 😀'), 'plain <b>text</b> é 😀');
+});
 
 test('ANSI sequences and C0 controls become visible escapes', () => {
   assert.equal(visible('\u001b[31mred\u001b[0m'), '\\x1B[31mred\\x1B[0m');

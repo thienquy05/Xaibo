@@ -55,15 +55,16 @@ test('the chunk root may not be a symlink', () => {
 });
 
 test('remove frees the bytes; items and registrations are separate', () => {
-  const s = openChunks(fresh());
-  s.put(key(), 0, false, 'aaaa');
+  // quota probes (each chunk file costs its bytes + 512): 2012 + 514 held of 4096, so a 2012 chunk only fits after remove
+  const OTHER = '00000000-0000-4000-8000-0000000c0002';
+  const s = openChunks(fresh(), { perRegistration: 4096, global: 1 << 20 });
+  s.put(key(), 0, false, 'a'.repeat(1500));
   s.put(key({ item: 'item-2' }), 0, false, 'bb');
-  s.put(key({ registration: '00000000-0000-4000-8000-0000000c0002' }), 0, false, 'c');
-  const before = s.pending(REG);
-  assert.ok(before > 0);
+  s.put(key({ registration: OTHER }), 0, false, 'c'.repeat(2500));
+  assert.equal(s.put(key({ item: 'probe-1' }), 0, false, 'p'.repeat(1500)).state, 'incomplete', 'held before remove');
   s.remove(key());
-  assert.ok(s.pending(REG) < before);
-  assert.ok(s.pending('00000000-0000-4000-8000-0000000c0002') > 0);
+  assert.equal(s.put(key({ item: 'probe-2' }), 0, false, 'p'.repeat(1500)).state, 'pending', 'remove freed the bytes');
+  assert.equal(s.put(key({ registration: OTHER, item: 'probe' }), 0, false, 'q'.repeat(1000)).state, 'incomplete', 'the other registration still holds its bytes');
   const r = s.put(key({ item: 'item-2' }), 1, true, 'B');
   assert.equal(r.state === 'complete' && r.content, 'bbB', 'the other item is untouched');
 });
@@ -73,10 +74,10 @@ test('Q3-9 quota: a chunk past the per-registration cap labels the item incomple
   assert.equal(s.put(key(), 0, false, 'x'.repeat(1000)).state, 'pending');
   const r = s.put(key(), 1, false, 'y'.repeat(4000));
   assert.equal(r.state, 'incomplete');
-  assert.ok(s.pending(REG) >= 1000, 'G3d-1: kept on disk until the caller commits the incomplete state (a failed commit can retry)');
+  assert.equal(s.put(key({ item: 'probe-1' }), 0, false, 'z'.repeat(2700)).state, 'incomplete', 'G3d-1: the 1000 bytes stay held until the caller commits the incomplete state (a failed commit can retry)');
   assert.equal(s.put(key(), 1, false, 'y'.repeat(4000)).state, 'incomplete', 'the retry is incomplete again');
   s.remove(key());
-  assert.equal(s.pending(REG), 0, 'the removed item no longer holds quota');
+  assert.equal(s.put(key({ item: 'probe-2' }), 0, false, 'z'.repeat(2700)).state, 'pending', 'the removed item no longer holds quota');
   assert.equal(s.put(key({ item: 'small' }), 0, true, 'ok').state, 'complete', 'the registration can still assemble within its cap');
 });
 
@@ -91,7 +92,6 @@ test('reopen: pending chunks survive and are counted toward the quota again', ()
   const a = openChunks(dir, { perRegistration: 4096, global: 1 << 20 });
   a.put(key(), 0, false, 'x'.repeat(3000));
   const b = openChunks(dir, { perRegistration: 4096, global: 1 << 20 });
-  assert.ok(b.pending(REG) >= 3000);
   assert.equal(b.put(key({ item: 'other' }), 0, false, 'y'.repeat(2000)).state, 'incomplete', 'recomputed pending bytes still count');
   const r = b.put(key(), 1, true, 'z');
   assert.equal(r.state === 'complete' && r.content, `${'x'.repeat(3000)}z`, 'chunks written before the restart complete the item');

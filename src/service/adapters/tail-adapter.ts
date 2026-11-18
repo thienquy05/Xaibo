@@ -30,13 +30,15 @@ export interface TailAdapterOptions {
   bytesPerBatch?: number;
   chunkBytes?: number;
   maxLineBytes?: number; // parse cap (OQ-P1-06): longer lines stream through oversized()
+  /** P4-T10a: fs.watch handle cap (S12 FD cap; the Watcher's default when absent). */
+  maxWatched?: number;
   watch?: WatchFn;
   now?: () => number;
 }
 
 type Stored = Checkpoint & { status: SourceFileCheckpoint['status'] };
 /** What boot holds of any adapter: its public lifecycle. */
-export type Ingester = Pick<TailAdapter<TailFile, TailRecord>, 'start' | 'watch' | 'backfill' | 'stop' | 'wake' | 'reads'>;
+export type Ingester = Pick<TailAdapter<TailFile, TailRecord>, 'start' | 'watch' | 'backfill' | 'stop' | 'wake' | 'reads' | 'watched'>;
 
 // In-memory parse cap (D-P1-13, OQ-P1-06 measured): an in-memory line costs about 7x its size in the service (bytes,
 // raw and parsed strings, SQLite binds and record build), so 64 MiB could not meet the EC-15 RSS bound; longer lines
@@ -44,7 +46,7 @@ export type Ingester = Pick<TailAdapter<TailFile, TailRecord>, 'start' | 'watch'
 export const PARSE_CAP = 8 * 1024 * 1024;
 
 export abstract class TailAdapter<F extends TailFile, R extends TailRecord> {
-  protected readonly o: Required<Omit<TailAdapterOptions, 'watch'>> & Pick<TailAdapterOptions, 'watch'>;
+  protected readonly o: Required<Omit<TailAdapterOptions, 'watch' | 'maxWatched'>> & Pick<TailAdapterOptions, 'watch' | 'maxWatched'>;
   readonly #watcher: Watcher<F>;
   readonly #chains = new Map<string, Promise<void>>(); // one sync at a time per file
   readonly #reads = new Map<string, number>();
@@ -58,7 +60,7 @@ export abstract class TailAdapter<F extends TailFile, R extends TailRecord> {
       list: () => this.discover(),
       onChange: (f) => void this.sync(f, true).catch(() => undefined), // a failed sync is retried on the next change or scan
       intervalMs: this.o.intervalMs, activeMs: this.o.activeMs, now: this.o.now,
-      ...(this.o.watch ? { watch: this.o.watch } : {}),
+      ...(this.o.watch ? { watch: this.o.watch } : {}), ...(this.o.maxWatched !== undefined ? { maxWatched: this.o.maxWatched } : {}),
     });
   }
 
@@ -73,6 +75,9 @@ export abstract class TailAdapter<F extends TailFile, R extends TailRecord> {
 
   /** Times a file was opened for reading (EC-19: unchanged files are never read). */
   reads(path: string): number { return this.#reads.get(path) ?? 0; }
+
+  /** Open fs.watch handles (P4-T10c2 metrics). */
+  watched(): number { return this.#watcher.watched(); }
 
   async start(): Promise<void> {
     await this.watch();

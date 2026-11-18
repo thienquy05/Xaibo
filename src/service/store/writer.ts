@@ -9,6 +9,9 @@ import { codexReadings, historyStep, scopeKey, sourceTime, type Reading, type St
 
 export const SCHEMA_VERSION = 1;
 const FTS_MAX_BYTES = 64 * 1024;
+/** P4-T08: model evidence relayed by Xaibo's own channels (not the agent's file) and the effort fill window. */
+const RELAYED = new Set(['hook', 'report', 'statusline']);
+const FILL_MS = 60_000;
 
 export interface SourceFileCheckpoint {
   path: string; kind: string; dev: number; ino: number; size: number; mtime: number; offset: number; headHash: string;
@@ -34,8 +37,10 @@ export interface EventRow {
   turn?: { id: string; edge: 'start' | 'end'; outcome?: string };
   /** P2-T06: raw usage this record carries; normalized and written by usage() below. */
   usage?: UsageObs;
-  /** P2-T08: model evidence (effort undefined = not exposed); `turn` names the turn it belongs to when the record says. */
-  model?: { id: string; effort?: string | null; turn?: string };
+  /** P2-T08: model evidence (effort undefined = not exposed); `turn` names the turn it belongs to when the record says;
+   *  `ts` orders it when the event has no source time (P4-T08: statusLine tee, service clock); `stale` (XAIBO-PROD-442):
+   *  older than evidence already stored from the same producer, so it only fills its own turn. */
+  model?: { id: string; effort?: string | null; turn?: string; ts?: number; stale?: true };
   /** P2-T07: a context observation; a Codex one with model null takes the session's current model at write time. */
   context?: ContextObs;
   /** P2-T11 (EC-80, agy): apply in source order by sourceSeq: current rows of the session with seq >= this one become
@@ -68,6 +73,8 @@ export interface Batch {
 export interface ReportDelivery {
   registrationId: string; deliveryId: string; agent: string; profileKey: string; nativeSessionId: string; event: string;
   producerId: string; producerSeq: number; receivedTs: number; committedTs: number; unattributed: 'unknown-profile' | null;
+  /** XAIBO-PROD-453: the delivery committed model evidence (only these make a lower producer_seq model frame stale). */
+  hasModel?: boolean;
   /** The content.upsert item this delivery advanced; a settled (complete or incomplete) item is never changed. */
   content?: { itemId: string; revision: number; role: string; kind: string; state: 'pending' | 'complete' | 'incomplete'; chunks: number; bytes: number; text: string | null };
 }
@@ -132,7 +139,7 @@ function prepare(db: DatabaseSync) {
     delivery: db.prepare(`INSERT INTO hook_delivery (delivery_id, agent, profile_key, native_session_id, event, received_ts, committed_ts, unattributed)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (delivery_id) DO NOTHING RETURNING delivery_id`),
     report: db.prepare(`INSERT INTO report_delivery (registration_id, delivery_id, agent, profile_key, native_session_id, event, producer_id, producer_seq,
-        received_ts, committed_ts, unattributed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING delivery_id`),
+        received_ts, committed_ts, unattributed, has_model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING RETURNING delivery_id`),
     newProfile: db.prepare('INSERT INTO profiles (id, agent, root, origin) VALUES (?, ?, ?, ?)'), // a conflict fails the commit, never skips
     reportContent: db.prepare(`INSERT INTO report_content (registration_id, native_session_id, item_id, revision, role, kind, state, chunks, bytes, content, updated_ts)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -155,13 +162,26 @@ function prepare(db: DatabaseSync) {
       ON CONFLICT (session_id, cwd) DO UPDATE SET
         first_seen = min(coalesce(cwd_history.first_seen, excluded.first_seen), coalesce(excluded.first_seen, cwd_history.first_seen))`),
     turn: db.prepare(`INSERT INTO turns (session_id, schema_version, source, native_turn_id, started_at, ended_at, outcome) VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT (session_id, native_turn_id) DO UPDATE SET started_at = coalesce(turns.started_at, excluded.started_at),
+      ON CONFLICT (session_id, native_turn_id) DO UPDATE SET -- P4-T08 review L5: the earliest start of any source
+        started_at = min(coalesce(turns.started_at, excluded.started_at), coalesce(excluded.started_at, turns.started_at)),
         ended_at = coalesce(turns.ended_at, excluded.ended_at), outcome = coalesce(turns.outcome, excluded.outcome)`),
-    currentModel: db.prepare(`UPDATE sessions SET current_model = ?, current_effort = ?, current_model_ts = ?
-      WHERE id = ? AND (current_model_ts IS NULL OR current_model_ts <= ?)`),
+    // P4-T08: ?1 = effort exposed. Unexposed effort keeps the same model's recorded effort; another model gets none.
+    currentModel: db.prepare(`UPDATE sessions SET current_effort = CASE WHEN ?1 THEN ?2 WHEN current_model IS ?3 THEN current_effort END,
+      current_model = ?3, current_model_ts = ?4 WHERE id = ?5 AND (current_model_ts IS NULL OR current_model_ts <= ?4)`),
+    // Older exposed evidence fills a missing effort of the same model only within FILL_MS of the current model's time
+    // (a hook stamped just after the file record that names the effort; review M2).
+    // ponytail: no switch history or explicit-null marker is stored, so within 60 s a late effort can fill one a newer
+    // record set to null, or one from before an A -> B -> A switch back; store a per-model "since" if that shows up.
+    fillEffort: db.prepare(`UPDATE sessions SET current_effort = ?1 WHERE id = ?2 AND current_model = ?3 AND current_effort IS NULL
+      AND (current_model_ts IS NULL OR current_model_ts - ?4 <= ${FILL_MS})`),
     firstModel: db.prepare('UPDATE sessions SET current_model = ?, current_effort = ? WHERE id = ? AND current_model IS NULL'),
-    turnModel: db.prepare(`INSERT INTO turns (session_id, schema_version, source, native_turn_id, model_id, effort) VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT (session_id, native_turn_id) DO UPDATE SET model_id = excluded.model_id, effort = excluded.effort`),
+    turnModel: db.prepare(`INSERT INTO turns (session_id, schema_version, source, native_turn_id, model_id, effort) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+      ON CONFLICT (session_id, native_turn_id) DO UPDATE SET model_id = excluded.model_id,
+        effort = CASE WHEN ?7 THEN excluded.effort WHEN turns.model_id IS excluded.model_id THEN turns.effort END`),
+    // Review M3: hook, report and statusLine evidence only fills a turn's model; the agent's own file stays authoritative.
+    turnModelFill: db.prepare(`INSERT INTO turns (session_id, schema_version, source, native_turn_id, model_id, effort) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+      ON CONFLICT (session_id, native_turn_id) DO UPDATE SET model_id = coalesce(turns.model_id, excluded.model_id),
+        effort = CASE WHEN ?7 AND (turns.model_id IS NULL OR turns.model_id = excluded.model_id) THEN excluded.effort ELSE turns.effort END`),
     latestTurnModel: db.prepare(`UPDATE turns SET model_id = ?, effort = ? WHERE model_id IS NULL AND id =
       (SELECT id FROM turns WHERE session_id = ? AND started_at <= ? ORDER BY started_at DESC, id DESC LIMIT 1)`),
     lastContext: db.prepare(`SELECT id, generation, model_id, used_tokens, window_tokens, window_basis, percentage, source, source_locator, as_of
@@ -321,7 +341,7 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
     const r = batch.report;
     if (r) {
       if (!st.report.get(r.registrationId, r.deliveryId, r.agent, r.profileKey, r.nativeSessionId, r.event, r.producerId, r.producerSeq, r.receivedTs,
-        r.committedTs, r.unattributed)) { db.exec('COMMIT'); return; }
+        r.committedTs, r.unattributed, r.hasModel ? 1 : 0)) { db.exec('COMMIT'); return; }
       const c = r.content;
       if (c) st.reportContent.run(r.registrationId, r.nativeSessionId, c.itemId, c.revision, c.role, c.kind, c.state, c.chunks, c.bytes, c.text, r.committedTs);
     }
@@ -379,11 +399,13 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
       }
       if (e.usage) usage(st, batch, sid, row.id, e, e.usage);
       if (e.model) {
-        const effort = e.model.effort ?? null;
-        if (e.sourceTs !== undefined) st.currentModel.run(e.model.id, effort, e.sourceTs, sid, e.sourceTs);
-        else st.firstModel.run(e.model.id, effort, sid); // no source time: only fills an unknown model, never replaces one
-        if (e.model.turn) st.turnModel.run(sid, SCHEMA_VERSION, e.source, e.model.turn, e.model.id, effort);
-        else if (e.sourceTs !== undefined) st.latestTurnModel.run(e.model.id, effort, sid, e.sourceTs);
+        const effort = e.model.effort ?? null, exposed = e.model.effort !== undefined ? 1 : 0;
+        const ts = e.model.ts ?? e.sourceTs, fresh = !e.model.stale;
+        if (fresh && ts !== undefined) st.currentModel.run(exposed, effort, e.model.id, ts, sid);
+        else st.firstModel.run(e.model.id, effort, sid); // only fills an unknown model, never replaces one (stale too: review L2)
+        if (fresh && effort !== null) st.fillEffort.run(effort, sid, e.model.id, ts ?? null); // older evidence still names the effort it only now knows
+        if (e.model.turn) (RELAYED.has(e.source) ? st.turnModelFill : st.turnModel).run(sid, SCHEMA_VERSION, e.source, e.model.turn, e.model.id, effort, exposed);
+        else if (fresh && ts !== undefined) st.latestTurnModel.run(e.model.id, effort, sid, ts);
       }
       if (e.context) context(st, sid, e, e.context);
       if (e.quota) history(st, batch, sid, e, e.quota);
@@ -422,6 +444,8 @@ interface Pending { batch: Batch; resolve: () => void; reject: (e: unknown) => v
 export interface WriterOptions {
   maxRows?: number; maxBytes?: number; maxDelayMs?: number;
   setTimer?: (fn: () => void, ms: number) => void;
+  /** Clock for the queue-age metric (P4-T10c2). */
+  now?: () => number;
   onCommit?: (batch: Batch) => void;
   /** EC-44: called when the store becomes full and again when a commit succeeds after that, outside any transaction. */
   onDiskFull?: (full: boolean) => void;
@@ -441,11 +465,17 @@ export class Writer {
   #rows = 0;
   #bytes = 0;
   #timerSet = false;
+  /** P4-T10c2: when the oldest queued batch was enqueued, and the peak enqueue-to-flush wait since the last take. */
+  #since: number | undefined;
+  #peak = 0;
 
   constructor(db: DatabaseSync, o: WriterOptions = {}) {
     this.#db = db;
-    this.#o = { maxRows: 100, maxBytes: 1 << 20, maxDelayMs: 50, setTimer: (fn, ms) => void setTimeout(fn, ms), commit: commitBatch, ...o };
+    this.#o = { maxRows: 100, maxBytes: 1 << 20, maxDelayMs: 50, setTimer: (fn, ms) => void setTimeout(fn, ms), commit: commitBatch, now: () => performance.now(), ...o }; // monotonic: a wall-clock step is no queue age
   }
+
+  /** The peak queue age (ms) since the previous call; resets it. A live commit bypasses the queue and adds nothing. */
+  takeQueueAgeMs(): number { const p = this.#peak; this.#peak = 0; return p; }
 
   /** True from a disk-full commit until the next commit succeeds (EC-44). */
   get diskFull(): boolean { return this.#full; }
@@ -471,6 +501,7 @@ export class Writer {
   enqueue(batch: Batch, live: boolean): Promise<void> {
     return new Promise((resolve, reject) => {
       (live ? this.#live : this.#backfill).push({ batch, resolve, reject });
+      this.#since ??= this.#o.now();
       this.#rows += batch.events.length;
       this.#bytes += batchBytes(batch);
       if (this.#rows >= this.#o.maxRows || this.#bytes >= this.#o.maxBytes) this.flush();
@@ -483,6 +514,7 @@ export class Writer {
 
   flush(): void {
     const jobs = [...this.#live, ...this.#backfill];
+    if (this.#since !== undefined) { this.#peak = Math.max(this.#peak, Math.round(this.#o.now() - this.#since)); this.#since = undefined; }
     this.#live = [];
     this.#backfill = [];
     this.#rows = 0;

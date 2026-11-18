@@ -12,9 +12,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CODEX_HOOK_EVENTS } from '../../src/service/adapters/codex/hooks.ts';
 import { CodexAdapter } from '../../src/service/adapters/codex/index.ts';
-import { codexHookOps, codexHookStatus, installCodexHooks, shimPath, uninstallCodexHooks } from '../../src/service/adapters/codex/setup.ts';
+import { codexHookOps, codexHookStatus, installCodexHooks, shimPath, type CodexHookOptions } from '../../src/service/adapters/codex/setup.ts';
 import { deployShim } from '../../src/service/adapters/claude/setup.ts';
-import { ConfigError, plan, readManifest } from '../../src/service/config/transaction.ts';
+import { ConfigError, plan, readManifest, revert } from '../../src/service/config/transaction.ts';
+
+/** The generic revert of the Codex hooks entry (dev-cli's revert path). */
+const uninstall = (o: CodexHookOptions) => revert(readManifest(o.dataDir).find((e) => e.route === 'codex-hooks')!, { dataDir: o.dataDir, bounds: o.bounds });
 import { createIntake } from '../../src/service/receivers/intake.ts';
 import { openStore } from '../../src/service/store/db.ts';
 import { Writer } from '../../src/service/store/writer.ts';
@@ -140,12 +143,11 @@ test('uninstall: byte-identical when nothing changed; config.toml untouched', as
   const before = readFileSync(join(h.codexHome, 'hooks.json'));
   const toml = sha(join(h.codexHome, 'config.toml'));
   installCodexHooks(h.o);
-  assert.deepEqual(uninstallCodexHooks(h.o), { result: 'restored', conflicts: [] });
+  assert.deepEqual(uninstall(h.o), { result: 'restored', conflicts: [] });
   assert.deepEqual(readFileSync(join(h.codexHome, 'hooks.json')), before);
   assert.equal(sha(join(h.codexHome, 'config.toml')), toml);
   assert.equal(readManifest(h.dataDir).length, 0);
   assert.equal(codexHookStatus(h.o).state, 'not-installed');
-  assert.equal(code(() => uninstallCodexHooks(h.o)), 'not-installed');
 });
 
 test('S5-C5 append-then-remove: a foreign group added after Xaibo\'s is a conflict and keeps its position', async () => {
@@ -158,7 +160,7 @@ test('S5-C5 append-then-remove: a foreign group added after Xaibo\'s is a confli
   writeFileSync(join(h.codexHome, 'hooks.json'), JSON.stringify(doc, null, 2));
   const xaiboStop = doc.hooks['Stop']![0];
 
-  const r = uninstallCodexHooks(h.o);
+  const r = uninstall(h.o);
   assert.equal(r.result, 'structural');
   assert.deepEqual(r.conflicts.map((c) => c.pointer).sort(), ['/hooks/PreToolUse/1', '/hooks/Stop/0']);
   const after = hooksJson(h);

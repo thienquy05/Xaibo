@@ -2,8 +2,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  createDecoder, encodeFrame, FrameError, MAX_FRAME, parseAck, parseEnvelope, parseHello, PROTOCOL_VERSION,
+  createDecoder, encodeFrame, FrameError, isProfileKey, MAX_FRAME, parseAck, parseEnvelope, parseHello, PROTOCOL_VERSION,
 } from '../../src/shared/hook-protocol.ts';
+
+test('isProfileKey: the profile_key charset up to 128, never a dot path segment (XAIBO-PROD-329)', () => {
+  for (const k of ['a', 'p1', 'A.b_c-9', '-lead', 'x'.repeat(128), '...']) assert.equal(isProfileKey(k), true, k);
+  for (const k of ['', '.', '..', 'x'.repeat(129), 'a/b', 'a b', 'é']) assert.equal(isProfileKey(k), false, k);
+});
 
 const ENV = {
   v: 1, delivery_id: '00000000-0000-4000-8000-0000000d0001', agent: 'claude', profile_key: 'p1', event: 'Stop',

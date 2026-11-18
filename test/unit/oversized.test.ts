@@ -67,6 +67,25 @@ test('S9 large-payload fields and top-level content are readable; other strings 
 
 test('injected content is flagged on the head', () => {
   assert.equal(run('{"type":"user","uuid":"U4","message":{"role":"user","content":"<command-name>/x</command-name> rest"}}', 4).head.injected, true);
+  // XAIBO-PROD-440
+  assert.equal(run('{"type":"user","uuid":"U4a","message":{"role":"user","content":"<system-reminder>note</system-reminder>"}}', 4).head.injected, true);
+  assert.equal(run('{"type":"user","uuid":"U4b","message":{"role":"user","content":[{"type":"text","text":"<task-notification>x"}]}}', 4).head.injected, true);
+  assert.equal(run('{"type":"user","uuid":"U4c","message":{"role":"user","content":"plain words"}}', 4).head.injected, false);
+});
+
+test('XAIBO-PROD-441 (G4b-N1): only string content or a first text block makes the head injected', () => {
+  const head = (content: unknown) => run(JSON.stringify({ type: 'user', uuid: 'U4d', message: { role: 'user', content } }), 3).head.injected;
+  assert.equal(head([{ type: 'tool_result', tool_use_id: 't1', content: 'tool output' }, { type: 'text', text: '<system-reminder>n</system-reminder>' }]), false);
+  assert.equal(head([{ type: 'text', text: 'typed' }, { type: 'text', text: '<system-reminder>n' }]), false);
+  assert.equal(head([{ type: 'text', text: '<system-reminder>n' }, { type: 'text', text: 'more' }]), true);
+});
+
+test('XAIBO-PROD-453 (G4b-N1): a first non-text block carrying a text property is not injected, in either key order', () => {
+  const raw = (blocks: string) => run(`{"type":"user","uuid":"U4e","message":{"role":"user","content":${blocks}}}`, 3).head.injected;
+  assert.equal(raw('[{"text":"<system-reminder>x","type":"tool_result"}]'), false);
+  assert.equal(raw('[{"type":"tool_result","text":"<system-reminder>x"}]'), false);
+  assert.equal(raw('[{"text":"<system-reminder>x"}]'), false, 'a block without a type is not a text block');
+  assert.equal(raw('[{"text":"<system-reminder>x","type":"text"}]'), true, 'type after text still counts');
 });
 
 test('a syntax error leaves a gap: content read before it is kept, raw is kept in full', () => {

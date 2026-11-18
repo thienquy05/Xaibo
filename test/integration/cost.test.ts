@@ -162,10 +162,12 @@ test('P2-T14: an incremental pass prices only usage rows above the high-water ma
   const prices = loadPrices({ db: p.db, overridePath: join(p.tmp, 'none.json') });
   const ids = (p.db.prepare("SELECT id FROM usage WHERE scope = 'message' ORDER BY id").all() as { id: number }[]).map((r) => r.id);
   assert.equal(ids.length, 3);
-  assert.equal(priceUsage(p.db, prices, { afterUsageId: ids[1]! }), 1, 'only the row above the mark');
+  assert.equal(priceUsage(p.db, prices, { afterUsageId: ids[1]! }).rows, 1, 'only the row above the mark');
   assert.equal(estimates(p.db, CLAUDE_SID).length + estimates(p.db, CODEX_SID).length, 1);
-  assert.equal(priceUsage(p.db, prices, { afterUsageId: ids[2]! }), 0);
-  assert.equal(priceUsage(p.db, prices), 2, 'a full pass picks up the rest');
+  assert.equal(priceUsage(p.db, prices, { afterUsageId: ids[2]! }).rows, 0);
+  assert.equal(priceUsage(p.db, prices).rows, 2, 'a full pass picks up the rest');
+  // P4-T12a: an empty slice says there is nothing more (slices over 100,000 rows: usage-under-fault.test.ts)
+  assert.deepEqual(priceUsage(p.db, prices, { limit: 1 }), { rows: 0, lastId: 0, more: false }, 'nothing left to price');
   near(sessionCost(p.db, sessionId(p.db, CLAUDE_SID)).amountUsd, 1578 / 1e6);
   near(estimates(p.db, CODEX_SID)[0]!.amount, (400 * 2 + 600 * 0.1 + 200 * 10) / 1e6);
 });

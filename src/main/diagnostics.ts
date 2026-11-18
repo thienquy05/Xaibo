@@ -2,7 +2,7 @@
 // with every string (keys included) through sanitize(), written 0600 to the file the user picks. No Electron import.
 import { chmodSync, closeSync, fstatSync, openSync, readSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import type { Health } from '../shared/ipc.ts';
+import type { Health, ServiceMetrics } from '../shared/ipc.ts';
 import { sanitize } from '../shared/sanitize.ts';
 
 export interface BundleInput {
@@ -10,6 +10,8 @@ export interface BundleInput {
   os: Record<string, string>;
   health: Health;
   counters: Record<string, number>;
+  /** P4-T10c2: the service's latest content-free metrics (validated numbers); null before its first report. */
+  serviceMetrics?: ServiceMetrics | null;
   logTail: string[];
 }
 
@@ -44,3 +46,8 @@ function tail(file: string, lines: number, bytes: number): string[] {
 /** The last lines of the current app log, then of the service log; each file read is bounded by `bytes`. */
 export const readLogTail = (dir: string, o: { lines: number; bytes: number }): string[] =>
   [path.join(dir, 'xaibo.log'), path.join(dir, 'service', 'xaibo.log')].flatMap((f) => tail(f, o.lines, o.bytes));
+
+/** P4-T10c2 review M1: reports carry the peaks of their 5 s interval; the bundle shows the largest since the service
+ *  (re)started, so a spike is still there when the user saves the bundle later. Every other value is the latest. */
+export const foldMetrics = (prev: ServiceMetrics | null, next: ServiceMetrics): ServiceMetrics => (!prev ? next
+  : { ...next, writerQueueAgeMs: Math.max(prev.writerQueueAgeMs, next.writerQueueAgeMs), parseLagMs: Math.max(prev.parseLagMs, next.parseLagMs) });

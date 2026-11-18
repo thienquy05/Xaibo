@@ -21,11 +21,13 @@ const READABLE = [
   /^shape\.system\.\[\]\.text$/,
 ];
 const FIRST_TEXT = /^message\.content(\.\[\]\.text)?$/;
+const FIRST_TYPE = 'message.content.[].type'; // XAIBO-PROD-453: content[0] counts only when its type is 'text'
 const LITERAL = /^(true|false|null|-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?)$/;
 const ESCAPES: Record<string, string> = { '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' };
 const STRING_STOP = /["\\\u0000-\u001f]/g;
 
-type Frame = { t: 'o'; key: string; state: 'keyOrEnd' | 'key' | 'colon' | 'value' | 'commaOrEnd' } | { t: 'a'; state: 'valueOrEnd' | 'value' | 'commaOrEnd' };
+// `later`: the array is past its first element (XAIBO-PROD-441: only content[0] text decides injected)
+type Frame = { t: 'o'; key: string; state: 'keyOrEnd' | 'key' | 'colon' | 'value' | 'commaOrEnd' } | { t: 'a'; state: 'valueOrEnd' | 'value' | 'commaOrEnd'; later?: true };
 type Target = 'readable' | 'small' | 'key' | 'skip';
 
 const isHigh = (c: number) => c >= 0xd800 && c < 0xdc00;
@@ -118,6 +120,7 @@ export class OversizedRecord {
   #fieldsEmitted = 0;
   readonly #fields = new Map<string, string | boolean>();
   #firstText: string | undefined;
+  #firstBlock = false;
 
   constructor(o: OversizedOptions) {
     this.#o = o;
@@ -217,7 +220,7 @@ export class OversizedRecord {
     } else {
       if (f.state === 'valueOrEnd' && c === ']') { this.#stack.pop(); this.#valueDone(); return i + 1; }
       if (f.state === 'value' || f.state === 'valueOrEnd') return this.#value(c, i);
-      if (c === ',') { f.state = 'value'; return i + 1; }
+      if (c === ',') { f.state = 'value'; f.later = true; return i + 1; }
       if (c === ']') { this.#stack.pop(); this.#valueDone(); return i + 1; }
     }
     this.#mode = 'error';
@@ -230,7 +233,8 @@ export class OversizedRecord {
     const path = this.#stack.map((f) => (f.t === 'o' ? f.key : '[]')).join('.');
     if (c === '"') {
       this.#path = path;
-      this.#startString(READABLE.some((r) => r.test(path)) ? 'readable' : SMALL.has(path) ? 'small' : 'skip');
+      const first = path === FIRST_TYPE && !this.#stack.some((f) => f.t === 'a' && f.later);
+      this.#startString(READABLE.some((r) => r.test(path)) ? 'readable' : SMALL.has(path) || first ? 'small' : 'skip');
       return i + 1;
     }
     if (/[-0-9tfn]/.test(c)) { this.#path = path; this.#literal = ''; this.#mode = 'literal'; return i; }
@@ -249,7 +253,10 @@ export class OversizedRecord {
   #chars(s: string): void {
     if (this.#target === 'readable') {
       this.#content.add(s, this.#fed);
-      if (FIRST_TEXT.test(this.#path) && (this.#firstText ?? '').length < 64) this.#firstText = ((this.#firstText ?? '') + s).slice(0, 64);
+      if (FIRST_TEXT.test(this.#path) && (this.#firstText ?? '').length < 64 && !this.#stack.some((f) => f.t === 'a' && f.later)) {
+        this.#firstText = ((this.#firstText ?? '') + s).slice(0, 64);
+        this.#firstBlock = this.#path !== 'message.content';
+      }
     } else if (this.#target === 'small' || this.#target === 'key') {
       if (this.#str.length + s.length > (this.#target === 'key' ? KEY_MAX : SMALL_MAX)) this.#strOver = true;
       else this.#str += s;
@@ -305,7 +312,7 @@ export class OversizedRecord {
       nativeId: s('uuid') ?? this.#key!, parentNativeId: s('parentUuid'), sessionId: s('sessionId'), sourceSeq: this.#o.offset,
       sourceTs: Number.isNaN(ts) ? undefined : ts, fileMtime: this.#o.fileMtime, receivedTs: this.#o.receivedTs,
       cwd: s('cwd'), entrypoint: s('entrypoint'), version: s('version'), role, messageId: s('message.id'), model: s('message.model'),
-      injected: role === 'user' && INJECTED_PREFIXES.some((p) => (this.#firstText ?? '').trimStart().startsWith(p)),
+      injected: role === 'user' && (!this.#firstBlock || s(FIRST_TYPE) === 'text') && INJECTED_PREFIXES.some((p) => (this.#firstText ?? '').trimStart().startsWith(p)),
       isSidechain: this.#fields.get('isSidechain') === true, subagentNativeId: this.#o.subagentNativeId, raw: '', ingestId: this.#key!,
     };
   }

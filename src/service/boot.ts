@@ -3,8 +3,9 @@
 // A read-only store (EC-45) is reported and skips ingest. P1-T12: commit and agent-status hooks for the renderer, and
 // a manual executable path ("Set path…") that re-detects that agent. P3-T04: once profiles are synced, the hook socket
 // listens and the spool replays, before the file backfill; a full disk is logged and its hook-only gap written on recovery.
+import { statSync } from 'node:fs';
 import path from 'node:path';
-import { OUTCOMES, REASONS, RULES, type AgentStatus, type Banner, type LiveStatus, type NotifyState } from '../shared/ipc.ts';
+import { OUTCOMES, REASONS, RULES, type AgentStatus, type Banner, type LiveStatus, type NotifyState, type ServiceMetrics } from '../shared/ipc.ts';
 import type { Logger } from '../shared/log.ts';
 import { AgyAdapter } from './adapters/agy/index.ts';
 import { ClaudeAdapter } from './adapters/claude/index.ts';
@@ -35,6 +36,9 @@ export interface BootOptions {
   onNotify?: (n: { agent: string; label: string | null; state: NotifyState }) => void;
   /** P3-T16e: watched sessions whose status changed at a settle deadline (the service also re-reads on its tick). */
   onTick?: (keys: string[]) => void;
+  /** XAIBO-PROD-445: a pricing job that ran in more than one slice, or had a rerun queued, finished: commits it overlapped
+   *  went out before their usage was priced, so open rows need one re-read. */
+  onPriced?: () => void;
 }
 export interface Service {
   store: Store;
@@ -59,6 +63,8 @@ export interface Service {
   ticking(): string[];
   /** Current coverage banners (hook-only gaps, disk full, hooks blocked, awaiting trust). */
   coverage(): Banner[];
+  /** P4-T10c2: content-free metrics; the `*Ms` peaks reset on each call (the service entry adds deltaResyncs). */
+  metrics(): Omit<ServiceMetrics, 'deltaResyncs'>;
   /** Validates and stores a manual executable path, then re-detects that agent; false if refused. */
   setPath(agent: string, file: string): Promise<boolean>;
   /** P3-T12: the machine sleeps from `at` (main's clock); the status engine excludes the gap from R1/R5. */
@@ -71,6 +77,16 @@ export interface Service {
 /** The turn-settle interval (PRD §6.2/§6.3, Q8 default; a setting with the Settings screen after Gate D, Q3-14). */
 const SETTLE_MS = 4000;
 
+// P4-T10c2 parse lag: commit time minus a file's last write (its mtime at sync), for files written within LIVE_LAG_MS;
+// older files are history import and a future mtime is clock skew, so neither is lag. ponytail: mtime has the file
+// system's resolution and is the write time only for append-only transcripts; a backfill of files written while the
+// service was down counts as lag (review L3).
+const LIVE_LAG_MS = 10 * 60_000;
+export function parseLagOf(now: number, mtime: number): number | null {
+  const lag = now - mtime;
+  return mtime > 0 && lag >= 0 && lag <= LIVE_LAG_MS ? Math.round(lag) : null;
+}
+
 export async function boot(o: BootOptions): Promise<Service> {
   const store = await openStore({ file: path.join(o.dataDir, 'xaibo.db'), backupDir: path.join(o.dataDir, 'backups') });
   const { db, readOnly } = store;
@@ -78,13 +94,43 @@ export async function boot(o: BootOptions): Promise<Service> {
   // P2-T10/T14: after each commit price only usage rows above the high-water mark; after a price load, every pending row.
   let pricedUpTo = 0;
   const topUsage = readOnly ? undefined : db.prepare('SELECT coalesce(max(id), 0) AS id FROM usage');
-  const price = (full = false) => {
+  // P4-T12a (EC-100): pricing runs in slices of PRICE_SLICE rows, the first now (a small store prices at once) and the
+  // rest on later event-loop turns, so a large reprice (an owner price added for a common model) never holds live
+  // dispatch (one pass of 100,000 rows held the loop ~1 s). One job at a time: a request during a job reruns after it
+  // from the lowest cursor asked for. ponytail: a fixed slice, ~20 ms at the measured ~10 us/row; give each slice a time
+  // budget if rows get costlier.
+  const PRICE_SLICE = 2000;
+  let pricing = false;
+  let rerunFrom: number | null = null;
+  // XAIBO-PROD-455 (G4a-3): notify = an explicit price reload, which always ends with one onPriced (a quiet mounted view
+  // still shows the old cost otherwise); commit-driven and boot pricing notify only for a sliced job or a rerun.
+  const priceFrom = (from: number, notify: boolean) => {
+    pricing = true;
+    let slices = 0;
+    let top = from;
+    try { top = Number((topUsage!.get() as { id: number }).id); } catch { /* the slice below logs the store error */ }
+    const step = (cursor: number) => {
+      if (!db.isOpen || !prices) { pricing = false; return; } // stop() closes the store (the first slice runs before `stopped` exists)
+      let next: number | null = null;
+      slices++;
+      try {
+        const r = priceUsage(db, prices, { afterUsageId: cursor, limit: PRICE_SLICE });
+        if (r.more) next = r.lastId;
+        else pricedUpTo = Math.max(pricedUpTo, top, r.lastId);
+      } catch (e) { o.log?.log('pricing_failed', { error: errorCode(e) }); }
+      if (next !== null) { const at = next; setImmediate(() => step(at)); return; }
+      pricing = false;
+      const resync = notify || slices > 1 || rerunFrom !== null; // a rerun (an explicit reload during a job too) is covered here
+      if (rerunFrom !== null) { const f = rerunFrom; rerunFrom = null; priceFrom(f, false); } // a one-slice rerun is done before the resync
+      if (resync) o.onPriced?.();
+    };
+    step(from);
+  };
+  const price = (full = false, notify = false) => {
     if (readOnly || !prices) return;
-    try {
-      const top = Number((topUsage!.get() as { id: number }).id);
-      priceUsage(db, prices, full ? {} : { afterUsageId: pricedUpTo });
-      pricedUpTo = top;
-    } catch (e) { o.log?.log('pricing_failed', { error: errorCode(e) }); }
+    const from = full ? 0 : pricedUpTo;
+    if (pricing) { rerunFrom = Math.min(rerunFrom ?? from, from); return; }
+    priceFrom(from, notify);
   };
   let hooks: Hooks | undefined;
   // P3-T10: the status engine (P3-T08/T09) over durable hook deliveries and live-window file records.
@@ -98,7 +144,7 @@ export async function boot(o: BootOptions): Promise<Service> {
     if (!s) return null;
     const known = <T extends string>(xs: readonly T[], x: string | null): T | null => (x !== null && (xs as readonly string[]).includes(x) ? x as T : null);
     return { lifecycle: s.lifecycle, confidence: s.confidence, health: s.health, reason: known(REASONS, s.reason), outcome: known(OUTCOMES, s.outcome),
-      findings: s.findings.filter((r): r is LiveStatus['findings'][number] => (RULES as readonly string[]).includes(r)) };
+      findings: s.findings.filter((r): r is LiveStatus['findings'][number] => (RULES as readonly string[]).includes(r)), since: s.since };
   };
   // Sessions whose status can change with time alone (busy: settle, R1/R5; heuristic waits), with the last status seen.
   // Keyed `agent\0profile\0native id`, the session identity (§5.5).
@@ -161,19 +207,26 @@ export async function boot(o: BootOptions): Promise<Service> {
       for (const x of fileObservations(b, clock())) { engine.ingest(x); if (x.source === 'file') watch(b.agent, b.profileId, x.sessionId); }
     } catch (e) { o.log?.log('status_feed_failed', { error: errorCode(e) }); }
   };
+  // P4-T10c2: the peak parse lag (parseLagOf) over committed batches that carry records; the writer's queue age uses its
+  // own monotonic clock (review L2).
+  let parseLag = 0;
   const writer = new Writer(db, {
-    onCommit: (b) => { price(); feed(b); o.onCommit?.(b); },
+    onCommit: (b) => {
+      const lag = b.file && b.events.length ? parseLagOf(clock(), b.file.mtime) : null;
+      if (lag !== null) parseLag = Math.max(parseLag, lag);
+      price(); feed(b); o.onCommit?.(b);
+    },
     onDiskFull: (full) => { o.log?.log('disk_full', { full }); if (!full) hooks?.intake.recovered(); },
   });
   const detections: Detection[] = [];
-  const reloadPrices = () => {
+  const reloadPrices = (explicit = true) => {
     try {
       prices = loadPrices({ db: readOnly ? null : db, overridePath: path.join(o.dataDir, 'models.override.json'), previous: prices, ...(o.log ? { log: o.log } : {}) });
     } catch { o.log?.log('models_invalid', {}); }
-    price(true);
+    price(true, explicit);
     return prices;
   };
-  reloadPrices();
+  reloadPrices(false);
   const adapters: Ingester[] = [];
   let profiles: Profile[] = [];
   let stopped = false;
@@ -246,12 +299,22 @@ export async function boot(o: BootOptions): Promise<Service> {
     kinds: () => catalog?.sessionKinds ?? [],
     models: () => prices?.table.models ?? [],
     prices: () => prices,
-    reloadPrices,
+    reloadPrices: () => reloadPrices(),
     status,
     ticking,
     coverage: () => {
       if (readOnly || !db.isOpen) return [];
       try { return coverageBanners({ db, dataDir: o.dataDir, profiles, diskFull: writer.diskFull, now: clock() }); } catch { return []; }
+    },
+    metrics: () => {
+      const parseLagMs = parseLag;
+      parseLag = 0;
+      let walBytes = 0;
+      // The WAL file's size: without journal_size_limit it never shrinks after a checkpoint, so this is its high-water
+      // mark, not what waits to be checkpointed (review L4).
+      try { walBytes = statSync(path.join(o.dataDir, 'xaibo.db-wal')).size; } catch { /* no WAL yet */ }
+      return { writerQueueAgeMs: writer.takeQueueAgeMs(), parseLagMs, walBytes, watchHandles: adapters.reduce((n, a) => n + a.watched(), 0),
+        statusSessions: engine?.cached() ?? 0, diskFull: writer.diskFull ? 1 : 0 };
     },
     async setPath(agent, file) {
       await Promise.race([detection, done.catch(() => undefined)]); // detection, not the whole backfill

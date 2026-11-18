@@ -2,10 +2,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
-import { mkdtempSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createLogger, hashId, loadInstallSecret } from '../../src/shared/log.ts';
+import { appendQuiet, createLogger, hashId, loadInstallSecret } from '../../src/shared/log.ts';
 import { canaries } from '../helpers/canary.ts';
 
 const temp = () => join(mkdtempSync(join(tmpdir(), 'xlog-')), 'logs');
@@ -83,4 +83,22 @@ test('canary: logs', () => {
   const text = read(dir);
   for (const v of Object.values(c)) for (const f of [v, JSON.stringify(v).slice(1, -1)]) assert.ok(!text.includes(f), 'a canary reached the log');
   assert.equal(text.trim().split('\n').length, Object.keys(c).length);
+});
+
+// XAIBO-PROD-430 (P4-T12b, EC-44): on a full disk an append throws ENOSPC, and the crash policy logs through this same
+// logger, so a throwing log() took the service down in a loop. A write that fails drops its line; nothing throws.
+test('a log or trace line that cannot be written is dropped, never thrown (disk full)', () => {
+  const dir = temp();
+  const log = createLogger({ dir, secret, now: () => 0 });
+  rmSync(dir, { recursive: true }); // the append now fails (ENOENT), as it does with ENOSPC
+  assert.doesNotThrow(() => log.log('disk_full', { full: true }));
+  assert.doesNotThrow(() => appendQuiet(join(dir, 'perf-trace-service.jsonl'), '{}\n'));
+
+  const rot = temp();
+  const small = createLogger({ dir: rot, secret, maxBytes: 64, maxFiles: 2, now: () => 0 });
+  small.log('first_line', { n: 1 });
+  mkdirSync(join(rot, 'xaibo.log.1'));
+  writeFileSync(join(rot, 'xaibo.log.1', 'x'), ''); // rotation cannot remove it
+  assert.doesNotThrow(() => small.log('second_line_that_needs_rotation', { n: 2 }));
+  assert.ok(statSync(join(rot, 'xaibo.log')).size <= 64, 'a failed rotation drops the line: the file stays bounded');
 });

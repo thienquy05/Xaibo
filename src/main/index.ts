@@ -7,16 +7,17 @@ import { appendFileSync } from 'node:fs';
 import { release } from 'node:os';
 import path from 'node:path';
 import { installCrashPolicy } from '../shared/crash.ts';
-import { AGENT_ID, IPC_VERSION } from '../shared/ipc.ts';
-import { createLogger, loadInstallSecret } from '../shared/log.ts';
+import { AGENT_ID, IPC_VERSION, type ServiceMetrics } from '../shared/ipc.ts';
+import { appendQuiet, createLogger, loadInstallSecret } from '../shared/log.ts';
 import { initDataDir } from './app-paths.ts';
-import { buildBundle, readLogTail, writeBundle } from './diagnostics.ts';
+import { buildBundle, foldMetrics, readLogTail, writeBundle } from './diagnostics.ts';
 import { notificationText, showNotification } from './notifications.ts';
 import { forwardPower } from './power.ts';
 import { APP_ORIGIN, devOrigin } from './policy.ts';
 import { lockDown, registerAppScheme, webPreferences } from './security.ts';
 import { Supervisor } from './service-supervisor.ts';
 import { createTray } from './tray.ts';
+import { hideWindow, showWindow } from './window.ts';
 
 const SERVICE_QUIT_MS = 2_000;
 const here = import.meta.dirname;
@@ -41,8 +42,9 @@ function start(dataDir: string) {
   let quitting = false;
   let stopped = false;
   let blocked = 0;
+  let serviceMetrics: ServiceMetrics | null = null;
 
-  const show = () => { win?.show(); win?.focus(); };
+  const show = () => showWindow(win);
   let pageReady = false; // a port sent to a loading page is lost; did-finish-load sends one
   const sendPort = () => {
     if (!win || !pageReady) return;
@@ -56,13 +58,14 @@ function start(dataDir: string) {
     }),
     channel: () => new MessageChannelMain(),
     onHealth: (h) => win?.webContents.send('health', h),
-    onSpawn: sendPort,
+    onSpawn: () => { serviceMetrics = null; sendPort(); }, // a new service process: no stale metrics (review L1)
     setTimer: (fn, ms) => setTimeout(fn, ms),
     clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
     now: Date.now,
     quitMs: SERVICE_QUIT_MS,
     log: (event, fields) => log.log(event, fields),
     // P3-T11 (EC-59): the text is built from agent, label and state only; test mode records it with an hrtime stamp.
+    onMetrics: (m) => { serviceMetrics = foldMetrics(serviceMetrics, m.metrics); }, // P4-T10c2: for the diagnostics bundle
     onNotify: (n) => {
       const title = notificationText(n.agent, n.label, n.state);
       if (notifyStub) appendFileSync(notifyStub, `${JSON.stringify({ title, t: process.hrtime.bigint().toString() })}\n`);
@@ -91,6 +94,7 @@ function start(dataDir: string) {
       os: { platform: process.platform, release: release(), arch: process.arch },
       health: supervisor.health,
       counters: { requestsBlocked: blocked, ipcDropped: supervisor.dropped },
+      serviceMetrics,
       logTail: readLogTail(app.getPath('logs'), { lines: 200, bytes: 256 * 1024 }),
     }));
     log.log('diagnostics_saved');
@@ -101,7 +105,7 @@ function start(dataDir: string) {
   ipcMain.on('paint-ack', (e, delta: unknown) => {
     const t = process.hrtime.bigint();
     if (!trace || !win || e.sender !== win.webContents || !Number.isSafeInteger(delta) || (delta as number) <= 0) return;
-    appendFileSync(trace, `${JSON.stringify({ ev: 'paint', delta, t: t.toString() })}\n`);
+    appendQuiet(trace, `${JSON.stringify({ ev: 'paint', delta, t: t.toString() })}\n`); // XAIBO-PROD-430: never throws
   });
   // "Set path…" (P1-T08/T12): only from our window, only an agent id; the user picks the file, the service validates it.
   ipcMain.on('set-agent-path', (e, agent: unknown) => {
@@ -124,7 +128,7 @@ function start(dataDir: string) {
     ]));
     win = new BrowserWindow({ width: 960, height: 640, show: false, title: 'Xaibo', webPreferences: webPreferences(path.join(here, 'preload.cjs')) });
     win.once('ready-to-show', show);
-    win.on('close', (e) => { if (!quitting) { e.preventDefault(); win?.hide(); } });
+    win.on('close', (e) => { if (!quitting) { e.preventDefault(); hideWindow(win); } });
     win.webContents.on('did-start-loading', () => { pageReady = false; });
     win.webContents.on('did-finish-load', () => { pageReady = true; win?.webContents.send('health', supervisor.health); sendPort(); });
     void win.loadURL(dev ? `${dev}/` : `${APP_ORIGIN}/index.html`);

@@ -3,13 +3,13 @@
 // before Phase 4). Order matches the service keyset: last activity descending (unknown last), then id.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyDelta, applyPage, bannerText, compareRows, contextText, costText, emptyList, findingBadges, formatTime, lifecycleMark, markers, PAGE,
-  statusText } from '../../src/renderer/model.ts';
+import { applyDelta, applyLiveDelta, applyPage, collectorStep, emptyCollector, emptyLiveSet, lastKnownLabel, bannerText, compareRows, contextText, costText, emptyList, findingBadges, formatTime, markers, PAGE,
+  statusExtras } from '../../src/renderer/model.ts';
 import type { LiveStatus, SessionRow } from '../../src/shared/ipc.ts';
 
 const r = (id: number, lastActivity: number | null, extra: Partial<SessionRow> = {}): SessionRow =>
   ({ id, agent: 'claude', entrypoint: 'cli', origin: 'CLI', interactive: true, model: 'Model unavailable', cwd: `/tmp/xaibo-fixture/${id}`, title: null, lastActivity, drift: false, compressed: false, quarantined: 0,
-    live: null, contextPct: null, costUsd: null, costCoverage: 'unavailable', ...extra });
+    live: null, contextPct: null, costUsd: null, costCoverage: 'unavailable', tokens: null, tokensComplete: true, ...extra });
 const ids = (s: { rows: SessionRow[] }) => s.rows.map((x) => x.id);
 
 test('order: newest first, ties by id, unknown activity last', () => {
@@ -25,6 +25,20 @@ test('first page replaces, Load more appends without duplicates and widens the w
   assert.deepEqual(ids(s), [1, 2, 3]);
   assert.equal(s.next, null);
   assert.equal(s.capacity, 2 * PAGE);
+});
+
+test('P4-T03: a replacing page larger than one page (a resynced window) keeps room for all its rows', () => {
+  const rows = Array.from({ length: 130 }, (_, i) => r(i + 1, 1_000 - i));
+  const s = applyPage(emptyList, { rows, next: { lastActivity: 870, id: 130 } }, false);
+  assert.equal(s.rows.length, 130);
+  assert.equal(s.capacity, 150, 'whole pages');
+  assert.equal(applyDelta(s, [r(999, 2_000)]).rows.length, 131, 'a delta inside the window does not trim it back to one page');
+  assert.equal(applyPage(emptyList, { rows: [r(1, 1)], next: null }, false).capacity, PAGE);
+});
+
+test('review L3: a replacing page never holds the same session twice (cursor drift between requests)', () => {
+  const s = applyPage(emptyList, { rows: [r(1, 30), r(2, 20), r(1, 30)], next: null }, false);
+  assert.deepEqual(s.rows.map((x) => x.id), [1, 2]);
 });
 
 test('a delta updates a loaded row and moves it up', () => {
@@ -63,21 +77,12 @@ test('coverage markers are text plus glyph; time is local and readable', () => {
 // P3-T10 (XAIBO-PROD-310, Q3-5): placeholder live status text. Every state is text plus glyph, never colour alone;
 // heuristic and inferred confidence are spelled out; findings name the rule and the PRD §6.4 warning.
 const L = (o: Partial<LiveStatus> = {}): LiveStatus =>
-  ({ lifecycle: 'busy', confidence: 'confirmed', health: 'connected', reason: null, outcome: null, findings: [], ...o });
+  ({ lifecycle: 'busy', confidence: 'confirmed', health: 'connected', reason: null, outcome: null, findings: [], since: null, ...o });
 
-test('status text: lifecycle, reason, confidence, health and outcome as words; no evidence is said so', () => {
-  assert.equal(statusText(null), 'No live status');
-  assert.equal(statusText(L()), 'Busy (confirmed)');
-  assert.equal(statusText(L({ reason: 'Finishing…' })), 'Busy · Finishing… (confirmed)');
-  assert.equal(statusText(L({ lifecycle: 'waiting-for-permission', confidence: 'heuristic', reason: 'Probably waiting' })),
-    'Waiting for permission · Probably waiting (heuristic)');
-  assert.equal(statusText(L({ lifecycle: 'idle', confidence: 'inferred', outcome: 'interrupted' })), 'Idle (inferred) · last turn interrupted');
-  assert.equal(statusText(L({ health: 'stale' })), 'Busy (confirmed) · stale');
-  for (const lc of ['idle', 'busy', 'waiting-for-permission', 'needs-input', 'error', 'ended', 'unknown'] as const) {
-    const m = lifecycleMark(lc);
-    assert.ok(m.glyph.length > 0 && m.text.length > 0, lc);
-  }
-  assert.equal(lifecycleMark('needs-input').text, 'Needs input');
+test('status extras (P4-T01): health and last-turn outcome as words beside the status badge (design §3.2)', () => {
+  assert.deepEqual(statusExtras(L()), []);
+  assert.deepEqual(statusExtras(L({ health: 'stale' })), ['Stale']);
+  assert.deepEqual(statusExtras(L({ health: 'detached', outcome: 'interrupted' })), ['Health: Detached', 'Last turn interrupted']);
 });
 
 test('finding badges: rule id plus the §6.4 warning name', () => {
@@ -111,4 +116,124 @@ test('coverage banners: gap counts, agent names and time ranges as text', () => 
   assert.equal(bannerText({ kind: 'hooks-blocked', agent: 'claude', state: 'blocked' }, names), 'Claude Code: hooks blocked by policy (files only)');
   assert.equal(bannerText({ kind: 'hooks-blocked', agent: 'claude', state: 'unknown' }, names), 'Claude Code: hook policy unknown (files only)');
   assert.equal(bannerText({ kind: 'awaiting-trust', agent: 'codex', steps: ['a'] }, names), 'codex: hooks installed, awaiting trust');
+});
+
+// XAIBO-PROD-407 (P4-T04c): the Dashboard live set kept current by session deltas: a row that ended or that the engine no
+// longer knows leaves; a live row enters or updates in list order; the set stays capped (more = true when trimmed).
+test('live set: ended or unknown rows leave; live rows enter in list order; capped with more', () => {
+  const on = (id: number, at: number, lifecycle: LiveStatus['lifecycle'] = 'busy') => r(id, at, { live: L({ lifecycle }) });
+  let s = { rows: [on(1, 30), on(2, 20)], more: false, loaded: true };
+  s = applyLiveDelta(s, [on(3, 25), r(9, 40)]); // 9 has no live status: not a member
+  assert.deepEqual(ids(s), [1, 3, 2]);
+  s = applyLiveDelta(s, [on(2, 50, 'needs-input')]);
+  assert.deepEqual(ids(s), [2, 1, 3], 'updated and moved up');
+  s = applyLiveDelta(s, [on(1, 60, 'ended'), { ...on(3, 25), live: null }]);
+  assert.deepEqual(ids(s), [2]);
+  const capped = applyLiveDelta({ rows: [on(1, 10), on(2, 9)], more: false, loaded: true }, [on(3, 11)], 2);
+  assert.deepEqual([ids(capped), capped.more], [[3, 1], true]);
+  assert.deepEqual(emptyLiveSet, { rows: [], more: false, loaded: false });
+});
+
+// P4-T04c security review: the "Last known" qualifier. Nothing is "last known" before the collector first ran; after
+// that, every non-running state carries the time it stopped running.
+test('collector: starting before any run reads Collection starting; a later loss keeps its time; running clears it', () => {
+  let c = collectorStep(emptyCollector, 'starting', 100);
+  assert.equal(lastKnownLabel(c, 'starting'), 'Collection starting');
+  c = collectorStep(c, 'running', 200);
+  assert.equal(lastKnownLabel(c, 'running'), null);
+  c = collectorStep(c, 'restarting', new Date(2026, 0, 2, 9, 5).getTime());
+  c = collectorStep(c, 'stopped', new Date(2026, 0, 2, 9, 6).getTime());
+  assert.equal(lastKnownLabel(c, 'stopped'), 'since 2026-01-02 09:05', 'first loss time kept');
+  c = collectorStep(c, 'running', 300);
+  assert.deepEqual([c.lostAt, lastKnownLabel(c, 'running')], [null, null]);
+  assert.equal(lastKnownLabel(emptyCollector, null), 'Collection starting', 'no health yet');
+});
+
+// XAIBO-PROD-436 (P4-T14b; owner decision D-P4-09): a full disk pauses collection; the band says so (not Running) and
+// live labels are qualified as last known while it lasts.
+test('band: a running service that reports disk full reads Paused (disk full); otherwise the health text', async () => {
+  const { bandText } = await import('../../src/renderer/model.ts');
+  const h = (state: 'starting' | 'running' | 'restarting' | 'stopped', attempt = 0) => ({ v: 1 as const, type: 'health' as const, state, attempt, readOnly: null });
+  const full = [{ kind: 'disk-full' as const }];
+  assert.deepEqual(bandText(null, full), { state: 'starting', text: 'Starting' });
+  assert.deepEqual(bandText(h('running'), []), { state: 'running', text: 'Running' });
+  assert.deepEqual(bandText(h('running'), full), { state: 'paused', text: 'Paused (disk full)' });
+  assert.deepEqual(bandText(h('restarting', 2), full), { state: 'restarting', text: 'Restarting (attempt 2)' }, 'a stale banner never hides a restart');
+  assert.deepEqual(bandText(h('running'), [{ kind: 'hooks-blocked' as const, agent: 'claude', state: 'blocked' as const }]), { state: 'running', text: 'Running' });
+});
+
+test('collector: a pause is a loss for the Last known qualifier; running again clears it', () => {
+  let c = collectorStep(collectorStep(emptyCollector, 'running', 100), 'paused', new Date(2026, 0, 2, 9, 7).getTime());
+  assert.equal(lastKnownLabel(c, 'paused'), 'since 2026-01-02 09:07');
+  c = collectorStep(c, 'running', 300);
+  assert.equal(lastKnownLabel(c, 'running'), null);
+});
+
+test('review L: a pause before any Running health (disk already full at start) still carries its time', () => {
+  const c = collectorStep(emptyCollector, 'paused', new Date(2026, 0, 2, 9, 8).getTime());
+  assert.equal(lastKnownLabel(c, 'paused'), 'since 2026-01-02 09:08');
+});
+
+// XAIBO-PROD-437 (P4-T15; design §8.1): repeated Open session actions name their record; an ordinal only where two
+// records would otherwise read the same. The visible text stays "Open session" (its name starts with it).
+test('Open session names: agent and folder per record; exact duplicates get "k of n"', async () => {
+  const { openSessionLabels } = await import('../../src/renderer/model.ts');
+  assert.deepEqual(openSessionLabels([{ agent: 'Claude Code', place: '/tmp/a' }, { agent: 'Claude Code', place: '/tmp/b' }]),
+    ['Open session: Claude Code · /tmp/a', 'Open session: Claude Code · /tmp/b']);
+  assert.deepEqual(openSessionLabels([{ agent: 'Codex', place: '/tmp/a' }, { agent: 'Codex', place: '/tmp/b' }, { agent: 'Codex', place: '/tmp/a' }]),
+    ['Open session: Codex · /tmp/a (1 of 2)', 'Open session: Codex · /tmp/b', 'Open session: Codex · /tmp/a (2 of 2)']);
+  assert.deepEqual(openSessionLabels([]), []);
+});
+
+// XAIBO-PROD-437 (design §5.3/§5.4): Return to Dashboard restores the same record, else the following one, else the
+// previous one (in the order shown when the user left), else null (the view heading).
+test('restoreFocus: same record, then following, then previous, else none', async () => {
+  const { restoreFocus } = await import('../../src/renderer/model.ts');
+  assert.equal(restoreFocus([1, 2, 3], [1, 2, 3], 2), 2);
+  assert.equal(restoreFocus([1, 3], [1, 2, 3], 2), 3, 'following');
+  assert.equal(restoreFocus([1, 4], [1, 2, 3], 2), 1, 'no following left: previous');
+  assert.equal(restoreFocus([7], [1, 2, 3], 2), null, 'neither neighbour remains');
+  assert.equal(restoreFocus([], [1, 2], 1), null);
+  assert.equal(restoreFocus([5, 6], [], 9), null, 'unknown origin');
+});
+
+// XAIBO-PROD-437 (design §8.1): a focusable record row is named title · agent · folder, short and stable; a long title
+// is cut (never a whole prompt in a label); untrusted text through visible().
+test('recordLabel: title (capped at 80 characters), agent and folder; fallbacks spelled out', async () => {
+  const { recordLabel } = await import('../../src/renderer/model.ts');
+  assert.equal(recordLabel(r(1, 5, { title: 'Fix the build', cwd: '/tmp/x' })), 'Fix the build · claude · /tmp/x');
+  assert.equal(recordLabel(r(1, 5, { title: null, cwd: null })), 'Untitled · claude · Unknown folder');
+  const long = recordLabel(r(1, 5, { title: 'a'.repeat(200) }));
+  assert.equal(long.split(' · ')[0], `${'a'.repeat(79)}…`);
+  assert.doesNotMatch(recordLabel(r(1, 5, { title: 'x‮y' })), /‮/, 'bidi controls are escaped');
+});
+
+// XAIBO-PROD-437 review L4: label parts are cut by code points before escaping (never mid-escape or mid-pair) and every
+// transcript-controlled part is bounded.
+test('capText: code-point cut with an ellipsis, then visible(); short text unchanged', async () => {
+  const { capText } = await import('../../src/renderer/model.ts');
+  assert.equal(capText('short', 10), 'short');
+  assert.equal(capText(`${'a'.repeat(8)}‮bb`, 10), `${'a'.repeat(8)}\\u202E…`, 'the control survives as an escape, then the ellipsis');
+  assert.equal(capText('😀'.repeat(12), 10), `${'😀'.repeat(9)}…`, 'no broken surrogate pair');
+});
+
+test('recordLabel bounds the folder too', async () => {
+  const { recordLabel } = await import('../../src/renderer/model.ts');
+  const parts = recordLabel(r(1, 5, { title: 't', cwd: `/${'d'.repeat(300)}` })).split(' · ');
+  assert.equal(Array.from(parts[2]!).length, 120);
+});
+
+// XAIBO-PROD-448 (G4c-3): a capped live set (more) whose shown members ended must fetch the left-out ones, else a
+// waiting session past the cap never appears ("No live sessions", "Needs attention 0+"). The service sets more only at
+// exactly LIVE_SET_MAX rows, so a refill answer never asks again.
+test('live set: a loaded capped set below LIVE_SET_MAX needs a refill; full, uncapped or unloaded sets do not', async () => {
+  const { liveSetNeedsRefill, LIVE_SET_MAX } = await import('../../src/renderer/model.ts');
+  const rows = (n: number) => Array.from({ length: n }, (_, i) => r(i + 1, 100 - i, { live: L({ lifecycle: 'busy' }) }));
+  assert.equal(liveSetNeedsRefill({ rows: rows(LIVE_SET_MAX - 1), more: true, loaded: true }), true, 'a member left a capped set');
+  assert.equal(liveSetNeedsRefill({ rows: [], more: true, loaded: true }), true, 'every shown member ended');
+  assert.equal(liveSetNeedsRefill({ rows: rows(LIVE_SET_MAX), more: true, loaded: true }), false, 'full: what the service returns');
+  assert.equal(liveSetNeedsRefill({ rows: rows(3), more: false, loaded: true }), false, 'nothing was left out');
+  assert.equal(liveSetNeedsRefill({ rows: [], more: true, loaded: false }), false, 'not loaded yet');
+  const ended = applyLiveDelta({ rows: rows(LIVE_SET_MAX), more: true, loaded: true }, [r(1, 100, { live: L({ lifecycle: 'ended' }) })]);
+  assert.equal(liveSetNeedsRefill(ended), true, 'a delta ending a member of a capped set');
 });

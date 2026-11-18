@@ -1,7 +1,8 @@
 // Session list state (P1-T12): pages and live deltas merged by session id in the service's keyset order. The loaded
 // window holds `capacity` rows (a page per Load more); deltas update loaded rows and add new sessions only inside
 // that window, trimming from the bottom, so a large backfill never grows the DOM (virtualization is Phase 4).
-import type { Banner, CostCoverage, Cursor, LiveStatus, Page, SessionRow } from '../shared/ipc.ts';
+import { healthText } from '../shared/ipc.ts';
+import type { Banner, CostCoverage, Cursor, Health, HealthState, LiveStatus, Page, SessionRow } from '../shared/ipc.ts';
 import { visible } from './text.ts';
 
 export const PAGE = 50;
@@ -22,9 +23,10 @@ const merged = (rows: SessionRow[], incoming: SessionRow[]) => {
   return [...byId.values()].sort(compareRows);
 };
 
-/** The first page replaces the list; a Load more page is merged in and widens the window. */
+/** A replacing page (the first page, or a resynced window of several) sets the window to whole pages around it; a
+ * Load more page is merged in and widens the window. */
 export function applyPage(s: ListState, page: Page, append: boolean): ListState {
-  if (!append) return { rows: [...page.rows].sort(compareRows), next: page.next, capacity: PAGE, loaded: true };
+  if (!append) return { rows: merged([], page.rows), next: page.next, capacity: Math.max(PAGE, Math.ceil(page.rows.length / PAGE) * PAGE), loaded: true };
   return { rows: merged(s.rows, page.rows), next: page.next, capacity: s.capacity + PAGE, loaded: true };
 }
 
@@ -40,6 +42,50 @@ export function applyDelta(s: ListState, incoming: SessionRow[]): ListState {
     next = cursorOf(rows.at(-1)!);
   }
   return { ...s, rows, next };
+}
+
+/** P4-T04c: the Dashboard's live set (P4-T04a `liveSet`), kept current by session deltas. */
+export interface LiveSetState { rows: SessionRow[]; more: boolean; loaded: boolean }
+export const emptyLiveSet: LiveSetState = { rows: [], more: false, loaded: false };
+export const LIVE_SET_MAX = 100; // the service's cap (api.ts LIVE_SET_MAX)
+const member = (r: SessionRow) => r.live !== null && r.live.lifecycle !== 'ended';
+/** A delta row that ended or lost its engine status leaves; a live row enters or updates in list order; past `max` the
+ *  oldest are trimmed and `more` is set (a resync by `liveSet` restores the exact set). */
+export function applyLiveDelta(s: LiveSetState, incoming: SessionRow[], max = LIVE_SET_MAX): LiveSetState {
+  const byId = new Map(s.rows.map((r) => [r.id, r]));
+  for (const r of incoming) {
+    if (member(r)) byId.set(r.id, r);
+    else byId.delete(r.id);
+  }
+  const rows = [...byId.values()].sort(compareRows);
+  return rows.length > max ? { ...s, rows: rows.slice(0, max), more: true } : { ...s, rows };
+}
+/** XAIBO-PROD-448 (G4c-3): members left a capped set (more) and it is below the cap: fetch the set again for the
+ *  left-out ones. Cannot loop: the service sets more only when it returns exactly LIVE_SET_MAX rows. */
+export const liveSetNeedsRefill = (s: LiveSetState): boolean => s.loaded && s.more && s.rows.length < LIVE_SET_MAX;
+
+/** P4-T04c (design §6.0): the collector's run history for the "Last known" qualifier. Nothing is last known before
+ *  the collector first ran; after a loss, the time it stopped running is kept until it runs again. */
+export interface Collector { seenRunning: boolean; lostAt: number | null }
+export const emptyCollector: Collector = { seenRunning: false, lostAt: null };
+/** XAIBO-PROD-436 (owner decision D-P4-09): `paused` is a running service that cannot store (disk full). */
+export type BandState = HealthState | 'paused';
+export function collectorStep(c: Collector, state: BandState, now: number): Collector {
+  if (state === 'running') return { seenRunning: true, lostAt: null };
+  if (state === 'paused') return { seenRunning: true, lostAt: c.lostAt ?? now }; // review L: a paused service has run
+  return c.seenRunning ? { ...c, lostAt: c.lostAt ?? now } : c;
+}
+/** The collection band (design §6.0, amended by D-P4-09): a running service that reports disk full reads Paused, never
+ *  Running; any other state reads as its health. */
+export function bandText(h: Health | null, banners: readonly Banner[]): { state: BandState; text: string } {
+  if (!h) return { state: 'starting', text: 'Starting' };
+  if (h.state === 'running' && banners.some((b) => b.kind === 'disk-full')) return { state: 'paused', text: 'Paused (disk full)' };
+  return { state: h.state, text: healthText(h) };
+}
+/** null while running (live labels unqualified); otherwise the qualifier text. */
+export function lastKnownLabel(c: Collector, state: BandState | null): string | null {
+  if (state === 'running') return null;
+  return c.seenRunning && c.lostAt !== null ? `since ${formatTime(c.lostAt)}` : 'Collection starting';
 }
 
 export interface Marker { glyph: string; text: string }
@@ -63,24 +109,17 @@ const two = (n: number) => String(n).padStart(2, '0');
 export function formatTime(ms: number | null): string {
   if (ms === null) return 'Unknown';
   const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return 'Unknown'; // P4-T04b2 review: finite but outside the Date range
   return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
 }
 
-// Live status as placeholder text (P3-T10, Q3-5, before the Gate D design): every state is a glyph plus words, never
-// colour alone; confidence is always spelled out, so a heuristic never reads as confirmed (§6.7).
-const LIFE: Record<LiveStatus['lifecycle'], Marker> = {
-  idle: { glyph: '○', text: 'Idle' }, busy: { glyph: '●', text: 'Busy' }, 'waiting-for-permission': { glyph: '⏸', text: 'Waiting for permission' },
-  'needs-input': { glyph: '✎', text: 'Needs input' }, error: { glyph: '✕', text: 'Error' }, ended: { glyph: '■', text: 'Ended' },
-  unknown: { glyph: '◌', text: 'Unknown' },
-};
-export const lifecycleMark = (l: LiveStatus['lifecycle']): Marker => LIFE[l];
-
-export function statusText(s: LiveStatus | null): string {
-  if (!s) return 'No live status';
-  let t = `${LIFE[s.lifecycle].text}${s.reason ? ` · ${s.reason}` : ''} (${s.confidence})`;
-  if (s.health !== 'connected') t += ` · ${s.health}`;
-  if (s.outcome) t += ` · last turn ${s.outcome}`;
-  return t;
+/** Health and last-turn words beside the status badge (design §3.2; full health/ownership presentation is P4-T04). */
+export function statusExtras(s: LiveStatus): string[] {
+  const out: string[] = [];
+  if (s.health === 'stale') out.push('Stale');
+  else if (s.health === 'detached') out.push('Health: Detached');
+  if (s.outcome) out.push(`Last turn ${s.outcome}`);
+  return out;
 }
 
 /** §6.4 warning names; a badge never terminates or changes anything. */
@@ -111,4 +150,43 @@ export function bannerText(b: Banner, name: (agent: string) => string): string {
     case 'hooks-blocked': return `${visible(name(b.agent))}: ${b.state === 'blocked' ? 'hooks blocked by policy' : 'hook policy unknown'} (files only)`;
     case 'awaiting-trust': return `${visible(name(b.agent))}: hooks installed, awaiting trust`;
   }
+}
+
+/** XAIBO-PROD-437 (design §8.1): names for repeated Open session actions, naming each record by agent and folder; an
+ *  ordinal ("k of n") only where two records would otherwise read the same. */
+export function openSessionLabels(items: readonly { agent: string; place: string }[]): string[] {
+  const base = items.map((x) => `Open session: ${x.agent} · ${x.place}`);
+  const total = new Map<string, number>();
+  for (const b of base) total.set(b, (total.get(b) ?? 0) + 1);
+  const seen = new Map<string, number>();
+  return base.map((b) => {
+    const n = total.get(b)!;
+    if (n === 1) return b;
+    const k = (seen.get(b) ?? 0) + 1;
+    seen.set(b, k);
+    return `${b} (${k} of ${n})`;
+  });
+}
+
+/** XAIBO-PROD-437 (design §5.3/§5.4): the record Return restores: the same one, else the nearest following one (in the
+ *  order shown when the user left), else the nearest previous one; null for the view heading. */
+export function restoreFocus(current: readonly number[], before: readonly number[], id: number): number | null {
+  const here = new Set(current);
+  if (here.has(id)) return id;
+  const at = before.indexOf(id);
+  if (at < 0) return null;
+  return before.slice(at + 1).find((x) => here.has(x)) ?? before.slice(0, at).reverse().find((x) => here.has(x)) ?? null;
+}
+
+/** XAIBO-PROD-437 (design §8.1): the name of a focusable record row: title · agent · folder, the title cut at 80
+ *  characters so a first-prompt title never becomes a whole prompt in a label. */
+export function recordLabel(r: Pick<SessionRow, 'title' | 'agent' | 'cwd'>): string {
+  return `${r.title ? capText(r.title, 80) : 'Untitled'} · ${capText(r.agent, 60)} · ${r.cwd ? capText(r.cwd, 120) : 'Unknown folder'}`;
+}
+
+/** XAIBO-PROD-437 review L4: untrusted text for a label, at most `n` code points (cut before escaping, so never inside
+ *  an escape or a surrogate pair; an ellipsis marks the cut), then visible(). */
+export function capText(s: string, n: number): string {
+  const a = Array.from(s);
+  return a.length > n ? `${visible(a.slice(0, n - 1).join(''))}…` : visible(s);
 }

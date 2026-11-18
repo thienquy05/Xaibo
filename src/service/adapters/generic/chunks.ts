@@ -11,12 +11,11 @@
 // store already settled before a crash removed them; a write that fails removes what it wrote. ponytail: abandoned
 // pending items, and items of a revoked registration, keep their quota until removed; an age reaper when retention lands
 // (Phase 5).
-import { createHash, randomUUID } from 'node:crypto';
-import {
-  chmodSync, closeSync, constants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeSync,
-} from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, lstatSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { UUID } from '../../../shared/hook-protocol.ts';
+import { atomicWrite, fsyncDir, privateDir as sharedPrivateDir } from '../../fs-private.ts';
 
 /** producer: two producer instances chunking one item differently never share chunks (G3d-2). */
 export interface ChunkKey { registration: string; producer: string; session: string; item: string; revision: number }
@@ -28,8 +27,6 @@ export interface ChunkStore {
   put(key: ChunkKey, index: number, final: boolean, content: string): PutResult;
   /** Drops an item's chunks (after its completion or incompleteness is committed). */
   remove(key: ChunkKey): void;
-  /** Accounted pending bytes of a registration (content plus per-file overhead). */
-  pending(registration: string): number;
   /** Keys of the items on disk (pending, or left by a crash after their state was committed). */
   items(): ChunkKey[];
 }
@@ -45,7 +42,6 @@ const KEY = 'key';
 interface Item { key: ChunkKey; chunks: number; bytes: number; final: number | null }
 interface Account { bytes: number; files: number; items: Map<string, Item> }
 
-const uid = () => process.getuid?.();
 // JSON keeps the parts apart whatever they contain (review H1: ids may hold NUL).
 const hashOf = (k: ChunkKey) => createHash('sha256').update(JSON.stringify([k.registration, k.producer, k.session, k.item, k.revision])).digest('hex');
 const parseKey = (text: string): ChunkKey | null => {
@@ -56,26 +52,12 @@ const parseKey = (text: string): ChunkKey | null => {
   } catch { return null; }
 };
 
-function privateDir(dir: string) {
-  try { mkdirSync(dir, { mode: 0o700 }); } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e; }
-  const st = lstatSync(dir);
-  if (!st.isDirectory() || (uid() !== undefined && st.uid !== uid())) throw new Error('content-chunks: not a private directory');
-  if (st.mode & 0o077) chmodSync(dir, 0o700);
-}
+const privateDir = (dir: string) => sharedPrivateDir(dir, () => { throw new Error('content-chunks: not a private directory'); });
 
 function durable(file: string, data: string) {
-  const dir = path.dirname(file);
-  const tmp = path.join(dir, `.${randomUUID()}.tmp`);
-  let renamed = false;
-  try {
-    const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-    try { writeSync(fd, data); fsyncSync(fd); } finally { closeSync(fd); }
-    renameSync(tmp, file);
-    renamed = true;
-    const d = openSync(dir, constants.O_RDONLY);
-    try { fsyncSync(d); } finally { closeSync(d); }
-  } catch (e) { // nothing half-written stays behind unaccounted (review M2/M3)
-    rmSync(renamed ? file : tmp, { force: true });
+  atomicWrite(file, data, 0o600); // a throw here removed its temp file and left the target as it was
+  try { fsyncDir(path.dirname(file)); } catch (e) { // nothing half-written stays behind unaccounted (review M2/M3)
+    rmSync(file, { force: true });
     throw e;
   }
 }
@@ -122,7 +104,6 @@ export function openChunks(root: string, limits: ChunkLimits = CHUNK_LIMITS): Ch
 
   return {
     remove,
-    pending: (reg) => accounts.get(reg)?.bytes ?? 0,
     items: () => [...accounts.values()].flatMap((a) => [...a.items.values()].map((i) => i.key)),
     put(key, index, final, content) {
       if (!Number.isSafeInteger(index) || index < 0 || index > MAX_INDEX) throw new RangeError('chunk index out of range');

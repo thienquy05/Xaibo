@@ -149,9 +149,10 @@ CREATE TABLE report_delivery (
   producer_seq INTEGER NOT NULL,
   received_ts INTEGER NOT NULL,
   committed_ts INTEGER NOT NULL,
-  unattributed TEXT CHECK (unattributed IN ('unknown-profile')),
+  unattributed TEXT CHECK (unattributed IN ('unknown-profile')), has_model INTEGER NOT NULL DEFAULT 0 CHECK (has_model IN (0, 1)),
   PRIMARY KEY (registration_id, delivery_id)
 );
+CREATE INDEX report_delivery_seq ON report_delivery (registration_id, producer_id, native_session_id, producer_seq) WHERE has_model = 1;
 CREATE TABLE report_rejects (
   registration_id TEXT NOT NULL,
   code TEXT NOT NULL,

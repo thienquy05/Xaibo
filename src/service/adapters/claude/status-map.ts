@@ -5,6 +5,7 @@
 // never restart the parent turn.
 import type { Ev, Observation } from '../../status/engine.ts';
 import { sigField } from '../../status/rules.ts';
+import { INJECTED_PREFIXES } from './parse.ts';
 
 // The S7 rejection text starts the result; a marker anywhere else is ordinary tool output (security review).
 const REJECTED = /^The user doesn't want to proceed with this tool use/;
@@ -58,7 +59,11 @@ function line(raw: string): Ev[] {
   const m = obj(r['message']);
   const blocks = Array.isArray(m['content']) ? (m['content'] as unknown[]).map(obj) : [];
   if (r['type'] === 'user') {
-    if (typeof m['content'] === 'string') return [{ k: 'turn.start', typed: true }];
+    if (typeof m['content'] === 'string') {
+      // XAIBO-PROD-441: an injected record (slash command, reminder, task notification) is no prompt
+      const t = m['content'].trimStart();
+      return INJECTED_PREFIXES.some((p) => t.startsWith(p)) ? [] : [{ k: 'turn.start', typed: true }];
+    }
     return blocks.flatMap((b): Ev[] => {
       const id = str(b, 'tool_use_id');
       if (b['type'] !== 'tool_result' || !id) return [];
@@ -84,6 +89,5 @@ function line(raw: string): Ev[] {
 
 export function claudeEvidence(o: Observation): Ev[] {
   if (o.source === 'file') return line(o.line);
-  if (o.source === 'otel') return [];
-  return hook(o.envelope.payload ?? {}, o.envelope.event);
+  return o.source === 'otel' ? [] : hook(o.envelope.payload ?? {}, o.envelope.event);
 }

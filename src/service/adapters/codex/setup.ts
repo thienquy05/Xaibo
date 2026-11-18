@@ -10,9 +10,10 @@
 import { createHash } from 'node:crypto';
 import { lstatSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { isProfileKey } from '../../../shared/hook-protocol.ts';
 import type { DatabaseSync } from 'node:sqlite';
 import {
-  apply, ConfigError, plan, readFile, readManifest, recordEntry, resolveTarget, revert, type Bounds, type ManifestEntry, type Op, type Plan, type RevertResult,
+  apply, ConfigError, plan, readFile, readManifest, recordEntry, resolveTarget, type Bounds, type ManifestEntry, type Op, type Plan,
 } from '../../config/transaction.ts';
 import { CODEX_ASYNC_EVENTS, CODEX_HOOK_EVENTS } from './hooks.ts';
 
@@ -30,9 +31,8 @@ export interface CodexHookStatus {
   steps: string[];
 }
 
-const PROFILE_KEY = /^[A-Za-z0-9._-]{1,128}$/; // as the hook protocol's profile_key
 const fail = (code: ConfigError['code']): never => { throw new ConfigError(code); };
-const key = (k: string) => (PROFILE_KEY.test(k) && k !== '.' && k !== '..' ? k : fail('ops'));
+const key = (k: string) => (isProfileKey(k) ? k : fail('ops'));
 const uid = process.getuid?.();
 export const shimPath = (dataDir: string) => path.join(dataDir, 'integrations', 'bin', 'xaibo-hook');
 const target = (o: CodexHookOptions) => resolveTarget(path.join(o.codexHome, 'hooks.json'), o.bounds);
@@ -56,12 +56,6 @@ export function installCodexHooks(o: CodexHookOptions, preview?: Plan): Manifest
   try { st = lstatSync(shim); } catch { return fail('shim-missing'); }
   if (!st.isFile() || (uid !== undefined && st.uid !== uid)) fail('shim-missing');
   return apply(preview ?? plan(file, 'codex-hooks', codexHookOps(shim, o.profileKey), o.bounds), { dataDir: o.dataDir, bounds: o.bounds });
-}
-
-export function uninstallCodexHooks(o: CodexHookOptions): RevertResult {
-  const entry = recorded(o, target(o));
-  if (!entry) return fail('not-installed');
-  return revert(entry, { dataDir: o.dataDir, bounds: o.bounds });
 }
 
 export function codexTrustSteps(codexHome: string, shim: string, profileKey: string): string[] {

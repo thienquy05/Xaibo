@@ -9,11 +9,12 @@
 // connection is then bound to that registration (at most 8 per registration), frames are at most 256 KiB, run through
 // one round-robin scheduler across registrations (1,000 frames / 16 MiB queued per registration, 128 MiB in all), and a
 // frame of a revoked registration cuts its connection. A frame intake rejects is acked rejected and the connection stays.
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { chmodSync, closeSync, constants, fchmodSync, fsyncSync, lstatSync, mkdirSync, openSync, renameSync, unlinkSync, writeSync } from 'node:fs';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { chmodSync, lstatSync, unlinkSync } from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import type { Logger } from '../../shared/log.ts';
+import { atomicWrite, privateDir } from '../fs-private.ts';
 import {
   createDecoder, encodeFrame, FrameError, MAX_FRAME, MAX_REPORT_FRAME, parseEnvelope, parseHello, parseRegistrationHello, PROTOCOL_VERSION,
   type Ack, type Envelope,
@@ -109,20 +110,9 @@ const uid = () => process.getuid?.();
 const digest = (s: string) => createHash('sha256').update(s).digest();
 const ownSocket = (st: { isSocket(): boolean; uid: number }) => st.isSocket() && (uid() === undefined || st.uid === uid());
 
+/** Every failure, a mkdir error included, is the typed run-dir error. */
 function privateRunDir(run: string) {
-  try { mkdirSync(run, { mode: 0o700 }); } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw new SocketError('run-dir');
-  }
-  const st = lstatSync(run);
-  if (!st.isDirectory() || (uid() !== undefined && st.uid !== uid())) throw new SocketError('run-dir');
-  if (st.mode & 0o077) chmodSync(run, 0o700);
-}
-
-function writeToken(file: string, token: string) {
-  const tmp = path.join(path.dirname(file), `.token.${randomUUID()}.tmp`);
-  const fd = openSync(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-  try { writeSync(fd, token); fchmodSync(fd, 0o600); fsyncSync(fd); } finally { closeSync(fd); }
-  renameSync(tmp, file);
+  try { privateDir(run); } catch { throw new SocketError('run-dir'); }
 }
 
 /** Resolves true once buffered output drains, false on close or after `ms`. */
@@ -164,7 +154,7 @@ export async function startSocketServer(o: SocketOptions): Promise<SocketServer>
   await clearStale(sock);
   const tokenFile = path.join(run, 'token');
   const token = randomBytes(TOKEN_BYTES).toString('base64url');
-  writeToken(tokenFile, token);
+  atomicWrite(tokenFile, token, 0o600);
   const expected = digest(token);
   const deadlineMs = o.deadlineMs ?? DEADLINE_MS;
 

@@ -55,6 +55,5 @@ function line(raw: string): Ev[] {
 
 export function codexEvidence(o: Observation): Ev[] {
   if (o.source === 'file') return line(o.line);
-  if (o.source === 'otel') return [];
-  return hook(o.envelope.payload ?? {}, o.envelope.event);
+  return o.source === 'otel' ? [] : hook(o.envelope.payload ?? {}, o.envelope.event);
 }

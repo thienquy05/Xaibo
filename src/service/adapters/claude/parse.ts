@@ -10,7 +10,8 @@ export const KNOWN_TYPES = new Set(['api-request', 'api-request-blob', 'api-requ
   'agent-color', 'agent-name', 'ai-title', 'artifact-autoreact-ledger', 'artifact-comment-monitor', 'bridge-session', 'custom-title',
   'failed', 'file-history-delta', 'file-history-snapshot', 'frame-link', 'launched', 'permission-mode', 'pr-link', 'relocated',
   'result', 'started']);
-export const INJECTED_PREFIXES = ['<command-name>', '<local-command-caveat>', '<local-command-stdout>'];
+// XAIBO-PROD-440: agent-injected reminders and background-task notifications (Gate 4 facts) are not prompts either
+export const INJECTED_PREFIXES = ['<command-name>', '<local-command-caveat>', '<local-command-stdout>', '<system-reminder>', '<task-notification>'];
 
 export interface ParseContext { offset: number; fileMtime: number; receivedTs: number; subagentNativeId?: string }
 export interface ClaudeRecord {
@@ -49,7 +50,7 @@ const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !
 const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
 const joined = (parts: (string | undefined)[]) => parts.filter((p) => p).join('\n') || undefined;
 
-function blockText(b: unknown): string | undefined {
+export function blockText(b: unknown): string | undefined {
   if (typeof b === 'string') return b;
   if (!isObj(b)) return undefined;
   switch (b.type) {
@@ -66,10 +67,11 @@ function messageText(content: unknown): string | undefined {
   return Array.isArray(content) ? joined(content.map(blockText)) : undefined;
 }
 
+/** String content, or content[0] when it is a text block (XAIBO-PROD-441: a later reminder block never hides a tool_result). */
 function firstText(content: unknown): string {
   if (typeof content === 'string') return content;
-  const first = Array.isArray(content) ? content.find((b) => isObj(b) && b.type === 'text') : undefined;
-  return isObj(first) ? str(first.text) ?? '' : '';
+  const first: unknown = Array.isArray(content) ? content[0] : undefined;
+  return isObj(first) && first.type === 'text' ? str(first.text) ?? '' : '';
 }
 
 function toolCalls(content: unknown): NonNullable<ClaudeRecord['toolCalls']> {

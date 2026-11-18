@@ -24,6 +24,8 @@ test('closing the window hides it; main and service stay alive', async ({ xaibo 
   const run = await xaibo.launch();
   await xaibo.window(run);
   const svc = await servicePid(run.app!);
+  // the window is created hidden and shown on ready-to-show; close it once shown (a user can only close a shown window)
+  await expect.poll(() => run.app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isVisible())).toBe(true);
   await run.app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.close());
   const state = await run.app!.evaluate(({ BrowserWindow }) => {
     const all = BrowserWindow.getAllWindows();
@@ -41,4 +43,26 @@ test('Quit stops the service and exits every process', async ({ xaibo }) => {
   const pids = await run.app!.evaluate(({ app }) => app.getAppMetrics().map((m) => m.pid));
   expect(await xaibo.quit(run)).toEqual({ code: 0, signal: null });
   await expect.poll(() => pids.filter((p) => alive(p))).toEqual([]);
+});
+
+// DD2-05/06: the refined inline detective stays named and visible in the actual nav at both appearances.
+test('nav shows the named refined detective in both system themes and reflows at narrow widths', async ({ xaibo }) => {
+  const run = await xaibo.launch({ unpackaged: true });
+  const page = await xaibo.window(run);
+  for (const theme of ['light', 'dark'] as const) {
+    await run.app!.evaluate(({ nativeTheme }, value) => { nativeTheme.themeSource = value; }, theme);
+    const logo = page.getByRole('navigation', { name: 'Areas' }).getByRole('img', { name: 'Xaibo detective', exact: true });
+    await expect(logo).toBeVisible();
+    await expect(logo).toHaveAttribute('shape-rendering', 'crispEdges');
+    await expect(logo).toHaveAttribute('viewBox', '0 0 16 16');
+    await expect(logo).toHaveAttribute('width', '32');
+    expect(await logo.locator('rect[fill="var(--x-cyan)"]').count()).toBe(9);
+    for (const width of [1440, 960, 640, 320]) {
+      await page.setViewportSize({ width, height: 640 });
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    }
+    await page.keyboard.press('Tab');
+    await page.getByRole('link', { name: 'Session', exact: true }).focus();
+    expect(await page.evaluate(() => getComputedStyle(document.activeElement!).outlineWidth)).toBe('2px');
+  }
 });

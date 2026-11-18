@@ -5,7 +5,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { visible } from '../../src/renderer/text.ts';
-import { expect, test } from './fixtures.ts';
+import { expect, test, openSessions } from './fixtures.ts';
 
 const SESSION = '00000000-0000-4000-8000-00000000e550';
 const CWD = '/tmp/xaibo-fixture/<img src=x onerror="window.__xss=1">**bold** [l](javascript:alert(1)) \u001b[31mred<script>window.__xss=2</script>';
@@ -27,12 +27,16 @@ test('EC-55: injected markup, markdown, ANSI and bidi render as escaped text', a
     document.addEventListener('securitypolicyviolation', () => { w.violations++; });
   });
   await page.reload();
-  const row = page.getByRole('table', { name: 'Sessions' }).locator('tbody tr', { hasText: 'xaibo-fixture/<img' });
+  await openSessions(page); // the app opens on the Dashboard (P4-T04c)
+  const row = page.getByRole('list', { name: 'Sessions' }).getByRole('listitem').filter({ hasText: 'xaibo-fixture/<img' });
   await expect(row).toHaveCount(1);
-  expect(await row.getByRole('cell').nth(2).textContent()).toBe(visible(CWD));
-  expect(await row.getByRole('cell').nth(1).textContent()).toBe(`${visible(ENTRY)} (unverified)`); // unknown kind (P2-T04)
+  expect(await row.locator('[data-field="folder"]').textContent()).toBe(visible(CWD));
+  // P4-T05d: origin moved from the compact list row to the open session's Details drawer
+  await row.getByRole('button').first().click();
+  await page.getByRole('button', { name: 'Details' }).click();
+  expect(await page.locator('#session-details [data-field="origin"]').textContent()).toBe(`${visible(ENTRY)} (unverified)`); // unknown kind (P2-T04)
   expect(await page.locator('img').count()).toBe(0);
-  expect(await page.locator('main b, main script, table b, table script').count()).toBe(0);
+  expect(await page.locator('main b, main script').count()).toBe(0);
   expect(await page.locator('script').evaluateAll((s) => s.filter((x) => (x.textContent ?? '').includes('__xss')).length)).toBe(0);
   await row.hover();
   expect(await page.evaluate(() => (window as unknown as { __xss?: unknown }).__xss)).toBeUndefined();

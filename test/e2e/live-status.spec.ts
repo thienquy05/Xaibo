@@ -6,13 +6,13 @@ import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { claudeProfile, deliver } from '../helpers/hook-socket.ts';
-import { expect, test } from './fixtures.ts';
+import { expect, test, openSessions } from './fixtures.ts';
 import type { Page } from '@playwright/test';
 
 const HOOKED = '00000000-0000-4000-8000-0000000f1101';
 const FILE_ONLY = '00000000-0000-4000-8000-0000000f1102';
 const project = (home: string) => path.join(home, '.claude', 'projects', '-tmp-xaibo-fixture-project');
-const rowOf = (page: Page, folder: string) => page.getByRole('table', { name: 'Sessions' }).getByRole('row').filter({ hasText: folder });
+const rowOf = (page: Page, folder: string) => page.getByRole('list', { name: 'Sessions' }).getByRole('listitem').filter({ hasText: folder });
 
 test('busy, waiting, R2 badge, Finishing… then idle, Probably waiting, overflow banner; perf trace acks painted deltas', async ({ xaibo }) => {
   const dataDir = path.join(path.dirname(xaibo.home), 'data-live'); // inside the fixture's temp root (cleaned), short for the socket path
@@ -23,6 +23,7 @@ test('busy, waiting, R2 badge, Finishing… then idle, Probably waiting, overflo
   await expect(page.getByRole('status')).toContainText('Running');
 
   await expect(page.getByRole('region', { name: 'Coverage' })).toContainText('Hook events missing (spool overflow): 1 from Claude Code', { timeout: 15_000 });
+  await openSessions(page); // Coverage is on the Dashboard; the full list is in the Session area (P4-T04c)
 
   let profile: string | null = null;
   await expect.poll(() => (profile = claudeProfile(dataDir)), { timeout: 15_000 }).toBeTruthy();
@@ -35,19 +36,19 @@ test('busy, waiting, R2 badge, Finishing… then idle, Probably waiting, overflo
       received_ts: Date.now(), payload: { hook_event_name: event, session_id: HOOKED, ...payload } });
     expect(ack).toMatchObject({ status: 'accepted' });
   };
-  const status = () => rowOf(page, '/tmp/xaibo-fixture/live').getByRole('cell').nth(7);
+  const status = () => rowOf(page, '/tmp/xaibo-fixture/live').locator('[data-field="status"]');
 
   await hook('SessionStart', { source: 'startup' });
   // P3-T16c: this event goes through the packaged forwarder, run and audited by the fixture
   const sent = await xaibo.hook(run, profile!, { hook_event_name: 'UserPromptSubmit', session_id: HOOKED, cwd: '/tmp/xaibo-fixture/live', prompt: 'fixture prompt' });
   expect(sent).toEqual({ exit: { code: 0, signal: null }, bytes: 0 });
-  await expect(status()).toContainText('Busy (confirmed)');
+  await expect(status()).toContainText('Busy · confirmed');
 
   await hook('PreToolUse', { tool_name: 'Write', tool_input: { file_path: '/tmp/xaibo-fixture/live/a' }, tool_use_id: 'w1' });
   await hook('PermissionRequest', { tool_name: 'Write' });
-  await expect(status()).toContainText('Waiting for permission (confirmed)');
+  await expect(status()).toContainText('Waiting for permission · confirmed');
   await hook('PostToolUse', { tool_name: 'Write', tool_use_id: 'w1', tool_response: { ok: true } });
-  await expect(status()).toContainText('Busy (confirmed)');
+  await expect(status()).toContainText('Busy · confirmed');
 
   for (let i = 0; i < 4; i++) {
     await hook('PreToolUse', { tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: `b${i}` });
@@ -56,8 +57,9 @@ test('busy, waiting, R2 badge, Finishing… then idle, Probably waiting, overflo
   await expect(status()).toContainText('R2 Repeated tool');
 
   await hook('Stop');
-  await expect(status()).toContainText('Busy · Finishing… (confirmed)');
-  await expect(status()).toContainText('Idle (confirmed)', { timeout: 10_000 }); // the 4 s settle, with no new event
+  await expect(status()).toContainText('Busy · confirmed');
+  await expect(status()).toContainText('Finishing…');
+  await expect(status()).toContainText('Idle · confirmed', { timeout: 10_000 }); // the 4 s settle, with no new event
   await expect(status()).not.toContainText('Repeated tool');
 
   // No hooks for this session: a pending tool call with no transcript writes for > 5 s reads as a heuristic wait.
@@ -67,9 +69,9 @@ test('busy, waiting, R2 badge, Finishing… then idle, Probably waiting, overflo
     line({ type: 'user', uuid: '00000000-0000-4000-8000-0000000f1201', message: { role: 'user', content: 'fixture prompt' } })
     + line({ type: 'assistant', uuid: '00000000-0000-4000-8000-0000000f1202', message: { id: 'msg_fixture_live', role: 'assistant',
       content: [{ type: 'tool_use', id: 'toolu_fixture_live', name: 'Bash', input: { command: 'npm run build' } }], stop_reason: 'tool_use' } })));
-  const fileStatus = rowOf(page, '/tmp/xaibo-fixture/fileonly').getByRole('cell').nth(7);
-  await expect(fileStatus).toContainText('Busy (inferred)', { timeout: 15_000 });
-  await expect(fileStatus).toContainText('Waiting for permission · Probably waiting (heuristic)', { timeout: 15_000 });
+  const fileStatus = rowOf(page, '/tmp/xaibo-fixture/fileonly').locator('[data-field="status"]');
+  await expect(fileStatus).toContainText('Busy · inferred', { timeout: 15_000 });
+  await expect(fileStatus).toContainText('Probably waiting · heuristic', { timeout: 15_000 });
 
   // Perf trace: IDs and hrtime stamps only; every painted delta id was emitted by the service; our deliveries are in deltas.
   const lines = (f: string) => (existsSync(f) ? readFileSync(f, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>) : []);

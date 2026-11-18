@@ -32,6 +32,12 @@ export function loadInstallSecret(dir: string): Buffer {
   return secret;
 }
 
+/** XAIBO-PROD-430 (EC-44): appends, and drops the text on any write error (a full disk throws ENOSPC). Logs and perf
+ *  traces must never throw: the crash policy logs through the same logger, so a throw there ends the process. */
+export function appendQuiet(file: string, text: string, mode?: number): void {
+  try { appendFileSync(file, text, mode === undefined ? undefined : { mode }); } catch { /* the line is lost */ }
+}
+
 export function createLogger(o: LoggerOptions): Logger {
   const { dir, secret, maxBytes = 1 << 20, maxFiles = 3, now = Date.now } = o;
   mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -55,9 +61,11 @@ export function createLogger(o: LoggerOptions): Logger {
         }
       }
       const line = `${JSON.stringify(entry)}\n`;
-      if (existsSync(file) && statSync(file).size + Buffer.byteLength(line) > maxBytes) rotate();
+      try {
+        if (existsSync(file) && statSync(file).size + Buffer.byteLength(line) > maxBytes) rotate();
+      } catch { return; } // rotation failed: drop the line, so the file stays within its bound (XAIBO-PROD-430)
       // ponytail: synchronous append; logs are low-volume codes. Buffer writes if logging ever shows up in profiles.
-      appendFileSync(file, line, { mode: 0o600 });
+      appendQuiet(file, line, 0o600);
     },
   };
 }

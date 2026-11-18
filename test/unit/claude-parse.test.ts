@@ -116,11 +116,26 @@ test('EC-16: cwd comes only from records and keeps Unicode, spaces and length', 
 });
 
 test('injected content is flagged and never a prompt', () => {
-  for (const content of ['<command-name>/clear</command-name>', [{ type: 'text', text: '<local-command-stdout>ok</local-command-stdout>' }]]) {
+  // XAIBO-PROD-440: agent-injected reminders and background-task notifications (Gate 4 facts, Claude 2.1.325)
+  for (const content of ['<command-name>/clear</command-name>', [{ type: 'text', text: '<local-command-stdout>ok</local-command-stdout>' }],
+    '<system-reminder>synthetic note</system-reminder>', [{ type: 'text', text: '<task-notification>\n<task-id>t1</task-id>' }]]) {
     const r = parseLine(line({ type: 'user', uuid: '00000000-0000-4000-8000-000000009930', message: { role: 'user', content } }), { ...ctx, offset: 0 });
     assert.ok(r?.ok);
     assert.equal(r.record.injected, true);
   }
+});
+
+test('XAIBO-PROD-441 (G4b-N1): only string content or a first text block makes a record injected', () => {
+  const rec = (content: unknown) => {
+    const r = parseLine(line({ type: 'user', uuid: '00000000-0000-4000-8000-000000009931', message: { role: 'user', content } }), { ...ctx, offset: 0 });
+    assert.ok(r?.ok);
+    return r.record;
+  };
+  const withResult = rec([{ type: 'tool_result', tool_use_id: 't1', content: 'tool output' }, { type: 'text', text: '<system-reminder>n</system-reminder>' }]);
+  assert.equal(withResult.injected, false);
+  assert.equal(withResult.content, 'tool output\n<system-reminder>n</system-reminder>');
+  assert.equal(rec([{ type: 'text', text: 'typed' }, { type: 'text', text: '<system-reminder>n' }]).injected, false);
+  assert.equal(rec([{ type: 'text', text: '<system-reminder>n' }, { type: 'text', text: 'more' }]).injected, true);
 });
 
 test('content from text, tool_use, tool_result and thinking blocks', () => {

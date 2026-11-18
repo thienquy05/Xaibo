@@ -22,7 +22,7 @@ interface Seen { size: number; mtime: number; ino: number }
 export class Watcher<E extends { path: string }> {
   readonly #o: Required<WatcherOptions<E>>;
   readonly #seen = new Map<string, Seen>();
-  readonly #watchers = new Map<string, Closable>();
+  readonly #watchers = new Map<string, { w: Closable; mtime: number }>();
   #timer: NodeJS.Timeout | undefined;
   #scan: Promise<void> | undefined;
 
@@ -42,11 +42,14 @@ export class Watcher<E extends { path: string }> {
 
   stop(): void {
     clearInterval(this.#timer);
-    for (const w of this.#watchers.values()) w.close();
+    for (const x of this.#watchers.values()) x.w.close();
     this.#watchers.clear();
   }
 
   scan(): Promise<void> { return this.#run(false); }
+
+  /** Open fs.watch handles (P4-T10 metrics); never above maxWatched. */
+  watched(): number { return this.#watchers.size; }
 
   /** Drops what was seen of a file, so the next scan reports it again (a failed sync is retried). */
   forget(path: string): void { this.#seen.delete(path); }
@@ -68,23 +71,39 @@ export class Watcher<E extends { path: string }> {
       const prev = this.#seen.get(e.path);
       this.#seen.set(e.path, { size: st.size, mtime: st.mtimeMs, ino: st.ino });
       if (!initial && (!prev || prev.size !== st.size || prev.mtime !== st.mtimeMs || prev.ino !== st.ino)) this.#o.onChange(e);
-      this.#manageWatch(e, this.#o.now() - st.mtimeMs < this.#o.activeMs);
+      this.#manageWatch(e, this.#o.now() - st.mtimeMs < this.#o.activeMs, st.mtimeMs);
     }
     for (const path of [...this.#seen.keys()]) if (!present.has(path)) { this.#seen.delete(path); this.#unwatch(path); }
   }
 
-  #manageWatch(e: E, active: boolean): void {
+  #manageWatch(e: E, active: boolean, mtime: number): void {
     if (!active) return this.#unwatch(e.path); // inactive handles close
-    if (this.#watchers.has(e.path) || this.#watchers.size >= this.#o.maxWatched) return;
+    const held = this.#watchers.get(e.path);
+    if (held) { held.mtime = Math.max(held.mtime, mtime); return; } // activity only moves forward (a watch event may be newer)
+    // P4-T10a (S12): at the FD cap the least recently active watched file gives way to a more recent one; an older or
+    // equally recent file stays to the scan (no churn). ponytail: an O(cap) scan for the oldest per new active file;
+    // keep a heap if the cap grows far past S12's ~200.
+    if (this.#watchers.size >= this.#o.maxWatched) {
+      let oldest: [string, number] | undefined;
+      for (const [p, x] of this.#watchers) if (!oldest || x.mtime < oldest[1]) oldest = [p, x.mtime];
+      if (!oldest || oldest[1] >= mtime) return;
+      this.#unwatch(oldest[0]);
+    }
+    // ponytail: the victim is closed before the new watch opens (never above the cap); if that open fails, both files
+    // are left to the scan until the next one.
     try {
-      const w = this.#o.watch(e.path, () => this.#o.onChange(e));
-      w.on('error', () => this.#unwatch(e.path)); // the scan keeps covering it
-      this.#watchers.set(e.path, w);
+      const held = { w: undefined as unknown as Closable, mtime };
+      held.w = this.#o.watch(e.path, () => {
+        held.mtime = Math.max(held.mtime, this.#o.now()); // review M2: a change through the watch is fresh activity
+        this.#o.onChange(e);
+      });
+      held.w.on('error', () => { if (this.#watchers.get(e.path) === held) this.#unwatch(e.path); }); // review L3: only this handle
+      this.#watchers.set(e.path, held);
     } catch { /* EMFILE, ENOSPC, unsupported fs: the scan covers this file */ }
   }
 
   #unwatch(path: string): void {
-    this.#watchers.get(path)?.close();
+    this.#watchers.get(path)?.w.close();
     this.#watchers.delete(path);
   }
 }

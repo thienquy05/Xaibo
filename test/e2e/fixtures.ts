@@ -211,4 +211,9 @@ export const test = base.extend<{ xaibo: Xaibo }>({
   },
 });
 
+/** P4-T04c: the full session list lives in the Session area; the app opens on the Dashboard (design §6.0). */
+export async function openSessions(page: Page): Promise<void> {
+  await page.getByRole('navigation', { name: 'Areas' }).getByRole('link', { name: 'Session', exact: true }).click();
+}
+
 export { expect };

@@ -186,6 +186,12 @@ test('EC-47: two data dirs (dev/prod) listen on distinct sockets; neither takes 
   } finally { await dev.s.close(); await prod.s.close(); }
 });
 
+test('XAIBO-PROD-329: a run dir that cannot be created is a typed run-dir error, not a raw errno', async () => {
+  const dir = join(dataDir(), 'missing'); // non-recursive mkdir of <dir>/run fails with ENOENT
+  await assert.rejects(startSocketServer({ dataDir: dir, onEnvelope: async () => ({ status: 'accepted', code: 'ok' }) }),
+    (e) => e instanceof SocketError && e.code === 'run-dir');
+});
+
 test('Q3-8: a socket path over the sun_path limit is a typed error', async () => {
   const dir = join(dataDir(), 'd'.repeat(90));
   await assert.rejects(startSocketServer({ dataDir: dir, onEnvelope: async () => ({ status: 'accepted', code: 'ok' }) }),

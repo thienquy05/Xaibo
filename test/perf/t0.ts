@@ -2,13 +2,13 @@
 // dispatch on the packaged app, real monotonic clock on both ends (the emitter's and main's process.hrtime), stub mode
 // (XAIBO_NOTIFY_STUB=1). One session, 100 sequential permission requests, each resolved before the next.
 import { createHash, randomUUID } from 'node:crypto';
-import { appendFileSync, constants, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, constants, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import type { Page } from '@playwright/test';
 import { emit, installHelpers, ms, now, Trace } from './emitter.ts';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { claudeProfile, deliver } from '../helpers/hook-socket.ts';
-import { close, environment, launch, query, serviceLog, sleep, stats } from './app.ts';
+import { close, environment, firstPage, launch, query, serviceLog, sleep, stats, waitForEvent } from './app.ts';
 import type { Launched } from './app.ts';
 
 const EVENTS = 100;
@@ -81,12 +81,13 @@ const assistant = (sid: string, uuid: string, n: number) => claudeLine(sid, uuid
 const compaction = (sid: string, uuid: string) => claudeLine(sid, uuid, { type: 'system', subtype: 'compact_boundary', content: 'synthetic compaction',
   isMeta: false, level: 'info', compactMetadata: { trigger: 'manual', preTokens: 1200 } });
 
-/** In-page wait for the row with this cwd to show `text` in its status cell; wall-clock ms when seen. */
+/** In-page wait for the Session area's compact row with this cwd to show `text` in its status; wall-clock ms when seen.
+ *  Gate 4: Phase 4 replaced the Phase 3 table (`tr`/`td`) with compact rows (`.x-srow`, data-field folder/status). */
 const rowShows = (page: Page, cwd: string, text: string, timeout: number) => page.evaluate(async ({ cwd, text, timeout }) => {
   const t0 = performance.now();
   while (performance.now() - t0 < timeout) {
-    const row = [...document.querySelectorAll('tr')].find((r) => r.querySelectorAll('td')[2]?.textContent === cwd);
-    if (row?.querySelectorAll('td')[7]?.textContent?.includes(text)) return performance.timeOrigin + performance.now();
+    const row = [...document.querySelectorAll('.x-srow')].find((r) => r.querySelector('[data-field="folder"]')?.textContent === cwd);
+    if (row?.querySelector('[data-field="status"]')?.textContent?.includes(text)) return performance.timeOrigin + performance.now();
     await new Promise((r) => requestAnimationFrame(r));
   }
   return null;
@@ -184,7 +185,21 @@ export async function liveProbe() {
         rate_limits: { limit_id: 'codex', primary: { used_percent: i, window_minutes: 300, resets_at: Math.floor(Date.now() / 1000) + 3600 } } } });
       m2.codexTokenCount!.push(await append(rollout, `${tc}\n`, `${codexIdentity}:${offset}`));
     }
-    const priced = await l.page.evaluate((cwd) => [...document.querySelectorAll('tr')].find((r) => r.querySelectorAll('td')[2]?.textContent === cwd)?.textContent?.includes('~$') ?? false, CWD);
+    // Gate 4: the estimated cost shows on the Dashboard's live records (the compact Session rows carry no cost); the
+    // live list is virtual, so it is scrolled until the record with this cwd is mounted
+    const areas = l.page.getByRole('navigation', { name: 'Areas' });
+    await areas.getByRole('link', { name: 'Dashboard', exact: true }).click();
+    const priced = await l.page.evaluate(async (cwd) => {
+      for (let i = 0; i < 60; i++) {
+        const rec = [...document.querySelectorAll('article.x-record')].find((r) => r.querySelector('[data-field="folder"]')?.textContent === cwd);
+        if (rec) return rec.querySelector('[data-field="cost"]')?.textContent?.includes('~$') ?? false;
+        const list = document.querySelector('[aria-label="Live sessions"]')?.parentElement;
+        if (list) list.scrollTop += 200;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return false;
+    }, CWD);
+    await areas.getByRole('link', { name: 'Session', exact: true }).click();
     const recovery: number[] = [];
     for (const s of stale) { const id = randomUUID(); recovery.push(await append(s.f, user(s.sid, id), id)); }
 
@@ -329,6 +344,109 @@ export async function importProbe(corpus: string) {
       checks, pass: Object.values(checks).every(Boolean), env: await environment(l.app) };
   } finally {
     if (l) await close(l);
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// P4-T13 (EC-86 P; M12, M13 on T0): the synthetic 200 MB session (ec15 corpus, cloned copy-on-write) is imported once
+// into a data dir kept across launches; then its transcript is made unreadable (mode 000), so any source read during
+// the runs fails and the selection can only page from the indexed store: bytes read from the source during selection
+// are 0 by construction (deviation: the plan's read counter in the test build is not needed). Each cold launch on that
+// store (n = runs, >= 20 per Q-4.7) measures M12 process creation -> first usable page mark; tray -> painted: the window
+// hidden by close, shown through `activate` (the same `show` as the tray's item), main's show time -> the page's second
+// frame after its visible message; M13 selecting the 200 MB session -> its first conversation item, two frames later.
+const COLD = { m12: 1500, show: 300, m13: 300 };
+const HUGE_SID = '00000000-0000-4000-8000-0000000e1502';
+const HUGE_CWD = '/tmp/xaibo-fixture/p1502';
+
+export async function coldStartProbe(corpus: string, runs: number) {
+  if (process.getuid?.() === 0) throw new Error('run as a normal user: as root mode 000 blocks no read'); // review M3
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), 'xaibo-perf-cold-')));
+  const project = path.join(root, 'claude', 'projects', '-tmp-xaibo-fixture-huge');
+  mkdirSync(path.dirname(project), { recursive: true });
+  cpSync(path.join(corpus, 'large', '.claude', 'projects', '-tmp-xaibo-fixture-huge'), project, { recursive: true, mode: constants.COPYFILE_FICLONE_FORCE, preserveTimestamps: true });
+  const transcript = path.join(project, `${HUGE_SID}.jsonl`);
+  const dataDir = path.join(root, 'data');
+  try {
+    const first = await launch(path.join(root, 'claude'), { dataDir });
+    let env: Awaited<ReturnType<typeof environment>>;
+    let importMs: number | null;
+    try {
+      env = await environment(first.app);
+      const done = await waitForEvent(dataDir, 'backfill_done', 10 * 60_000);
+      importMs = done === null ? null : done - first.created;
+    } finally { await close(first); }
+    if (importMs === null) throw new Error('the 200 MB session never finished importing');
+    chmodSync(transcript, 0);
+
+    const m12: number[] = [];
+    const show: number[] = [];
+    const m13: number[] = [];
+    let sameWindow = 0;
+    let firstItemMissing = 0;
+    for (let i = 0; i < runs; i++) {
+      const l = await launch(path.join(root, 'claude'), { dataDir });
+      try {
+        const page = await firstPage(l);
+        if (page.ms !== null) m12.push(page.ms);
+        // review M1: the window really is hidden before the show and visible after it (ids and visibility)
+        const state = () => l.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => `${w.id}:${w.isVisible() ? 'shown' : 'hidden'}`).join());
+        const before = await state();
+        await l.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.close()); // hides (tray app)
+        await sleep(1000);
+        const hidden = await state();
+        await l.page.evaluate(() => {
+          (window as unknown as { shown: Promise<number> }).shown = new Promise((res) => {
+            const on = (e: MessageEvent) => {
+              if ((e.data as { xaiboVisible?: unknown } | null)?.xaiboVisible !== true) return;
+              removeEventListener('message', on);
+              requestAnimationFrame(() => requestAnimationFrame(() => res(performance.timeOrigin + performance.now())));
+            };
+            addEventListener('message', on);
+          });
+        });
+        const shownAt = await l.app.evaluate(({ app: a }) => { const t = Date.now(); a.emit('activate'); return t; });
+        // review M2: a visible message that never comes is a failed run, not a hang
+        const painted = await Promise.race([l.page.evaluate(() => (window as unknown as { shown: Promise<number> }).shown), sleep(5000).then(() => null)]);
+        const after = await state();
+        if (painted !== null && hidden === before.replace(':shown', ':hidden') && after === before) { show.push(painted - shownAt); sameWindow++; }
+        // M13: the click and the wait run in the page, so no Playwright round trip is timed
+        const row = l.page.getByRole('list', { name: 'Sessions' }).getByRole('button').filter({ hasText: HUGE_CWD }).first();
+        await row.waitFor({ timeout: 10_000 });
+        const ms = await row.evaluate((el) => new Promise<number | null>((res) => {
+          const t0 = performance.now();
+          (el as HTMLElement).click();
+          const tick = () => {
+            if (document.querySelector('ul[aria-label="Conversation"] > li')) { requestAnimationFrame(() => requestAnimationFrame(() => res(performance.now() - t0))); return; }
+            if (performance.now() - t0 > 10_000) { res(null); return; }
+            requestAnimationFrame(tick);
+          };
+          tick();
+        }));
+        if (ms === null) firstItemMissing++; else m13.push(ms);
+      } finally { await close(l); }
+    }
+    const s = { m12: stats(m12), show: stats(show), m13: stats(m13) };
+    // review M3 / G4f-5: the tail adapter swallows read failures without logging, so log silence cannot prove that no read was
+    // attempted; this check says only that the service logged no EACCES (the render-from-store proof is rendersWithoutSource)
+    const errors = serviceLog(dataDir).filter((e) => 'error' in e).map((e) => `${e.event}:${String((e as { error?: unknown }).error)}`);
+    const checks = {
+      runs: runs >= 20, m12: s.m12.n === runs && s.m12.p95 <= COLD.m12, show: s.show.n === runs && s.show.p95 <= COLD.show,
+      m13: s.m13.n === runs && s.m13.p95 <= COLD.m13, sameWindow: sameWindow === runs, rendersWithoutSource: firstItemMissing === 0,
+      noEaccesLogged: !errors.some((x) => x.includes('EACCES')),
+    };
+    return { metric: 'cold-tray-huge', tier: 'T0', runs, budgetsMs: COLD, sessionBytes: statSync(transcript).size, importMs,
+      storeBytes: statSync(path.join(dataDir, 'xaibo.db')).size, m12ColdToUsableListMs: s.m12, trayToPaintedMs: s.show, m13SelectToFirstPageMs: s.m13,
+      sameWindow, firstItemMissing, serviceErrors: errors.slice(0, 40),
+      notes: 'One import, then each run is a cold launch on the same indexed store with the transcript at mode 000: the selection renders without the source, '
+        + 'and no read attempt was logged (no EACCES in the service log). '
+        + 'M12 = process creation -> first-usable-page mark (two frames after the first list commit). Tray -> painted = main\'s Date.now at the show call '
+        + '-> the page\'s wall clock two frames after the visible message, with the window verified hidden before and shown after (same id); page visibility '
+        + 'does not follow hide() on macOS, so rAF runs while hidden and this is IPC + two frames, a proxy for the compositor paint. M13 = click -> first conversation item, two frames later.',
+      checks, pass: Object.values(checks).every(Boolean), env: env! };
+  } finally {
+    try { chmodSync(transcript, 0o600); } catch { /* gone */ }
     rmSync(root, { recursive: true, force: true });
   }
 }

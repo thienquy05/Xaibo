@@ -3,14 +3,13 @@
 // answers main's commands. Logs go to their own dir so two processes never rotate one file. P1-T12: each brokered
 // port gets agent status on connect, answers listSessions after boot, and receives coalesced session deltas.
 import type { MessagePortMain } from 'electron';
-import { appendFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { errorCode, installCrashPolicy } from '../shared/crash.ts';
 import { accept, IPC_VERSION, parsePortRequest, parseServiceCommand } from '../shared/ipc.ts';
 import type { Banner, PortMessage, ServiceEvent } from '../shared/ipc.ts';
-import { createLogger, loadInstallSecret, type Logger } from '../shared/log.ts';
-import { answer, coalesce, sessionsByKey, type LiveOf } from './api.ts';
+import { appendQuiet, createLogger, loadInstallSecret, type Logger } from '../shared/log.ts';
+import { answer, answerCost, answerFiles, answerLiveSet, answerMarkers, answerSession, answerSlice, answerSubagents, answerTools, answerTranscript, answerUsage, answerUsageHistory, coalesce, createHub, sessionsByKey, type LiveOf } from './api.ts';
 import { boot, type Service } from './boot.ts';
 import type { Batch } from './store/writer.ts';
 import { traceableIds } from './trace-ids.ts';
@@ -21,7 +20,7 @@ const DELTA_MS = 50;
 const TICK_MS = 250;
 const COVERAGE_MS = 5000;
 const parent = process.parentPort;
-const ports = new Set<MessagePortMain>();
+const hub = createHub<MessagePortMain>();
 let svc: Service | undefined;
 let resolveBooted: (s: Service) => void = () => {};
 const booted = new Promise<Service>((resolve) => { resolveBooted = resolve; });
@@ -32,19 +31,28 @@ const live: LiveOf = (agent, sid, profileId) => svc?.status(agent, sid, profileI
 let trace: string | null = null;
 const pendingIds = new Map<string, string[]>();
 let deltaSeq = 0;
-const stamp = (line: object) => { if (trace) appendFileSync(trace, `${JSON.stringify({ ...line, t: process.hrtime.bigint().toString() })}\n`); };
+const stamp = (line: object) => { if (trace) appendQuiet(trace, `${JSON.stringify({ ...line, t: process.hrtime.bigint().toString() })}\n`); };
 
-const broadcast = (m: PortMessage) => { for (const p of ports) p.postMessage(m); };
+// P4-T10c1: a window with more changed sessions than this sends a resync instead of rows, so one flush is one bounded
+// query and message. ponytail: a fixed bound; raise it if the P4-T11 T2 run shows resyncs under normal load.
+const DELTA_KEYS_MAX = 200;
+let resyncs = 0; // P4-T10c2 metric: delta windows replaced by a resync since start
+const broadcast = (m: PortMessage) => hub.broadcast(m);
 const changed = coalesce((keys) => {
+  if (!keys) { // review L1: a trace tells an overflow (no paint ack for that window's ids) from a lost delta
+    pendingIds.clear(); stamp({ ev: 'resync' }); resyncs++;
+    if (hub.anyLive()) hub.sessions({ v: IPC_VERSION, type: 'resync' });
+    return;
+  }
   const ids = trace ? keys.flatMap((k) => { const x = pendingIds.get(k) ?? []; pendingIds.delete(k); return x; }) : []; // cleared on every flush (review L2)
-  if (!svc?.store.db.isOpen) return;
+  if (!svc?.store.db.isOpen || !hub.anyLive()) return; // hidden windows resync by cursor when shown (P4-T02)
   const rows = sessionsByKey(svc.store.db, keys.map((k) => { const [agent, profileId, nativeSessionId] = k.split('\0') as [string, string, string]; return { agent, profileId, nativeSessionId }; }), svc.kinds(), svc.models(), live);
   if (!rows.length) return;
-  if (!trace) { broadcast({ v: IPC_VERSION, type: 'sessions', rows }); return; }
+  if (!trace) { hub.sessions({ v: IPC_VERSION, type: 'sessions', rows }); return; }
   const delta = ++deltaSeq;
   stamp({ ev: 'delta', delta, ids });
-  broadcast({ v: IPC_VERSION, type: 'sessions', rows, delta });
-}, DELTA_MS);
+  hub.sessions({ v: IPC_VERSION, type: 'sessions', rows, delta });
+}, DELTA_MS, setTimeout, DELTA_KEYS_MAX);
 
 let banners: Banner[] = [];
 const coverage = () => {
@@ -55,13 +63,31 @@ const coverage = () => {
 };
 
 const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
-  void booted.then((s) => { if (s.store.db.isOpen) port.postMessage(answer(s.store.db, req, s.kinds(), s.models(), live)); });
+  if (req.type === 'live') { hub.setLive(port, req.on); return; }
+  void booted.then((s) => {
+    // A closed store still answers (empty: each answer catches its store errors), so no renderer request waits forever.
+    const db = s.store.db;
+    switch (req.type) {
+      case 'liveSet': port.postMessage(db.isOpen ? answerLiveSet(db, req, Date.now(), s.kinds(), s.models(), live) : { v: IPC_VERSION, type: 'liveSet', id: req.id, rows: [], more: false }); break;
+      case 'usage': port.postMessage(answerUsage(db, req, homedir())); break;
+      case 'usageHistory': port.postMessage(answerUsageHistory(db, req)); break;
+      case 'session': port.postMessage(answerSession(db, req, s.kinds(), s.models(), live)); break;
+      case 'transcript': port.postMessage(answerTranscript(db, req)); break;
+      case 'slice': port.postMessage(answerSlice(db, req)); break;
+      case 'tools': port.postMessage(answerTools(db, req, live)); break;
+      case 'subagents': port.postMessage(answerSubagents(db, req, s.models(), live)); break;
+      case 'files': port.postMessage(answerFiles(db, req)); break;
+      case 'markers': port.postMessage(answerMarkers(db, req, s.models())); break;
+      case 'cost': port.postMessage(answerCost(db, req, s.models())); break;
+      default: port.postMessage(db.isOpen ? answer(db, req, s.kinds(), s.models(), live) : { v: IPC_VERSION, type: 'page', id: req.id, rows: [], next: null });
+    }
+  });
 });
 
 function connect(port: MessagePortMain) {
-  ports.add(port);
+  hub.add(port);
   port.on('message', (e) => request(e.data, port));
-  port.on('close', () => ports.delete(port));
+  port.on('close', () => hub.remove(port));
   port.start();
   port.postMessage({ v: IPC_VERSION, type: 'agents', agents: svc?.agents() ?? null } satisfies PortMessage);
   port.postMessage({ v: IPC_VERSION, type: 'coverage', banners } satisfies PortMessage);
@@ -95,10 +121,20 @@ async function main(dataDir: string, log: Logger) {
     onAgents: (agents) => broadcast({ v: IPC_VERSION, type: 'agents', agents }),
     onNotify: (n) => parent.postMessage({ v: IPC_VERSION, type: 'notify', ...n } satisfies ServiceEvent), // P3-T11
     onTick: (keys) => { for (const k of keys) changed(k); }, // P3-T16e: a settle at its deadline, not the next tick
+    onPriced: () => { if (hub.anyLive()) hub.sessions({ v: IPC_VERSION, type: 'resync' }); }, // XAIBO-PROD-445: one per sliced job
   });
   resolveBooted(svc);
   setInterval(() => { for (const k of svc?.ticking() ?? []) changed(k); }, TICK_MS);
   setInterval(coverage, COVERAGE_MS);
+  // P4-T10c2: content-free metrics for main's diagnostics bundle, at the coverage cadence (peaks cover the interval).
+  setInterval(() => { // a failing metric is logged, never an uncaught exception (the crash policy would restart us; review L5)
+    try {
+      const metrics = { ...svc!.metrics(), deltaResyncs: resyncs };
+      stamp({ ev: 'metrics', ...metrics }); // P4-T11: the live-load run reads queue age and resyncs from the perf trace
+      parent.postMessage({ v: IPC_VERSION, type: 'metrics', metrics } satisfies ServiceEvent);
+    }
+    catch (e) { log.log('metrics_failed', { error: errorCode(e) }); }
+  }, COVERAGE_MS);
   svc.done.then(coverage, coverage); // profiles are synced by then; a spool replay still running is caught by the interval
   const ready: ServiceEvent = { v: IPC_VERSION, type: 'ready', readOnly: svc.store.reason ?? null };
   parent.postMessage(ready);

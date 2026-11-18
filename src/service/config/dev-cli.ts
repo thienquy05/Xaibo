@@ -24,6 +24,7 @@ import { closeSync, constants, fstatSync, openSync, readSync, realpathSync } fro
 import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
+import { parseArgs as parseFlags } from 'node:util';
 import { deployShim, installPlugin, installTee, MARKETPLACE, PLUGIN_REF, teePlan, uninstallPlugin } from '../adapters/claude/setup.ts';
 import { checkAgyInstall, installAgyHooks } from '../adapters/agy/setup.ts';
 import { codexHookOps, codexTrustSteps, installCodexHooks, shimPath } from '../adapters/codex/setup.ts';
@@ -50,16 +51,21 @@ class UsageError extends Error {}
 const refuse = (msg: string): never => { throw new UsageError(msg); };
 const real = (p: string) => { try { return realpathSync.native(p); } catch { return path.resolve(p); } };
 
-function parseArgs(argv: string[]) {
+/** Strict flags (node:util): a value never comes from the next flag, no positionals, `--flag=value` accepted
+ * (a value starting with '-' needs that form). Only parse errors become usage errors. */
+function flagsOf(rest: string[], names: string[]): Record<string, string | true | undefined> {
+  const options = Object.fromEntries([['yes', { type: 'boolean' as const }], ...names.map((n) => [n, { type: 'string' as const }])]);
+  let values;
+  try { ({ values } = parseFlags({ args: rest, options, strict: true, allowPositionals: false })); } catch (e) {
+    return refuse(`usage: ${(e as Error).message.split('\n')[0]}`);
+  }
+  return values as Record<string, string | true | undefined>;
+}
+
+function cliArgs(argv: string[]) {
   const [cmd, ...rest] = argv;
   if (!cmd || !COMMANDS.has(cmd)) refuse('usage: dev-cli.ts plan|apply|revert|status --target <t> --profile <dir> [--change <ops.json>] [--yes]');
-  const flags: Record<string, string | true> = {};
-  for (let i = 0; i < rest.length; i++) {
-    const k = rest[i]!;
-    if (k === '--yes') flags['yes'] = true;
-    else if (['--target', '--profile', '--change', '--claude', '--profile-key', '--forwarder', '--project', '--statusline'].includes(k) && rest[i + 1] !== undefined) flags[k.slice(2)] = rest[++i]!;
-    else refuse(`unknown argument: ${k}`);
-  }
+  const flags = flagsOf(rest, ['target', 'profile', 'change', 'claude', 'profile-key', 'forwarder', 'project', 'statusline']);
   const target = flags['target'];
   if (typeof target !== 'string' || !TARGETS[target]) refuse(`--target must be one of ${Object.keys(TARGETS).join(', ')}`);
   if (typeof flags['profile'] !== 'string') refuse('--profile <dir> is required');
@@ -117,13 +123,7 @@ const show = (v: unknown) => JSON.stringify(v);
 /** P3-T13b: approve or revoke a report producer. --yes only for a data dir strictly below the temp dir (tests). */
 async function registration(argv: string[]): Promise<number> {
   const [cmd, ...rest] = argv;
-  const flags: Record<string, string | true> = {};
-  for (let i = 0; i < rest.length; i++) {
-    const k = rest[i]!;
-    if (k === '--yes') flags['yes'] = true;
-    else if (['--agent', '--profile-key', '--id'].includes(k) && rest[i + 1] !== undefined) flags[k.slice(2)] = rest[++i]!;
-    else refuse(`unknown argument: ${k}`);
-  }
+  const flags = flagsOf(rest, ['agent', 'profile-key', 'id']);
   const dataDir = process.env['XAIBO_DATA_DIR'];
   if (!dataDir || !path.isAbsolute(dataDir)) refuse('XAIBO_DATA_DIR must be an absolute path');
   const tmp = real(os.tmpdir());
@@ -149,7 +149,7 @@ async function registration(argv: string[]): Promise<number> {
 
 async function main(argv: string[]): Promise<number> {
   if (argv[0] === 'register' || argv[0] === 'revoke') return registration(argv);
-  const a = parseArgs(argv);
+  const a = cliArgs(argv);
   const dataDir = process.env['XAIBO_DATA_DIR'];
   if (!dataDir || !path.isAbsolute(dataDir)) refuse('XAIBO_DATA_DIR must be an absolute path');
   const profile = real(a.profile);
@@ -198,7 +198,7 @@ function printPlan(name: string, p: Plan): Plan {
 
 /** P3-T06: the Codex hook groups for --profile-key, appended to <dir>/.codex/hooks.json; revert is the generic one.
  *  Codex runs them only after the owner approves them in Codex's own review, so apply prints the guided steps. */
-async function codex(a: ReturnType<typeof parseArgs>, dataDir: string, profile: string, bounds: Bounds, target: string): Promise<number> {
+async function codex(a: ReturnType<typeof cliArgs>, dataDir: string, profile: string, bounds: Bounds, target: string): Promise<number> {
   const p = printPlan(a.target, plan(target, 'codex-hooks', codexHookOps(shimPath(dataDir), a.profileKey!), bounds));
   if (a.cmd === 'plan') return 0;
   await confirm(a.yes, profile, 'write codex-hooks');
@@ -211,7 +211,7 @@ async function codex(a: ReturnType<typeof parseArgs>, dataDir: string, profile: 
 }
 
 /** P3-T13d: the Xaibo group for --profile-key in <dir>/.gemini/config/hooks.json; revert is the generic one. */
-async function agy(a: ReturnType<typeof parseArgs>, dataDir: string, profile: string, bounds: Bounds, target: string): Promise<number> {
+async function agy(a: ReturnType<typeof cliArgs>, dataDir: string, profile: string, bounds: Bounds, target: string): Promise<number> {
   const o = { dataDir, profileKey: a.profileKey!, profileHome: profile, bounds, ...(a.project ? { project: a.project } : {}) };
   const { file, ops } = checkAgyInstall(o); // plan refuses whatever apply would (review M2)
   const p = printPlan(a.target, plan(file, 'agy-hooks', ops, bounds));
@@ -225,7 +225,7 @@ async function agy(a: ReturnType<typeof parseArgs>, dataDir: string, profile: st
 
 /** P3-T14: the statusLine tee for --profile-key in <dir>/.claude/settings.json (the original command stays in the
  *  manifest); apply deploys xaibo-statusline beside the shim; revert is the generic one. */
-async function tee(a: ReturnType<typeof parseArgs>, dataDir: string, profile: string, bounds: Bounds): Promise<number> {
+async function tee(a: ReturnType<typeof cliArgs>, dataDir: string, profile: string, bounds: Bounds): Promise<number> {
   const o = { dataDir, profileKey: a.profileKey!, configDir: path.join(profile, '.claude'), bounds };
   const p = printPlan(a.target, teePlan(o));
   if (a.cmd === 'plan') return 0;
@@ -238,7 +238,7 @@ async function tee(a: ReturnType<typeof parseArgs>, dataDir: string, profile: st
 }
 
 /** P3-T05: the hooks-only plugin, through `claude plugin` in the disposable profile only. */
-async function plugin(a: ReturnType<typeof parseArgs>, dataDir: string, profile: string, bounds: Bounds): Promise<number> {
+async function plugin(a: ReturnType<typeof cliArgs>, dataDir: string, profile: string, bounds: Bounds): Promise<number> {
   if (!a.claude || !a.profileKey) refuse('claude-plugin needs --claude <exe> and --profile-key <key>');
   const o = { dataDir, profileKey: a.profileKey!, configDir: path.join(profile, '.claude'), claude: real(a.claude!), bounds, env: { PATH: process.env['PATH'] ?? '', HOME: profile } };
   if (a.cmd === 'plan') {

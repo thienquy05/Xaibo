@@ -94,3 +94,34 @@ test('writer: live batches before backfill; row bound and timer flush', async ()
   await w.enqueue({ ...batch(6, 30), file: { ...batch(6, 30).file!, path: '/tmp/xaibo-fixture/big.jsonl' } }, false); // over maxRows: immediate
   assert.equal(order.at(-1), '/tmp/xaibo-fixture/big.jsonl');
 });
+
+// XAIBO-PROD-427 (P4-T10c2, §7.4 queue age): the peak wait from enqueue to flush since the last take.
+test('writer: takeQueueAgeMs is the peak enqueue-to-flush wait since the last take; a live commit adds nothing', async () => {
+  const { db } = await fresh();
+  let t = 1_000;
+  const timers: (() => void)[] = [];
+  const w = new Writer(db, { setTimer: (fn) => timers.push(fn), now: () => t });
+  const one = w.enqueue({ ...batch(1, 10), file: { ...batch(1, 10).file!, path: '/tmp/xaibo-fixture/q1.jsonl' } }, false);
+  t += 10;
+  const two = w.enqueue({ ...batch(1, 10), file: { ...batch(1, 10).file!, path: '/tmp/xaibo-fixture/q2.jsonl' } }, true);
+  t += 30;
+  timers.shift()!();
+  await Promise.all([one, two]);
+  assert.equal(w.takeQueueAgeMs(), 40, 'the oldest pending batch waited 40 ms');
+  assert.equal(w.takeQueueAgeMs(), 0, 'reset by the take');
+  w.commitLive({ ...batch(1, 10), file: { ...batch(1, 10).file!, path: '/tmp/xaibo-fixture/q3.jsonl' } });
+  assert.equal(w.takeQueueAgeMs(), 0);
+});
+
+test('writer review M2: the peak survives a shorter later flush; a flush at the row bound adds its own short wait', async () => {
+  const { db } = await fresh();
+  let t = 0;
+  const timers: (() => void)[] = [];
+  const w = new Writer(db, { maxRows: 5, setTimer: (fn) => timers.push(fn), now: () => t });
+  const one = w.enqueue({ ...batch(1, 10), file: { ...batch(1, 10).file!, path: '/tmp/xaibo-fixture/p1.jsonl' } }, false);
+  t += 50; timers.shift()!(); await one;
+  const two = w.enqueue({ ...batch(1, 10), file: { ...batch(1, 10).file!, path: '/tmp/xaibo-fixture/p2.jsonl' } }, false);
+  t += 5; timers.shift()!(); await two;
+  await w.enqueue({ ...batch(6, 30), file: { ...batch(6, 30).file!, path: '/tmp/xaibo-fixture/p3.jsonl' } }, false); // over maxRows: immediate
+  assert.equal(w.takeQueueAgeMs(), 50);
+});

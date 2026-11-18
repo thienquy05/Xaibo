@@ -16,6 +16,7 @@ import path from 'node:path';
 import { claudeProfile } from '../helpers/hook-socket.ts';
 import { close, environment, launch, query, serviceLog, sleep, stats, waitForEvent } from './app.ts';
 import { installHelpers } from './emitter.ts';
+import type { ElectronApplication } from '@playwright/test';
 
 const BOUND_MS = 100;
 const SPOOL_CAP = 50 * (1 << 20); // the forwarder's
@@ -180,11 +181,11 @@ async function until<T>(f: () => T | null | false, ms: number): Promise<T> {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-const M4_MB = 250;
-const M4_CPU = 1;
+export const M4_MB = 250;
+export const M4_CPU = 1;
 
 /** The pids under `roots` (inclusive) with their RSS (KiB) and %CPU from one `ps` call. */
-function psTree(roots: number[]) {
+export function psTree(roots: number[]) {
   const rows = execFileSync('/bin/ps', ['-axo', 'pid=,ppid=,rss=,pcpu='], { encoding: 'utf8' }).split('\n').filter(Boolean)
     .map((l) => { const [pid, ppid, rss, cpu] = l.trim().split(/\s+/).map(Number); return { pid: pid!, ppid: ppid!, rss: rss!, cpu: cpu! }; });
   const mine = new Set(roots);
@@ -194,7 +195,7 @@ function psTree(roots: number[]) {
 
 /** Sum over pids of the first `Footprint:` figure `footprint <pid>` prints, in MiB (one pid per call: no total line
  *  to double-count); null if any cannot be read. */
-function footprintMiB(pids: number[]): number | null {
+export function footprintMiB(pids: number[]): number | null {
   const unit = { KB: 1 / 1024, MB: 1, GB: 1024 } as Record<string, number>;
   let sum = 0;
   for (const pid of pids) {
@@ -208,6 +209,31 @@ function footprintMiB(pids: number[]): number | null {
   return sum;
 }
 
+export const mib = (mb: number) => mb * 1e6 / 2 ** 20; // targets are MB = 10^6 bytes
+export const TREE_NOTES = 'Memory checked as the max of the summed macOS phys_footprint of the app tree every 10 s (owner 2026-11-13; MB = 10^6 bytes); summed RSS '
+  + 'is reported only (it counts shared framework pages once per process). CPU = mean of the summed getAppMetrics percentCPUUsage (percent of '
+  + 'one core); it includes the probe\'s own 1 s app.evaluate polling in main, so it slightly overstates idle CPU.';
+
+/** P4-T17: samples the app tree every 1 s for `seconds` (RSS, CPU) and its phys_footprint every 10 s (as M4, P3-T16b). */
+export async function sampleTree(app: ElectronApplication, seconds: number) {
+  type Sample = { metricsMiB: number; metricsCpu: number; psRssMiB: number; psCpu: number; processes: number };
+  const samples: Sample[] = [];
+  const footprints: (number | null)[] = []; // every 10 s (owner 2026-11-13: M4 memory = summed phys_footprint)
+  await app.evaluate(({ app: a }) => void a.getAppMetrics()); // starts the percentCPUUsage interval
+  for (let i = 0; i < seconds; i++) {
+    await sleep(1000);
+    const m = await app.evaluate(({ app: a }) => a.getAppMetrics().map((p) => ({ pid: p.pid, kb: p.memory.workingSetSize, cpu: p.cpu.percentCPUUsage })));
+    const tree = psTree(m.map((p) => p.pid));
+    samples.push({ metricsMiB: m.reduce((s, p) => s + p.kb, 0) / 1024, metricsCpu: m.reduce((s, p) => s + p.cpu, 0),
+      psRssMiB: tree.reduce((s, p) => s + p.rss, 0) / 1024, psCpu: tree.reduce((s, p) => s + p.cpu, 0), processes: tree.length });
+    if (i % 10 === 9) footprints.push(footprintMiB(tree.map((p) => p.pid)));
+  }
+  const s = (k: keyof Sample) => stats(samples.map((x) => x[k]));
+  return { footprintMiB: footprints.length > 0 && footprints.every((x) => x !== null) ? stats(footprints as number[]) : null,
+    psRssMiB: s('psRssMiB'), psRssMiBPerMinute: Array.from({ length: Math.ceil(samples.length / 60) }, (_, i) => stats(samples.slice(i * 60, i * 60 + 60).map((x) => x.psRssMiB)).mean),
+    metricsWorkingSetMiB: s('metricsMiB'), cpuPercent: s('metricsCpu'), psCpuPercent: s('psCpu'), processes: s('processes') };
+}
+
 export async function m4Probe(corpus: string, seconds: number) {
   const l = await launch(path.join(corpus, '.claude'));
   try {
@@ -219,29 +245,9 @@ export async function m4Probe(corpus: string, seconds: number) {
     await l.app.evaluate(({ BrowserWindow }) => { for (const w of BrowserWindow.getAllWindows()) w.close(); }); // hides (tray app)
     const visible = await l.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some((w) => w.isVisible()));
     await sleep(10_000); // the close settles
-    type Sample = { metricsMiB: number; metricsCpu: number; psRssMiB: number; psCpu: number; processes: number };
-    const samples: Sample[] = [];
-    const footprints: (number | null)[] = []; // every 10 s (owner 2026-11-13: M4 memory = summed phys_footprint)
-    await l.app.evaluate(({ app }) => void app.getAppMetrics()); // starts the percentCPUUsage interval
-    for (let i = 0; i < seconds; i++) {
-      await sleep(1000);
-      const m = await l.app.evaluate(({ app }) => app.getAppMetrics().map((p) => ({ pid: p.pid, kb: p.memory.workingSetSize, cpu: p.cpu.percentCPUUsage })));
-      const tree = psTree(m.map((p) => p.pid));
-      samples.push({ metricsMiB: m.reduce((s, p) => s + p.kb, 0) / 1024, metricsCpu: m.reduce((s, p) => s + p.cpu, 0),
-        psRssMiB: tree.reduce((s, p) => s + p.rss, 0) / 1024, psCpu: tree.reduce((s, p) => s + p.cpu, 0), processes: tree.length });
-      if (i % 10 === 9) footprints.push(footprintMiB(tree.map((p) => p.pid)));
-    }
-    const s = (k: keyof Sample) => stats(samples.map((x) => x[k]));
-    const cpu = s('metricsCpu');
-    const fp = footprints.every((x) => x !== null) ? stats(footprints as number[]) : null;
-    const checks = { fiveMinutes: seconds >= 300, windowHidden: !visible, footprint: fp !== null && fp.max <= M4_MB * 1e6 / 2 ** 20, cpu: cpu.mean <= M4_CPU };
-    const result = { metric: 'm4', seconds, targets: { footprintMB: M4_MB, cpuPercentMean: M4_CPU }, footprintMiB: fp,
-      psRssMiB: s('psRssMiB'), psRssMiBPerMinute: Array.from({ length: Math.ceil(samples.length / 60) }, (_, i) => stats(samples.slice(i * 60, i * 60 + 60).map((x) => x.psRssMiB)).mean),
-      metricsWorkingSetMiB: s('metricsMiB'), cpuPercent: cpu, psCpuPercent: s('psCpu'), processes: s('processes'),
-      notes: 'Memory checked as the max of the summed macOS phys_footprint of the app tree every 10 s (owner 2026-11-13; MB = 10^6 bytes); summed RSS '
-        + 'is reported only (it counts shared framework pages once per process). CPU = mean of the summed getAppMetrics percentCPUUsage (percent of '
-        + 'one core); it includes the probe\'s own 1 s app.evaluate polling in main, so it slightly overstates idle CPU.',
-      checks, pass: Object.values(checks).every(Boolean), env };
+    const t = await sampleTree(l.app, seconds);
+    const checks = { fiveMinutes: seconds >= 300, windowHidden: !visible, footprint: t.footprintMiB !== null && t.footprintMiB.max <= mib(M4_MB), cpu: t.cpuPercent.mean <= M4_CPU };
+    const result = { metric: 'm4', seconds, targets: { footprintMB: M4_MB, cpuPercentMean: M4_CPU }, ...t, notes: TREE_NOTES, checks, pass: Object.values(checks).every(Boolean), env };
     const quit = await close(l);
     return { ...result, quitTimedOut: quit.timedOut }; // reported, not a check: the quit path is investigated separately
   } catch (e) {

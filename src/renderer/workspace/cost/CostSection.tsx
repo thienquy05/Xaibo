@@ -1,0 +1,62 @@
+// XAIBO-PROD-418 (P4-T07b; PRD FR-48, US-18, §5.12; design §6.3.2): the Cost section of an open session. Headline
+// estimate, basis, coverage and notes; one table per (model, price revision, basis) group; then Price provenance with
+// one entry per applied revision. Every amount shows ~ visibly and is spoken from text starting "Estimated cost".
+// Source references are plain text: nothing here links out or fetches.
+import type { CostDetail } from '../../../shared/ipc.ts';
+import { LoadingLine, RetryNotice } from '../../components/RetryNotice.tsx';
+import { retryIdle, type Retry } from '../../retry.ts';
+import { visible } from '../../text.ts';
+import { componentRows, costHeadline, groupTitle, revisionRows } from './present.ts';
+
+/** undefined = loading; null = no such session; failed = the request failed (Retry). */
+export function CostPane({ cost, failed, onRetry, retry = { ...retryIdle, failures: 1 } }: { cost: CostDetail | null | undefined; failed: boolean; onRetry: () => void; retry?: Retry }) {
+  if (failed) return <RetryNotice thing="cost" retry={retry} onRetry={onRetry} />; // XAIBO-PROD-438 (D-P4-10)
+  if (cost === undefined) return <LoadingLine text="Loading estimated cost…" className="x-context-note" />;
+  if (cost === null) return <p className="x-context-note">Estimated cost unavailable — session not found</p>;
+  return <CostSection cost={cost} />;
+}
+
+export function CostSection({ cost }: { cost: CostDetail }) {
+  const h = costHeadline(cost);
+  const revisions = revisionRows(cost);
+  return (
+    <div className="x-context x-cost">
+      <h3>Estimated cost</h3>
+      <p className="x-context-value"><span aria-hidden="true">{h.value}</span><span className="x-sr-only">{h.label}</span></p>
+      {/* review L2 / XAIBO-PROD-452 (G4d-6): hidden only where the headline's text already speaks the coverage */}
+      <p className="x-context-meta"><span>{h.basis}</span><span aria-hidden={h.label.includes(h.coverage) || undefined}>{h.coverage}</span></p>
+      {h.notes.map((n) => <p key={n} className="x-context-note">{n}</p>)}
+      {cost.groups.map((g) => {
+        const title = visible(groupTitle(g, cost.revisions));
+        return (
+          <table key={`${g.model}\0${g.revision}\0${g.basis}`} className="x-table x-context-table">
+            <caption>{title}</caption>
+            <thead><tr><th scope="col">Component</th><th scope="col">Tokens</th><th scope="col">Price rate</th><th scope="col">Estimated cost</th></tr></thead>
+            <tbody>
+              {componentRows(g).map((r) => (
+                <tr key={r.name}>
+                  <th scope="row">{r.name}</th><td>{r.tokens}</td><td>{r.rate}</td>
+                  <td className="x-cost-usd"><span aria-hidden="true">{r.usd}</span><span className="x-sr-only">{r.label}</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        );
+      })}
+      {revisions.length ? (
+        <>
+          <h4 id="price-provenance">Price provenance</h4>
+          <ul className="x-provenance" aria-labelledby="price-provenance">
+            {revisions.map((r) => (
+              <li key={r.id}>
+                <strong>{visible(r.label)}</strong> · {visible(r.asOf)} · {r.source}{r.fallback ? <> · <span className="x-chip x-chip-warn">Owner-set fallback</span></> : null}
+                <div className="x-context-note">{r.models ? `${visible(r.models)} · ` : ''}{r.period}</div>
+                {r.references.filter((x) => x !== 'Owner-set fallback').map((x, i) => <div key={i} className="x-context-note x-mono">{visible(x)}</div>)}
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
+    </div>
+  );
+}

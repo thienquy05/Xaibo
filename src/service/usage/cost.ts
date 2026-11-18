@@ -92,24 +92,31 @@ const CODEX_DEFAULT_TIER = 'default';
 
 /** Prices message-scope usage rows without an estimate, or unavailable under an older revision; with afterUsageId only
  *  rows above that usage id (the per-commit pass; start and reloadPrices run the full pass). Returns rows written. */
-export function priceUsage(db: DatabaseSync, prices: Prices, o: { afterUsageId?: number } = {}): number {
+/** P4-T12a (EC-100): with `limit`, one slice: at most `limit` rows after `afterUsageId` in usage-id order, plus at most
+ *  `limit` dirty estimates; `lastId` is where the next slice starts and `more` says whether one is needed. Each call is
+ *  its own transaction, so slices on later event-loop turns let live work run between them. */
+export function priceUsage(db: DatabaseSync, prices: Prices, o: { afterUsageId?: number; limit?: number } = {}): { rows: number; lastId: number; more: boolean } {
   const rev = prices.revisionId;
-  const rows = db.prepare(`SELECT u.session_id AS sid, s.agent, u.source, u.identity, u.model_id, u.uncached_input, u.cache_read, u.cache_write,
+  const after = o.afterUsageId ?? 0, limit = o.limit ?? -1; // SQLite: LIMIT -1 is no limit
+  const rows = db.prepare(`SELECT u.id, u.session_id AS sid, s.agent, u.source, u.identity, u.model_id, u.uncached_input, u.cache_read, u.cache_write,
       u.cache_write_classes, u.output, u.raw, u.completeness, u.source_ts, (ev.subagent_native_id IS NOT NULL) AS child
     FROM usage u JOIN sessions s ON s.id = u.session_id LEFT JOIN events ev ON ev.id = u.event_id
     LEFT JOIN cost_estimates e ON e.session_id = u.session_id AND e.covered_scope = 'usage:' || u.source || ':' || u.identity
     WHERE u.scope = 'message' AND (e.id IS NULL OR (e.amount_usd IS NULL AND e.price_revision_id IS NOT ?))
-      AND u.id > ?`).all(rev, o.afterUsageId ?? 0) as UsageRow[];
+      AND u.id > ? ORDER BY u.id LIMIT ?`).all(rev, after, limit) as (UsageRow & { id: number })[];
+  const lastId = rows.at(-1)?.id ?? after;
   // G2-2: estimates marked dirty (their evidence changed after pricing) are re-priced with their own revision.
   const dirty = db.prepare(`SELECT u.session_id AS sid, s.agent, u.source, u.identity, u.model_id, u.uncached_input, u.cache_read, u.cache_write,
       u.cache_write_classes, u.output, u.raw, u.completeness, u.source_ts, (ev.subagent_native_id IS NOT NULL) AS child, e.price_revision_id AS ownRev
     FROM cost_estimates e CROSS JOIN usage u ON u.session_id = e.session_id AND u.source = e.source AND u.scope = 'message'
       AND 'usage:' || u.source || ':' || u.identity = e.covered_scope -- G2-17: CROSS JOIN keeps the dirty partial index as the outer loop
     JOIN sessions s ON s.id = u.session_id LEFT JOIN events ev ON ev.id = u.event_id
-    WHERE e.dirty = 1`).all() as (UsageRow & { ownRev: number | null })[];
+    WHERE e.dirty = 1 LIMIT ?`).all(limit) as (UsageRow & { ownRev: number | null })[];
+  const more = limit >= 0 && (rows.length === limit || dirty.length === limit);
+  const all: UsageRow[] = rows;
   const seen = new Set(rows.map((u) => `${u.sid}\0${u.source}\0${u.identity}`));
-  for (const d of dirty) if (!seen.has(`${d.sid}\0${d.source}\0${d.identity}`)) rows.push(d);
-  if (!rows.length) return 0;
+  for (const d of dirty) if (!seen.has(`${d.sid}\0${d.source}\0${d.identity}`)) all.push(d);
+  if (!all.length) return { rows: 0, lastId, more };
   const revTable = db.prepare('SELECT body FROM price_revisions WHERE id = ?');
   const tables = new Map<number, ModelList>();
   const tableOf = (id: number | null | undefined): ModelList => {
@@ -142,7 +149,7 @@ export function priceUsage(db: DatabaseSync, prices: Prices, o: { afterUsageId?:
       as_of = excluded.as_of, dirty = 0 WHERE cost_estimates.amount_usd IS NULL OR cost_estimates.dirty = 1`);
   db.exec('BEGIN IMMEDIATE');
   try {
-    for (const u of rows) {
+    for (const u of all) {
       const ts = u.source_ts;
       const model = u.model_id ?? (ts === null ? null : (turnModel.get(u.sid, ts) as { model_id: string } | undefined)?.model_id ?? null);
       const q: Qualifiers = {};
@@ -168,7 +175,7 @@ export function priceUsage(db: DatabaseSync, prices: Prices, o: { afterUsageId?:
     db.exec('ROLLBACK');
     throw e;
   }
-  return rows.length;
+  return { rows: all.length, lastId, more };
 }
 
 /** The session's selected cost (read time). */

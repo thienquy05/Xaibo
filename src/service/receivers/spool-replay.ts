@@ -17,7 +17,7 @@ import { randomUUID } from 'node:crypto';
 import { chmodSync, closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync, renameSync, unlinkSync, type Stats } from 'node:fs';
 import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
-import { parseEnvelope, UUID, type Envelope } from '../../shared/hook-protocol.ts';
+import { AGENT, parseEnvelope, UUID, type Envelope } from '../../shared/hook-protocol.ts';
 import type { IntakeResult } from './socket.ts';
 
 export interface ReplayOptions {
@@ -38,7 +38,6 @@ export interface ReplayResult { delivered: number; torn: number; skipped: number
 const PLAIN = /^(\d{4}-\d{2}-\d{2})\.jsonl$/;
 const TAKEN = /^\d{4}-\d{2}-\d{2}\.replay-[0-9a-f-]{36}\.jsonl$/;
 const OVERFLOW_TAKEN = /^overflow\.taken-[0-9a-f-]{36}\.log$/;
-const AGENT = /^[a-z0-9][a-z0-9-]{0,31}$/;
 // The forwarder's 50 MiB cap plus its concurrent overshoot (N x 256 KiB); a larger file is not one it wrote. ponytail:
 // a skipped file stays and counts toward the forwarder's cap until someone removes it.
 const FILE_MAX = 64 << 20;

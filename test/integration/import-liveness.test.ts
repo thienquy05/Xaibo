@@ -215,9 +215,11 @@ test('(3) watching many settling sessions stays linear (no rescan per watch)', a
   pre.db.close();
   const svc = await boot({ dataDir, home: join(base, 'home'), catalog: { ...loadCatalog(), agents: [] }, onTick: () => undefined });
   try {
+    // P4-T10b: the engine loads each session from the store on its first read (no load at boot), so this pass also pays
+    // 5,000 indexed loads (~150 ms alone, ~500 ms under the full parallel suite); a rescan per watch adds ~1.8 s.
     const t0 = performance.now();
     for (const sid of sids) svc.status('claude', sid, 'p1');
     const ms = performance.now() - t0;
-    assert.ok(ms < 500, `watching 5,000 sessions took ${Math.round(ms)} ms`);
+    assert.ok(ms < 1000, `watching 5,000 sessions took ${Math.round(ms)} ms`);
   } finally { svc.stop(); }
 });
