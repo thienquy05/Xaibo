@@ -9,6 +9,7 @@ import { cut, PAGE_DEFAULT, PAGE_MAX, ROW, toRow, type LiveOf, type Raw } from '
 import type { SessionKind } from '../catalog/validate.ts';
 import { isDiskFull } from '../store/db.ts';
 import { groupWhere } from './map.ts';
+import { trashPurgeAt } from './trash.ts';
 import type { ModelEntry } from '../usage/models.ts';
 
 // ponytail: fixed caps bound what a renderer can create; make them settings if an owner ever needs more.
@@ -40,10 +41,15 @@ function run(db: DatabaseSync, op: OverlayOp, now: number): OverlayResult {
   const set = (assign: string, ...args: (number | null)[]) => {
     db.prepare('INSERT INTO overlays (agent, profile_id, native_session_id) VALUES (?, ?, ?) ON CONFLICT DO NOTHING').run(k.agent, k.profile_id, k.native_session_id);
     db.prepare(`UPDATE overlays SET ${assign} WHERE agent = ? AND profile_id = ? AND native_session_id = ?`).run(...args, k.agent, k.profile_id, k.native_session_id);
+    // P5-T03: a row back at every default is no overlay at all, so Undo/Restore leaves exactly what was there before
+    db.prepare(`DELETE FROM overlays WHERE agent = ? AND profile_id = ? AND native_session_id = ? AND project_id IS NULL AND folder_id IS NULL
+      AND pinned = 0 AND archived_at IS NULL AND trashed_at IS NULL AND keep = 0`).run(k.agent, k.profile_id, k.native_session_id);
   };
   switch (op.kind) {
     case 'pin': set('pinned = ?', op.on ? 1 : 0); return { ok: true };
     case 'archive': set(op.on ? 'archived_at = coalesce(archived_at, ?)' : 'archived_at = ?', op.on ? now : null); return { ok: true };
+    // P5-T03 (FR-11): Delete moves to Trash (the 30-day timer starts at the first deletion); Undo and Restore clear it
+    case 'trash': set(op.on ? 'trashed_at = coalesce(trashed_at, ?)' : 'trashed_at = ?', op.on ? now : null); return { ok: true };
     case 'move': {
       if (op.project === null) {
         if (op.folder !== null) return fail('invalid');
@@ -97,7 +103,7 @@ export function approvedLabel(db: DatabaseSync, agent: string, profileId: string
   } catch { return null; }
 }
 
-interface HistoryRaw extends Raw { pinned: number; archived_at: number | null; p_id: number | null; p_name: string | null; f_id: number | null; f_name: string | null }
+interface HistoryRaw extends Raw { pinned: number; archived_at: number | null; trashed_at: number | null; p_id: number | null; p_name: string | null; f_id: number | null; f_name: string | null }
 const named = (id: number | null, name: string | null): Named | null => (id === null || name === null ? null : { id, name });
 
 /** Pinned first, then last activity descending (unknown last), then id; mode all leaves Trash out. Without overlay tables
@@ -108,12 +114,12 @@ export function listHistory(db: DatabaseSync, f: HistoryFilter, cursor: HistoryK
   if (!overlay && (f.mode !== 'all' || f.project !== null || f.folder !== null || f.group)) return { rows: [], next: null };
   const n = clamp(limit);
   const P = overlay ? 'coalesce(o.pinned, 0)' : '0';
-  const cols = overlay ? `${P} AS pinned, o.archived_at, p.id AS p_id, p.name AS p_name, d.id AS f_id, d.name AS f_name, `
-    : '0 AS pinned, NULL AS archived_at, NULL AS p_id, NULL AS p_name, NULL AS f_id, NULL AS f_name, ';
+  const cols = overlay ? `${P} AS pinned, o.archived_at, o.trashed_at, p.id AS p_id, p.name AS p_name, d.id AS f_id, d.name AS f_name, `
+    : '0 AS pinned, NULL AS archived_at, NULL AS trashed_at, NULL AS p_id, NULL AS p_name, NULL AS f_id, NULL AS f_name, ';
   const joins = overlay ? ` LEFT JOIN overlays o ON o.agent = s.agent AND o.profile_id = s.profile_id AND o.native_session_id = s.native_session_id
     LEFT JOIN projects p ON p.id = o.project_id LEFT JOIN folders d ON d.id = o.folder_id` : '';
   const where: string[] = [], args: (string | number | null)[] = [];
-  if (overlay) where.push(f.mode === 'archived' ? 'o.archived_at IS NOT NULL AND o.trashed_at IS NULL' : 'o.trashed_at IS NULL');
+  if (overlay) where.push(f.mode === 'trash' ? 'o.trashed_at IS NOT NULL' : f.mode === 'archived' ? 'o.archived_at IS NOT NULL AND o.trashed_at IS NULL' : 'o.trashed_at IS NULL');
   if (f.agent !== null) { where.push('s.agent = ?'); args.push(f.agent); }
   if (f.project !== null) { where.push('o.project_id = ?'); args.push(f.project); }
   if (f.folder !== null) { where.push('o.folder_id = ?'); args.push(f.folder); }
@@ -127,7 +133,8 @@ export function listHistory(db: DatabaseSync, f: HistoryFilter, cursor: HistoryK
   const sql = `${ROW.replace(/^SELECT /, `SELECT ${cols}`)}${joins}${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY ${P} DESC, s.last_activity DESC, s.id LIMIT ?`;
   const raw = db.prepare(sql).all(...args, n) as unknown as HistoryRaw[];
   const base = toRow(db, kinds, models, live);
-  const rows = raw.map((r): HistoryRow => ({ ...base(r), project: named(r.p_id, r.p_name), folder: named(r.f_id, r.f_name), pinned: r.pinned === 1, archivedAt: r.archived_at }));
+  const rows = raw.map((r): HistoryRow => ({ ...base(r), project: named(r.p_id, r.p_name), folder: named(r.f_id, r.f_name), pinned: r.pinned === 1, archivedAt: r.archived_at,
+    trashedAt: r.trashed_at, trashPurgeAt: r.trashed_at === null ? null : trashPurgeAt(r.trashed_at) }));
   const last = rows.at(-1);
   return { rows, next: rows.length === n && last ? { pinned: last.pinned, lastActivity: last.lastActivity, id: last.id } : null };
 }

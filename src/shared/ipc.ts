@@ -213,7 +213,7 @@ export const MAX_FILE_TOUCHES = 2 * MAX_ITEMS; // a page holds up to MAX_ITEMS c
 const MAX_SOURCES = 8, MAX_SOURCE = 32, MAX_LABEL = 4097; // labels are cut to DISPLAY_MAX plus "…" by the service
 // XAIBO-PROD-504 (P5-T01; FR-10, US-5): the history overlay. The renderer names a session only by its row id.
 export const NAME_MAX = 200;
-export const HISTORY_MODES = ['all', 'archived'] as const;
+export const HISTORY_MODES = ['all', 'archived', 'trash'] as const;
 /** XAIBO-PROD-510 (P5-T01c; design §6.5.1): a map group. project null = automatic grouping (moved sessions excluded),
  *  else that Project override; at = a repository (worktree null: all its worktrees) or a cwd folder (repository grouping
  *  absent; cwd null: Cwd unavailable); at null only under a project. Keys are the stored canonical paths. */
@@ -230,9 +230,11 @@ export interface HistoryFilter { mode: (typeof HISTORY_MODES)[number]; agent: st
 /** History keyset: pinned first, then last activity descending (unknown last), then id. */
 export interface HistoryKey { pinned: boolean; lastActivity: number | null; id: number }
 export interface Named { id: number; name: string }
-export interface HistoryRow extends SessionRow { project: Named | null; folder: Named | null; pinned: boolean; archivedAt: number | null }
+export interface HistoryRow extends SessionRow { project: Named | null; folder: Named | null; pinned: boolean; archivedAt: number | null;
+  /** P5-T03: when the session went to Trash, and when Trash auto-empty makes it eligible for purge (30 × 24 h later). */
+  trashedAt: number | null; trashPurgeAt: number | null }
 export type OverlayOp =
-  | { kind: 'pin'; session: number; on: boolean } | { kind: 'archive'; session: number; on: boolean }
+  | { kind: 'pin'; session: number; on: boolean } | { kind: 'archive'; session: number; on: boolean } | { kind: 'trash'; session: number; on: boolean }
   | { kind: 'move'; session: number; project: number | null; folder: number | null }
   | { kind: 'newProject'; name: string } | { kind: 'newFolder'; project: number; name: string } | { kind: 'confirmLabel'; session: number };
 export const OVERLAY_ERRORS = ['not-found', 'invalid', 'read-only', 'disk-full', 'store', 'limit'] as const;
@@ -524,7 +526,7 @@ function parseOp(x: unknown): OverlayOp | null {
   if (!isObj(x)) return null;
   const keys = (...k: string[]) => exactKeys(x, ['kind', ...k]);
   switch (x.kind) {
-    case 'pin': case 'archive': return keys('session', 'on') && positive(x.session) && typeof x.on === 'boolean' ? { kind: x.kind, session: x.session, on: x.on } : null;
+    case 'pin': case 'archive': case 'trash': return keys('session', 'on') && positive(x.session) && typeof x.on === 'boolean' ? { kind: x.kind, session: x.session, on: x.on } : null;
     case 'move': return keys('session', 'project', 'folder') && positive(x.session) && idOrNull(x.project) && idOrNull(x.folder)
       ? { kind: 'move', session: x.session, project: x.project, folder: x.folder } : null;
     case 'newProject': return keys('name') && nameOk(x.name) ? { kind: 'newProject', name: x.name } : null;
@@ -536,9 +538,9 @@ function parseOp(x: unknown): OverlayOp | null {
 const parseNamed = (x: unknown): Named | null => (isObj(x) && positive(x.id) && nameOk(x.name) && x.name !== '' ? { id: x.id, name: x.name } : null);
 function parseHistoryRow(x: unknown): HistoryRow | null {
   const row = parseRow(x);
-  if (!row || !isObj(x) || typeof x.pinned !== 'boolean' || !timeOrNull(x.archivedAt)) return null;
+  if (!row || !isObj(x) || typeof x.pinned !== 'boolean' || !timeOrNull(x.archivedAt) || !timeOrNull(x.trashedAt) || !timeOrNull(x.trashPurgeAt)) return null;
   const project = x.project === null ? null : parseNamed(x.project), folder = x.folder === null ? null : parseNamed(x.folder);
-  return (x.project === null || project) && (x.folder === null || folder) ? { ...row, project, folder, pinned: x.pinned, archivedAt: x.archivedAt } : null;
+  return (x.project === null || project) && (x.folder === null || folder) ? { ...row, project, folder, pinned: x.pinned, archivedAt: x.archivedAt, trashedAt: x.trashedAt, trashPurgeAt: x.trashPurgeAt } : null;
 }
 function parseResult(x: unknown): OverlayResult | null {
   if (!isObj(x)) return null;

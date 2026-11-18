@@ -92,13 +92,21 @@ export const toRow = (db: DatabaseSync, kinds: SessionKind[], models: ModelEntry
   };
 };
 
+/** P5-T03 (FR-11, design §6.1/§6.4): trashed sessions leave All sessions, the live set and deltas. A store without the
+ *  overlay tables (a read-only older schema) has no Trash. */
+function shown(db: DatabaseSync): string {
+  return db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'overlays'").get() === undefined ? '1'
+    : 'NOT EXISTS (SELECT 1 FROM overlays o WHERE o.agent = s.agent AND o.profile_id = s.profile_id AND o.native_session_id = s.native_session_id AND o.trashed_at IS NOT NULL)';
+}
+
 export function listSessions(db: DatabaseSync, cursor: Cursor | null, limit: number, kinds: SessionKind[] = [], models: ModelEntry[] = [], live?: LiveOf): Page {
   const n = Math.min(Number.isSafeInteger(limit) && limit > 0 ? limit : PAGE_DEFAULT, PAGE_MAX);
+  const t = shown(db);
   let raw: Raw[];
-  if (!cursor) raw = db.prepare(`${ROW} ${ORDER}`).all(n) as unknown as Raw[];
-  else if (cursor.lastActivity === null) raw = db.prepare(`${ROW} WHERE s.last_activity IS NULL AND s.id > ? ${ORDER}`).all(cursor.id, n) as unknown as Raw[];
+  if (!cursor) raw = db.prepare(`${ROW} WHERE ${t} ${ORDER}`).all(n) as unknown as Raw[];
+  else if (cursor.lastActivity === null) raw = db.prepare(`${ROW} WHERE s.last_activity IS NULL AND s.id > ? AND ${t} ${ORDER}`).all(cursor.id, n) as unknown as Raw[];
   else {
-    raw = db.prepare(`${ROW} WHERE s.last_activity < ? OR s.last_activity IS NULL OR (s.last_activity = ? AND s.id > ?) ${ORDER}`)
+    raw = db.prepare(`${ROW} WHERE (s.last_activity < ? OR s.last_activity IS NULL OR (s.last_activity = ? AND s.id > ?)) AND ${t} ${ORDER}`)
       .all(cursor.lastActivity, cursor.lastActivity, cursor.id, n) as unknown as Raw[];
   }
   const rows = raw.map(toRow(db, kinds, models, live));
@@ -107,7 +115,7 @@ export function listSessions(db: DatabaseSync, cursor: Cursor | null, limit: num
 }
 
 export function sessionsByKey(db: DatabaseSync, keys: SessionKey[], kinds: SessionKind[] = [], models: ModelEntry[] = [], live?: LiveOf): SessionRow[] {
-  const one = db.prepare(`${ROW} WHERE s.agent = ? AND s.profile_id = ? AND s.native_session_id = ?`);
+  const one = db.prepare(`${ROW} WHERE s.agent = ? AND s.profile_id = ? AND s.native_session_id = ? AND ${shown(db)}`);
   return keys.flatMap((k) => (one.all(k.agent, k.profileId, k.nativeSessionId) as unknown as Raw[]).map(toRow(db, kinds, models, live)));
 }
 
@@ -129,7 +137,7 @@ export function answerLiveSet(db: DatabaseSync, req: PortRequest & { type: 'live
     const build = toRow(db, kinds, models, live);
     const one = db.prepare(`${ROW} WHERE s.id = ?`);
     // Review M1: membership from the bare key columns; the per-session subqueries run for members only.
-    for (const k of db.prepare('SELECT s.id, s.agent, s.profile_id, s.native_session_id FROM sessions s WHERE s.last_activity >= ? ORDER BY s.last_activity DESC, s.id')
+    for (const k of db.prepare(`SELECT s.id, s.agent, s.profile_id, s.native_session_id FROM sessions s WHERE s.last_activity >= ? AND ${shown(db)} ORDER BY s.last_activity DESC, s.id`)
       .iterate(now - LIVE_WINDOW_MS) as Iterable<Pick<Raw, 'id' | 'agent' | 'profile_id' | 'native_session_id'>>) {
       const st = live?.(k.agent, k.native_session_id, k.profile_id);
       if (!st || st.lifecycle === 'ended') continue;

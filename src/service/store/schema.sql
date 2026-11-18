@@ -115,6 +115,7 @@ CREATE TABLE overlays (
   PRIMARY KEY (agent, profile_id, native_session_id)
 ) WITHOUT ROWID;
 CREATE INDEX overlays_project ON overlays (project_id, folder_id);
+CREATE INDEX overlays_trashed ON overlays (trashed_at) WHERE trashed_at IS NOT NULL;
 CREATE TABLE price_revisions (
   id INTEGER PRIMARY KEY,
   schema_version INTEGER NOT NULL,

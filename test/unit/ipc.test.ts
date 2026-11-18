@@ -347,8 +347,9 @@ test('P5-T01: history, projects and folders requests: filters, cursor and limit 
   assert.deepEqual(parsePortRequest({ ...req, cursor }), { ...req, cursor });
   assert.deepEqual(parsePortRequest({ ...req, filter: { mode: 'archived', agent: 'codex', project: 2, folder: 5 } }),
     { ...req, filter: { mode: 'archived', agent: 'codex', project: 2, folder: 5 } });
+  assert.deepEqual(parsePortRequest({ ...req, filter: { ...filter, mode: 'trash' } }), { ...req, filter: { ...filter, mode: 'trash' } }); // P5-T03
   for (const bad of [{ limit: 0 }, { limit: 101 }, { limit: 1.5 }, { cursor: { pinned: 1, lastActivity: null, id: 3 } }, { cursor: { pinned: true, lastActivity: null, id: 0 } },
-    { cursor: { pinned: true, lastActivity: 1, id: 3, x: 1 } }, { filter: { ...filter, mode: 'trash' } }, { filter: { ...filter, project: -1 } },
+    { cursor: { pinned: true, lastActivity: 1, id: 3, x: 1 } }, { filter: { ...filter, mode: 'deleted' } }, { filter: { ...filter, project: -1 } },
     { filter: { ...filter, agent: 'Bad Agent' } }, { filter: { mode: 'all' } }, { filter: { ...filter, extra: 1 } }])
     assert.equal(parsePortRequest({ ...req, ...bad }), null, JSON.stringify(bad));
   assert.deepEqual(parsePortRequest({ v: 1, type: 'projects', id: 2, cursor: null, limit: 10 }), { v: 1, type: 'projects', id: 2, cursor: null, limit: 10 });
@@ -359,21 +360,24 @@ test('P5-T01: history, projects and folders requests: filters, cursor and limit 
 test('P5-T01: overlay ops are exact shapes; names are bounded strings; session ids positive', () => {
   const ok = [{ kind: 'pin', session: 1, on: true }, { kind: 'archive', session: 1, on: false }, { kind: 'move', session: 1, project: 2, folder: null },
     { kind: 'move', session: 1, project: null, folder: null }, { kind: 'newProject', name: 'Alpha' }, { kind: 'newFolder', project: 2, name: 'Docs' },
-    { kind: 'confirmLabel', session: 9 }];
+    { kind: 'confirmLabel', session: 9 }, { kind: 'trash', session: 3, on: true }, { kind: 'trash', session: 3, on: false }];
   for (const op of ok) assert.deepEqual(parsePortRequest({ v: 1, type: 'overlay', id: 1, op }), { v: 1, type: 'overlay', id: 1, op }, JSON.stringify(op));
   const bad = [{ kind: 'pin', session: 1, on: 1 }, { kind: 'pin', session: 0, on: true }, { kind: 'pin', session: 1, on: true, agent: 'claude' },
     { kind: 'move', session: 1, project: 2 }, { kind: 'newProject', name: 'x'.repeat(201) }, { kind: 'newProject', name: 5 }, { kind: 'delete', session: 1 },
-    { kind: 'confirmLabel', session: 1, label: 'x' }, null, []];
+    { kind: 'confirmLabel', session: 1, label: 'x' }, { kind: 'trash', session: 1 }, { kind: 'trash', session: 1, on: 'yes' }, { kind: 'trash', session: 1, on: true, at: 5 }, null, []];
   for (const op of bad) assert.equal(parsePortRequest({ v: 1, type: 'overlay', id: 1, op }), null, JSON.stringify(op));
 });
 
 test('P5-T01: history, projects, folders and overlay replies validated', () => {
   const row = { id: 1, agent: 'claude', entrypoint: null, origin: null, interactive: null, model: 'Model unavailable', cwd: null, title: null, lastActivity: 1,
     drift: false, compressed: false, quarantined: 0, live: null, contextPct: null, costUsd: null, costCoverage: 'unavailable', tokens: null, tokensComplete: false };
-  const h = { ...row, project: { id: 2, name: 'Alpha' }, folder: null, pinned: true, archivedAt: null };
+  const h = { ...row, project: { id: 2, name: 'Alpha' }, folder: null, pinned: true, archivedAt: null, trashedAt: null, trashPurgeAt: null };
   const msg = { v: 1, type: 'history', id: 1, rows: [h], next: { pinned: true, lastActivity: 1, id: 1 } };
   assert.deepEqual(parsePortMessage(msg), msg);
-  for (const bad of [{ pinned: 'yes' }, { project: { id: 0, name: 'x' } }, { project: { id: 1, name: '' } }, { archivedAt: 'x' }])
+  const trashed = { ...msg, rows: [{ ...h, trashedAt: 10, trashPurgeAt: 20 }] }; // P5-T03
+  assert.deepEqual(parsePortMessage(trashed), trashed);
+  for (const bad of [{ pinned: 'yes' }, { project: { id: 0, name: 'x' } }, { project: { id: 1, name: '' } }, { archivedAt: 'x' }, { trashedAt: 'x' }, { trashPurgeAt: Infinity },
+    { trashedAt: undefined }])
     assert.equal(parsePortMessage({ ...msg, rows: [{ ...h, ...bad }] }), null, JSON.stringify(bad));
   assert.deepEqual(parsePortMessage({ v: 1, type: 'projects', id: 2, projects: [{ id: 1, name: 'A' }], next: null }), { v: 1, type: 'projects', id: 2, projects: [{ id: 1, name: 'A' }], next: null });
   assert.deepEqual(parsePortMessage({ v: 1, type: 'folders', id: 3, folders: [], next: 4 }), { v: 1, type: 'folders', id: 3, folders: [], next: 4 });
