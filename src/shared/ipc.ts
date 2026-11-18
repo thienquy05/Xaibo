@@ -214,7 +214,19 @@ const MAX_SOURCES = 8, MAX_SOURCE = 32, MAX_LABEL = 4097; // labels are cut to D
 // XAIBO-PROD-504 (P5-T01; FR-10, US-5): the history overlay. The renderer names a session only by its row id.
 export const NAME_MAX = 200;
 export const HISTORY_MODES = ['all', 'archived'] as const;
-export interface HistoryFilter { mode: (typeof HISTORY_MODES)[number]; agent: string | null; project: number | null; folder: number | null }
+/** XAIBO-PROD-510 (P5-T01c; design §6.5.1): a map group. project null = automatic grouping (moved sessions excluded),
+ *  else that Project override; at = a repository (worktree null: all its worktrees) or a cwd folder (repository grouping
+ *  absent; cwd null: Cwd unavailable); at null only under a project. Keys are the stored canonical paths. */
+export type MapAt = { repo: string; worktree: string | null } | { cwd: string | null };
+export interface MapGroup { project: number | null; at: MapAt | null }
+export const REPO_REASONS = ['no-git', 'unreadable', 'inconsistent', 'back-pointer', 'not-repository'] as const;
+/** reasons: a cwd group's recorded repository-grouping reasons, null = none recorded (a pre-015 row); counts are exact
+ *  service aggregates over the whole group, null when unavailable; agents are catalog ids, sorted. */
+export interface MapNode {
+  group: MapGroup; project: Named | null; reasons: ((typeof REPO_REASONS)[number] | null)[];
+  sessions: number | null; live: number | null; agents: string[] | null;
+}
+export interface HistoryFilter { mode: (typeof HISTORY_MODES)[number]; agent: string | null; project: number | null; folder: number | null; group?: MapGroup }
 /** History keyset: pinned first, then last activity descending (unknown last), then id. */
 export interface HistoryKey { pinned: boolean; lastActivity: number | null; id: number }
 export interface Named { id: number; name: string }
@@ -231,6 +243,8 @@ export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Curs
   | { v: 1; type: 'projects'; id: number; cursor: number | null; limit: number }
   | { v: 1; type: 'folders'; id: number; project: number; cursor: number | null; limit: number }
   | { v: 1; type: 'overlay'; id: number; op: OverlayOp }
+  /** P5-T01c: a page of map groups under parent (null = roots); cursor is the last group of the previous page. */
+  | { v: 1; type: 'mapGroups'; id: number; parent: MapGroup | null; cursor: MapGroup | null; limit: number }
   /** P4-T02: the window is visible (live session deltas wanted) or hidden (paused; the renderer resyncs by cursor). */
   | { v: 1; type: 'live'; on: boolean }
   /** P4-T04a: the live-session set (tracked, non-ended, active within 24 h), capped; deltas keep it current. */
@@ -250,6 +264,7 @@ export type PortMessage =
   | { v: 1; type: 'projects'; id: number; projects: Named[]; next: number | null }
   | { v: 1; type: 'folders'; id: number; folders: Named[]; next: number | null }
   | { v: 1; type: 'overlay'; id: number; result: OverlayResult }
+  | { v: 1; type: 'mapGroups'; id: number; groups: MapNode[]; next: MapGroup | null; failed?: true }
   | { v: 1; type: 'cost'; id: number; cost: CostDetail | null }
   | { v: 1; type: 'session'; id: number; detail: SessionDetail | null }
   | { v: 1; type: 'transcript'; id: number; items: TranscriptItem[]; prev: TCursor | null; next: TCursor | null }
@@ -475,8 +490,33 @@ function parseHistoryKey(x: unknown): HistoryKey | null | undefined { // undefin
     ? { pinned: x.pinned, lastActivity: x.lastActivity, id: x.id } : undefined;
 }
 function parseFilter(x: unknown): HistoryFilter | null {
-  if (!exactKeys(x, ['mode', 'agent', 'project', 'folder']) || !oneOf(HISTORY_MODES, x.mode)) return null;
-  return (x.agent === null || agentOk(x.agent)) && idOrNull(x.project) && idOrNull(x.folder) ? { mode: x.mode, agent: x.agent, project: x.project, folder: x.folder } : null;
+  const grouped = isObj(x) && Object.hasOwn(x, 'group');
+  if (!exactKeys(x, ['mode', 'agent', 'project', 'folder', ...(grouped ? ['group'] : [])]) || !oneOf(HISTORY_MODES, x.mode)) return null;
+  const group = grouped ? parseMapGroup(x.group) : undefined;
+  if (group === null || !((x.agent === null || agentOk(x.agent)) && idOrNull(x.project) && idOrNull(x.folder))) return null;
+  return { mode: x.mode, agent: x.agent, project: x.project, folder: x.folder, ...(group ? { group } : {}) };
+}
+const keyText = (x: unknown): x is string => text(x) && x !== '';
+/** Exact shapes only; a group with neither project nor place names nothing and is refused. */
+function parseMapGroup(x: unknown): MapGroup | null {
+  if (!exactKeys(x, ['project', 'at']) || !idOrNull(x.project)) return null;
+  const a = x.at;
+  let at: MapAt | null;
+  if (a === null) at = null;
+  else if (exactKeys(a, ['repo', 'worktree']) && keyText(a.repo) && (a.worktree === null || keyText(a.worktree))) at = { repo: a.repo, worktree: a.worktree };
+  else if (exactKeys(a, ['cwd']) && (a.cwd === null || keyText(a.cwd))) at = { cwd: a.cwd };
+  else return null;
+  return x.project === null && at === null ? null : { project: x.project, at };
+}
+const groupOrNull = (x: unknown): MapGroup | null | undefined => (x === null ? null : parseMapGroup(x) ?? undefined); // undefined = invalid
+function parseMapNode(x: unknown): MapNode | null {
+  if (!exactKeys(x, ['group', 'project', 'reasons', 'sessions', 'live', 'agents'])) return null;
+  const group = parseMapGroup(x.group), project = x.project === null ? null : parseNamed(x.project);
+  const reasons = all(x.reasons, REPO_REASONS.length + 1, (r) => (r === null ? { r } : oneOf(REPO_REASONS, r) ? { r } : null));
+  const agents = x.agents === null ? null : all(x.agents, 32, (a) => (agentOk(a) ? a : null));
+  if (!group || (x.project !== null && !project) || !reasons || (x.agents !== null && !agents)) return null;
+  if (!(x.sessions === null || count(x.sessions)) || !(x.live === null || count(x.live))) return null;
+  return { group, project, reasons: reasons.map((v) => v.r), sessions: x.sessions, live: x.live, agents };
 }
 const nameOk = (x: unknown): x is string => text(x, NAME_MAX);
 /** Exact shapes only: an extra key (e.g. a smuggled agent or native id) voids the op. */
@@ -515,6 +555,10 @@ export function parsePortRequest(x: unknown): PortRequest | null {
   if (m?.type === 'projects') return count(m.id) && idOrNull(m.cursor) && pageLimit(m.limit) ? { v: 1, type: 'projects', id: m.id, cursor: m.cursor, limit: m.limit } : null;
   if (m?.type === 'folders') {
     return count(m.id) && positive(m.project) && idOrNull(m.cursor) && pageLimit(m.limit) ? { v: 1, type: 'folders', id: m.id, project: m.project, cursor: m.cursor, limit: m.limit } : null;
+  }
+  if (m?.type === 'mapGroups') {
+    const parent = groupOrNull(m.parent), cursor = groupOrNull(m.cursor);
+    return count(m.id) && parent !== undefined && cursor !== undefined && pageLimit(m.limit) ? { v: 1, type: 'mapGroups', id: m.id, parent, cursor, limit: m.limit } : null;
   }
   if (m?.type === 'overlay') {
     const op = parseOp(m.op);
@@ -564,6 +608,11 @@ export function parsePortMessage(x: unknown): PortMessage | null {
     const list = all(m[m.type], MAX_ITEMS, parseNamed);
     if (!count(m.id) || !list || !idOrNull(m.next)) return null;
     return m.type === 'projects' ? { v: 1, type: 'projects', id: m.id, projects: list, next: m.next } : { v: 1, type: 'folders', id: m.id, folders: list, next: m.next };
+  }
+  if (m.type === 'mapGroups') {
+    const groups = all(m.groups, MAX_ITEMS, parseMapNode), next = groupOrNull(m.next);
+    if (m.failed !== undefined && m.failed !== true) return null;
+    return count(m.id) && groups && next !== undefined ? { v: 1, type: 'mapGroups', id: m.id, groups, next, ...(m.failed ? { failed: true as const } : {}) } : null;
   }
   if (m.type === 'overlay') {
     const result = parseResult(m.result);

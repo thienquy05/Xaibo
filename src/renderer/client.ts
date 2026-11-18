@@ -3,7 +3,7 @@
 // are counted; an invalid reply rejects its request, so the caller can recover. A service restart brings a new port
 // and a new client; replies owed on the old one never arrive.
 import { accept, IPC_VERSION, isObj, parsePortMessage } from '../shared/ipc.ts';
-import type { AgentStatus, Banner, CostDetail, Cursor, FileItem, HistoryCursor, HistoryFilter, HistoryKey, HistoryRow, MCursor, ModelMarker, Named, OverlayOp, OverlayResult, Page, PortMessage, PortRequest, SessionDetail, SessionRow, SubagentItem, TCursor, ToolItem, TranscriptAt, TranscriptItem, UsageRecord, UsageScope } from '../shared/ipc.ts';
+import type { AgentStatus, Banner, CostDetail, Cursor, FileItem, HistoryCursor, HistoryFilter, HistoryKey, HistoryRow, MapGroup, MapNode, MCursor, ModelMarker, Named, OverlayOp, OverlayResult, Page, PortMessage, PortRequest, SessionDetail, SessionRow, SubagentItem, TCursor, ToolItem, TranscriptAt, TranscriptItem, UsageRecord, UsageScope } from '../shared/ipc.ts';
 
 export interface LiveSet { rows: SessionRow[]; more: boolean }
 export interface PortLike { onmessage: ((e: { data: unknown }) => void) | null; postMessage(m: unknown): void; close(): void }
@@ -106,6 +106,12 @@ export function createClient(port: PortLike, push: Pushes) {
     async folders(project: number, cursor: number | null, limit: number): Promise<{ folders: Named[]; next: number | null }> {
       const m = await ask({ type: 'folders', project, cursor, limit }, 'folders');
       return { folders: m.folders, next: m.next };
+    },
+    /** XAIBO-PROD-510 (P5-T01c): a page of map groups under parent (null = roots); throws when the store could not answer. */
+    async mapGroups(parent: MapGroup | null, cursor: MapGroup | null, limit: number): Promise<{ groups: MapNode[]; next: MapGroup | null }> {
+      const m = await ask({ type: 'mapGroups', parent, cursor, limit }, 'mapGroups');
+      if (m.failed) throw new Error('map groups unavailable');
+      return { groups: m.groups, next: m.next };
     },
     async overlay(op: OverlayOp): Promise<OverlayResult> { return (await ask({ type: 'overlay', op }, 'overlay')).result; },
     /** P4-T07a: the session's cost breakdown; null for an unknown session. */

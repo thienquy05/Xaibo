@@ -8,6 +8,7 @@ import { NAME_MAX, type HistoryFilter, type HistoryKey, type HistoryRow, type Na
 import { cut, PAGE_DEFAULT, PAGE_MAX, ROW, toRow, type LiveOf, type Raw } from '../api.ts';
 import type { SessionKind } from '../catalog/validate.ts';
 import { isDiskFull } from '../store/db.ts';
+import { groupWhere } from './map.ts';
 import type { ModelEntry } from '../usage/models.ts';
 
 // ponytail: fixed caps bound what a renderer can create; make them settings if an owner ever needs more.
@@ -104,7 +105,7 @@ const named = (id: number | null, name: string | null): Named | null => (id === 
 export function listHistory(db: DatabaseSync, f: HistoryFilter, cursor: HistoryKey | null, limit: number,
   kinds: SessionKind[] = [], models: ModelEntry[] = [], live?: LiveOf): { rows: HistoryRow[]; next: HistoryKey | null } {
   const overlay = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'overlays'").get() !== undefined;
-  if (!overlay && (f.mode !== 'all' || f.project !== null || f.folder !== null)) return { rows: [], next: null };
+  if (!overlay && (f.mode !== 'all' || f.project !== null || f.folder !== null || f.group)) return { rows: [], next: null };
   const n = clamp(limit);
   const P = overlay ? 'coalesce(o.pinned, 0)' : '0';
   const cols = overlay ? `${P} AS pinned, o.archived_at, p.id AS p_id, p.name AS p_name, d.id AS f_id, d.name AS f_name, `
@@ -116,6 +117,7 @@ export function listHistory(db: DatabaseSync, f: HistoryFilter, cursor: HistoryK
   if (f.agent !== null) { where.push('s.agent = ?'); args.push(f.agent); }
   if (f.project !== null) { where.push('o.project_id = ?'); args.push(f.project); }
   if (f.folder !== null) { where.push('o.folder_id = ?'); args.push(f.folder); }
+  if (f.group) { const g = groupWhere(f.group); where.push(...g.where); args.push(...g.args); } // P5-T01c: one map group's scope
   if (cursor) {
     const p = cursor.pinned ? 1 : 0;
     const after = cursor.lastActivity === null ? '(s.last_activity IS NULL AND s.id > ?)' : '(s.last_activity < ? OR s.last_activity IS NULL OR (s.last_activity = ? AND s.id > ?))';

@@ -382,3 +382,39 @@ test('P5-T01: history, projects, folders and overlay replies validated', () => {
   for (const result of [{ ok: false, error: 'boom' }, { ok: true, id: 0 }, { ok: 'yes' }])
     assert.equal(parsePortMessage({ v: 1, type: 'overlay', id: 4, result }), null, JSON.stringify(result));
 });
+
+// XAIBO-PROD-510 (P5-T01c): map groups are exact shapes; a group names a project (or none = automatic) and a place.
+test('P5-T01c: mapGroups requests and the history group filter take exact group shapes only', () => {
+  const groups = [{ project: null, at: { repo: '/r/.git', worktree: null } }, { project: null, at: { repo: '/r/.git', worktree: '/r' } },
+    { project: null, at: { cwd: '/x' } }, { project: null, at: { cwd: null } }, { project: 3, at: null }, { project: 3, at: { cwd: '/x' } },
+    { project: 3, at: { repo: '/r/.git', worktree: '/r' } }];
+  const req = { v: 1, type: 'mapGroups', id: 1, parent: null, cursor: null, limit: 10 };
+  assert.deepEqual(parsePortRequest(req), req);
+  for (const g of groups) {
+    assert.deepEqual(parsePortRequest({ ...req, parent: g, cursor: g }), { ...req, parent: g, cursor: g }, JSON.stringify(g));
+    const filter = { mode: 'all', agent: null, project: null, folder: null, group: g };
+    const h = { v: 1, type: 'history', id: 2, filter, cursor: null, limit: 50 };
+    assert.deepEqual(parsePortRequest(h), h);
+  }
+  const badGroups = [{ project: null, at: null }, { project: 0, at: null }, { project: null, at: { repo: '/r' } }, { project: null, at: { repo: '', worktree: null } },
+    { project: null, at: { repo: '/r', worktree: null, cwd: null } }, { project: null, at: { cwd: 3 } }, { project: null, at: { repo: '/r', worktree: '' } },
+    { project: null, at: { cwd: 'x'.repeat(64 * 1024 + 1) } }, { project: null }, { project: null, at: { cwd: '/x' }, extra: 1 }, 'x', []];
+  for (const g of badGroups) {
+    assert.equal(parsePortRequest({ ...req, parent: g }), null, JSON.stringify(g));
+    assert.equal(parsePortRequest({ ...req, cursor: g }), null, JSON.stringify(g));
+    assert.equal(parsePortRequest({ v: 1, type: 'history', id: 2, filter: { mode: 'all', agent: null, project: null, folder: null, group: g }, cursor: null, limit: 50 }), null);
+  }
+  for (const bad of [{ limit: 0 }, { limit: 101 }, { id: -1 }]) assert.equal(parsePortRequest({ ...req, ...bad }), null, JSON.stringify(bad));
+});
+
+test('P5-T01c: mapGroups replies: counts are counts or null, agents ids or null, reasons known or null', () => {
+  const node = { group: { project: null, at: { cwd: '/x' } }, project: null, reasons: ['no-git', null], sessions: 3, live: null, agents: ['claude', 'codex'] };
+  const msg = { v: 1, type: 'mapGroups', id: 1, groups: [node, { ...node, group: { project: 2, at: null }, project: { id: 2, name: 'Work' }, reasons: [], agents: null, sessions: null, live: 1 }],
+    next: { project: 2, at: null } };
+  assert.deepEqual(parsePortMessage(msg), msg);
+  assert.deepEqual(parsePortMessage({ v: 1, type: 'mapGroups', id: 1, groups: [], next: null, failed: true }), { v: 1, type: 'mapGroups', id: 1, groups: [], next: null, failed: true });
+  for (const bad of [{ sessions: -1 }, { live: 1.5 }, { agents: ['Bad Agent'] }, { reasons: ['guess'] }, { project: { id: 0, name: 'x' } }, { group: { project: null, at: null } }, { extra: 1 }])
+    assert.equal(parsePortMessage({ ...msg, groups: [{ ...node, ...bad }] }), null, JSON.stringify(bad));
+  assert.equal(parsePortMessage({ ...msg, next: { project: null, at: null } }), null);
+  assert.equal(parsePortMessage({ ...msg, groups: Array.from({ length: 101 }, () => node) }), null);
+});

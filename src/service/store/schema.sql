@@ -216,6 +216,7 @@ CREATE TABLE sessions (
 );
 CREATE INDEX sessions_activity ON sessions (last_activity DESC, id);
 CREATE INDEX sessions_agent_activity ON sessions (agent, last_activity DESC, id);
+CREATE INDEX sessions_cwd ON sessions (repo_key, cwd);
 CREATE INDEX sessions_repo ON sessions (repo_key, worktree);
 CREATE TABLE source_files (
   id INTEGER PRIMARY KEY,

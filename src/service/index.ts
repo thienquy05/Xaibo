@@ -12,6 +12,7 @@ import { appendQuiet, createLogger, loadInstallSecret, type Logger } from '../sh
 import { answer, answerCost, answerFiles, answerLiveSet, answerMarkers, answerSession, answerSlice, answerSubagents, answerTools, answerTranscript, answerUsage, answerUsageHistory, coalesce, createHub, sessionsByKey, type LiveOf } from './api.ts';
 import { boot, type Service } from './boot.ts';
 import { applyOverlay, listFolders, listHistory, listProjects } from './history/overlay.ts';
+import { mapGroups } from './history/map.ts';
 import type { Batch } from './store/writer.ts';
 import { traceableIds } from './trace-ids.ts';
 
@@ -95,6 +96,11 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
         let page: { folders: { id: number; name: string }[]; next: number | null } = { folders: [], next: null };
         try { if (db.isOpen) page = listFolders(db, req.project, req.cursor, req.limit); } catch { /* empty page */ }
         port.postMessage({ v: IPC_VERSION, type: 'folders', id: req.id, ...page } satisfies PortMessage); break;
+      }
+      case 'mapGroups': { // P5-T01c: a store that cannot answer says failed (the renderer offers Retry), never an empty page
+        let page: Omit<Extract<PortMessage, { type: 'mapGroups' }>, 'v' | 'type' | 'id'> = { groups: [], next: null, failed: true };
+        try { if (db.isOpen) page = mapGroups(db, req.parent, req.cursor, req.limit, live); } catch { /* failed */ }
+        port.postMessage({ v: IPC_VERSION, type: 'mapGroups', id: req.id, ...page } satisfies PortMessage); break;
       }
       case 'overlay': port.postMessage({ v: IPC_VERSION, type: 'overlay', id: req.id,
         result: applyOverlay(db, req.op, { readOnly: s.store.readOnly || !db.isOpen, now: Date.now() }) } satisfies PortMessage); break;
