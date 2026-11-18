@@ -102,6 +102,44 @@ CREATE TABLE kv (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+CREATE TABLE monthly_quota_peaks (
+  month TEXT NOT NULL,
+  scope_key TEXT NOT NULL,
+  limit_id TEXT NOT NULL,
+  window_minutes INTEGER NOT NULL, -- -1 = window length unknown
+  verified INTEGER NOT NULL CHECK (verified IN (0, 1)),
+  peak_percent REAL NOT NULL,
+  observations INTEGER NOT NULL,
+  PRIMARY KEY (month, scope_key, limit_id, window_minutes)
+) WITHOUT ROWID;
+CREATE TABLE monthly_sessions (
+  month TEXT NOT NULL,
+  agent TEXT NOT NULL,
+  profile_key TEXT NOT NULL,
+  sessions INTEGER NOT NULL DEFAULT 0, -- distinct sessions across models
+  PRIMARY KEY (month, agent, profile_key)
+) WITHOUT ROWID;
+CREATE TABLE monthly_usage (
+  month TEXT NOT NULL,
+  agent TEXT NOT NULL,
+  profile_key TEXT NOT NULL,
+  model_id TEXT NOT NULL,              -- '' = model unavailable
+  sessions INTEGER NOT NULL DEFAULT 0, -- sessions that used this model in the month
+  turns INTEGER NOT NULL DEFAULT 0,
+  requests INTEGER NOT NULL DEFAULT 0,
+  uncached_input INTEGER NOT NULL DEFAULT 0,
+  cache_read INTEGER NOT NULL DEFAULT 0,
+  cache_write INTEGER NOT NULL DEFAULT 0,
+  output INTEGER NOT NULL DEFAULT 0,
+  token_gaps INTEGER NOT NULL DEFAULT 0, -- requests with a missing component (known subtotal kept)
+  cost_micros INTEGER,                   -- known subtotal of per-request estimates in micro-USD (exact sums); NULL = none priced
+  cost_full INTEGER NOT NULL DEFAULT 0,
+  cost_partial INTEGER NOT NULL DEFAULT 0,
+  cost_none INTEGER NOT NULL DEFAULT 0,
+  cost_pending INTEGER NOT NULL DEFAULT 0,
+  price_revisions TEXT NOT NULL DEFAULT '[]', -- price revision ids that priced the subtotal
+  PRIMARY KEY (month, agent, profile_key, model_id)
+) WITHOUT ROWID;
 CREATE TABLE overlays (
   agent TEXT NOT NULL,
   profile_id TEXT NOT NULL,
@@ -219,6 +257,13 @@ CREATE INDEX sessions_activity ON sessions (last_activity DESC, id);
 CREATE INDEX sessions_agent_activity ON sessions (agent, last_activity DESC, id);
 CREATE INDEX sessions_cwd ON sessions (repo_key, cwd);
 CREATE INDEX sessions_repo ON sessions (repo_key, worktree);
+CREATE TABLE settled_contributions (
+  key TEXT PRIMARY KEY,
+  month TEXT NOT NULL,
+  utc_offset INTEGER NOT NULL,
+  settled_at INTEGER NOT NULL,
+  cleared INTEGER NOT NULL DEFAULT 0 CHECK (cleared IN (0, 1))
+) WITHOUT ROWID;
 CREATE TABLE source_files (
   id INTEGER PRIMARY KEY,
   profile_id TEXT NOT NULL REFERENCES profiles(id),
