@@ -1,4 +1,4 @@
-// XAIBO-PROD-517 (P5-T09; FR-12, US-6, Q-5.5, EC-22 part, EC-42): the session retention policy. Never purge an active
+// XAIBO-PROD-517 (P5-T09/T10; FR-12, US-6, Q-5.5, EC-22, EC-42): the session retention policy. Never purge an active
 // (busy, waiting for permission, needs input), recent (< 24 h), Keep or in-Trash session; the purge date is N x 24 h of
 // elapsed time after the last activity; the setting is 1-3650 days or Never, default 45.
 import { test } from 'node:test';
@@ -6,6 +6,9 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { clockJumped, DAY, eligible, isActive, parseRetention, purgeAt, RETENTION_DEFAULT, retentionOf, setRetention } from '../../../src/service/retention/policy.ts';
 import { retentionScheduler } from '../../../src/service/retention/job.ts';
+import { blocks, refuses, type Marker, type SuppressionReason } from '../../../src/service/history/suppression.ts';
+import { trashExpired, trashPurgeAt } from '../../../src/service/history/trash.ts';
+import type { LiveStatus } from '../../../src/shared/ipc.ts';
 
 const NOW = Date.UTC(2026, 10, 18, 12);
 const old = { lastActivity: NOW - 46 * DAY, keep: false, trashed: false, active: false };
@@ -100,4 +103,68 @@ test('EC-22: busy, waiting for permission and needs input are active; the rest a
   for (const l of ['busy', 'waiting-for-permission', 'needs-input'] as const) assert.equal(isActive(l), true, l);
   for (const l of ['idle', 'error', 'ended', 'unknown'] as const) assert.equal(isActive(l), false, l);
   assert.equal(isActive(null), false, 'no live status');
+});
+
+// P5-T10 (EC-22): a fake lifecycle table through the job's two checks (isActive feeds eligible). Only idle, error, ended
+// or unknown sessions without Keep, last active N x 24 h ago, are purged.
+test('EC-22: fake lifecycle table, only the old, idle-like, unkept rows are eligible', () => {
+  const rows: [LiveStatus['lifecycle'] | null, number, boolean, boolean][] = [
+    // lifecycle, age, keep, expected
+    ['busy', 60 * DAY, false, false], ['waiting-for-permission', 60 * DAY, false, false], ['needs-input', 60 * DAY, false, false],
+    ['idle', 60 * DAY, false, true], ['error', 60 * DAY, false, true], ['ended', 60 * DAY, false, true], ['unknown', 60 * DAY, false, true],
+    [null, 60 * DAY, false, true], ['idle', 60 * DAY, true, false], ['ended', 23 * 3600_000, false, false], ['ended', 44 * DAY, false, false]];
+  for (const [l, age, keep, want] of rows)
+    assert.equal(eligible({ lastActivity: NOW - age, keep, trashed: false, active: isActive(l) }, R45, NOW), want, `${l} ${age / DAY}d keep=${keep}`);
+  // 24 h floor holds even when the setting is 1 day
+  assert.equal(eligible({ ...old, lastActivity: NOW - DAY + 1 }, { days: 1 }, NOW), false);
+  assert.equal(eligible({ ...old, lastActivity: NOW - DAY }, { days: 1 }, NOW), true);
+});
+
+// P5-T10 (EC-22): what new native activity does to the marker the purge left. A retention purge gives way (the session is
+// re-imported and the cleared marker is the "re-imported" notice); a manual purge keeps blocking until Re-import (its
+// uncleared manual marker is the "suppressed, Re-import" notice). Owed file work blocks both.
+test('EC-22: auto-purged session continued natively is re-imported; manual purge stays suppressed', () => {
+  const m = (reason: SuppressionReason, extra: Partial<Marker> = {}): Marker => ({ reason, at: NOW, pending: null, cleared_at: null, files: '[]', ...extra });
+  assert.equal(blocks(m('retention'), true), false, 'retention + new activity: re-import');
+  assert.equal(blocks(m('retention'), false), true, 'retention, no new activity: stays out');
+  assert.equal(blocks(m('manual'), true), true, 'manual + new activity: stays suppressed');
+  assert.equal(blocks(m('manual'), false), true);
+  assert.equal(blocks(m('retention', { pending: '["r1"]' }), true), true, 'owed file work blocks');
+  assert.equal(blocks(m('manual', { cleared_at: NOW + 1 }), false), false, 'after Re-import');
+  assert.equal(blocks(undefined, false), false, 'never purged');
+  // intake: a delivery from before the purge never comes back, even for a retention marker
+  assert.equal(refuses(m('retention'), NOW), true);
+  assert.equal(refuses(m('retention'), NOW + 1), false);
+  assert.equal(refuses(m('manual'), NOW + 1), true);
+});
+
+// P5-T10 (EC-42 regression): fixtures across America/New_York DST changes. A calendar "+N days" in the local zone is 1 h
+// short across spring forward and 1 h long across fall back; retention and Trash expiry use elapsed N x 24 h either way.
+test('EC-42: retention and Trash expiry use elapsed N x 24 h across DST, not local calendar days', () => {
+  const tz = process.env.TZ;
+  process.env.TZ = 'America/New_York';
+  try {
+    const calendarPlus = (t: number, days: number) => { const d = new Date(t); d.setDate(d.getDate() + days); return d.getTime(); };
+    // spring forward 2026-03-08: last activity 2026-02-20 10:00 EST
+    const last = Date.UTC(2026, 1, 20, 15);
+    const cal = calendarPlus(last, 45);
+    assert.equal(purgeAt(last, R45)! - cal, 3600_000, 'fixture crosses spring forward');
+    const c = { ...old, lastActivity: last };
+    assert.equal(eligible(c, R45, cal), false, 'local calendar date reached, 45 x 24 h not elapsed');
+    assert.equal(eligible(c, R45, last + 45 * DAY - 1), false);
+    assert.equal(eligible(c, R45, last + 45 * DAY), true);
+    // fall back 2026-11-01: deleted 2026-10-15 10:00 EDT
+    const trashed = Date.UTC(2026, 9, 15, 14);
+    const tcal = calendarPlus(trashed, 30);
+    assert.equal(tcal - trashPurgeAt(trashed), 3600_000, 'fixture crosses fall back');
+    assert.equal(trashPurgeAt(trashed), trashed + 30 * DAY);
+    assert.equal(trashExpired(trashed, trashed + 30 * DAY - 1), false);
+    assert.equal(trashExpired(trashed, trashed + 30 * DAY), true, '30 x 24 h elapsed, before the local calendar date');
+    // and retention across fall back is 1 h earlier than the calendar date
+    const last2 = Date.UTC(2026, 9, 1, 14);
+    assert.equal(calendarPlus(last2, 45) - purgeAt(last2, R45)!, 3600_000);
+    assert.equal(eligible({ ...old, lastActivity: last2 }, R45, last2 + 45 * DAY), true);
+  } finally {
+    if (tz === undefined) delete process.env.TZ; else process.env.TZ = tz;
+  }
 });
