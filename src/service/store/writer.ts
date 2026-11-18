@@ -20,7 +20,9 @@ export interface SourceFileCheckpoint {
   status: 'ok' | 'compressed_not_imported' | 'gone' | 'oversized';
 }
 export interface SessionUpsert {
-  nativeSessionId: string; cwd?: string; cwdKey?: string; entrypoint?: string; interactive?: boolean; title?: string;
+  nativeSessionId: string; cwd?: string; cwdKey?: string; entrypoint?: string; interactive?: boolean;
+  /** The native title: Claude's rename (custom-title); aiTitle is Claude's generated title, kept apart (XAIBO-PROD-507). */
+  title?: string; aiTitle?: string;
   startedAt?: number; lastActivity?: number; originator?: string; nativeArchived?: boolean;
   /** P2-T11 (EC-81): false once the native conversation is verifiably gone; true again when it reappears. */
   nativeAvailable?: boolean;
@@ -115,8 +117,8 @@ function prepare(db: DatabaseSync) {
   return {
     // ponytail: native_archived only rises (a rollout seen under archived_sessions/); unarchiving needs a scan-level check.
     upsertSession: db.prepare(`INSERT INTO sessions (agent, profile_id, native_session_id, cwd, cwd_key, entrypoint, interactive, title, started_at, last_activity,
-        originator, native_archived, native_available, account_epoch, repo_key, worktree, repo_reason)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, coalesce(?, 1), ?, ?, ?, ?)
+        originator, native_archived, native_available, account_epoch, repo_key, worktree, repo_reason, ai_title)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, coalesce(?, 1), ?, ?, ?, ?, ?)
       ON CONFLICT (agent, profile_id, native_session_id) DO UPDATE SET
         repo_key = CASE WHEN sessions.cwd IS NULL THEN excluded.repo_key ELSE sessions.repo_key END,
         worktree = CASE WHEN sessions.cwd IS NULL THEN excluded.worktree ELSE sessions.worktree END,
@@ -126,7 +128,7 @@ function prepare(db: DatabaseSync) {
         entrypoint = coalesce(sessions.entrypoint, excluded.entrypoint), interactive = coalesce(sessions.interactive, excluded.interactive),
         originator = coalesce(sessions.originator, excluded.originator), native_archived = max(sessions.native_archived, excluded.native_archived),
         native_available = coalesce(?, sessions.native_available),
-        title = coalesce(excluded.title, sessions.title),
+        title = coalesce(excluded.title, sessions.title), ai_title = coalesce(excluded.ai_title, sessions.ai_title),
         started_at = min(coalesce(sessions.started_at, excluded.started_at), coalesce(excluded.started_at, sessions.started_at)),
         last_activity = max(coalesce(sessions.last_activity, excluded.last_activity), coalesce(excluded.last_activity, sessions.last_activity))
       RETURNING id`),
@@ -377,7 +379,7 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
       const row = st.upsertSession.get(batch.agent, batch.profileId, s.nativeSessionId, s.cwd ?? null, s.cwdKey ?? null, s.entrypoint ?? null,
         b(s.interactive), s.title ?? null, s.startedAt ?? null, s.lastActivity ?? null, s.originator ?? null, s.nativeArchived ? 1 : 0,
         b(s.nativeAvailable), s.accountEpoch ?? null, g?.kind === 'repository' ? g.key : null, g?.kind === 'repository' ? g.worktree : null,
-        g?.kind === 'cwd' ? g.reason : null, b(s.nativeAvailable)) as { id: number };
+        g?.kind === 'cwd' ? g.reason : null, s.aiTitle ?? null, b(s.nativeAvailable)) as { id: number };
       ids.set(s.nativeSessionId, row.id);
       for (const c of s.cwds ?? []) st.cwd.run(row.id, SCHEMA_VERSION, c.source, c.cwd, c.cwdKey, c.firstSeen ?? null);
     }

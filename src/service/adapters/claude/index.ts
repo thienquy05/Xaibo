@@ -49,6 +49,8 @@ export class ClaudeAdapter extends TailAdapter<ClaudeFile, ClaudeRecord> {
       if (r.cwd && !s.cwd) { s.cwd = r.cwd; s.cwdKey = cwdKey(r.cwd); }
       if (r.cwd) noteCwd(s, r.cwd, r.sourceTs, 'transcript');
       if (r.entrypoint && !s.entrypoint) s.entrypoint = r.entrypoint;
+      // XAIBO-PROD-507: the latest rename and AI title of the main transcript, kept apart (rename shown first).
+      if (r.title && !r.isSidechain && !r.subagentNativeId) { if (r.title.kind === 'custom') s.title = r.title.text; else s.aiTitle = r.title.text; }
       if (r.sourceTs !== undefined) {
         s.lastActivity = Math.max(s.lastActivity ?? r.sourceTs, r.sourceTs);
         s.startedAt = Math.min(s.startedAt ?? r.sourceTs, r.sourceTs);
