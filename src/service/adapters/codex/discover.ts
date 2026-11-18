@@ -1,6 +1,6 @@
 // Codex rollout discovery (P2-T03; S9 layout): <CODEX_HOME>/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl[.zst] and
-// <CODEX_HOME>/archived_sessions/ (any depth). Realpath root (EC-18). State DBs and session_index.jsonl are never
-// opened (S-03); only rollout files are listed.
+// <CODEX_HOME>/archived_sessions/ (any depth). Realpath root (EC-18). State DBs are never opened (S-03); only rollout
+// files are listed. session_index.jsonl is read for thread names by the adapter (index.ts, D-P5-03), never listed here.
 import { readdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { filenameSessionId } from './parse.ts';

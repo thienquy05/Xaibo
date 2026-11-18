@@ -23,6 +23,8 @@ export interface SessionUpsert {
   nativeSessionId: string; cwd?: string; cwdKey?: string; entrypoint?: string; interactive?: boolean;
   /** The native title: Claude's rename (custom-title); aiTitle is Claude's generated title, kept apart (XAIBO-PROD-507). */
   title?: string; aiTitle?: string;
+  /** XAIBO-PROD-508: only sets the title of an already stored session (Codex thread names); never inserts one. */
+  existing?: boolean;
   startedAt?: number; lastActivity?: number; originator?: string; nativeArchived?: boolean;
   /** P2-T11 (EC-81): false once the native conversation is verifiably gone; true again when it reappears. */
   nativeAvailable?: boolean;
@@ -132,6 +134,7 @@ function prepare(db: DatabaseSync) {
         started_at = min(coalesce(sessions.started_at, excluded.started_at), coalesce(excluded.started_at, sessions.started_at)),
         last_activity = max(coalesce(sessions.last_activity, excluded.last_activity), coalesce(excluded.last_activity, sessions.last_activity))
       RETURNING id`),
+    setTitle: db.prepare('UPDATE sessions SET title = ? WHERE agent = ? AND profile_id = ? AND native_session_id = ? AND title IS NOT ?'),
     upsertFile: db.prepare(`INSERT INTO source_files (profile_id, session_id, path, kind, dev, ino, size, mtime, offset, head_hash, status)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (path) DO UPDATE SET session_id = coalesce(excluded.session_id, source_files.session_id), kind = excluded.kind,
@@ -375,6 +378,7 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
     if (np) st.newProfile.run(np.id, np.agent, np.root, np.origin);
     const ids = new Map<string, number | bigint>();
     for (const [i, s] of batch.sessions.entries()) {
+      if (s.existing) { if (s.title) st.setTitle.run(s.title, batch.agent, batch.profileId, s.nativeSessionId, s.title); continue; }
       const g = groups[i] ?? null;
       const row = st.upsertSession.get(batch.agent, batch.profileId, s.nativeSessionId, s.cwd ?? null, s.cwdKey ?? null, s.entrypoint ?? null,
         b(s.interactive), s.title ?? null, s.startedAt ?? null, s.lastActivity ?? null, s.originator ?? null, s.nativeArchived ? 1 : 0,
