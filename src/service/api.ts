@@ -202,6 +202,10 @@ export function answerUsage(db: DatabaseSync, req: PortRequest & { type: 'usage'
 }
 
 export const HISTORY_MAX = MAX_RECORDS;
+/** Parameters: scope, stream, lower bound, to, cursor measuredAt (null = first page) twice, cursor id, limit. */
+export const USAGE_HISTORY_PAGE = `SELECT id, kind, measured_at, used_percent, window_minutes, resets_at, as_of FROM usage_history
+  WHERE usage_scope_id = ? AND limit_id = ? AND measured_at >= ? AND measured_at < ? AND (? IS NULL OR measured_at > ? OR id > ?)
+  ORDER BY measured_at, id LIMIT ?`;
 /** P4-T04b1: one scope+stream's stored observations with measured time in [from, to), oldest first; keyset
  *  (measured_at, id) on the usage_history_stream index. Nothing interpolated: absent minutes are absent. */
 export function answerUsageHistory(db: DatabaseSync, req: PortRequest & { type: 'usageHistory' }): PortMessage & { type: 'usageHistory' } {
@@ -209,9 +213,7 @@ export function answerUsageHistory(db: DatabaseSync, req: PortRequest & { type: 
   const c = req.cursor;
   try {
     // Review L: the cursor is the index lower bound, so later pages seek instead of rescanning the window.
-    const raw = db.prepare(`SELECT id, kind, measured_at, used_percent, window_minutes, resets_at, as_of FROM usage_history
-      WHERE usage_scope_id = ? AND limit_id = ? AND measured_at >= ? AND measured_at < ? AND (? IS NULL OR measured_at > ? OR id > ?)
-      ORDER BY measured_at, id LIMIT ?`).all(req.scope, req.stream, Math.max(req.from, c?.measuredAt ?? req.from), req.to, c?.measuredAt ?? null, c?.measuredAt ?? null, c?.id ?? null, n) as
+    const raw = db.prepare(USAGE_HISTORY_PAGE).all(req.scope, req.stream, Math.max(req.from, c?.measuredAt ?? req.from), req.to, c?.measuredAt ?? null, c?.measuredAt ?? null, c?.id ?? null, n) as
       { id: number; kind: UsageRecord['kind']; measured_at: number; used_percent: number | null; window_minutes: number | null; resets_at: number | null; as_of: number | null }[];
     const records: UsageRecord[] = raw.map((r) => ({ id: r.id, kind: r.kind, measuredAt: r.measured_at, usedPercent: finiteOrNull(r.used_percent), windowMinutes: r.window_minutes,
       resetsAt: r.resets_at, sourceTimeKnown: r.as_of !== null }));

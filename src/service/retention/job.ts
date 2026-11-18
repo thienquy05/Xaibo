@@ -11,7 +11,7 @@ import { TRASH_MS } from '../history/trash.ts';
 import { LIVE_WINDOW_MS } from '../status/feed.ts';
 import type { Writer } from '../store/writer.ts';
 import { settle } from '../usage/settle.ts';
-import { clockJumped, DAY, eligible, QUOTA_MS, RECENT_MS, retentionOf } from './policy.ts';
+import { clockJumped, DAY, eligible, LAST_RUN_KEY, QUOTA_MS, RECENT_MS, retentionOf } from './policy.ts';
 
 export interface RetentionOptions {
   dataDir: string; backupDir: string; secret: Buffer; now: number;
@@ -24,8 +24,13 @@ export interface RetentionOptions {
 }
 export interface RetentionResult { sessions: number; trash: number; quota: number; skipped: null | 'clock-behind' | 'invalid-setting' }
 
-const LAST_RUN = 'retention.lastRunAt';
+const LAST_RUN = LAST_RUN_KEY;
 const QUOTA_BATCH = 500;
+/** P5-T11 (EC-99): the next stream of an account scope after `limit_id`, one seek on usage_history_stream (stream ids are
+ *  never empty, so '' starts the walk). */
+export const QUOTA_STREAM = 'SELECT min(limit_id) AS l FROM usage_history WHERE usage_scope_id = ? AND limit_id > ?';
+/** One stream's expired rows, oldest first, a range on usage_history_stream. */
+export const QUOTA_EXPIRED = `SELECT id FROM usage_history WHERE usage_scope_id = ? AND limit_id = ? AND measured_at <= ? ORDER BY measured_at LIMIT ${QUOTA_BATCH}`;
 type Row = { id: number; agent: string; profile: string; native: string; last: number | null; k: number };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
@@ -108,21 +113,27 @@ export async function runRetention(writer: Writer, db: DatabaseSync, o: Retentio
   }
 
   // 3. Account-level usage history: samples and snapshots without a session, 45 days after measurement (§5.11). Session-
-  // linked ones follow their session (Keep, Trash, purge). ponytail: P5-T11 checks these plans and replayed re-inserts.
+  // linked ones follow their session (Keep, Trash, purge). P5-T11: walked per account scope and stream on the
+  // usage_history_stream index (no scan of the history); the writer keeps readings expired here from coming back.
+  // ponytail: the account scopes come from a scan of usage_scopes (one row per account plus one per unverified session).
   const quotaCut = o.now - QUOTA_MS;
-  const expired = db.prepare(`SELECT h.id FROM usage_history h JOIN usage_scopes sc ON sc.id = h.usage_scope_id
-    WHERE sc.session_id IS NULL AND h.measured_at <= ? LIMIT ${QUOTA_BATCH}`);
-  for (;;) {
-    if (halt()) return finish();
-    const ids = (expired.all(quotaCut) as { id: number }[]).map((x) => x.id);
-    if (!ids.length) break;
-    const gone = Number(writer.transact((tdb) => {
-      settle(tdb, { sessions: [], quota: ids }, o.secret, o.now); // FR-52: before the rows go
-      return tdb.prepare('DELETE FROM usage_history WHERE id IN (SELECT value FROM json_each(?))').run(JSON.stringify(ids)).changes;
-    }));
-    if (!gone) break; // diff review L3: never the same rows again
-    r.quota += gone;
-    await tick();
+  const streamAfter = db.prepare(QUOTA_STREAM);
+  const expired = db.prepare(QUOTA_EXPIRED);
+  for (const { id: scope } of db.prepare('SELECT id FROM usage_scopes WHERE session_id IS NULL ORDER BY id').all() as { id: number }[]) {
+    for (let l = (streamAfter.get(scope, '') as { l: string | null }).l; l !== null; l = (streamAfter.get(scope, l) as { l: string | null }).l) {
+      for (;;) {
+        if (halt()) return finish();
+        const ids = (expired.all(scope, l, quotaCut) as { id: number }[]).map((x) => x.id);
+        if (!ids.length) break;
+        const gone = Number(writer.transact((tdb) => {
+          settle(tdb, { sessions: [], quota: ids }, o.secret, o.now); // FR-52: before the rows go
+          return tdb.prepare('DELETE FROM usage_history WHERE id IN (SELECT value FROM json_each(?))').run(JSON.stringify(ids)).changes;
+        }));
+        r.quota += gone;
+        if (!gone || ids.length < QUOTA_BATCH) break; // diff review L3: never the same rows again
+        await tick();
+      }
+    }
   }
   for (;;) {
     if (halt()) return finish();

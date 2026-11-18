@@ -12,6 +12,8 @@ export const RECENT_MS = DAY;
 /** Account-level usage history expires this long after its measurement (§5.11). */
 export const QUOTA_MS = 45 * DAY;
 const KEY = 'retention.sessions';
+/** kv: wall-clock time of the last completed retention run (review H3; P5-T11: account readings it expired stay out). */
+export const LAST_RUN_KEY = 'retention.lastRunAt';
 
 export type Retention = { days: number } | 'never';
 

@@ -9,6 +9,7 @@ import { blocks, clear as clearMarker, MARKER, noteFile, refuses, type Marker } 
 import { agyUsage, claudeUsage, codexRateLimits, codexStep, codexUsage, tokenRecordDrift, type Usage } from '../usage/tokens.ts';
 import { contextStep, type ContextObs, type Snapshot } from '../usage/context.ts';
 import { codexReadings, historyStep, scopeKey, sourceTime, type Reading, type Stored } from '../usage/snapshots.ts';
+import { LAST_RUN_KEY, QUOTA_MS } from '../retention/policy.ts';
 
 export const SCHEMA_VERSION = 1;
 // The FTS row of an event is its ftsPrefix; deletes (revisions, purge) must pass that same text, so changing this bound
@@ -246,6 +247,7 @@ function prepare(db: DatabaseSync) {
       WHERE usage_scope_id = ? AND limit_id = ? AND measured_at < ? ORDER BY measured_at DESC, id DESC LIMIT 1`),
     // a clash with a row of that kind in the same minute keeps the old kind (the one-per-minute cap wins)
     setKind: db.prepare('UPDATE OR IGNORE usage_history SET kind = ? WHERE id = ?'),
+    kv: db.prepare('SELECT value FROM kv WHERE key = ?'),
     reportedCost: db.prepare(`INSERT INTO cost_estimates (session_id, schema_version, source, covered_scope, amount_usd, basis, coverage)
       VALUES (?, ?, ?, 'session:statusline', ?, 'agent_reported', '{"coverage":"full"}')
       ON CONFLICT (session_id, covered_scope) DO UPDATE SET amount_usd = excluded.amount_usd`),
@@ -294,12 +296,18 @@ function history(st: ReturnType<typeof prepare>, batch: Batch, sid: number | big
   const epoch = batch.agent === 'codex' ? (st.sessionEpoch.get(sid) as { account_epoch: string | null } | undefined)?.account_epoch ?? null : null;
   const k = scopeKey({ profileId: batch.profileId, agent: batch.agent, epoch, nativeSessionId: e.nativeSessionId });
   const scope = (st.scope.get(k.key, batch.profileId, batch.agent, k.epoch, k.verified ? null : sid, k.verified ? 1 : 0) as { id: number }).id;
+  // P5-T11 (EC-99): an account-level reading the last retention run already expired is never stored again (a re-import or
+  // rescan of an old rollout); NaN (no run yet) keeps everything. Session-linked readings follow their session instead.
+  // Review M3: a last run later than the wall clock (stored while the clock was set ahead) is ignored, so new readings
+  // are never refused for the time it would take the corrected clock to catch up.
+  const lastRun = k.verified ? Number((st.kv.get(LAST_RUN_KEY) as { value: string } | undefined)?.value) : NaN;
+  const expiredUpTo = lastRun <= Date.now() ? lastRun - QUOTA_MS : NaN;
   for (const r of readings) {
     const p = st.prevHistory.get(scope, r.stream, sourceTime(r, e.receivedTs) ?? e.receivedTs) as HistRow | undefined;
     const prev: Stored | null = p ? { stream: r.stream, usedPercent: p.used_percent, windowMinutes: p.window_minutes, resetsAt: p.resets_at, plan: p.plan,
       credits: p.credits, asOf: p.as_of, firstObservedAt: p.first_observed_at, measuredAt: p.measured_at } : null;
     const step = historyStep(prev, r, e.receivedTs);
-    if (step.action === 'skip') continue;
+    if (step.action === 'skip' || step.measuredAt <= expiredUpTo) continue;
     st.putHistory.run(SCHEMA_VERSION, scope, r.stream, step.action, step.minute, r.usedPercent, r.windowMinutes, r.resetsAt, r.plan, r.credits,
       sourceTime(r, e.receivedTs), step.firstObservedAt, e.receivedTs, step.measuredAt, e.source, e.nativeId);
     // Review M1: a backfilled older reading can change what the next row follows; reclassify it against its predecessor.
