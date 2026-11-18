@@ -21,6 +21,7 @@ import type { ModelEntry } from './usage/models.ts';
 import { priceUsage } from './usage/cost.ts';
 import { loadPrices, type Prices } from './usage/prices.ts';
 import { errorCode } from '../shared/crash.ts';
+import { approvedLabel } from './history/overlay.ts';
 import { openStore, type Store } from './store/db.ts';
 import { startHooks, type Hooks } from './receivers/intake.ts';
 import { Writer, type Batch } from './store/writer.ts';
@@ -135,9 +136,9 @@ export async function boot(o: BootOptions): Promise<Service> {
   let hooks: Hooks | undefined;
   // P3-T10: the status engine (P3-T08/T09) over durable hook deliveries and live-window file records.
   const clock = o.now ?? Date.now;
-  // P3-T11: the approved project label is always null until the Phase 5 overlay can store one (FR-10, Q3-6, D-P3-10).
-  const onWait = (agent: string, _profile: string, _sid: string, state: NotifyState) =>
-    o.onNotify?.({ agent: catalog?.agents.find((a) => a.id === agent)?.displayName ?? agent, label: null, state });
+  // P3-T11: the approved project label (FR-10, D-P3-10): the session's overlay project name (XAIBO-PROD-504), else null.
+  const onWait = (agent: string, profile: string, sid: string, state: NotifyState) =>
+    o.onNotify?.({ agent: catalog?.agents.find((a) => a.id === agent)?.displayName ?? agent, label: approvedLabel(db, agent, profile, sid), state });
   const engine: StatusEngine | null = readOnly ? null : createEngine({ db, now: clock, settleMs: SETTLE_MS, log: (l) => o.log?.log(l.split(' ')[0]!), onWait });
   const read = (agent: string, profile: string, sid: string): LiveStatus | null => {
     const s = engine?.status(agent, profile, sid);

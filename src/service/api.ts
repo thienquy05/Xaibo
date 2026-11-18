@@ -27,7 +27,7 @@ export const DISPLAY_MAX = 4096;
 
 export interface SessionKey { agent: string; profileId: string; nativeSessionId: string }
 
-const ROW = `SELECT s.id, s.agent, s.profile_id, s.native_session_id, s.entrypoint, s.originator, s.current_model, s.current_effort, s.cwd, s.title, s.last_activity, s.drift, s.quarantined_count,
+export const ROW = `SELECT s.id, s.agent, s.profile_id, s.native_session_id, s.entrypoint, s.originator, s.current_model, s.current_effort, s.cwd, s.title, s.last_activity, s.drift, s.quarantined_count,
   EXISTS (SELECT 1 FROM source_files f WHERE f.session_id = s.id AND f.status = 'compressed_not_imported') AS compressed,
   (SELECT c.percentage FROM context_snapshots c WHERE c.session_id = s.id ORDER BY c.generation DESC, c.id DESC LIMIT 1) AS context_pct,
   (SELECT CASE WHEN COUNT(u.uncached_input) + COUNT(u.cache_read) + COUNT(u.cache_write) + COUNT(u.output) = 0 THEN NULL
@@ -41,15 +41,15 @@ const ORDER = 'ORDER BY s.last_activity DESC, s.id LIMIT ?';
 
 /** The status engine's view of a session by agent and native id (P3-T10); null when it has no evidence. */
 export type LiveOf = (agent: string, nativeSessionId: string, profileId: string) => LiveStatus | null;
-interface Raw { tokens: number | null; tokens_gap: number; id: number; agent: string; profile_id: string; native_session_id: string; context_pct: number | null; entrypoint: string | null; originator: string | null; current_model: string | null; current_effort: string | null; cwd: string | null; title: string | null; last_activity: number | null; drift: number; quarantined_count: number; compressed: number }
+export interface Raw { tokens: number | null; tokens_gap: number; id: number; agent: string; profile_id: string; native_session_id: string; context_pct: number | null; entrypoint: string | null; originator: string | null; current_model: string | null; current_effort: string | null; cwd: string | null; title: string | null; last_activity: number | null; drift: number; quarantined_count: number; compressed: number }
 /** At most `max` UTF-16 units, ending in "…" when cut; never ends inside a surrogate pair. */
-const cut = (s: string, max: number) => (s.length <= max ? s : `${s.slice(0, (s.charCodeAt(max - 2) & 0xfc00) === 0xd800 ? max - 2 : max - 1)}…`);
+export const cut = (s: string, max: number) => (s.length <= max ? s : `${s.slice(0, (s.charCodeAt(max - 2) & 0xfc00) === 0xd800 ? max - 2 : max - 1)}…`);
 const display = (s: string | null): string | null => (s === null ? null : cut(s, DISPLAY_MAX + 1));
 // Origin badge and interactive flag come from the catalog kind (P2-T04); an unknown kind leaves both null. The model
 // label is "<display name> · <effort>", the raw id when unlisted, "Model unavailable" without evidence (P2-T08).
 // P3-T10: live status from the engine, the latest context percentage (clamped to the 0–100 the IPC accepts) and the
 // session ~$ estimate (Phase 2 selection; an unreadable estimate is unavailable, never zero).
-const toRow = (db: DatabaseSync, kinds: SessionKind[], models: ModelEntry[], live?: LiveOf) => (r: Raw): SessionRow => {
+export const toRow = (db: DatabaseSync, kinds: SessionKind[], models: ModelEntry[], live?: LiveOf) => (r: Raw): SessionRow => {
   const k = sessionKind(kinds, r);
   let cost: { amountUsd: number | null; coverage: SessionRow['costCoverage'] };
   try { cost = sessionCost(db, r.id); } catch { cost = { amountUsd: null, coverage: 'unavailable' }; }

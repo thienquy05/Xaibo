@@ -3,8 +3,7 @@
 // are counted; an invalid reply rejects its request, so the caller can recover. A service restart brings a new port
 // and a new client; replies owed on the old one never arrive.
 import { accept, IPC_VERSION, isObj, parsePortMessage } from '../shared/ipc.ts';
-import type { AgentStatus, Banner, CostDetail, Cursor, FileItem, HistoryCursor, MCursor, ModelMarker, Page, PortMessage, PortRequest, SessionDetail, SessionRow, SubagentItem, TCursor,
-  ToolItem, TranscriptAt, TranscriptItem, UsageRecord, UsageScope } from '../shared/ipc.ts';
+import type { AgentStatus, Banner, CostDetail, Cursor, FileItem, HistoryCursor, HistoryFilter, HistoryKey, HistoryRow, MCursor, ModelMarker, Named, OverlayOp, OverlayResult, Page, PortMessage, PortRequest, SessionDetail, SessionRow, SubagentItem, TCursor, ToolItem, TranscriptAt, TranscriptItem, UsageRecord, UsageScope } from '../shared/ipc.ts';
 
 export interface LiveSet { rows: SessionRow[]; more: boolean }
 export interface PortLike { onmessage: ((e: { data: unknown }) => void) | null; postMessage(m: unknown): void; close(): void }
@@ -95,6 +94,20 @@ export function createClient(port: PortLike, push: Pushes) {
       if (m.failed) throw new Error('markers unavailable');
       return { markers: m.markers, next: m.next };
     },
+    /** XAIBO-PROD-504 (P5-T01): the history list (pinned first), project and folder pages, and overlay actions. */
+    async history(filter: HistoryFilter, cursor: HistoryKey | null, limit: number): Promise<{ rows: HistoryRow[]; next: HistoryKey | null }> {
+      const m = await ask({ type: 'history', filter, cursor, limit }, 'history');
+      return { rows: m.rows, next: m.next };
+    },
+    async projects(cursor: number | null, limit: number): Promise<{ projects: Named[]; next: number | null }> {
+      const m = await ask({ type: 'projects', cursor, limit }, 'projects');
+      return { projects: m.projects, next: m.next };
+    },
+    async folders(project: number, cursor: number | null, limit: number): Promise<{ folders: Named[]; next: number | null }> {
+      const m = await ask({ type: 'folders', project, cursor, limit }, 'folders');
+      return { folders: m.folders, next: m.next };
+    },
+    async overlay(op: OverlayOp): Promise<OverlayResult> { return (await ask({ type: 'overlay', op }, 'overlay')).result; },
     /** P4-T07a: the session's cost breakdown; null for an unknown session. */
     async cost(session: number): Promise<CostDetail | null> { return (await ask({ type: 'cost', session }, 'cost')).cost; },
     /** P4-T02: live session deltas while the window is visible; paused while hidden (resync by cursor on show). */

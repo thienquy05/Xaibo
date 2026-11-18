@@ -209,7 +209,26 @@ export interface MCursor { ts: number; id: number }
 type IdPage<T extends string> = { v: 1; type: T; id: number; session: number; cursor: number | null; limit: number };
 export const MAX_FILE_TOUCHES = 2 * MAX_ITEMS; // a page holds up to MAX_ITEMS calls, at most two touches each
 const MAX_SOURCES = 8, MAX_SOURCE = 32, MAX_LABEL = 4097; // labels are cut to DISPLAY_MAX plus "…" by the service
+// XAIBO-PROD-504 (P5-T01; FR-10, US-5): the history overlay. The renderer names a session only by its row id.
+export const NAME_MAX = 200;
+export const HISTORY_MODES = ['all', 'archived'] as const;
+export interface HistoryFilter { mode: (typeof HISTORY_MODES)[number]; agent: string | null; project: number | null; folder: number | null }
+/** History keyset: pinned first, then last activity descending (unknown last), then id. */
+export interface HistoryKey { pinned: boolean; lastActivity: number | null; id: number }
+export interface Named { id: number; name: string }
+export interface HistoryRow extends SessionRow { project: Named | null; folder: Named | null; pinned: boolean; archivedAt: number | null }
+export type OverlayOp =
+  | { kind: 'pin'; session: number; on: boolean } | { kind: 'archive'; session: number; on: boolean }
+  | { kind: 'move'; session: number; project: number | null; folder: number | null }
+  | { kind: 'newProject'; name: string } | { kind: 'newFolder'; project: number; name: string } | { kind: 'confirmLabel'; session: number };
+export const OVERLAY_ERRORS = ['not-found', 'invalid', 'read-only', 'disk-full', 'store', 'limit'] as const;
+/** `id`: the project or folder a create or confirmLabel produced or reused. */
+export type OverlayResult = { ok: true; id?: number } | { ok: false; error: (typeof OVERLAY_ERRORS)[number] };
 export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Cursor | null; limit: number }
+  | { v: 1; type: 'history'; id: number; filter: HistoryFilter; cursor: HistoryKey | null; limit: number }
+  | { v: 1; type: 'projects'; id: number; cursor: number | null; limit: number }
+  | { v: 1; type: 'folders'; id: number; project: number; cursor: number | null; limit: number }
+  | { v: 1; type: 'overlay'; id: number; op: OverlayOp }
   /** P4-T02: the window is visible (live session deltas wanted) or hidden (paused; the renderer resyncs by cursor). */
   | { v: 1; type: 'live'; on: boolean }
   /** P4-T04a: the live-session set (tracked, non-ended, active within 24 h), capped; deltas keep it current. */
@@ -225,6 +244,10 @@ export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Curs
   | { v: 1; type: 'markers'; id: number; session: number; cursor: MCursor | null; limit: number }
   | { v: 1; type: 'cost'; id: number; session: number };
 export type PortMessage =
+  | { v: 1; type: 'history'; id: number; rows: HistoryRow[]; next: HistoryKey | null }
+  | { v: 1; type: 'projects'; id: number; projects: Named[]; next: number | null }
+  | { v: 1; type: 'folders'; id: number; folders: Named[]; next: number | null }
+  | { v: 1; type: 'overlay'; id: number; result: OverlayResult }
   | { v: 1; type: 'cost'; id: number; cost: CostDetail | null }
   | { v: 1; type: 'session'; id: number; detail: SessionDetail | null }
   | { v: 1; type: 'transcript'; id: number; items: TranscriptItem[]; prev: TCursor | null; next: TCursor | null }
@@ -441,8 +464,58 @@ function parseMarker(x: unknown): ModelMarker | null {
   return isObj(x) && positive(x.turn) && Number.isSafeInteger(x.ts) && label(x.model) ? { turn: x.turn, ts: x.ts as number, model: x.model } : null;
 }
 
+const pageLimit = (x: unknown): x is number => limitOk(x) && x <= MAX_ITEMS;
+function parseHistoryKey(x: unknown): HistoryKey | null | undefined { // undefined = invalid
+  if (x === null) return null;
+  return exactKeys(x, ['pinned', 'lastActivity', 'id']) && typeof x.pinned === 'boolean' && timeOrNull(x.lastActivity) && positive(x.id)
+    ? { pinned: x.pinned, lastActivity: x.lastActivity, id: x.id } : undefined;
+}
+function parseFilter(x: unknown): HistoryFilter | null {
+  if (!exactKeys(x, ['mode', 'agent', 'project', 'folder']) || !oneOf(HISTORY_MODES, x.mode)) return null;
+  return (x.agent === null || agentOk(x.agent)) && idOrNull(x.project) && idOrNull(x.folder) ? { mode: x.mode, agent: x.agent, project: x.project, folder: x.folder } : null;
+}
+const nameOk = (x: unknown): x is string => text(x, NAME_MAX);
+/** Exact shapes only: an extra key (e.g. a smuggled agent or native id) voids the op. */
+function parseOp(x: unknown): OverlayOp | null {
+  if (!isObj(x)) return null;
+  const keys = (...k: string[]) => exactKeys(x, ['kind', ...k]);
+  switch (x.kind) {
+    case 'pin': case 'archive': return keys('session', 'on') && positive(x.session) && typeof x.on === 'boolean' ? { kind: x.kind, session: x.session, on: x.on } : null;
+    case 'move': return keys('session', 'project', 'folder') && positive(x.session) && idOrNull(x.project) && idOrNull(x.folder)
+      ? { kind: 'move', session: x.session, project: x.project, folder: x.folder } : null;
+    case 'newProject': return keys('name') && nameOk(x.name) ? { kind: 'newProject', name: x.name } : null;
+    case 'newFolder': return keys('project', 'name') && positive(x.project) && nameOk(x.name) ? { kind: 'newFolder', project: x.project, name: x.name } : null;
+    case 'confirmLabel': return keys('session') && positive(x.session) ? { kind: 'confirmLabel', session: x.session } : null;
+    default: return null;
+  }
+}
+const parseNamed = (x: unknown): Named | null => (isObj(x) && positive(x.id) && nameOk(x.name) && x.name !== '' ? { id: x.id, name: x.name } : null);
+function parseHistoryRow(x: unknown): HistoryRow | null {
+  const row = parseRow(x);
+  if (!row || !isObj(x) || typeof x.pinned !== 'boolean' || !timeOrNull(x.archivedAt)) return null;
+  const project = x.project === null ? null : parseNamed(x.project), folder = x.folder === null ? null : parseNamed(x.folder);
+  return (x.project === null || project) && (x.folder === null || folder) ? { ...row, project, folder, pinned: x.pinned, archivedAt: x.archivedAt } : null;
+}
+function parseResult(x: unknown): OverlayResult | null {
+  if (!isObj(x)) return null;
+  if (x.ok === true) return x.id === undefined ? { ok: true } : positive(x.id) ? { ok: true, id: x.id } : null;
+  return x.ok === false && oneOf(OVERLAY_ERRORS, x.error) ? { ok: false, error: x.error } : null;
+}
+
 export function parsePortRequest(x: unknown): PortRequest | null {
   const m = envelope(x);
+  if (m?.type === 'history') {
+    const filter = parseFilter(m.filter), cursor = parseHistoryKey(m.cursor);
+    return count(m.id) && filter && cursor !== undefined && pageLimit(m.limit) ? { v: 1, type: 'history', id: m.id, filter, cursor, limit: m.limit } : null;
+  }
+  if (m?.type === 'projects') return count(m.id) && idOrNull(m.cursor) && pageLimit(m.limit) ? { v: 1, type: 'projects', id: m.id, cursor: m.cursor, limit: m.limit } : null;
+  if (m?.type === 'folders') {
+    return count(m.id) && positive(m.project) && idOrNull(m.cursor) && pageLimit(m.limit) ? { v: 1, type: 'folders', id: m.id, project: m.project, cursor: m.cursor, limit: m.limit } : null;
+  }
+  if (m?.type === 'overlay') {
+    const op = parseOp(m.op);
+    return count(m.id) && op ? { v: 1, type: 'overlay', id: m.id, op } : null;
+  }
   if (m?.type === 'tools' || m?.type === 'subagents' || m?.type === 'files') {
     if (!count(m.id) || !positive(m.session) || !idOrNull(m.cursor) || !limitOk(m.limit)) return null;
     return { v: 1, type: m.type, id: m.id, session: m.session, cursor: m.cursor, limit: m.limit } as IdPage<typeof m.type> as PortRequest;
@@ -479,6 +552,19 @@ export function parsePortRequest(x: unknown): PortRequest | null {
 export function parsePortMessage(x: unknown): PortMessage | null {
   const m = envelope(x);
   if (!m) return null;
+  if (m.type === 'history') {
+    const rows = all(m.rows, MAX_ITEMS, parseHistoryRow), next = parseHistoryKey(m.next);
+    return count(m.id) && rows && next !== undefined ? { v: 1, type: 'history', id: m.id, rows, next } : null;
+  }
+  if (m.type === 'projects' || m.type === 'folders') {
+    const list = all(m[m.type], MAX_ITEMS, parseNamed);
+    if (!count(m.id) || !list || !idOrNull(m.next)) return null;
+    return m.type === 'projects' ? { v: 1, type: 'projects', id: m.id, projects: list, next: m.next } : { v: 1, type: 'folders', id: m.id, folders: list, next: m.next };
+  }
+  if (m.type === 'overlay') {
+    const result = parseResult(m.result);
+    return count(m.id) && result ? { v: 1, type: 'overlay', id: m.id, result } : null;
+  }
   if (m.type === 'session') {
     const detail = parseDetail(m.detail);
     return count(m.id) && detail !== undefined ? { v: 1, type: 'session', id: m.id, detail } : null;

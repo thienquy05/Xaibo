@@ -71,6 +71,12 @@ CREATE TABLE events (
 );
 CREATE INDEX events_current_seq ON events (session_id, source, source_seq) WHERE revision_status = 'current';
 CREATE INDEX events_seq ON events (session_id, source_seq);
+CREATE TABLE folders (
+  id INTEGER PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 200),
+  UNIQUE (project_id, name)
+);
 CREATE TABLE hook_delivery (
   delivery_id TEXT PRIMARY KEY,
   agent TEXT NOT NULL,
@@ -96,6 +102,19 @@ CREATE TABLE kv (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+CREATE TABLE overlays (
+  agent TEXT NOT NULL,
+  profile_id TEXT NOT NULL,
+  native_session_id TEXT NOT NULL,
+  project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+  folder_id INTEGER REFERENCES folders(id) ON DELETE SET NULL,
+  pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1)),
+  archived_at INTEGER,
+  trashed_at INTEGER,
+  keep INTEGER NOT NULL DEFAULT 0 CHECK (keep IN (0, 1)),
+  PRIMARY KEY (agent, profile_id, native_session_id)
+) WITHOUT ROWID;
+CREATE INDEX overlays_project ON overlays (project_id, folder_id);
 CREATE TABLE price_revisions (
   id INTEGER PRIMARY KEY,
   schema_version INTEGER NOT NULL,
@@ -114,6 +133,11 @@ CREATE TABLE "profiles" (
   root TEXT NOT NULL,
   origin TEXT NOT NULL CHECK (origin IN ('default', 'env', 'manual', 'registration')),
   UNIQUE (agent, root)
+);
+CREATE TABLE projects (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE CHECK (length(name) BETWEEN 1 AND 200),
+  created_at INTEGER NOT NULL
 );
 CREATE TABLE quarantine (
   id INTEGER PRIMARY KEY,
@@ -191,6 +215,7 @@ CREATE TABLE sessions (
   UNIQUE (agent, profile_id, native_session_id)
 );
 CREATE INDEX sessions_activity ON sessions (last_activity DESC, id);
+CREATE INDEX sessions_agent_activity ON sessions (agent, last_activity DESC, id);
 CREATE TABLE source_files (
   id INTEGER PRIMARY KEY,
   profile_id TEXT NOT NULL REFERENCES profiles(id),

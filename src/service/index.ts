@@ -11,6 +11,7 @@ import type { Banner, PortMessage, ServiceEvent } from '../shared/ipc.ts';
 import { appendQuiet, createLogger, loadInstallSecret, type Logger } from '../shared/log.ts';
 import { answer, answerCost, answerFiles, answerLiveSet, answerMarkers, answerSession, answerSlice, answerSubagents, answerTools, answerTranscript, answerUsage, answerUsageHistory, coalesce, createHub, sessionsByKey, type LiveOf } from './api.ts';
 import { boot, type Service } from './boot.ts';
+import { applyOverlay, listFolders, listHistory, listProjects } from './history/overlay.ts';
 import type { Batch } from './store/writer.ts';
 import { traceableIds } from './trace-ids.ts';
 
@@ -79,6 +80,24 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
       case 'files': port.postMessage(answerFiles(db, req)); break;
       case 'markers': port.postMessage(answerMarkers(db, req, s.models())); break;
       case 'cost': port.postMessage(answerCost(db, req, s.models())); break;
+      // XAIBO-PROD-504 (P5-T01): history overlay; a store that cannot answer gives an empty page or the store error
+      case 'history': {
+        let page: Omit<Extract<PortMessage, { type: 'history' }>, 'v' | 'type' | 'id'> = { rows: [], next: null };
+        try { if (db.isOpen) page = listHistory(db, req.filter, req.cursor, req.limit, s.kinds(), s.models(), live); } catch { /* empty page */ }
+        port.postMessage({ v: IPC_VERSION, type: 'history', id: req.id, ...page } satisfies PortMessage); break;
+      }
+      case 'projects': {
+        let page: { projects: { id: number; name: string }[]; next: number | null } = { projects: [], next: null };
+        try { if (db.isOpen) page = listProjects(db, req.cursor, req.limit); } catch { /* empty page */ }
+        port.postMessage({ v: IPC_VERSION, type: 'projects', id: req.id, ...page } satisfies PortMessage); break;
+      }
+      case 'folders': {
+        let page: { folders: { id: number; name: string }[]; next: number | null } = { folders: [], next: null };
+        try { if (db.isOpen) page = listFolders(db, req.project, req.cursor, req.limit); } catch { /* empty page */ }
+        port.postMessage({ v: IPC_VERSION, type: 'folders', id: req.id, ...page } satisfies PortMessage); break;
+      }
+      case 'overlay': port.postMessage({ v: IPC_VERSION, type: 'overlay', id: req.id,
+        result: applyOverlay(db, req.op, { readOnly: s.store.readOnly || !db.isOpen, now: Date.now() }) } satisfies PortMessage); break;
       default: port.postMessage(db.isOpen ? answer(db, req, s.kinds(), s.models(), live) : { v: IPC_VERSION, type: 'page', id: req.id, rows: [], next: null });
     }
   });
