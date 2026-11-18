@@ -5,7 +5,7 @@ import { byRank, mergeToolCalls, type ToolCallObservation } from '../normalize.t
 import { resolveRepository, type Grouping } from '../history/repository.ts';
 import { cwdKey } from '../paths.ts';
 import { isDiskFull } from './db.ts';
-import { SUPPRESSED } from '../history/suppression.ts';
+import { blocks, clear as clearMarker, MARKER, noteFile, refuses, type Marker } from '../history/suppression.ts';
 import { agyUsage, claudeUsage, codexRateLimits, codexStep, codexUsage, tokenRecordDrift, type Usage } from '../usage/tokens.ts';
 import { contextStep, type ContextObs, type Snapshot } from '../usage/context.ts';
 import { codexReadings, historyStep, scopeKey, sourceTime, type Reading, type Stored } from '../usage/snapshots.ts';
@@ -21,6 +21,8 @@ const FILL_MS = 60_000;
 export interface SourceFileCheckpoint {
   path: string; kind: string; dev: number; ino: number; size: number; mtime: number; offset: number; headHash: string;
   status: 'ok' | 'compressed_not_imported' | 'gone' | 'oversized';
+  /** P5-T08: the stored epoch this checkpoint was read at; a re-import reset since then wins. Absent = unguarded. */
+  epoch?: number;
 }
 export interface SessionUpsert {
   nativeSessionId: string; cwd?: string; cwdKey?: string; entrypoint?: string; interactive?: boolean;
@@ -138,11 +140,13 @@ function prepare(db: DatabaseSync) {
         last_activity = max(coalesce(sessions.last_activity, excluded.last_activity), coalesce(excluded.last_activity, sessions.last_activity))
       RETURNING id`),
     setTitle: db.prepare('UPDATE sessions SET title = ? WHERE agent = ? AND profile_id = ? AND native_session_id = ? AND title IS NOT ?'),
+    // P5-T08 (review H2): a checkpoint read before a re-import reset (older epoch) never moves the reset one; no epoch = unguarded
     upsertFile: db.prepare(`INSERT INTO source_files (profile_id, session_id, path, kind, dev, ino, size, mtime, offset, head_hash, status)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (path) DO UPDATE SET session_id = coalesce(excluded.session_id, source_files.session_id), kind = excluded.kind,
         dev = excluded.dev, ino = excluded.ino, size = excluded.size, mtime = excluded.mtime, offset = excluded.offset,
         head_hash = excluded.head_hash, status = excluded.status
+      WHERE ? IS NULL OR source_files.epoch = ?
       RETURNING id`),
     insertEvent: db.prepare(`INSERT INTO events (session_id, schema_version, source, confidence, native_id, parent_native_id, message_id,
         kind, role, subagent_native_id, file_id, byte_offset, source_seq, source_ts, file_mtime, received_ts, ingest_id, injected, content, raw)
@@ -245,25 +249,33 @@ function prepare(db: DatabaseSync) {
     reportedCost: db.prepare(`INSERT INTO cost_estimates (session_id, schema_version, source, covered_scope, amount_usd, basis, coverage)
       VALUES (?, ?, ?, 'session:statusline', ?, 'agent_reported', '{"coverage":"full"}')
       ON CONFLICT (session_id, covered_scope) DO UPDATE SET amount_usd = excluded.amount_usd`),
-    suppressed: db.prepare(SUPPRESSED),
+    marker: db.prepare(MARKER),
+    fileId: db.prepare('SELECT id FROM source_files WHERE path = ?'),
   };
 }
 
-/** XAIBO-PROD-515 (FR-11, review M1): the batch without its suppressed sessions: their events, subagent links and
- *  quarantine rows go too, and a suppressed file session leaves the file's checkpoint unattached (its quarantine dropped),
- *  so the checkpoint still advances and the other sessions of the file still commit. */
-function unsuppressed(st: ReturnType<typeof prepare>, batch: Batch): Batch {
+/** XAIBO-PROD-515/516 (FR-11, EC-21/22, review M1): the batch without the sessions its markers keep out (suppression.ts
+ *  blocks): their events, subagent links and quarantine rows go too, and a dropped file session leaves the file's
+ *  checkpoint unattached (its quarantine dropped), so the checkpoint still advances and the other sessions of the file
+ *  still commit. `clear`: retention markers this batch's new native activity clears (re-import). */
+function unsuppressed(st: ReturnType<typeof prepare>, batch: Batch): { batch: Batch; gone: Set<string>; clear: Set<string> } {
   const ids = new Set([...batch.sessions.map((s) => s.nativeSessionId), ...(batch.fileSession !== undefined ? [batch.fileSession] : [])]);
-  const gone = new Set([...ids].filter((id) => st.suppressed.get(batch.agent, batch.profileId, id)));
-  if (!gone.size) return batch;
+  const gone = new Set<string>(), clear = new Set<string>();
+  for (const id of ids) {
+    const m = st.marker.get(batch.agent, batch.profileId, id) as Marker | undefined;
+    if (!m || m.cleared_at !== null) continue;
+    const fresh = batch.events.some((e) => e.nativeSessionId === id && e.sourceTs !== undefined && e.sourceTs > m.at && (e.fileMtime === undefined || e.fileMtime > m.at));
+    (blocks(m, fresh) ? gone : clear).add(id);
+  }
+  if (!gone.size) return { batch, gone, clear };
   const { fileSession, quarantine, subagents, ...rest } = batch;
   const fileGone = fileSession !== undefined && gone.has(fileSession);
-  return {
+  return { gone, clear, batch: {
     ...rest, sessions: batch.sessions.filter((s) => !gone.has(s.nativeSessionId)), events: batch.events.filter((e) => !gone.has(e.nativeSessionId)),
     ...(fileSession !== undefined && !fileGone ? { fileSession } : {}),
     ...(quarantine ? { quarantine: fileGone ? [] : quarantine.filter((q) => q.nativeSessionId === undefined || !gone.has(q.nativeSessionId)) } : {}),
     ...(subagents ? { subagents: subagents.filter((s) => !gone.has(s.nativeSessionId)) } : {}),
-  };
+  } };
 }
 
 /** Research L6: rolls back after a failure without replacing the caller's error (a throwing ROLLBACK is swallowed).
@@ -391,10 +403,13 @@ export function commitBatch(db: DatabaseSync, input: Batch): Batch {
   const groups = new Map(input.sessions.map((s) => [s, s.cwd ? groupingOf(s.cwd) : null])); // file metadata reads, outside the transaction
   db.exec('BEGIN IMMEDIATE');
   try {
-    const batch = unsuppressed(st, input); // read inside the transaction (keeps the session objects): a purge committed meanwhile is seen
+    // read inside the transaction (keeps the session objects): a purge committed meanwhile is seen
+    const { batch, gone, clear } = unsuppressed(st, input);
     const d = batch.delivery, r = batch.report;
-    // review: a delivery of a suppressed session (intake refuses it first) commits nothing, not even its dedup row
-    if ((d?.nativeSessionId && st.suppressed.get(d.agent, d.profileKey, d.nativeSessionId)) || (r && st.suppressed.get(r.agent, r.profileKey, r.nativeSessionId))) {
+    // review: a delivery intake would refuse (a suppressed session, or one timed before its purge) commits nothing, not even its dedup row
+    const refused = (agent: string, profile: string, native: string, ts: number) => refuses(st.marker.get(agent, profile, native) as Marker | undefined, ts);
+    if ((d?.nativeSessionId && refused(d.agent, d.profileKey, d.nativeSessionId, Math.min(d.receivedTs, d.committedTs)))
+      || (r && refused(r.agent, r.profileKey, r.nativeSessionId, r.receivedTs))) {
       db.exec('COMMIT');
       return batch;
     }
@@ -428,8 +443,15 @@ export function commitBatch(db: DatabaseSync, input: Batch): Batch {
     };
 
     const f = batch.file;
-    const file = f ? st.upsertFile.get(batch.profileId, batch.fileSession ? sessionId(batch.fileSession) : null, f.path, f.kind, f.dev, f.ino,
-      f.size, f.mtime, f.offset, f.headHash, f.status) as { id: number } : { id: null };
+    const file = f ? (st.upsertFile.get(batch.profileId, batch.fileSession ? sessionId(batch.fileSession) : null, f.path, f.kind, f.dev, f.ino,
+      f.size, f.mtime, f.offset, f.headHash, f.status, f.epoch ?? null, f.epoch ?? null) ?? st.fileId.get(f.path)) as { id: number } : { id: null };
+    // P5-T08: re-import bookkeeping after this batch's own checkpoint. A file that held records of a session kept out joins
+    // its marker (review M2); a retention marker cleared by new activity resets its files for a whole re-import.
+    const who = (native: string) => ({ agent: batch.agent, profile: batch.profileId, native });
+    if (file.id !== null) {
+      for (const id of gone) if (input.fileSession === id || input.events.some((e) => e.nativeSessionId === id)) noteFile(db, who(id), file.id);
+    }
+    for (const id of clear) clearMarker(db, who(id), Math.max(...batch.events.filter((e) => e.nativeSessionId === id).map((e) => e.receivedTs)));
 
     const added = new Map<number | bigint, [number, number, number]>();
     const bump = (id: number | bigint, i: 0 | 1 | 2) => { const c = added.get(id) ?? [0, 0, 0]; c[i]++; added.set(id, c); };
@@ -544,15 +566,17 @@ export class Writer {
   get diskFull(): boolean { return this.#full; }
 
   /** A live hook delivery (OQ-A1): its own small transaction now, ahead of anything queued; throws on failure. */
-  commitLive(batch: Batch): void {
-    this.#commit(batch);
+  commitLive(batch: Batch): Batch {
+    return this.#commit(batch);
   }
 
-  #commit(batch: Batch): void {
+  /** Returns what was committed (P5-T07/T08: without the sessions a suppression marker kept out). */
+  #commit(batch: Batch): Batch {
     // ponytail: while full every commit still runs as the probe (SQLite fails fast without growing); a pause timer if
     // the retried file reads ever cost too much.
-    const done = this.#guard(() => this.#o.commit(this.#db, batch));
-    this.#o.onCommit?.(done ?? batch); // P5-T07: what was committed, never a suppressed session
+    const done = this.#guard(() => this.#o.commit(this.#db, batch)) ?? batch;
+    this.#o.onCommit?.(done); // never a suppressed session
+    return done;
   }
 
   /** XAIBO-PROD-515 (P5-T07, research L6): `fn` in one immediate transaction on the writer's connection, with the same

@@ -56,11 +56,7 @@ export function resumePurges(writer: Writer, o: FileOptions): number {
   const rows = writer.transact((db) => db.prepare('SELECT agent, profile_id AS profile, native_session_id AS native, pending FROM suppressions WHERE pending IS NOT NULL')
     .all() as unknown as (Identity & { pending: string })[]);
   let n = 0;
-  for (const r of rows) {
-    let regs: string[] = [];
-    try { const v = JSON.parse(r.pending) as unknown; if (Array.isArray(v)) regs = v.filter((x): x is string => typeof x === 'string'); } catch { /* none: chunks of no registration */ }
-    if (!finishFiles(writer, { agent: r.agent, profile: r.profile, native: r.native }, regs, o).filesPending) n++;
-  }
+  for (const r of rows) if (!finishFiles(writer, { agent: r.agent, profile: r.profile, native: r.native }, registrations(r.pending), o).filesPending) n++;
   return n;
 }
 
@@ -78,6 +74,9 @@ function deleteRows(db: DatabaseSync, id: number, s: Identity, regs: string[], o
   run('DELETE FROM session_links WHERE from_session_id = ?1 OR to_session_id = ?1', id);
   run(`DELETE FROM usage_history WHERE usage_scope_id IN (${scopes})`, id); // session-linked quota (EC-99); account scopes stay
   run('DELETE FROM usage_scopes WHERE session_id = ?', id);
+  // P5-T08 (review M2): the files that held its records, for a re-import: its own rows and any file its events came from
+  const files = (db.prepare('SELECT id FROM source_files WHERE session_id = ?1 UNION SELECT file_id FROM events WHERE session_id = ?1 AND file_id IS NOT NULL')
+    .all(id) as { id: number }[]).map((r) => r.id);
   // quarantined lines of the session's files may hold its content; the checkpoints stay, so a rescan resumes at its offset
   run('DELETE FROM quarantine WHERE file_id IN (SELECT id FROM source_files WHERE session_id = ?)', id);
   run('UPDATE source_files SET session_id = NULL WHERE session_id = ?', id);
@@ -92,7 +91,19 @@ function deleteRows(db: DatabaseSync, id: number, s: Identity, regs: string[], o
   run("DELETE FROM status_evidence WHERE agent = ? AND profile_id IN (?, '') AND native_session_id = ?", s.agent, s.profile, s.native);
   run('DELETE FROM overlays WHERE agent = ? AND profile_id = ? AND native_session_id = ?', s.agent, s.profile, s.native);
   run('DELETE FROM sessions WHERE id = ?', id);
-  suppress(db, s, o.reason, o.now, regs);
+  suppress(db, s, o.reason, o.now, regs, files);
+}
+
+/** P5-T08 (review M1): finishes the file work one marker still owes; true when none is owed any more. */
+export function finishPending(writer: Writer, who: Identity, o: FileOptions): boolean {
+  const row = writer.transact((db) => db.prepare('SELECT pending FROM suppressions WHERE agent = ? AND profile_id = ? AND native_session_id = ?')
+    .get(who.agent, who.profile, who.native) as { pending: string | null } | undefined);
+  if (!row || row.pending === null) return true;
+  return !finishFiles(writer, who, registrations(row.pending), o).filesPending;
+}
+
+function registrations(pending: string): string[] {
+  try { const v = JSON.parse(pending) as unknown; return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []; } catch { return []; }
 }
 
 /** The post-commit file work; clears the marker's pending work once every step is done. Never throws. */

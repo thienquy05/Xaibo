@@ -277,7 +277,7 @@ CREATE TABLE source_files (
   offset INTEGER NOT NULL DEFAULT 0,
   head_hash TEXT,
   status TEXT NOT NULL DEFAULT 'ok' CHECK (status IN ('ok', 'compressed_not_imported', 'gone', 'oversized'))
-);
+, epoch INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE status_evidence (
   id INTEGER PRIMARY KEY,
   agent TEXT NOT NULL,
@@ -304,7 +304,7 @@ CREATE TABLE suppressions (
   native_session_id TEXT NOT NULL,
   reason TEXT NOT NULL CHECK (reason IN ('manual', 'retention')),
   at INTEGER NOT NULL,
-  pending TEXT,
+  pending TEXT, files TEXT, cleared_at INTEGER,
   PRIMARY KEY (agent, profile_id, native_session_id)
 ) WITHOUT ROWID;
 CREATE INDEX suppressions_pending ON suppressions (agent) WHERE pending IS NOT NULL;

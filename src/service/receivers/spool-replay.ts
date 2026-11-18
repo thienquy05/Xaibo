@@ -136,6 +136,11 @@ function overflowLine(line: string): { ts: number; agent: string; session: strin
 }
 
 function overflowGaps(dir: string, db: DatabaseSync, now: number, done: Done[]) {
+  // P5-T08 (EC-21): no gap row names a purged session: lines of a session still suppressed, or timed before its purge
+  // (gap lines carry no profile; native ids are UUIDs)
+  const markers = db.prepare('SELECT at, cleared_at FROM suppressions WHERE agent = ? AND native_session_id = ?');
+  const purged = (x: { ts: number; agent: string; session: string | null }) => x.session !== null
+    && (markers.all(x.agent, x.session) as { at: number; cleared_at: number | null }[]).some((m) => m.cleared_at === null || x.ts <= m.at);
   for (const name of readdirSync(dir).sort()) {
     const fresh = name === 'overflow.log';
     const file = fresh ? take(dir, name, `overflow.taken-${randomUUID()}.log`) : OVERFLOW_TAKEN.test(name) ? path.join(dir, name) : null;
@@ -147,6 +152,7 @@ function overflowGaps(dir: string, db: DatabaseSync, now: number, done: Done[]) 
     for (const line of buf.toString('utf8').split('\n')) {
       if (!line) continue;
       const x = overflowLine(line);
+      if (x && purged(x)) continue;
       const key = JSON.stringify(x ? [x.agent, x.session] : null);
       const g = groups.get(key);
       if (!g) groups.set(key, { reason: 'spool-overflow', agent: x?.agent ?? null, session: x?.session ?? null, from: x?.ts ?? null, to: x?.ts ?? null, count: 1, locator: `overflow:${id}:${key}` });

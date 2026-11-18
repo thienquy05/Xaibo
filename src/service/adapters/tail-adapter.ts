@@ -36,7 +36,7 @@ export interface TailAdapterOptions {
   now?: () => number;
 }
 
-type Stored = Checkpoint & { status: SourceFileCheckpoint['status'] };
+type Stored = Checkpoint & { status: SourceFileCheckpoint['status']; epoch: number };
 /** What boot holds of any adapter: its public lifecycle. */
 export type Ingester = Pick<TailAdapter<TailFile, TailRecord>, 'start' | 'watch' | 'backfill' | 'stop' | 'wake' | 'reads' | 'watched'>;
 
@@ -112,16 +112,18 @@ export abstract class TailAdapter<F extends TailFile, R extends TailRecord> {
   }
 
   #checkpoint(path: string): Stored | undefined {
-    const r = this.o.db.prepare('SELECT dev, ino, size, mtime, offset, head_hash, status FROM source_files WHERE path = ?').get(path) as
-      { dev: number; ino: number; size: number; mtime: number; offset: number; head_hash: string; status: Stored['status'] } | undefined;
-    return r && { dev: r.dev, ino: r.ino, size: r.size, mtime: r.mtime, offset: r.offset, headHash: r.head_hash, status: r.status };
+    const r = this.o.db.prepare('SELECT dev, ino, size, mtime, offset, head_hash, status, epoch FROM source_files WHERE path = ?').get(path) as
+      { dev: number; ino: number; size: number; mtime: number; offset: number; head_hash: string; status: Stored['status']; epoch: number } | undefined;
+    return r && { dev: r.dev, ino: r.ino, size: r.size, mtime: r.mtime, offset: r.offset, headHash: r.head_hash, status: r.status, epoch: r.epoch };
   }
 
   async #sync(file: F, live: boolean): Promise<void> {
     let st;
     try { st = await stat(file.path); } catch { return; } // gone between discovery and sync
     const cp = this.#checkpoint(file.path);
-    const base = { path: file.path, kind: file.kind, dev: st.dev, ino: st.ino, size: st.size, mtime: st.mtimeMs };
+    // P5-T08 (review H2): every checkpoint this sync commits carries the epoch it read, so a re-import reset made
+    // meanwhile is never overwritten by this (older) read
+    const base = { path: file.path, kind: file.kind, dev: st.dev, ino: st.ino, size: st.size, mtime: st.mtimeMs, epoch: cp?.epoch ?? 0 };
     if (file.compressed) {
       if (cp && cp.dev === st.dev && cp.ino === st.ino && cp.size === st.size && cp.mtime === st.mtimeMs) return;
       if (!this.o.zstd) {
