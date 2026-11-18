@@ -13,6 +13,19 @@ import { FIRST_PAGE_MARK, LONG_FRAME } from '../../src/renderer/perf-marks.ts';
 export const REPO = path.resolve(import.meta.dirname, '..', '..');
 const PACKAGED = path.join(REPO, 'release', 'mac-arm64', 'Xaibo.app', 'Contents', 'MacOS', 'Xaibo');
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** Polls `f` every `every` ms until it returns a truthy value; throws after `ms`. */
+export async function until<T>(f: () => T | null | false | undefined, ms: number, every = 50): Promise<T> {
+  const end = Date.now() + ms;
+  for (let v = f(); ; v = f()) {
+    if (v) return v;
+    if (Date.now() > end) throw new Error(`timed out after ${ms} ms`);
+    await sleep(every);
+  }
+}
+/** A synthetic session UUID: a 4-digit prefix and an 8-digit index. */
+export const sidOf = (prefix: number, i: number) => `00000000-0000-4000-8000-${String(prefix).padStart(4, '0')}${String(i).padStart(8, '0')}`;
+/** The Antigravity CLI root inside a synthetic home. */
+export const agyRoot = (home: string) => path.join(home, '.gemini', 'antigravity-cli');
 
 export interface Launched { app: ElectronApplication; page: Page; dataDir: string; root: string; created: number }
 

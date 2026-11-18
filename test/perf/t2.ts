@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { claudeProfile } from '../helpers/hook-socket.ts';
-import { close, environment, launch, serviceLog, sleep, stats, tornLogLines, type Launched } from './app.ts';
+import { agyRoot, close, environment, launch, serviceLog, sidOf, sleep, stats, tornLogLines, until, type Launched } from './app.ts';
 import { emit, installHelpers, now } from './emitter.ts';
 import { analyze, loadQualifies, type Emitted, type TraceLine, type Window } from './t2-analysis.ts';
 import { footprintMiB, psTree } from './m16.ts';
@@ -33,7 +33,6 @@ const VOLUME_GIB = 4; // the data dir's sparse image: room for the t1mix import 
 const TOKEN_EVERY = 5; // a Codex session's every 5th record is a token_count, every 50th of those malformed
 const PROHIBITED = /(^|\s)(-p|--print|exec)(\s|$)|\/context|count_tokens/; // FR-44, as the P4-T12a runtime audit
 export const CWD = '/tmp/xaibo-fixture/perf-live';
-const sidOf = (prefix: number, i: number) => `00000000-0000-4000-8000-${String(prefix).padStart(4, '0')}${String(i).padStart(8, '0')}`;
 
 function mulberry32(a: number) {
   return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
@@ -77,14 +76,6 @@ export function seedSessions(home: string, count: number, codexShare: number) {
   });
 }
 
-async function until<T>(f: () => T | null | false | undefined, ms: number): Promise<T> {
-  const end = Date.now() + ms;
-  for (let v = f(); ; v = f()) {
-    if (v) return v;
-    if (Date.now() > end) throw new Error(`timed out after ${ms} ms`);
-    await sleep(50);
-  }
-}
 
 /** usage: P4-T12b frames and checks; diskFull (with usage): the data dir on its own volume, filled once (off: the
  *  attribution run that tells the volume's write cost from the usage work). */
@@ -118,7 +109,7 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
     // --usage: the data dir on its own volume, so the disk-full fault fills the store's disk and nothing else
     let ownDataDir: string | undefined;
     if (usage && withDiskFull) { vol = volume(root, VOLUME_GIB); process.once('SIGINT', onSigint); ownDataDir = path.join(vol.mount, 'data'); mkdirSync(ownDataDir, { mode: 0o700 }); }
-    l = await launch(claude, { codex, agy: path.join(home, '.gemini', 'antigravity-cli'), env: { XAIBO_PERF_TRACE: '1' }, ...(ownDataDir ? { dataDir: ownDataDir } : {}) });
+    l = await launch(claude, { codex, agy: agyRoot(home), env: { XAIBO_PERF_TRACE: '1' }, ...(ownDataDir ? { dataDir: ownDataDir } : {}) });
     const launched = l;
     const dataDir = launched.dataDir;
     // P4-T12b: renderer health, so a window that stops painting says why (main logs no renderer crash or hang)

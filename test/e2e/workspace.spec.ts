@@ -1,10 +1,10 @@
 // XAIBO-PROD-413 (P4-T05d; plan P4-T05 E; design §6.3 as amended by D-P4-06): the Session workspace on synthetic
 // Claude, Codex and Antigravity sessions: turns, tools with results, a subagent, the three file-touch kinds, the
 // reasoning block and the Content incomplete label; fixed frame, Details drawer and section tabs.
-import { copyFileSync, cpSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { visible } from '../../src/renderer/text.ts';
-import { REPO, expect, openSessions, test } from './fixtures.ts';
+import { expect, openSessions, seedCodexAgy, test } from './fixtures.ts';
 import type { Page } from '@playwright/test';
 
 const SID = '00000000-0000-4000-8000-00000000d000';
@@ -45,12 +45,7 @@ function seed(home: string) {
     JSON.stringify({ ...JSON.parse(rec('assistant', [{ type: 'text', text: 'Tests pass.' }], 9, { isSidechain: true })),
       message: { model: 'claude-haiku-fixture', id: 'msg_ws_sub', type: 'message', role: 'assistant', content: [{ type: 'text', text: 'Tests pass.' }] } }),
   ].join('\n') + '\n');
-  const codex = path.join(home, '.codex', 'sessions', '2026', '01', '01');
-  mkdirSync(codex, { recursive: true });
-  const fixture = path.join(REPO, 'test', 'fixtures', 'synthetic', 'codex', '0.160.0', 'simple-turn');
-  const name = readdirSync(fixture).find((f) => f.startsWith('rollout-'))!;
-  copyFileSync(path.join(fixture, name), path.join(codex, name));
-  cpSync(path.join(REPO, 'test', 'fixtures', 'synthetic', 'agy', '1.5.6', 'basic', 'brain'), path.join(home, '.gemini', 'antigravity-cli', 'brain'), { recursive: true });
+  seedCodexAgy(home);
 }
 
 const list = (page: Page) => page.getByRole('list', { name: 'Sessions' });

@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { Locator, Page } from '@playwright/test';
 import { claudeProfile, deliver } from '../helpers/hook-socket.ts';
-import { expect, test, type Xaibo } from './fixtures.ts';
+import { expect, shot, tabTo, test, type Xaibo } from './fixtures.ts';
 
 const SID = '00000000-0000-4000-8000-0000000fa151';
 const OTHER = '00000000-0000-4000-8000-0000000fa152';
@@ -28,17 +28,7 @@ function transcript(home: string, sid: string, cwd: string) {
   ].map((x) => JSON.stringify(x)).join('\n') + '\n');
 }
 
-/** XAIBO_SHOT=<dir>: screenshots for the visual check (off by default). */
-const shot = async (page: Page, name: string) => { if (process.env.XAIBO_SHOT) await page.screenshot({ path: path.join(process.env.XAIBO_SHOT, `${name}.png`) }); };
 
-/** Presses Tab until `target` has focus; fails if it is not reached within `max` presses (keyboard-only access). */
-async function tabTo(page: Page, target: Locator, max = 120) {
-  for (let i = 0; i < max; i++) {
-    if (await target.evaluate((el) => el === document.activeElement, undefined, { timeout: 2000 })) return;
-    await page.keyboard.press('Tab');
-  }
-  throw new Error(`not reachable by Tab: ${target.toString()}`);
-}
 
 /** Design §2.3/§5.1: focus shows a 2 px solid outline in the focus token with a 2 px offset (on the element or, for a
  *  virtual-list item, its first child). */

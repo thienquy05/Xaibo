@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { appendFileSync, constants, cpSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { close, environment, launch, sleep, waitForEvent, type Launched } from './app.ts';
+import { agyRoot, close, environment, launch, sleep, waitForEvent, type Launched } from './app.ts';
 import { M4_CPU, M4_MB, mib, sampleTree, TREE_NOTES } from './m16.ts';
 import { claudeLine, codexLine, CWD, PROFILES, seedSessions } from './t2.ts';
 
@@ -20,7 +20,7 @@ export async function m4m5Probe(corpus: string, seconds: number) {
     const home = path.join(root, 'home');
     cpSync(path.join(corpus, 'home'), home, { recursive: true, mode: constants.COPYFILE_FICLONE_FORCE, preserveTimestamps: true });
     const sessions = seedSessions(home, PROFILES.T2.sessions, PROFILES.T2.codexShare);
-    l = await launch(path.join(home, '.claude'), { codex: path.join(home, '.codex'), agy: path.join(home, '.gemini', 'antigravity-cli') });
+    l = await launch(path.join(home, '.claude'), { codex: path.join(home, '.codex'), agy: agyRoot(home) });
     const { app, page, dataDir } = l;
     const env = await environment(app);
     if (await waitForEvent(dataDir, 'backfill_done', 30 * 60_000) === null) throw new Error('import never finished');

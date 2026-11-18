@@ -8,21 +8,13 @@ import { emit, installHelpers, ms, now, Trace } from './emitter.ts';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { claudeProfile, deliver } from '../helpers/hook-socket.ts';
-import { close, environment, firstPage, launch, query, serviceLog, sleep, stats, waitForEvent } from './app.ts';
+import { agyRoot, close, environment, firstPage, launch, query, serviceLog, sidOf, sleep, stats, until, waitForEvent } from './app.ts';
 import type { Launched } from './app.ts';
 
 const EVENTS = 100;
 const BUDGET_MS = 2000;
 const SID = '00000000-0000-4000-8000-0000000f1112';
 
-async function until<T>(f: () => T | null | false, ms: number): Promise<T> {
-  const end = Date.now() + ms;
-  for (let v = f(); ; v = f()) {
-    if (v) return v;
-    if (Date.now() > end) throw new Error(`timed out after ${ms} ms`);
-    await sleep(10);
-  }
-}
 
 export async function notifyProbe() {
   const claude = mkdtempSync(path.join(tmpdir(), 'xaibo-perf-claude-'));
@@ -42,7 +34,7 @@ export async function notifyProbe() {
       await hook('PreToolUse', { tool_name: 'Write', tool_use_id: `t${i}` });
       const t0 = process.hrtime.bigint();
       await hook('PermissionRequest', { tool_name: 'Write' });
-      const line = await until(() => lines()[i], 10_000);
+      const line = await until(() => lines()[i], 10_000, 10);
       ms.push(Number(BigInt((JSON.parse(line) as { t: string }).t) - t0) / 1e6);
       await hook('PostToolUse', { tool_name: 'Write', tool_use_id: `t${i}` });
     }
@@ -71,7 +63,16 @@ const SETTLE_MS = 4000;
 const B = { m1: 250, finishing: 250, settled: SETTLE_MS + 250, m11: 300, m2: 1000, recovery: 5000 + 1000 };
 const PROJECT = '-tmp-xaibo-fixture-perf';
 const CWD = '/tmp/xaibo-fixture/perf';
-const sidOf = (prefix: number, i: number) => `00000000-0000-4000-8000-${String(prefix).padStart(4, '0')}${String(i).padStart(8, '0')}`;
+/** A one-turn Codex rollout for session `sidOf(prefix, 0)` in `cwd`; its identity is the session_meta hash (16 hex). */
+function codexRollout(codex: string, prefix: number, cwd: string): { rollout: string; codexIdentity: string } {
+  const csid = sidOf(prefix, 0);
+  const rollout = path.join(codex, 'sessions', '2026', '01', '01', `rollout-2026-01-01T00-00-00-${csid}.jsonl`);
+  mkdirSync(path.dirname(rollout), { recursive: true });
+  const meta = JSON.stringify({ timestamp: new Date().toISOString(), type: 'session_meta', payload: { id: csid, timestamp: new Date().toISOString(),
+    cwd, originator: 'codex-tui', cli_version: '0.160.0', source: 'cli' } });
+  writeFileSync(rollout, `${meta}\n${JSON.stringify({ timestamp: new Date().toISOString(), type: 'turn_context', payload: { turn_id: sidOf(prefix, 1), cwd, model: 'gpt-6.1-sol' } })}\n`);
+  return { rollout, codexIdentity: createHash('sha256').update(meta).digest('hex').slice(0, 16) };
+}
 const claudeLine = (sid: string, uuid: string, o: object) => `${JSON.stringify({ parentUuid: null, isSidechain: false, uuid, timestamp: new Date().toISOString(),
   userType: 'external', entrypoint: 'cli', cwd: CWD, sessionId: sid, version: '2.1.319', ...o })}\n`;
 const user = (sid: string, uuid: string) => claudeLine(sid, uuid, { type: 'user', message: { role: 'user', content: 'synthetic prompt' } });
@@ -109,13 +110,7 @@ export async function liveProbe() {
     utimesSync(f, old, old);
     return { sid, f };
   });
-  const csid = sidOf(3, 0);
-  const rollout = path.join(codex, 'sessions', '2026', '01', '01', `rollout-2026-01-01T00-00-00-${csid}.jsonl`);
-  mkdirSync(path.dirname(rollout), { recursive: true });
-  const meta = JSON.stringify({ timestamp: new Date().toISOString(), type: 'session_meta', payload: { id: csid, timestamp: new Date().toISOString(),
-    cwd: '/tmp/xaibo-fixture/perf-codex', originator: 'codex-tui', cli_version: '0.160.0', source: 'cli' } });
-  writeFileSync(rollout, `${meta}\n${JSON.stringify({ timestamp: new Date().toISOString(), type: 'turn_context', payload: { turn_id: sidOf(3, 1), cwd: '/tmp/xaibo-fixture/perf-codex', model: 'gpt-6.1-sol' } })}\n`);
-  const codexIdentity = createHash('sha256').update(meta).digest('hex').slice(0, 16);
+  const { rollout, codexIdentity } = codexRollout(codex, 3, '/tmp/xaibo-fixture/perf-codex');
 
   const l = await launch(claude, { codex, env: { XAIBO_PERF_TRACE: '1' } });
   try {
@@ -256,15 +251,9 @@ export async function importProbe(corpus: string) {
     const active = sidOf(6, 0);
     const activeFile = path.join(project, `${active}.jsonl`);
     writeFileSync(activeFile, user(active, randomUUID()));
-    const csid = sidOf(7, 0);
-    const rollout = path.join(codex, 'sessions', '2026', '01', '01', `rollout-2026-01-01T00-00-00-${csid}.jsonl`);
-    mkdirSync(path.dirname(rollout), { recursive: true });
-    const meta = JSON.stringify({ timestamp: new Date().toISOString(), type: 'session_meta', payload: { id: csid, timestamp: new Date().toISOString(),
-      cwd: '/tmp/xaibo-fixture/perf-import-codex', originator: 'codex-tui', cli_version: '0.160.0', source: 'cli' } });
-    writeFileSync(rollout, `${meta}\n${JSON.stringify({ timestamp: new Date().toISOString(), type: 'turn_context', payload: { turn_id: sidOf(7, 1), cwd: '/tmp/xaibo-fixture/perf-import-codex', model: 'gpt-6.1-sol' } })}\n`);
-    const codexIdentity = createHash('sha256').update(meta).digest('hex').slice(0, 16);
+    const { rollout, codexIdentity } = codexRollout(codex, 7, '/tmp/xaibo-fixture/perf-import-codex');
 
-    l = await launch(claude, { codex, agy: path.join(home, '.gemini', 'antigravity-cli'), env: { XAIBO_PERF_TRACE: '1' } });
+    l = await launch(claude, { codex, agy: agyRoot(home), env: { XAIBO_PERF_TRACE: '1' } });
     const dataDir = l.dataDir;
     const profile = await until(() => claudeProfile(dataDir), 30_000);
     await until(() => existsSync(path.join(dataDir, 'run', 'token')), 30_000);
