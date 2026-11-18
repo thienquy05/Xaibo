@@ -13,6 +13,14 @@ export function nextFocus(index: number, key: string, count: number, axis: 'vert
   return Math.min(count - 1, Math.max(0, index + (key === forward ? 1 : -1)));
 }
 
+/** A horizontal roving group (Dashboard views, Session sections): Left/Right/Home/End move focus among `count` refs. */
+export function rovingKey(e: { key: string; preventDefault(): void }, index: number, count: number, refs: readonly ({ focus(): void } | null | undefined)[]): void {
+  const n = nextFocus(index, e.key, count, 'horizontal');
+  if (n === null || n < 0) return;
+  e.preventDefault();
+  refs[n]?.focus();
+}
+
 /** ArrowDown on the last loaded record with more available asks for the next page once per edge (End only jumps). */
 export function createEdgeFetch() {
   let firedAt = -1;

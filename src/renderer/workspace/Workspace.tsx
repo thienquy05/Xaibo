@@ -6,12 +6,11 @@ import type { SessionRow } from '../../shared/ipc.ts';
 import { VirtualList } from '../components/VirtualList.tsx';
 import { findingBadges, formatTime, recordLabel, type ListState } from '../model.ts';
 import { Icon } from '../status/StatusBadge.tsx';
-import { visible } from '../text.ts';
+import { show, visible } from '../text.ts';
 import { OpenSession, type WorkspaceApi } from './OpenSession.tsx';
 import { compactStatus, openChange, type SessionChanges } from './view.ts';
 
 const keyOf = (r: SessionRow) => r.id;
-const show = (s: string | null, fallback: string) => (s ? visible(s) : fallback);
 
 function Row({ row, open, lastKnown, onOpen }: { row: SessionRow; open: boolean; lastKnown: boolean; onOpen: (r: SessionRow) => void }) {
   const status = compactStatus(row.live);
@@ -22,7 +21,7 @@ function Row({ row, open, lastKnown, onOpen }: { row: SessionRow; open: boolean;
         <span className={`x-dot x-dot-${status.tone}`} aria-hidden="true" />
         <span data-field="agent">{visible(row.agent)}</span>
         <span data-field="status">{lastKnown ? 'Last known: ' : null}{status.text}
-          {findingBadges(row.live).map((b) => <span key={b.text} className="x-tone-warning"> · {b.text}</span>)}</span>
+          {findingBadges(row.live).map((t) => <span key={t} className="x-tone-warning"> · {t}</span>)}</span>
         <span data-field="activity">{formatTime(row.lastActivity)}</span>
       </span>
       <span className="x-s-path" data-field="folder">{show(row.cwd, 'Unknown')}</span>
@@ -30,7 +29,6 @@ function Row({ row, open, lastKnown, onOpen }: { row: SessionRow; open: boolean;
   );
 }
 
-export type { SessionChanges };
 
 export function Workspace({ list, changes, loading, onLoadMore, lastKnown, api, request, onRequestDone, returnFor, onReturn, onListOpen }: {
   list: ListState; changes: SessionChanges; loading: boolean; onLoadMore: () => void; lastKnown: boolean; api: WorkspaceApi;

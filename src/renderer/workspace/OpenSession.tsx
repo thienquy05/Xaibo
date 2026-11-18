@@ -5,11 +5,11 @@
 import { useEffect, useMemo, useReducer, useRef, useState, type KeyboardEvent } from 'react';
 import type { CostDetail, FileItem, ModelMarker, SessionDetail, SessionRow, SubagentItem, TCursor, ToolItem, TranscriptItem } from '../../shared/ipc.ts';
 import type { Client } from '../client.ts';
-import { contextText, costText, findingBadges, formatTime, markers as rowMarkers, originText, statusExtras } from '../model.ts';
+import { contextText, costText, formatTime, markers as rowMarkers, originText } from '../model.ts';
 import { RetryNotice } from '../components/RetryNotice.tsx';
-import { nextFocus } from '../components/virtual-list-model.ts';
+import { rovingKey } from '../components/virtual-list-model.ts';
 import { retryIdle, retryStep } from '../retry.ts';
-import { Icon, StatusBadge } from '../status/StatusBadge.tsx';
+import { Icon, StatusLine } from '../status/StatusBadge.tsx';
 import { visible } from '../text.ts';
 import { ContextPane } from './context/ContextSection.tsx';
 import { CostPane } from './cost/CostSection.tsx';
@@ -213,12 +213,7 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
   };
   const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && drawer) { e.stopPropagation(); openDrawer(false); } };
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
-  const onTabKey = (e: KeyboardEvent, i: number) => {
-    const n = nextFocus(i, e.key, SECTIONS.length, 'horizontal');
-    if (n === null || n < 0) return;
-    e.preventDefault();
-    tabRefs.current[n]?.focus();
-  };
+  const onTabKey = (e: KeyboardEvent, i: number) => rovingKey(e, i, SECTIONS.length, tabRefs.current);
   const count = (s: Section) => (s === 'tools' ? tools : s === 'subagents' ? subagents : s === 'files' ? files : null);
   const title = row.title ? visible(row.title) : 'Untitled';
   const status = compactStatus(row.live);
@@ -290,14 +285,13 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
             <div><dt>Agent</dt><dd>{visible(row.agent)}</dd></div>
             <div><dt>Folder</dt><dd className="x-mono" data-field="folder">{row.cwd ? visible(row.cwd) : 'Unknown'}</dd></div>
             <div><dt>Origin</dt><dd data-field="origin">{originText(row)}</dd></div>
-            <div><dt>Status</dt><dd>{lastKnown ? 'Last known: ' : null}<StatusBadge status={row.live} />{row.live ? statusExtras(row.live).map((t) => <span key={t}> · {t}</span>) : null}
-              {findingBadges(row.live).map((b) => <span key={b.text}> <Icon id="finding" /> {b.text}</span>)}</dd></div>
+            <div><dt>Status</dt><dd><StatusLine status={row.live} lastKnown={lastKnown} /></dd></div>
             <div><dt>Model</dt><dd>{visible(row.model)}</dd></div>
             <div><dt>Last activity</dt><dd>{formatTime(row.lastActivity)}</dd></div>
             <div><dt>Context</dt><dd>{contextText(row.contextPct)}</dd></div>
             <div><dt>Estimated cost</dt><dd>{costText(row.costUsd, row.costCoverage)}</dd></div>
             <div><dt>Coverage</dt><dd>{gaps.length || rowMarkers(row).length
-              ? [...gaps.map((g) => `Content incomplete: ${g}`), ...rowMarkers(row).map((m) => m.text)].join('; ') : 'No known gaps'}</dd></div>
+              ? [...gaps.map((g) => `Content incomplete: ${g}`), ...rowMarkers(row)].join('; ') : 'No known gaps'}</dd></div>
           </dl>
         </div>
       </aside>

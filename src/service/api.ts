@@ -491,7 +491,7 @@ export function answerSubagents(db: DatabaseSync, req: PortRequest & { type: 'su
       GROUP BY subagent_native_id`).all(req.session, JSON.stringify(subs.map((x) => x.nativeId))) as Span[]).map((x) => [x.sub, x]));
     // The subagent's own reported model, read in SQLite so a long record never enters JS; never the parent's. Review M3:
     // the record sizes count against RAW_BUDGET (octet_length reads no content); past it the model is unknown.
-    // ponytail: the latest assistant record only (subagentModel's rule over one record); scan earlier ones if a record without a model shows up.
+    // ponytail: the latest assistant record only (a non-empty model of at most MAX_MODEL); scan earlier ones if a record without a model shows up.
     const size = db.prepare('SELECT octet_length(raw) AS n FROM events WHERE id = ?');
     const modelOf = db.prepare(`SELECT CASE WHEN json_valid(raw) THEN CASE WHEN json_type(raw, '$.message.model') = 'text' THEN json_extract(raw, '$.message.model') END END AS m
       FROM events WHERE id = ?`);

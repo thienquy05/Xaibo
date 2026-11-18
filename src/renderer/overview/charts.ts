@@ -3,16 +3,17 @@ import { LIFECYCLES, type CostCoverage, type SessionRow, type UsageRecord } from
 
 export interface Datum { label: string; value: number | null; coverage?: CostCoverage; partial?: boolean }
 export function tileSeries(rows: SessionRow[], name: (agent: string) => string) {
-  const members = [...new Map(rows.map((r) => [r.id, r])).values()];
+  // Active agents: distinct agents with a busy (incl. background work), waiting-for-permission or needs-input session.
+  // ponytail: agents, not profiles (rows carry no profile); count profiles once a row does.
   const agents = new Map<string, number>();
-  for (const r of members) {
+  for (const r of rows) {
     if (r.live && ['busy', 'waiting-for-permission', 'needs-input'].includes(r.live.lifecycle)) agents.set(r.agent, (agents.get(r.agent) ?? 0) + 1);
   }
   return {
     agents: [...agents].map(([agent, value]) => ({ label: name(agent), value })),
-    states: LIFECYCLES.map((label) => ({ label, value: members.filter((r) => (r.live?.lifecycle ?? 'unknown') === label).length })),
-    tokens: members.map((r, i) => ({ label: `Session ${i + 1}`, value: r.tokens, partial: !r.tokensComplete })),
-    cost: members.map((r, i) => ({ label: `Session ${i + 1}`, value: r.costCoverage === 'unavailable' ? null : r.costUsd, coverage: r.costCoverage })),
+    states: LIFECYCLES.map((label) => ({ label, value: rows.filter((r) => (r.live?.lifecycle ?? 'unknown') === label).length })),
+    tokens: rows.map((r, i) => ({ label: `Session ${i + 1}`, value: r.tokens, partial: !r.tokensComplete })),
+    cost: rows.map((r, i) => ({ label: `Session ${i + 1}`, value: r.costCoverage === 'unavailable' ? null : r.costUsd, coverage: r.costCoverage })),
   };
 }
 

@@ -38,15 +38,14 @@ test('below 80 % eligible coverage is flagged; exactly 80 % is not', () => {
   assert.equal(liveSetSummary([...four, r(5), r(6)], false).tokens.low, true);
 });
 
-test('a session listed twice counts once; active agents are distinct agents with busy or waiting sessions; capped sets read as at least', () => {
-  const rows = [r(1, { tokens: 100 }), r(1, { tokens: 100 }), r(2, { agent: 'codex', live: live('busy', { reason: 'Background work' }) }),
+test('the service live set: each row counts once; capped sets read as at least', () => {
+  const rows = [r(1, { tokens: 100 }), r(2, { agent: 'codex', live: live('busy', { reason: 'Background work' }) }),
     r(3, { agent: 'codex', live: live('needs-input') }), r(4, { agent: 'claude', live: live('waiting-for-permission', { confidence: 'heuristic', reason: 'Probably waiting' }) }),
     r(5, { agent: 'agy', live: live('idle') }), r(6, { agent: 'agy', live: live('error') }), r(7, { agent: 'agy', live: live('unknown', { confidence: 'inferred' }) })];
   const s = liveSetSummary(rows, true);
   assert.equal(s.sessions, 7);
   assert.equal(s.atLeast, true);
   assert.equal(s.tokens.value, 100);
-  assert.equal(s.activeAgents, 2, 'codex (background work, needs input) and claude (waiting); agy idle/error/unknown is not active');
 });
 
 test('D1 token abbreviation: full below 1,000; one decimal half up; trailing .0 dropped; suffix promoted at rounding', () => {

@@ -1,6 +1,6 @@
 // XAIBO-PROD-438 (D-P4-10; design §6.13 B3): the state behind every Retry. A Retry is disabled while it runs; a
 // failure counts and stamps its time, so a failed retry reads "Still couldn't …" with the clock; success resets.
-import { clock } from './workspace/view.ts';
+import { clock } from './model.ts';
 
 export interface Retry { failures: number; at: number | null; busy: boolean }
 export const retryIdle: Retry = { failures: 0, at: null, busy: false };

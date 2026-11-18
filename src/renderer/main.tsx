@@ -16,7 +16,8 @@ import { framePad } from './frame-pad.ts';
 import { openOrder } from './overview/queue.ts';
 import { retryIdle, retryStep } from './retry.ts';
 import { firstUsablePage, LONG_FRAME, watchLongFrames } from './perf-marks.ts';
-import { Workspace, type SessionChanges } from './workspace/Workspace.tsx';
+import { Workspace } from './workspace/Workspace.tsx';
+import type { SessionChanges } from './workspace/view.ts';
 import type { WorkspaceApi } from './workspace/OpenSession.tsx';
 import { workspaceApiOf } from './workspace/workspace-api.ts';
 import './styles/tokens.css';
@@ -182,10 +183,9 @@ function App() {
   useLayoutEffect(() => { setCollector((c) => collectorStep(c, band, Date.now())); }, [band]);
   const lastKnown = lastKnownLabel(collector, band);
   const retryLive = () => {
-    const c = client.current;
-    if (!c) return;
+    if (!client.current) return;
     liveRetryDo({ type: 'start' }); // the notice stays, its Retry disabled until the answer (D-P4-10)
-    void loadLive(c);
+    void liveRefresh(); // joins a refill already in flight rather than sending a second request
   };
   // review L3: leaving through the Areas links or opening from the Session list ends the Dashboard's Return
   const clearReturn = useCallback(() => { origin.current = null; setReturnFor(null); setFocusId(null); }, []);

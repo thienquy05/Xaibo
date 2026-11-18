@@ -77,6 +77,18 @@ test('H3: an invalid reply to a request settles it with an error instead of leav
   assert.equal(c.dropped, 1);
 });
 
+// XAIBO-PROD-502: an invalid message with an id but no type, for an id nothing waits on, is only counted.
+test('an invalid typeless message with an unknown id is dropped without touching pending requests', async () => {
+  const f = fakePort();
+  const c = createClient(f.port, { sessions() {}, agents() {} });
+  const p = c.listSessions(null, 50);
+  f.deliver({ id: 99 });
+  f.deliver({ id: 1 });
+  assert.equal(c.dropped, 2);
+  f.deliver({ v: 1, type: 'page', id: 1, rows: [], next: null });
+  assert.deepEqual(await p, { rows: [], next: null });
+});
+
 // XAIBO-PROD-404 review M2: the live-set request has its own pending map; an invalid reply rejects it; a page reply
 // never settles it.
 test('liveSet resolves with its own reply, ignores a page reply with its id, and rejects on an invalid reply', async () => {

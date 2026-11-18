@@ -64,12 +64,11 @@ test('the window stays bounded; trimmed rows come back through Load more', () =>
   assert.deepEqual(s.next, { lastActivity: 1000 - (PAGE - 1), id: PAGE });
 });
 
-test('coverage markers are text plus glyph; time is local and readable', () => {
+test('coverage markers are text; time is local and readable', () => {
   assert.deepEqual(markers(r(1, 1)), []);
-  assert.deepEqual(markers(r(1, 1, { drift: true, compressed: true, quarantined: 2 })).map((m) => m.text),
+  assert.deepEqual(markers(r(1, 1, { drift: true, compressed: true, quarantined: 2 })),
     ['Format drift', 'Compressed, not imported', '2 quarantined lines']);
-  assert.ok(markers(r(1, 1, { quarantined: 1 }))[0]!.glyph.length > 0);
-  assert.equal(markers(r(1, 1, { quarantined: 1 }))[0]!.text, '1 quarantined line');
+  assert.equal(markers(r(1, 1, { quarantined: 1 }))[0], '1 quarantined line');
   assert.equal(formatTime(new Date(2026, 0, 2, 3, 4, 5).getTime()), '2026-01-02 03:04');
   assert.equal(formatTime(null), 'Unknown');
 });
@@ -87,7 +86,7 @@ test('status extras (P4-T01): health and last-turn outcome as words beside the s
 
 test('finding badges: rule id plus the §6.4 warning name', () => {
   assert.deepEqual(findingBadges(null), []);
-  assert.deepEqual(findingBadges(L({ findings: ['R1', 'R2', 'R3', 'R4', 'R5'] })).map((b) => b.text),
+  assert.deepEqual(findingBadges(L({ findings: ['R1', 'R2', 'R3', 'R4', 'R5'] })),
     ['R1 Possibly inactive', 'R2 Repeated tool', 'R3 Repeated error', 'R4 Possible loop', 'R5 Long-running tool']);
 });
 

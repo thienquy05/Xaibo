@@ -88,12 +88,11 @@ export function lastKnownLabel(c: Collector, state: BandState | null): string | 
   return c.seenRunning && c.lostAt !== null ? `since ${formatTime(c.lostAt)}` : 'Collection starting';
 }
 
-export interface Marker { glyph: string; text: string }
-export function markers(r: SessionRow): Marker[] {
-  const out: Marker[] = [];
-  if (r.drift) out.push({ glyph: '⚠', text: 'Format drift' });
-  if (r.compressed) out.push({ glyph: '◫', text: 'Compressed, not imported' });
-  if (r.quarantined > 0) out.push({ glyph: '⊘', text: `${r.quarantined} quarantined line${r.quarantined === 1 ? '' : 's'}` });
+export function markers(r: SessionRow): string[] {
+  const out: string[] = [];
+  if (r.drift) out.push('Format drift');
+  if (r.compressed) out.push('Compressed, not imported');
+  if (r.quarantined > 0) out.push(`${r.quarantined} quarantined line${r.quarantined === 1 ? '' : 's'}`);
   return out;
 }
 
@@ -112,6 +111,15 @@ export function formatTime(ms: number | null): string {
   if (Number.isNaN(d.getTime())) return 'Unknown'; // P4-T04b2 review: finite but outside the Date range
   return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
 }
+/** Local HH:MM (design §7.1 clock time); unknown is said, never blank. */
+export function clock(ms: number | null): string {
+  const t = formatTime(ms);
+  return t === 'Unknown' ? 'Time unknown' : t.slice(11);
+}
+/** The clock time when `at` falls on the local day of `now`, else date and time. */
+export const shortTime = (at: number, now: number): string =>
+  (new Date(at).toDateString() === new Date(now).toDateString() ? clock(at) : formatTime(at));
+export const SEC = 1000, MIN = 60 * SEC, HOUR = 60 * MIN, DAY = 24 * HOUR;
 
 /** Health and last-turn words beside the status badge (design §3.2; full health/ownership presentation is P4-T04). */
 export function statusExtras(s: LiveStatus): string[] {
@@ -126,7 +134,7 @@ export function statusExtras(s: LiveStatus): string[] {
 const WARNING: Record<LiveStatus['findings'][number], string> = {
   R1: 'Possibly inactive', R2: 'Repeated tool', R3: 'Repeated error', R4: 'Possible loop', R5: 'Long-running tool',
 };
-export const findingBadges = (s: LiveStatus | null): Marker[] => (s?.findings ?? []).map((r) => ({ glyph: '⚠', text: `${r} ${WARNING[r]}` }));
+export const findingBadges = (s: LiveStatus | null): string[] => (s?.findings ?? []).map((r) => `${r} ${WARNING[r]}`);
 
 export const contextText = (pct: number | null) => (pct === null ? 'Context unavailable' : `${Math.round(pct)}% context`);
 

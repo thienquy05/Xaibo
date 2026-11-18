@@ -22,6 +22,8 @@ const LIFE: Record<LiveStatus['lifecycle'], { name: string; icon: IconId; tone: 
   ended: { name: 'Ended', icon: 'ended', tone: 'muted' },
   unknown: { name: 'Unknown', icon: 'unknown', tone: 'muted' },
 };
+/** The lifecycle as the status badge words it ("Waiting for permission"). */
+export const lifecycleName = (l: LiveStatus['lifecycle']): string => LIFE[l].name;
 const EVIDENCE: Record<LiveStatus['confidence'], IconId> = { confirmed: 'evidence-solid', inferred: 'evidence-open', heuristic: 'evidence-dashed' };
 const REASON: Record<string, ReasonPresentation> = {
   'Finishing…': { label: 'Finishing…', icon: 'settle', tone: 'muted' },

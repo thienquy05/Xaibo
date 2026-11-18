@@ -1,6 +1,6 @@
 // XAIBO-PROD-413 (P4-T05d; design §6.3 as amended by D-P4-06): pure helpers behind the Session workspace components.
 import type { CoverageCode, FileItem, LiveStatus, SessionRow, TCursor, ToolItem, TranscriptItem } from '../../shared/ipc.ts';
-import { capText, statusExtras } from '../model.ts';
+import { capText, clock, statusExtras } from '../model.ts';
 import { statusPresentation, type Tone } from '../status/presentation.ts';
 import { approvalText, durationLabel, type Entry } from './timeline.ts';
 
@@ -41,7 +41,6 @@ export const argFor = (callId: string | null, touches: readonly FileItem[]): str
   (callId === null ? null : touches.find((t) => t.callId === callId)?.path ?? null);
 /** A section count; `+` when more pages exist than are loaded (never an invented total). */
 export const countText = (n: number, more: boolean): string => `${n}${more ? '+' : ''}`;
-const two = (n: number) => String(n).padStart(2, '0');
 /** P4-T08b: the machine-readable form of a known instant (a <time> dateTime); null when unknown or out of Date range. */
 export function isoTime(ms: number | null): string | null {
   const d = new Date(ms ?? Number.NaN);
@@ -80,13 +79,6 @@ export function openChange(c: SessionChanges, seen: { n: number; resync: number 
 export function sizeText(bytes: number): string {
   const kb = (bytes / 1e3).toFixed(1);
   return Number(kb) >= 1000 ? `${(bytes / 1e6).toFixed(1)} MB` : `${kb} KB`; // review L6: 999,999 B reads 1.0 MB
-}
-
-/** Local HH:mm (design §7.1 clock time); unknown is said, never blank. */
-export function clock(ms: number | null): string {
-  if (ms === null) return 'Time unknown';
-  const d = new Date(ms);
-  return Number.isNaN(d.getTime()) ? 'Time unknown' : `${two(d.getHours())}:${two(d.getMinutes())}`;
 }
 
 const DOT: Record<Tone, StepTone | 'busy'> = { accent: 'busy', warning: 'warn', danger: 'bad', success: 'ok', muted: 'muted' };

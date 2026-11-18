@@ -2,15 +2,16 @@
 // React text through visible(), in pre-wrap blocks; tool inputs/results and reasoning stay collapsed and are fetched as
 // bounded slices only when expanded (design §5.2).
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
-import type { FileItem, ModelMarker, SubagentItem, ToolItem, TranscriptItem } from '../../shared/ipc.ts';
+import type { FileItem, SubagentItem, ToolItem, TranscriptItem } from '../../shared/ipc.ts';
 import { LoadingLine, RetryNotice } from '../components/RetryNotice.tsx';
 import { VirtualList, type VirtualListProps } from '../components/VirtualList.tsx';
 import { failText, type Retry } from '../retry.ts';
+import { clock } from '../model.ts';
 import { Icon } from '../status/StatusBadge.tsx';
 import { visible, visibleBlock } from '../text.ts';
 import { appendSlice, focusAfter, openWindow, prependSlice, previousAt, sliceAnnouncement, type SliceDir } from './slice.ts';
 import { approvalText, durationLabel, FILE_KIND_TEXT, groupFiles, lifecycleText, resultText, toolTitle, type Entry } from './timeline.ts';
-import { argFor, clock, entryLabel, isoTime, sizeText, toolMeta, toolTone } from './view.ts';
+import { argFor, entryLabel, isoTime, sizeText, toolMeta, toolTone } from './view.ts';
 
 /** Fetches one bounded slice of an item's text or reasoning. */
 /** call (XAIBO-PROD-446): a tool step's own call id, so the slice is that call's block only. */
@@ -315,4 +316,3 @@ export function Files({ files, tools }: { files: Paged<FileItem>; tools: ToolIte
   );
 }
 
-export type { ModelMarker };
