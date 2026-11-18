@@ -1709,14 +1709,14 @@ After each UI change, a Playwright MCP visual check on a dev build with syntheti
 - Reporting: hardware, macOS, versions, seed, DB/index sizes, real monotonic clock; a miss needs explicit owner acceptance.
 
 ### Gate 4 checklist
-- [ ] EC-56, 57, 86, 97, 100, 102 pass.
-- [ ] E2E covers Overview live updates, attention queue, session workspace (turns, tools, subagents, files, reasoning), stuck/loop badge display, context, cost, timeline, model switch, tray/close/quit.
-- [ ] Visual baselines from the implemented approved design, light and dark; Playwright MCP check on every screen with 0 console errors.
-- [ ] A11Y: keyboard-only flows, visible focus, labels, text + icon status, focus restoration, narrow layouts.
-- [ ] M5, M12, M14 (T2, usage enabled) measured; misses accepted by the owner.
-- [ ] M6 = 0 in every E2E run; repo unchanged after runs.
-- [ ] Pipeline evidence per unit; `record_decision` entries for risk prompts.
-- [ ] GS: Codex review, Claude second review, owner stop, `.handoff` deleted, PR after the gate.
+- [x] EC-56, 57, 86, 97, 100, 102 pass. *`gates/gate4.md`: suite on `e1cd15c`; EC-57 at the personal profile TP (D-P4-07).*
+- [x] E2E covers Overview live updates, attention queue, session workspace (turns, tools, subagents, files, reasoning), stuck/loop badge display, context, cost, timeline, model switch, tray/close/quit. *`gates/gate4.md`: 61/61 on the clean clone of `e1cd15c`.*
+- [x] Visual baselines from the implemented approved design, light and dark; Playwright MCP check on every screen with 0 console errors. *P4-T16 (9c45259, MCP check); 16 shots updated for the Gate 4 fixes with the owner's OK after a before/after review (D-P4-16, 11c2ad8); visual.spec green on `e1cd15c`.*
+- [x] A11Y: keyboard-only flows, visible focus, labels, text + icon status, focus restoration, narrow layouts. *P4-T14b, P4-T15a/b (D-P4-11); remaining LOW items carried to Phase 5 (progress §1, Phase 5 cleanup row).*
+- [x] M5, M12, M14 (T2, usage enabled) measured; misses accepted by the owner. *`gates/gate4.md`: M5 ~225 MiB (D-P4-12), M12 pass, M14 at TP with usage and disk-full (T2 in the scale-up stage, D-P4-07); only miss M11 file-only, accepted (D-P3-19); owner approval 2026-11-17.*
+- [x] M6 = 0 in every E2E run; repo unchanged after runs. *`gates/gate4.md`: connection audit in every launch, packaged gate audit pass, clone and repo clean after the suite.*
+- [x] Pipeline evidence per unit; `record_decision` entries for risk prompts. *harness runs 76–132 all completed (progress ledger); keyword-critical runs disclosed (117, 129, 132; decision 2105 pending at the owner's terminal, non-blocking).*
+- [x] GS: Codex review, Claude second review, owner stop, `.handoff` deleted, PR after the gate. *`gates/gate4.md`: Codex six chunks + three fix re-reviews (last approve), Claude second reviews approve; owner approved `e1cd15c` on 2026-11-17; handoffs deleted; PR opened on the owner's request.*
 
 ### Risks (Phase 4)
 - **RSS budget** with 50 live rows → virtualization, coalescer, paused deltas while hidden, measure early (P4-T17 after P4-T04).
