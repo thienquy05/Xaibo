@@ -19,7 +19,13 @@ import { settle } from '../usage/settle.ts';
 import { suppress, type Identity, type SuppressionReason } from './suppression.ts';
 
 export interface FileOptions { dataDir: string; backupDir: string; now: number }
-export interface PurgeOptions extends FileOptions { secret: Buffer; reason: SuppressionReason }
+export interface PurgeOptions extends FileOptions {
+  secret: Buffer; reason: SuppressionReason;
+  /** P5-T09 (review H2): re-checked inside the purge transaction; false = the session is no longer eligible, nothing done. */
+  guard?: (db: DatabaseSync, sessionId: number) => boolean;
+  /** false: the caller gives freed pages back once for many purges (retention, review M2). */
+  vacuum?: boolean;
+}
 export interface PurgeResult { purged: boolean; chunkItems: number; spoolFiles: number; backupsDeleted: number; filesPending: boolean }
 
 /** Spool files no forwarder appends to: plain files of an earlier UTC day, and files a replay has taken. Today's plain
@@ -35,7 +41,7 @@ export function purgeSession(writer: Writer, sessionId: number, o: PurgeOptions)
   const listed = openRegistry(o.dataDir).all(); // the file read stays outside the transaction
   const purged = writer.transact((db) => {
     const s = db.prepare('SELECT agent, profile_id AS profile, native_session_id AS native FROM sessions WHERE id = ?').get(sessionId) as Identity | undefined;
-    if (!s) return null;
+    if (!s || (o.guard && !o.guard(db, sessionId))) return null;
     const regs = [...new Set([
       ...listed.filter((r) => r.agent === s.agent && r.profile_key === s.profile).map((r) => r.id),
       ...(db.prepare('SELECT DISTINCT registration_id AS r FROM report_delivery WHERE agent = ? AND profile_key = ? AND native_session_id = ?')
@@ -46,9 +52,14 @@ export function purgeSession(writer: Writer, sessionId: number, o: PurgeOptions)
   });
   if (!purged) return { purged: false, chunkItems: 0, spoolFiles: 0, backupsDeleted: 0, filesPending: false };
   const files = finishFiles(writer, purged.who, purged.regs, o);
-  // ponytail: one unbounded incremental_vacuum on the writer; a bounded maintenance job with P5-T19 if a large purge stalls it
-  try { writer.transact((db) => db.exec('PRAGMA incremental_vacuum')); } catch { /* best effort: the pages stay free for reuse */ }
+  if (o.vacuum !== false) vacuum(writer);
   return { purged: true, ...files };
+}
+
+/** Gives freed pages back, best effort. ponytail: one unbounded incremental_vacuum on the writer; a bounded maintenance job
+ *  with P5-T19 if a large purge stalls it. */
+export function vacuum(writer: Writer): void {
+  try { writer.transact((db) => db.exec('PRAGMA incremental_vacuum')); } catch { /* the pages stay free for reuse */ }
 }
 
 /** Redoes the file work of every committed purge that still owes it; returns how many finished now. */

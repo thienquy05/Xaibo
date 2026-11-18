@@ -23,6 +23,9 @@ import { loadPrices, type Prices } from './usage/prices.ts';
 import { errorCode } from '../shared/crash.ts';
 import { approvedLabel } from './history/overlay.ts';
 import { resumePurges } from './history/purge.ts';
+import { retentionScheduler, runRetention, type RetentionResult } from './retention/job.ts';
+import { isActive } from './retention/policy.ts';
+import { loadInstallSecret } from '../shared/log.ts';
 import { openStore, type Store } from './store/db.ts';
 import { startHooks, type Hooks } from './receivers/intake.ts';
 import { Writer, type Batch } from './store/writer.ts';
@@ -41,6 +44,8 @@ export interface BootOptions {
   /** XAIBO-PROD-445: a pricing job that ran in more than one slice, or had a rerun queued, finished: commits it overlapped
    *  went out before their usage was priced, so open rows need one re-read. */
   onPriced?: () => void;
+  /** P5-T09: wait after the backfill before the first retention run (default 10 min); then daily. */
+  retentionDelayMs?: number;
 }
 export interface Service {
   store: Store;
@@ -73,11 +78,15 @@ export interface Service {
   suspend(at?: number): void;
   /** Resumes the status engine now, then reconciles every adapter at once (FR-02, bounded scans). */
   wake(): Promise<void>;
+  /** P5-T09: one retention run now (joins a run in progress); null for a read-only or stopped store. */
+  retention(): Promise<RetentionResult | null>;
   stop(): void;
 }
 
 /** The turn-settle interval (PRD §6.2/§6.3, Q8 default; a setting with the Settings screen after Gate D, Q3-14). */
 const SETTLE_MS = 4000;
+/** P5-T09: the first retention run waits this long after the backfill, off readiness and behind start-up work. */
+const RETENTION_DELAY_MS = 10 * 60_000;
 
 // P4-T10c2 parse lag: commit time minus a file's last write (its mtime at sync), for files written within LIVE_LAG_MS;
 // older files are history import and a future mtime is clock skew, so neither is lag. ponytail: mtime has the file
@@ -297,7 +306,25 @@ export async function boot(o: BootOptions): Promise<Service> {
       await a.backfill();
     }
     o.log?.log('backfill_done', { profiles: profiles.length });
+    if (!stopped) scheduler.start();
   };
+
+  // P5-T09 (FR-12): retention after the backfill (review H1: a session continued while Xaibo was off has its new records
+  // first), then daily; a run whose wall clock ran more than 1 h ahead of the monotonic clock is skipped (review H3).
+  let retentionRun: Promise<RetentionResult | null> | null = null;
+  const retention = (): Promise<RetentionResult | null> => {
+    if (readOnly || stopped || !db.isOpen) return Promise.resolve(null);
+    // diff review M1: everything, the secret's read included, inside the chain: a failure is a logged rejection
+    retentionRun ??= Promise.resolve().then(() => runRetention(writer, db, { dataDir: o.dataDir, backupDir: path.join(o.dataDir, 'backups'),
+      secret: loadInstallSecret(o.dataDir), now: clock(), active: (agent, profile, sid) => isActive(engine?.status(agent, profile, sid)?.lifecycle ?? null),
+      stopped: () => stopped, ...(o.log ? { log: (event: string, fields?: Record<string, string | number>) => o.log!.log(event, fields) } : {}) }))
+      .catch((e: unknown) => { o.log?.log('retention_failed', { error: errorCode(e) }); return null; })
+      .finally(() => { retentionRun = null; });
+    return retentionRun;
+  };
+  const scheduler = retentionScheduler({ run: () => { if (!stopped) void retention(); }, delayMs: o.retentionDelayMs ?? RETENTION_DELAY_MS,
+    wall: Date.now, mono: () => performance.now(), setTimer: (fn, ms) => setTimeout(fn, ms).unref(), clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
+    ...(o.log ? { log: (event: string, fields?: Record<string, string | number>) => o.log!.log(event, fields) } : {}) });
 
   const done = start();
   done.catch(() => undefined); // callers observe it; this only keeps an early failure from being unhandled meanwhile
@@ -333,10 +360,12 @@ export async function boot(o: BootOptions): Promise<Service> {
       return true;
     },
     suspend: (at) => engine?.suspend(at ?? clock()),
-    wake: async () => { engine?.resume(clock()); await Promise.all(adapters.map((a) => a.wake())); },
+    wake: async () => { scheduler.wake(); engine?.resume(clock()); await Promise.all(adapters.map((a) => a.wake())); }, // sleep is no clock jump
+    retention,
     stop: () => {
       stopped = true;
       if (due) clearTimeout(due.timer);
+      scheduler.stop();
       void hooks?.close();
       for (const a of adapters) a.stop();
       engine?.close();

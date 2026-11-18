@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, realpathSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -48,6 +48,25 @@ test('P5-T07 (review H3): boot finishes the file work a committed purge still ow
     await svc.done;
     assert.equal(existsSync(item), false);
     assert.equal(count(svc.store.db, 'SELECT count(*) FROM suppressions WHERE pending IS NOT NULL'), 0);
+  } finally {
+    svc.stop();
+  }
+});
+
+test('P5-T09: boot runs retention after the backfill (review H1); a session past 45 days is purged and stays out', async () => {
+  const s = setup();
+  const svc = await boot({ dataDir: s.dataDir, home: s.home, catalog, intervalMs: 60_000, retentionDelayMs: 0 });
+  try {
+    await svc.done;
+    const db = svc.store.db;
+    // the fixture's last activity is January 2026, but its file was copied just now: a native file changed since the
+    // cutoff (the session may have continued while Xaibo was off) keeps it in the deferred run
+    await until(() => count(db, "SELECT count(*) FROM kv WHERE key = 'retention.lastRunAt'") === 1, 5_000);
+    assert.equal(count(db, 'SELECT count(*) FROM sessions WHERE native_session_id = ?', SESSION), 1, 'file changed since the cutoff: kept');
+    utimesSync(s.transcript, new Date(Date.UTC(2026, 0, 2)), new Date(Date.UTC(2026, 0, 2)));
+    await svc.retention();
+    assert.equal(count(db, 'SELECT count(*) FROM sessions WHERE native_session_id = ?', SESSION), 0);
+    assert.equal(count(db, "SELECT count(*) FROM suppressions WHERE native_session_id = ? AND reason = 'retention'", SESSION), 1);
   } finally {
     svc.stop();
   }
