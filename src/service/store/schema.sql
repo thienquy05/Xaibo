@@ -109,7 +109,7 @@ CREATE TABLE monthly_quota_peaks (
   window_minutes INTEGER NOT NULL, -- -1 = window length unknown
   verified INTEGER NOT NULL CHECK (verified IN (0, 1)),
   peak_percent REAL NOT NULL,
-  observations INTEGER NOT NULL,
+  observations INTEGER NOT NULL, agent TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (month, scope_key, limit_id, window_minutes)
 ) WITHOUT ROWID;
 CREATE TABLE monthly_sessions (

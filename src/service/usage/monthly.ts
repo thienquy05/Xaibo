@@ -20,7 +20,7 @@ export interface MonthUsage {
   costUsd: number | null; costFull: number; costPartial: number; costNone: number; costPending: number; priceRevisions: number[];
 }
 export interface MonthSessions { month: string; agent: string; profileKey: string; sessions: number }
-export interface MonthQuota { month: string; scopeKey: string; limitId: string; windowMinutes: number | null; verified: boolean; peakPercent: number; observations: number }
+export interface MonthQuota { month: string; agent: string; scopeKey: string; limitId: string; windowMinutes: number | null; verified: boolean; peakPercent: number; observations: number }
 export interface Monthly { usage: MonthUsage[]; sessions: MonthSessions[]; quota: MonthQuota[] }
 
 type Coverage = 'full' | 'partial' | 'none' | 'pending';
@@ -30,7 +30,7 @@ export type Contribution = { key: string; at: Bucket } & (
   | ({ kind: 't'; model: string } & Who)
   | ({ kind: 'm'; model: string } & Who)
   | ({ kind: 's' } & Who)
-  | { kind: 'q'; scopeKey: string; limitId: string; window: number; verified: boolean; percent: number });
+  | { kind: 'q'; agent: string; scopeKey: string; limitId: string; window: number; verified: boolean; percent: number });
 
 // Review L4: JSON keeps the parts apart (native ids may contain NUL). Regenerating the install secret orphans every
 // settled key, so its file is created once and never replaced (log.ts loadInstallSecret).
@@ -124,14 +124,14 @@ export function* sessionContributions(db: DatabaseSync, secret: Buffer, ids: num
 
 /** Quota readings with a measured percent: usage_history rows `ids`, or all when null. */
 export function* quotaContributions(db: DatabaseSync, secret: Buffer, ids: number[] | null): Generator<Contribution> {
-  const sql = `SELECT h.limit_id, h.kind, h.used_percent, h.window_minutes, h.measured_at, sc.scope_key, sc.verified
+  const sql = `SELECT h.limit_id, h.kind, h.used_percent, h.window_minutes, h.measured_at, sc.scope_key, sc.verified, sc.agent
     FROM usage_history h JOIN usage_scopes sc ON sc.id = h.usage_scope_id WHERE h.used_percent IS NOT NULL`;
-  type Q = { limit_id: string; kind: string; used_percent: number; window_minutes: number | null; measured_at: number; scope_key: string; verified: number };
+  type Q = { limit_id: string; kind: string; used_percent: number; window_minutes: number | null; measured_at: number; scope_key: string; verified: number; agent: string };
   const one = db.prepare(`${sql} AND h.id = ?`);
   const rows = ids === null ? db.prepare(sql).iterate() as Iterable<Q> : ids.map((id) => one.get(id) as Q | undefined).filter((r): r is Q => r !== undefined);
   for (const q of rows) {
     const window = q.window_minutes ?? -1;
-    yield { kind: 'q', key: keyOf(secret, 'q', [q.scope_key, q.limit_id, window, q.kind, q.measured_at]), at: monthOf(q.measured_at),
+    yield { kind: 'q', key: keyOf(secret, 'q', [q.scope_key, q.limit_id, window, q.kind, q.measured_at]), at: monthOf(q.measured_at), agent: q.agent,
       scopeKey: scopeKey(secret, q.scope_key), limitId: q.limit_id, window, verified: q.verified === 1, percent: q.used_percent };
   }
 }
@@ -155,7 +155,7 @@ export class Totals {
   }
   add(c: Contribution) {
     const month = c.at.month;
-    if (c.kind === 'q') return this.addQuota({ month, scopeKey: c.scopeKey, limitId: c.limitId, windowMinutes: c.window < 0 ? null : c.window, verified: c.verified, peakPercent: c.percent, observations: 1 });
+    if (c.kind === 'q') return this.addQuota({ month, agent: c.agent, scopeKey: c.scopeKey, limitId: c.limitId, windowMinutes: c.window < 0 ? null : c.window, verified: c.verified, peakPercent: c.percent, observations: 1 });
     if (c.kind === 's') return this.addSessions({ month, agent: c.agent, profileKey: c.profileKey, sessions: 1 });
     const d = zero(month, c, c.model);
     if (c.kind === 't') d.turns = 1;
@@ -203,8 +203,8 @@ export function frozen(db: DatabaseSync): Totals {
   for (const r of db.prepare('SELECT month, agent, profile_key, sessions FROM monthly_sessions').iterate() as Iterable<{ month: string; agent: string; profile_key: string; sessions: number }>) {
     t.addSessions({ month: r.month, agent: r.agent, profileKey: r.profile_key, sessions: r.sessions });
   }
-  for (const r of db.prepare('SELECT * FROM monthly_quota_peaks').iterate() as Iterable<{ month: string; scope_key: string; limit_id: string; window_minutes: number; verified: number; peak_percent: number; observations: number }>) {
-    t.addQuota({ month: r.month, scopeKey: r.scope_key, limitId: r.limit_id, windowMinutes: r.window_minutes < 0 ? null : r.window_minutes,
+  for (const r of db.prepare('SELECT * FROM monthly_quota_peaks').iterate() as Iterable<{ month: string; agent: string; scope_key: string; limit_id: string; window_minutes: number; verified: number; peak_percent: number; observations: number }>) {
+    t.addQuota({ month: r.month, agent: r.agent, scopeKey: r.scope_key, limitId: r.limit_id, windowMinutes: r.window_minutes < 0 ? null : r.window_minutes,
       verified: r.verified === 1, peakPercent: r.peak_percent, observations: r.observations });
   }
   return t;
@@ -218,4 +218,15 @@ export function liveMonthly(db: DatabaseSync, secret: Buffer): Monthly {
     for (const c of gen) if (!settled.get(c.key)) t.add(c);
   }
   return t.result();
+}
+
+/** XAIBO-PROD-514 (P5-T06; US-20): the agent filter applies to usage, sessions and quota; the model filter to usage and
+ *  sessions only (quota peaks are not attributed to models). With a model, sessions are those that used that model. */
+export function filterMonthly(m: Monthly, f: { agent: string | null; model: string | null }): Monthly {
+  const agent = <T extends { agent: string }>(r: T) => f.agent === null || r.agent === f.agent;
+  const usage = m.usage.filter((u) => agent(u) && (f.model === null || u.modelId === f.model));
+  if (f.model === null) return { usage, sessions: m.sessions.filter(agent), quota: m.quota.filter(agent) };
+  const t = new Totals();
+  for (const u of usage) if (u.sessions) t.addSessions({ month: u.month, agent: u.agent, profileKey: u.profileKey, sessions: u.sessions });
+  return { usage, sessions: t.result().sessions, quota: m.quota.filter(agent) };
 }

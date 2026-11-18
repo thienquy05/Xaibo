@@ -4,7 +4,8 @@
 process.env.TZ = 'America/Los_Angeles';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { liveMonthly, monthOf } from '../../../src/service/usage/monthly.ts';
+import { filterMonthly, liveMonthly, monthOf } from '../../../src/service/usage/monthly.ts';
+import { monthStatus } from '../../../src/service/usage/availability.ts';
 import { settle } from '../../../src/service/usage/settle.ts';
 import { monthlyStore, removeSessions, request, sample, scope, SECRET, session, turn, tx } from '../../helpers/monthly.ts';
 
@@ -91,4 +92,78 @@ test('quota peak: max measured per month per scope and window; never summed or c
   assert.equal(row(uk, '2026-10', 300)?.peakPercent, 80);
   assert.equal(q.filter((r) => r.month === '2026-12').length, 0); // absent, not zero, not carried forward
   assert.equal(q.length, 4);
+});
+
+// XAIBO-PROD-514 (P5-T06, EC-104): month to date, detail availability from retained records, and the filters.
+test('EC-104: detail availability comes from retained records; the current month is month to date; empty months are absent', async () => {
+  const db = await monthlyStore();
+  const used = (sid: string, iso: string) => {
+    const s = session(db, { sid, last: at(iso) });
+    turn(db, s, `${sid}-t`, at(iso), 'model-a');
+    request(db, s, { identity: `${sid}-r`, ts: at(iso), model: 'model-a', output: 1 });
+    return s;
+  };
+  const expire = (sessions: number[], quota: number[] = []) => tx(db, () => {
+    settle(db, { sessions, quota }, SECRET, 0);
+    removeSessions(db, sessions);
+    for (const q of quota) db.prepare('DELETE FROM usage_history WHERE id = ?').run(q);
+  });
+  const q = sample(db, scope(db, 'scope-aug', true), { percent: 12, at: at('2026-08-10T12:00:00-07:00') });
+  const oct = used('oct', '2026-10-05T12:00:00-07:00');
+  const nov1 = used('nov1', '2026-11-05T12:00:00-08:00');
+  used('nov2', '2026-11-06T12:00:00-08:00'); // kept (Keep or active): still retained
+  used('dec', '2026-12-05T12:00:00-08:00');
+  expire([oct, nov1], [q]);
+  assert.deepEqual(monthStatus(db, SECRET, at('2026-12-10T12:00:00-08:00')), [
+    { month: '2026-08', monthToDate: false, detail: 'totals-only' },
+    { month: '2026-10', monthToDate: false, detail: 'totals-only' },
+    { month: '2026-11', monthToDate: false, detail: 'some-expired' },
+    { month: '2026-12', monthToDate: true, detail: 'full' },
+  ]);
+  // the same month list as the totals: no September, no zero months
+  const months = liveMonthly(db, SECRET);
+  assert.deepEqual([...new Set([...months.usage, ...months.quota].map((r) => r.month))].sort(), ['2026-08', '2026-10', '2026-11', '2026-12']);
+});
+
+test('EC-104: the model filter applies to usage and sessions, never to quota; the agent filter applies to all three', async () => {
+  const db = await monthlyStore();
+  const nov = at('2026-11-05T12:00:00-08:00');
+  const c = session(db, { sid: 'c', last: nov });
+  turn(db, c, 'c1', nov, 'model-a'); turn(db, c, 'c2', nov, 'model-b');
+  const x = session(db, { profile: 'p2', sid: 'x', last: nov });
+  turn(db, x, 'x1', nov, 'gpt-y');
+  sample(db, scope(db, 'codex-scope', true), { percent: 40, at: nov });
+  db.prepare("INSERT INTO usage_scopes (scope_key, profile_id, agent, epoch, verified) VALUES ('claude-scope', 'p1', 'claude', NULL, 0)").run();
+  sample(db, (db.prepare("SELECT id FROM usage_scopes WHERE scope_key = 'claude-scope'").get() as { id: number }).id, { percent: 60, at: nov });
+  const all = liveMonthly(db, SECRET);
+  assert.deepEqual(all.quota.map((q) => q.agent).sort(), ['claude', 'codex']);
+  assert.deepEqual(filterMonthly(all, { agent: null, model: null }), all);
+  const byModel = filterMonthly(all, { agent: null, model: 'model-a' });
+  assert.deepEqual(byModel.usage.map((u) => [u.agent, u.modelId, u.turns]), [['claude', 'model-a', 1]]);
+  assert.deepEqual(byModel.sessions.map((s) => [s.agent, s.sessions]), [['claude', 1]]);
+  assert.deepEqual(byModel.quota, all.quota); // quota is not attributed to models
+  const byAgent = filterMonthly(all, { agent: 'codex', model: null });
+  assert.deepEqual(byAgent.usage.map((u) => u.modelId), ['gpt-y']);
+  assert.deepEqual(byAgent.sessions.map((s) => [s.agent, s.sessions]), [['codex', 1]]);
+  assert.deepEqual(byAgent.quota.map((q) => [q.agent, q.peakPercent]), [['codex', 40]]);
+  // the agent is frozen with the quota peak too
+  const ids = (db.prepare('SELECT id FROM usage_history').all() as { id: number }[]).map((r) => r.id);
+  tx(db, () => { settle(db, { sessions: [], quota: ids }, SECRET, 0); db.prepare('DELETE FROM usage_history').run(); });
+  assert.deepEqual(liveMonthly(db, SECRET).quota.map((q) => q.agent).sort(), ['claude', 'codex']);
+});
+
+test('review: cleared contributions are not shown even while retained; frozen totals without keys still list their month', async () => {
+  const db = await monthlyStore();
+  const t = at('2026-10-05T12:00:00-07:00');
+  const s = session(db, { sid: 'kept', last: t });
+  turn(db, s, 'k1', t, 'model-a');
+  tx(db, () => settle(db, { sessions: [s], quota: [] }, SECRET, 0)); // settled while kept, then cleared (P5-T16)
+  db.prepare('UPDATE settled_contributions SET cleared = 1').run();
+  db.prepare('DELETE FROM monthly_usage').run();
+  db.prepare('DELETE FROM monthly_sessions').run();
+  assert.deepEqual(liveMonthly(db, SECRET), { usage: [], sessions: [], quota: [] });
+  assert.deepEqual(monthStatus(db, SECRET, t), []);
+  // frozen totals whose keys are missing (a repair, an older store) are still a month, totals only
+  db.prepare("INSERT INTO monthly_sessions (month, agent, profile_key, sessions) VALUES ('2026-07', 'claude', 'k', 1)").run();
+  assert.deepEqual(monthStatus(db, SECRET, t), [{ month: '2026-07', monthToDate: false, detail: 'totals-only' }]);
 });

@@ -39,9 +39,9 @@ export function settle(db: DatabaseSync, sel: SettleSelection, secret: Buffer, n
   const sessions = db.prepare(`INSERT INTO monthly_sessions (month, agent, profile_key, sessions) VALUES (?, ?, ?, ?)
     ON CONFLICT DO UPDATE SET sessions = sessions + excluded.sessions`);
   for (const d of delta.sessions.values()) sessions.run(d.month, d.agent, d.profileKey, d.sessions);
-  const quota = db.prepare(`INSERT INTO monthly_quota_peaks (month, scope_key, limit_id, window_minutes, verified, peak_percent, observations) VALUES (?, ?, ?, ?, ?, ?, ?)
+  const quota = db.prepare(`INSERT INTO monthly_quota_peaks (month, scope_key, limit_id, window_minutes, verified, peak_percent, observations, agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT DO UPDATE SET peak_percent = max(peak_percent, excluded.peak_percent), observations = observations + excluded.observations,
       verified = max(verified, excluded.verified)`); // review L7: a scope that became verified stays verified
-  for (const d of delta.quota.values()) quota.run(d.month, d.scopeKey, d.limitId, d.windowMinutes ?? -1, d.verified ? 1 : 0, d.peakPercent, d.observations);
+  for (const d of delta.quota.values()) quota.run(d.month, d.scopeKey, d.limitId, d.windowMinutes ?? -1, d.verified ? 1 : 0, d.peakPercent, d.observations, d.agent);
   return { added, skipped };
 }
