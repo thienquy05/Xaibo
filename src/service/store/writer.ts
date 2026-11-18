@@ -3,6 +3,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { byRank, mergeToolCalls, type ToolCallObservation } from '../normalize.ts';
 import { cwdKey } from '../paths.ts';
+import { isDiskFull } from './db.ts';
 import { agyUsage, claudeUsage, codexRateLimits, codexStep, codexUsage, tokenRecordDrift, type Usage } from '../usage/tokens.ts';
 import { contextStep, type ContextObs, type Snapshot } from '../usage/context.ts';
 import { codexReadings, historyStep, scopeKey, sourceTime, type Reading, type Stored } from '../usage/snapshots.ts';
@@ -434,11 +435,6 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
   }
 }
 
-/** SQLITE_FULL (primary code 13) or ENOSPC: the store cannot grow (EC-44). */
-export const isDiskFull = (e: unknown) => {
-  const x = e as { errcode?: unknown; code?: unknown } | null;
-  return (typeof x?.errcode === 'number' && (x.errcode & 0xff) === 13) || x?.code === 'ENOSPC';
-};
 
 interface Pending { batch: Batch; resolve: () => void; reject: (e: unknown) => void }
 export interface WriterOptions {

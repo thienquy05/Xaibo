@@ -5,7 +5,7 @@ import path from 'node:path';
 import { backup, DatabaseSync } from 'node:sqlite';
 
 export interface Migration { version: number; name: string; sql: string }
-export type ReadOnlyReason = 'migration-failed' | 'insufficient-space';
+export type ReadOnlyReason = 'migration-failed' | 'insufficient-space' | 'newer-schema';
 export interface Store { db: DatabaseSync; readOnly: boolean; reason?: ReadOnlyReason }
 export interface StoreOptions {
   file: string;
@@ -25,6 +25,12 @@ export function loadMigrations(dir: URL = MIGRATIONS_DIR): Migration[] {
   return readdirSync(dir).filter((f) => /^\d{3}_[\w-]+\.sql$/.test(f)).sort()
     .map((f) => ({ version: Number(f.slice(0, 3)), name: f.slice(0, -4), sql: readFileSync(new URL(f, dir), 'utf8') }));
 }
+
+/** SQLITE_FULL (primary code 13) or ENOSPC: the store cannot grow (EC-44). */
+export const isDiskFull = (e: unknown) => {
+  const x = e as { errcode?: unknown; code?: unknown } | null;
+  return (typeof x?.errcode === 'number' && (x.errcode & 0xff) === 13) || x?.code === 'ENOSPC';
+};
 
 const userVersion = (db: DatabaseSync) => Number(Object.values(db.prepare('PRAGMA user_version').get() ?? {})[0]);
 const sizeOf = (f: string) => (existsSync(f) ? statSync(f).size : 0);
@@ -59,9 +65,18 @@ async function backupTo(db: DatabaseSync, dir: string, version: number, onProgre
 
 export async function openStore(o: StoreOptions): Promise<Store> {
   mkdirSync(path.dirname(o.file), { recursive: true, mode: 0o700 });
+  const migrations = o.migrations ?? loadMigrations();
+  // Research L6: a database from a newer Xaibo is read before any pragma or migration could change it.
+  if (existsSync(o.file)) {
+    const probe = new DatabaseSync(o.file, { readOnly: true });
+    let found: number;
+    try { found = userVersion(probe); } catch (e) { probe.close(); throw e; } // e.g. not a database: refused as before, not leaked
+    if (found > Math.max(0, ...migrations.map((m) => m.version))) return { db: probe, readOnly: true, reason: 'newer-schema' };
+    probe.close();
+  }
   const db = openReadWrite(o.file);
   const current = userVersion(db);
-  const pending = (o.migrations ?? loadMigrations()).filter((m) => m.version > current);
+  const pending = migrations.filter((m) => m.version > current);
   if (pending.length === 0) return { db, readOnly: false };
   if (current > 0) { // a brand-new DB holds nothing to back up
     const needed = sizeOf(o.file) + sizeOf(`${o.file}-wal`) + SPACE_MARGIN;
@@ -72,7 +87,7 @@ export async function openStore(o: StoreOptions): Promise<Store> {
     // A table rebuild (SQLite's documented procedure) runs with foreign keys off; the pragma only takes effect outside a
     // transaction. Every reference must still resolve before the commit, and foreign keys are back on in every case.
     const fkOff = FK_OFF.test(m.sql);
-    let failed = false;
+    let failed: ReadOnlyReason | null = null;
     try {
       if (fkOff) db.exec('PRAGMA foreign_keys = OFF');
       db.exec('BEGIN IMMEDIATE');
@@ -80,13 +95,13 @@ export async function openStore(o: StoreOptions): Promise<Store> {
       if (fkOff && db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('dangling reference');
       db.exec(`PRAGMA user_version = ${m.version}`);
       db.exec('COMMIT');
-    } catch {
-      if (db.isTransaction) db.exec('ROLLBACK');
-      failed = true;
+    } catch (e) {
+      try { if (db.isTransaction) db.exec('ROLLBACK'); } catch { /* the connection is closed and reopened read-only below */ }
+      failed = isDiskFull(e) ? 'insufficient-space' : 'migration-failed'; // research L6: space is fixable by the owner
     } finally {
       if (fkOff) db.exec('PRAGMA foreign_keys = ON');
     }
-    if (failed) return readOnly(db, o.file, 'migration-failed');
+    if (failed) return readOnly(db, o.file, failed);
   }
   return { db, readOnly: false };
 }

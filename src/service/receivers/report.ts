@@ -12,7 +12,8 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { Envelope } from '../../shared/hook-protocol.ts';
 import { parseReport } from '../../shared/report/schema.ts';
 import { openChunks, type ChunkKey, type ChunkLimits } from '../adapters/generic/chunks.ts';
-import { isDiskFull, type Batch, type ReportDelivery, type Writer } from '../store/writer.ts';
+import { isDiskFull } from '../store/db.ts';
+import type { Batch, ReportDelivery, Writer } from '../store/writer.ts';
 import type { Registration } from './registrations.ts';
 import type { IntakeResult } from './socket.ts';
 

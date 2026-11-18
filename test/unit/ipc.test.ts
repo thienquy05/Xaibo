@@ -42,6 +42,8 @@ test('health: state, attempt and readOnly are checked; text is plain', () => {
   assert.equal(healthText(h), 'Restarting (attempt 2)');
   assert.equal(healthText({ ...h, state: 'stopped', attempt: 0 }), 'Stopped');
   assert.equal(READ_ONLY_BANNER['migration-failed'], 'Database migration failed: read-only');
+  assert.equal(READ_ONLY_BANNER['newer-schema'], 'Database is from a newer Xaibo version: read-only');
+  assert.deepEqual(parseServiceEvent({ v: 1, type: 'ready', readOnly: 'newer-schema' }), { v: 1, type: 'ready', readOnly: 'newer-schema' });
 });
 
 test('accept() hands valid messages on and counts the dropped ones', () => {

@@ -4,10 +4,11 @@
 // brokered port (P1-T12).
 export const IPC_VERSION = 1;
 
-export type ReadOnlyReason = 'migration-failed' | 'insufficient-space';
+export type ReadOnlyReason = 'migration-failed' | 'insufficient-space' | 'newer-schema';
 export const READ_ONLY_BANNER: Record<ReadOnlyReason, string> = {
   'migration-failed': 'Database migration failed: read-only',
   'insufficient-space': 'Not enough disk space to migrate the database: read-only',
+  'newer-schema': 'Database is from a newer Xaibo version: read-only',
 };
 
 /** main -> service; setPath carries a file the user picked in the native dialog (validated again by the service);
@@ -34,7 +35,7 @@ type Msg = Record<string, unknown>;
 const envelope = (x: unknown): Msg | null =>
   typeof x === 'object' && x !== null && !Array.isArray(x) && (x as Msg).v === IPC_VERSION ? (x as Msg) : null;
 const oneOf = <T extends string>(values: readonly T[], x: unknown): x is T => typeof x === 'string' && (values as readonly string[]).includes(x);
-const READ_ONLY = ['migration-failed', 'insufficient-space'] as const;
+const READ_ONLY = ['migration-failed', 'insufficient-space', 'newer-schema'] as const;
 const readOnlyOk = (x: unknown): x is ReadOnlyReason | null => x === null || oneOf(READ_ONLY, x);
 
 export const AGENT_ID = /^[a-z][a-z0-9-]{0,31}$/;
