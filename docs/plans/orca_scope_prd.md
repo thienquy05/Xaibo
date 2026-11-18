@@ -107,7 +107,7 @@ Milestones start after the Phase 3 gate. Ordering against the remaining MVP gate
       repository.
 - [x] Milestone 3 (answered: none preselected, PRD Q26): default for ignored files: none, a per-repository list, or a preview of candidates?
 - [x] Milestone 4 (answered: wait for S-20, PRD Q28): does it wait for the embedded terminal (S-20) or ship with a minimal owned terminal?
-- [ ] Compare Orca's journal recovery and versioning with Xaibo's store before Phase 5 (research L6).
+- [x] Compare Orca's journal recovery and versioning with Xaibo's store before Phase 5 (research L6; done at P5-T00, 2026-11-18: five takeaways in the `xaibo_progress.md` P5-T00 row, input to P5-T01, T07, T08, T09).
 
 Owner decisions, 2026-11-13: PRD Q24–Q30 resolved with their defaults (new sessions only; S-39 and the
 terminal source in v1-A; no ignored files preselected; "Mixed" shows both, never summed; no usage APIs; checkout
