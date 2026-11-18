@@ -16,6 +16,8 @@ export interface Registry {
   verify(id: string, token: string): Registration | null;
   /** The registration as currently stored (null once revoked). */
   current(id: string): Registration | null;
+  /** Every registration as currently stored (P5-T07: the ones of a purged session's agent and profile). */
+  all(): Registration[];
 }
 export class RegistrationError extends Error {
   readonly code: 'invalid' | 'unreadable' | 'full';
@@ -118,5 +120,6 @@ export function openRegistry(dataDir: string): Registry {
       return ok && r ? r : null;
     },
     current: (id) => list().find((x) => x.id === id) ?? null,
+    all: () => [...list()],
   };
 }

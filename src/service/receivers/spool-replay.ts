@@ -58,7 +58,7 @@ const own = (st: Stats) => uid === undefined || st.uid === uid;
 const lstat = (p: string) => { try { return lstatSync(p); } catch { return null; } };
 const regularOwn = (st: Stats | null) => !!st && st.isFile() && own(st) && st.nlink === 1;
 
-function spoolDir(dataDir: string): string | null {
+export function spoolDir(dataDir: string): string | null {
   const dir = path.join(dataDir, 'spool');
   const st = lstat(dir);
   if (!st || !st.isDirectory() || !own(st)) return null;
@@ -67,7 +67,7 @@ function spoolDir(dataDir: string): string | null {
 }
 
 /** The whole file if it is a regular, single-link file of our own within `max` bytes; never follows a symlink. */
-function readOwn(file: string, max: number): { buf: Buffer; ino: number } | null {
+export function readOwn(file: string, max: number): { buf: Buffer; ino: number; mtimeMs: number; ctimeMs: number } | null {
   let fd: number;
   try { fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch { return null; }
   try {
@@ -76,7 +76,7 @@ function readOwn(file: string, max: number): { buf: Buffer; ino: number } | null
     const buf = Buffer.alloc(st.size);
     let n = 0;
     while (n < st.size) { const r = readSync(fd, buf, n, st.size - n, n); if (r === 0) break; n += r; }
-    return { buf: buf.subarray(0, n), ino: st.ino };
+    return { buf: buf.subarray(0, n), ino: st.ino, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs };
   } finally {
     closeSync(fd);
   }

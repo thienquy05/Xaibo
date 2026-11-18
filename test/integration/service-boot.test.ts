@@ -3,12 +3,14 @@
 // reconciles; a second boot on the same data dir resumes from committed checkpoints without duplicates.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFileSync, chmodSync, cpSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { boot, parseLagOf } from '../../src/service/boot.ts';
 import { loadCatalog, type Catalog } from '../../src/service/catalog/validate.ts';
+import { openStore } from '../../src/service/store/db.ts';
 import { count, FIXTURES, until } from '../helpers/claude-profile.ts';
 
 const SESSION = '00000000-0000-4000-8000-000000001000';
@@ -27,6 +29,29 @@ function setup() {
   chmodSync(join(bin, 'claude'), 0o755);
   return { tmp, home, dataDir: join(tmp, 'data'), transcript: join(project, `${SESSION}.jsonl`) };
 }
+
+test('P5-T07 (review H3): boot finishes the file work a committed purge still owed', async () => {
+  const s = setup();
+  const pre = await openStore({ file: join(s.dataDir, 'xaibo.db'), backupDir: join(s.dataDir, 'backups') });
+  const reg = '00000000-0000-4000-8000-0000000f0703';
+  pre.db.prepare("INSERT INTO suppressions (agent, profile_id, native_session_id, reason, at, pending) VALUES ('claude', 'px', 'gone-session', 'manual', 1, ?)")
+    .run(JSON.stringify([reg]));
+  pre.db.close();
+  // an interrupted chunk assembly of the purged session, left on disk by a crash right after the purge's COMMIT
+  const key = { registration: reg, producer: 'fixture-producer', session: 'gone-session', item: 'cut', revision: 1 };
+  const item = join(s.dataDir, 'content-chunks', reg, createHash('sha256').update(JSON.stringify([key.registration, key.producer, key.session, key.item, key.revision])).digest('hex'));
+  mkdirSync(item, { recursive: true, mode: 0o700 });
+  writeFileSync(join(item, 'key'), JSON.stringify(key), { mode: 0o600 });
+  writeFileSync(join(item, '0.c'), 'interrupted', { mode: 0o600 });
+  const svc = await boot({ dataDir: s.dataDir, home: s.home, catalog, intervalMs: 60_000 });
+  try {
+    await svc.done;
+    assert.equal(existsSync(item), false);
+    assert.equal(count(svc.store.db, 'SELECT count(*) FROM suppressions WHERE pending IS NOT NULL'), 0);
+  } finally {
+    svc.stop();
+  }
+});
 
 test('P2-T03: a Codex profile gets its own adapter and its rollouts are ingested', async () => {
   const s = setup();

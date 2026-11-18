@@ -14,6 +14,7 @@ import type { Logger } from '../../shared/log.ts';
 import { isStatusline, lastSnapshots, statuslineRecord } from '../adapters/claude/statusline.ts';
 import { claudeReadings, statuslineContext, statuslineCost } from '../usage/snapshots.ts';
 import { isDiskFull } from '../store/db.ts';
+import { SUPPRESSED } from '../history/suppression.ts';
 import type { Batch, EventRow, Writer } from '../store/writer.ts';
 import { openRegistry } from './registrations.ts';
 import { createReportIntake, type ReportIntake } from './report.ts';
@@ -56,6 +57,7 @@ export function createIntake(o: IntakeOptions): Intake {
   // A report registration's profile belongs to that registration's token, never to the install token (P3-T13b2 review).
   const profile = o.db.prepare("SELECT 1 FROM profiles WHERE id = ? AND agent = ? AND origin <> 'registration'");
   const stored = o.db.prepare('SELECT 1 FROM hook_delivery WHERE delivery_id = ?');
+  const suppressed = o.db.prepare(SUPPRESSED);
   const putGap = o.db.prepare(`INSERT INTO hook_gaps (reason, agent, native_session_id, from_ts, to_ts, count, locator, recorded_at)
     VALUES ('disk-full', ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (locator) DO NOTHING`);
   const dropGap = o.db.prepare('DELETE FROM hook_gaps WHERE locator = ?');
@@ -121,6 +123,9 @@ export function createIntake(o: IntakeOptions): Intake {
   };
 
   const deliver = async (e: Envelope): Promise<IntakeResult> => {
+    // P5-T07 (FR-11, review H1): a purged session is refused before it is published (status engine) or stored; accepted,
+    // so the forwarder does not spool it and the replay drops it. The writer's filter is the backstop.
+    if (e.session_id !== null && suppressed.get(e.agent, e.profile_key, e.session_id)) return { status: 'accepted', code: 'suppressed' };
     if (isStatusline(e)) return statusline(e);
     if (stored.get(e.delivery_id)) { // stored, so never missing: a commit that landed but reported disk full (G3b-2)
       if (!gaps.delete(e.delivery_id)) try { dropGap.run(`disk-full:${e.delivery_id}`); } catch { /* the gap row stays */ }

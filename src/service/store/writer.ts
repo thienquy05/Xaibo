@@ -5,11 +5,14 @@ import { byRank, mergeToolCalls, type ToolCallObservation } from '../normalize.t
 import { resolveRepository, type Grouping } from '../history/repository.ts';
 import { cwdKey } from '../paths.ts';
 import { isDiskFull } from './db.ts';
+import { SUPPRESSED } from '../history/suppression.ts';
 import { agyUsage, claudeUsage, codexRateLimits, codexStep, codexUsage, tokenRecordDrift, type Usage } from '../usage/tokens.ts';
 import { contextStep, type ContextObs, type Snapshot } from '../usage/context.ts';
 import { codexReadings, historyStep, scopeKey, sourceTime, type Reading, type Stored } from '../usage/snapshots.ts';
 
 export const SCHEMA_VERSION = 1;
+// The FTS row of an event is its ftsPrefix; deletes (revisions, purge) must pass that same text, so changing this bound
+// leaves rows indexed under the old one undeletable (XAIBO-PROD-515 review M5).
 const FTS_MAX_BYTES = 64 * 1024;
 /** P4-T08: model evidence relayed by Xaibo's own channels (not the agent's file) and the effort fill window. */
 const RELAYED = new Set(['hook', 'report', 'statusline']);
@@ -242,7 +245,32 @@ function prepare(db: DatabaseSync) {
     reportedCost: db.prepare(`INSERT INTO cost_estimates (session_id, schema_version, source, covered_scope, amount_usd, basis, coverage)
       VALUES (?, ?, ?, 'session:statusline', ?, 'agent_reported', '{"coverage":"full"}')
       ON CONFLICT (session_id, covered_scope) DO UPDATE SET amount_usd = excluded.amount_usd`),
+    suppressed: db.prepare(SUPPRESSED),
   };
+}
+
+/** XAIBO-PROD-515 (FR-11, review M1): the batch without its suppressed sessions: their events, subagent links and
+ *  quarantine rows go too, and a suppressed file session leaves the file's checkpoint unattached (its quarantine dropped),
+ *  so the checkpoint still advances and the other sessions of the file still commit. */
+function unsuppressed(st: ReturnType<typeof prepare>, batch: Batch): Batch {
+  const ids = new Set([...batch.sessions.map((s) => s.nativeSessionId), ...(batch.fileSession !== undefined ? [batch.fileSession] : [])]);
+  const gone = new Set([...ids].filter((id) => st.suppressed.get(batch.agent, batch.profileId, id)));
+  if (!gone.size) return batch;
+  const { fileSession, quarantine, subagents, ...rest } = batch;
+  const fileGone = fileSession !== undefined && gone.has(fileSession);
+  return {
+    ...rest, sessions: batch.sessions.filter((s) => !gone.has(s.nativeSessionId)), events: batch.events.filter((e) => !gone.has(e.nativeSessionId)),
+    ...(fileSession !== undefined && !fileGone ? { fileSession } : {}),
+    ...(quarantine ? { quarantine: fileGone ? [] : quarantine.filter((q) => q.nativeSessionId === undefined || !gone.has(q.nativeSessionId)) } : {}),
+    ...(subagents ? { subagents: subagents.filter((s) => !gone.has(s.nativeSessionId)) } : {}),
+  };
+}
+
+/** Research L6: rolls back after a failure without replacing the caller's error (a throwing ROLLBACK is swallowed).
+ *  True when the connection is still inside a transaction afterwards. */
+export function rollback(db: DatabaseSync): boolean {
+  try { if (db.isTransaction) db.exec('ROLLBACK'); } catch { /* the original error is the one reported */ }
+  return db.isTransaction;
 }
 
 type HistRow = { used_percent: number | null; window_minutes: number | null; resets_at: number | null; plan: string | null; credits: string | null;
@@ -357,29 +385,35 @@ function groupingOf(cwd: string): Grouping {
   return g;
 }
 
-export function commitBatch(db: DatabaseSync, batch: Batch): void {
+/** Commits one batch; returns what it committed (the batch without suppressed sessions, P5-T07). */
+export function commitBatch(db: DatabaseSync, input: Batch): Batch {
   const st = statements(db);
-  const groups = batch.sessions.map((s) => (s.cwd ? groupingOf(s.cwd) : null)); // file metadata reads, outside the transaction
+  const groups = new Map(input.sessions.map((s) => [s, s.cwd ? groupingOf(s.cwd) : null])); // file metadata reads, outside the transaction
   db.exec('BEGIN IMMEDIATE');
   try {
-    const d = batch.delivery;
+    const batch = unsuppressed(st, input); // read inside the transaction (keeps the session objects): a purge committed meanwhile is seen
+    const d = batch.delivery, r = batch.report;
+    // review: a delivery of a suppressed session (intake refuses it first) commits nothing, not even its dedup row
+    if ((d?.nativeSessionId && st.suppressed.get(d.agent, d.profileKey, d.nativeSessionId)) || (r && st.suppressed.get(r.agent, r.profileKey, r.nativeSessionId))) {
+      db.exec('COMMIT');
+      return batch;
+    }
     if (d && !st.delivery.get(d.deliveryId, d.agent, d.profileKey, d.nativeSessionId, d.event, d.receivedTs, d.committedTs, d.unattributed)) {
       db.exec('COMMIT'); // already stored (spool replay of an acked delivery, or a retry)
-      return;
+      return batch;
     }
-    const r = batch.report;
     if (r) {
       if (!st.report.get(r.registrationId, r.deliveryId, r.agent, r.profileKey, r.nativeSessionId, r.event, r.producerId, r.producerSeq, r.receivedTs,
-        r.committedTs, r.unattributed, r.hasModel ? 1 : 0)) { db.exec('COMMIT'); return; }
+        r.committedTs, r.unattributed, r.hasModel ? 1 : 0)) { db.exec('COMMIT'); return batch; }
       const c = r.content;
       if (c) st.reportContent.run(r.registrationId, r.nativeSessionId, c.itemId, c.revision, c.role, c.kind, c.state, c.chunks, c.bytes, c.text, r.committedTs);
     }
     const np = batch.profile;
     if (np) st.newProfile.run(np.id, np.agent, np.root, np.origin);
     const ids = new Map<string, number | bigint>();
-    for (const [i, s] of batch.sessions.entries()) {
+    for (const s of batch.sessions) {
       if (s.existing) { if (s.title) st.setTitle.run(s.title, batch.agent, batch.profileId, s.nativeSessionId, s.title); continue; }
-      const g = groups[i] ?? null;
+      const g = groups.get(s) ?? null;
       const row = st.upsertSession.get(batch.agent, batch.profileId, s.nativeSessionId, s.cwd ?? null, s.cwdKey ?? null, s.entrypoint ?? null,
         b(s.interactive), s.title ?? null, s.startedAt ?? null, s.lastActivity ?? null, s.originator ?? null, s.nativeArchived ? 1 : 0,
         b(s.nativeAvailable), s.accountEpoch ?? null, g?.kind === 'repository' ? g.key : null, g?.kind === 'repository' ? g.worktree : null,
@@ -460,8 +494,9 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
       st.drift.run(id);
     }
     db.exec('COMMIT');
+    return batch;
   } catch (e) {
-    if (db.isTransaction) db.exec('ROLLBACK'); // SQLite already rolled back on SQLITE_FULL; keep that error, not ours
+    rollback(db); // SQLite already rolled back on SQLITE_FULL; keep that error, not ours
     throw e;
   }
 }
@@ -476,8 +511,8 @@ export interface WriterOptions {
   onCommit?: (batch: Batch) => void;
   /** EC-44: called when the store becomes full and again when a commit succeeds after that, outside any transaction. */
   onDiskFull?: (full: boolean) => void;
-  /** Fault injection for tests (Q3-15); commitBatch otherwise. */
-  commit?: (db: DatabaseSync, batch: Batch) => void;
+  /** Fault injection for tests (Q3-15); commitBatch otherwise. Returns what it committed (void = the batch as given). */
+  commit?: (db: DatabaseSync, batch: Batch) => Batch | void;
 }
 
 const batchBytes = (b: Batch) => b.events.reduce((n, e) => n + (e.content?.length ?? 0) + (e.raw?.length ?? 0), 0);
@@ -487,6 +522,7 @@ export class Writer {
   readonly #db: DatabaseSync;
   readonly #o: Required<Omit<WriterOptions, 'onCommit' | 'onDiskFull'>> & Pick<WriterOptions, 'onCommit' | 'onDiskFull'>;
   #full = false;
+  #broken = false;
   #live: Pending[] = [];
   #backfill: Pending[] = [];
   #rows = 0;
@@ -515,14 +551,41 @@ export class Writer {
   #commit(batch: Batch): void {
     // ponytail: while full every commit still runs as the probe (SQLite fails fast without growing); a pause timer if
     // the retried file reads ever cost too much.
+    const done = this.#guard(() => this.#o.commit(this.#db, batch));
+    this.#o.onCommit?.(done ?? batch); // P5-T07: what was committed, never a suppressed session
+  }
+
+  /** XAIBO-PROD-515 (P5-T07, research L6): `fn` in one immediate transaction on the writer's connection, with the same
+   *  disk-full state as batches (purge, retention). Any throw rolls back and is rethrown as it was; the work is committed
+   *  only when this returns. */
+  transact<T>(fn: (db: DatabaseSync) => T): T {
+    return this.#guard(() => {
+      this.#db.exec('BEGIN IMMEDIATE');
+      try {
+        const r = fn(this.#db);
+        this.#db.exec('COMMIT');
+        return r;
+      } catch (e) {
+        rollback(this.#db);
+        throw e;
+      }
+    });
+  }
+
+  #guard<T>(run: () => T): T {
+    // ponytail: a connection left inside a transaction (a ROLLBACK that failed) is not reused; writes fail until the
+    // service restarts and opens a new one. Reopen in place if that is ever seen.
+    if (this.#broken) throw new Error('store connection left inside a transaction; restart required');
+    let r: T;
     try {
-      this.#o.commit(this.#db, batch);
+      r = run();
     } catch (e) {
+      if (this.#db.isTransaction) this.#broken = true;
       if (isDiskFull(e) && !this.#full) { this.#full = true; this.#o.onDiskFull?.(true); }
       throw e;
     }
     if (this.#full) { this.#full = false; this.#o.onDiskFull?.(false); }
-    this.#o.onCommit?.(batch);
+    return r;
   }
 
   enqueue(batch: Batch, live: boolean): Promise<void> {

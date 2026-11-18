@@ -13,6 +13,7 @@ import type { Envelope } from '../../shared/hook-protocol.ts';
 import { parseReport } from '../../shared/report/schema.ts';
 import { openChunks, type ChunkKey, type ChunkLimits } from '../adapters/generic/chunks.ts';
 import { isDiskFull } from '../store/db.ts';
+import { SUPPRESSED } from '../history/suppression.ts';
 import type { Batch, ReportDelivery, Writer } from '../store/writer.ts';
 import type { Registration } from './registrations.ts';
 import type { IntakeResult } from './socket.ts';
@@ -45,6 +46,7 @@ export function createReportIntake(o: ReportIntakeOptions): ReportIntake {
   const chunks = openChunks(path.join(o.dataDir, 'content-chunks'), o.chunks);
   const profileOf = o.db.prepare('SELECT agent, origin FROM profiles WHERE id = ?');
   const stored = o.db.prepare('SELECT 1 FROM report_delivery WHERE registration_id = ? AND delivery_id = ?');
+  const suppressed = o.db.prepare(SUPPRESSED);
   const newestSeq = o.db.prepare(NEWEST_SEQ);
   const itemState = o.db.prepare('SELECT state FROM report_content WHERE registration_id = ? AND native_session_id = ? AND item_id = ? AND revision = ?');
   const putReject = o.db.prepare(`INSERT INTO report_rejects (registration_id, code, count, first_ts, last_ts) VALUES (?, ?, 1, ?, ?)
@@ -67,6 +69,8 @@ export function createReportIntake(o: ReportIntakeOptions): ReportIntake {
     if (!r.ok) { rejected(reg, r.code); return { status: 'rejected', code: r.code }; }
     const x = r.event;
     if (stored.get(reg.id, x.delivery_id)) return { status: 'accepted', code: 'duplicate' };
+    // P5-T07 (FR-11, review H1): a purged session is refused before it is published or a chunk of it is written
+    if (suppressed.get(reg.agent, reg.profile_key, x.session_id)) return { status: 'accepted', code: 'suppressed' };
     // A replayed frame keeps the helper's receive time, never later than now, so it orders and ages as it happened (G3c-3).
     const committed = now(), at = receivedTs === undefined ? committed : Math.min(receivedTs, committed);
     const p = x.payload;

@@ -22,6 +22,7 @@ import { priceUsage } from './usage/cost.ts';
 import { loadPrices, type Prices } from './usage/prices.ts';
 import { errorCode } from '../shared/crash.ts';
 import { approvedLabel } from './history/overlay.ts';
+import { resumePurges } from './history/purge.ts';
 import { openStore, type Store } from './store/db.ts';
 import { startHooks, type Hooks } from './receivers/intake.ts';
 import { Writer, type Batch } from './store/writer.ts';
@@ -274,6 +275,11 @@ export async function boot(o: BootOptions): Promise<Service> {
       },
     });
     if (stopped) { void hooks.close(); return; }
+    // P5-T07 (review H3): file work a purge committed but did not finish (a crash, a busy backup) is redone, off readiness
+    try {
+      const resumed = resumePurges(writer, { dataDir: o.dataDir, backupDir: path.join(o.dataDir, 'backups'), now: (o.now ?? Date.now)() });
+      if (resumed) o.log?.log('purge_resumed', { count: resumed });
+    } catch (e) { o.log?.log('purge_resume_failed', { error: errorCode(e) }); }
     const Adapters: Record<string, typeof ClaudeAdapter | typeof CodexAdapter | typeof AgyAdapter> = { claude: ClaudeAdapter, codex: CodexAdapter, agy: AgyAdapter };
     // P3-T15: the account-marker salt (created on first boot; review L1); null = no marker, Codex scopes stay unverified
     const salt = loadScopeSalt(o.dataDir, o.log);

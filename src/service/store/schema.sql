@@ -298,6 +298,16 @@ CREATE TABLE subagents (
   agent_type TEXT, model_id TEXT,
   UNIQUE (session_id, native_id)
 );
+CREATE TABLE suppressions (
+  agent TEXT NOT NULL,
+  profile_id TEXT NOT NULL,
+  native_session_id TEXT NOT NULL,
+  reason TEXT NOT NULL CHECK (reason IN ('manual', 'retention')),
+  at INTEGER NOT NULL,
+  pending TEXT,
+  PRIMARY KEY (agent, profile_id, native_session_id)
+) WITHOUT ROWID;
+CREATE INDEX suppressions_pending ON suppressions (agent) WHERE pending IS NOT NULL;
 CREATE TABLE tool_calls (
   id INTEGER PRIMARY KEY,
   session_id INTEGER NOT NULL REFERENCES sessions(id),

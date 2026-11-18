@@ -62,6 +62,28 @@ function durable(file: string, data: string) {
   }
 }
 
+const ownDir = (p: string) => { try { const st = lstatSync(p); return st.isDirectory() && (process.getuid === undefined || st.uid === process.getuid()); } catch { return false; } };
+
+/** XAIBO-PROD-515 (P5-T07): removes every item (pending, interrupted or left by a crash) whose verified key matches;
+ *  returns how many. Only our own dirs with valid names and a key that hashes to its dir are touched; symlinks are never
+ *  followed. ponytail: a running report intake keeps counting the removed bytes against its quota until it reopens
+ *  (service restart); route this through its ChunkStore if purges of large pending items ever starve other sessions. */
+export function removeItems(root: string, match: (k: ChunkKey) => boolean): number {
+  if (!ownDir(root)) return 0;
+  let n = 0;
+  for (const reg of readdirSync(root).filter((x) => UUID.test(x) && ownDir(path.join(root, x)))) {
+    for (const h of readdirSync(path.join(root, reg)).filter((x) => HASH.test(x) && ownDir(path.join(root, reg, x)))) {
+      const dir = path.join(root, reg, h);
+      let key: ChunkKey | null = null;
+      try { if (lstatSync(path.join(dir, KEY)).isFile()) key = parseKey(readFileSync(path.join(dir, KEY), 'utf8')); } catch { /* no key file: not ours to judge */ }
+      if (!key || key.registration !== reg || hashOf(key) !== h || !match(key)) continue;
+      rmSync(dir, { recursive: true, force: true });
+      n++;
+    }
+  }
+  return n;
+}
+
 export function openChunks(root: string, limits: ChunkLimits = CHUNK_LIMITS): ChunkStore {
   const cap = { ...CHUNK_LIMITS, ...limits };
   privateDir(root);
