@@ -2,19 +2,19 @@
 // turns, sessions, quota samples) and a purge stand-in that deletes a session's records, as permanent deletion will.
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { openStore } from '../../src/service/store/db.ts';
+import { settle } from '../../src/service/usage/settle.ts';
 
 export const SECRET = Buffer.alloc(32, 7);
 
-export async function monthlyStore() {
-  const dir = mkdtempSync(join(tmpdir(), 'xmonthly-'));
-  const { db } = await openStore({ file: join(dir, 'xaibo.db'), backupDir: join(dir, 'backups') });
-  db.prepare("INSERT INTO profiles (id, agent, root, origin) VALUES ('p1', 'claude', '/tmp/xaibo-fixture/root', 'default')").run();
-  db.prepare("INSERT INTO profiles (id, agent, root, origin) VALUES ('p2', 'codex', '/tmp/xaibo-fixture/codex', 'default')").run();
+export async function monthlyStore(file = join(mkdtempSync(join(tmpdir(), 'xmonthly-')), 'xaibo.db')) {
+  const { db } = await openStore({ file, backupDir: join(dirname(file), 'backups') });
+  db.prepare("INSERT OR IGNORE INTO profiles (id, agent, root, origin) VALUES ('p1', 'claude', '/tmp/xaibo-fixture/root', 'default')").run();
+  db.prepare("INSERT OR IGNORE INTO profiles (id, agent, root, origin) VALUES ('p2', 'codex', '/tmp/xaibo-fixture/codex', 'default')").run();
   for (const id of [1, 2]) {
-    db.prepare("INSERT INTO price_revisions (id, schema_version, source, revision, content_hash, body, accepted_at) VALUES (?, 1, 'bundled', ?, ?, '{}', 0)")
+    db.prepare("INSERT OR IGNORE INTO price_revisions (id, schema_version, source, revision, content_hash, body, accepted_at) VALUES (?, 1, 'bundled', ?, ?, '{}', 0)")
       .run(id, `r${id}`, `h${id}`);
   }
   return db;
@@ -70,3 +70,35 @@ export const tx = <T>(db: DatabaseSync, f: () => T): T => {
 };
 export const dump = (db: DatabaseSync) => JSON.stringify(['monthly_usage', 'monthly_sessions', 'monthly_quota_peaks', 'settled_contributions']
   .map((t) => db.prepare(`SELECT * FROM ${t}`).all()));
+
+// XAIBO-PROD-513 (P5-T05, EC-103): a deterministic multi-month history and the expiry loop that settles and deletes it
+// in batches, as the retention job (P5-T09) will.
+const DAY = 24 * 3600_000, START = Date.UTC(2026, 9, 20, 12); // October 20 2026, 12:00 UTC
+export function seedHistory(db: DatabaseSync) {
+  for (let i = 0; i < 12; i++) {
+    const t = START + i * 4 * DAY; // October to December
+    const s = session(db, { profile: i % 3 === 2 ? 'p2' : 'p1', sid: `seed-${i}`, last: t + DAY });
+    const model = i % 3 === 2 ? 'gpt-y' : i % 2 ? 'claude-x' : 'claude-z';
+    turn(db, s, `seed-${i}-t1`, t, model);
+    turn(db, s, `seed-${i}-t2`, t + DAY, model);
+    request(db, s, { identity: `${i}:a`, ts: t, model, input: 10 + i, read: i, write: i % 4 ? 1 : null, output: 5 + i, cost: { usd: 0.01 * (i + 1), coverage: i % 4 ? 'full' : 'partial', rev: 1 + (i % 2) } });
+    request(db, s, { identity: `${i}:b`, ts: t + DAY, model, output: 3, ...(i % 5 ? { cost: { usd: i % 7 ? 0.003 : null, coverage: i % 7 ? 'full' : 'none', rev: 1 } } : {}) });
+  }
+  db.prepare("INSERT OR IGNORE INTO usage_scopes (scope_key, profile_id, agent, epoch, verified) VALUES ('seed-scope', 'p2', 'codex', NULL, 1)").run();
+  const sc = (db.prepare("SELECT id FROM usage_scopes WHERE scope_key = 'seed-scope'").get() as { id: number }).id;
+  for (let i = 0; i < 10; i++) sample(db, sc, { percent: (i * 37) % 100, at: START + i * 5 * DAY, window: i % 2 ? 300 : 10080 });
+}
+/** One expiry batch: the oldest `size` sessions and quota rows are settled, then deleted, in one transaction (`hook` runs
+ *  between the two). False when nothing is left. */
+export function expireBatch(db: DatabaseSync, secret: Buffer, size: number, hook?: () => void): boolean {
+  const ids = (db.prepare('SELECT id FROM sessions ORDER BY id LIMIT ?').all(size) as { id: number }[]).map((r) => r.id);
+  const quota = (db.prepare('SELECT id FROM usage_history ORDER BY id LIMIT ?').all(size) as { id: number }[]).map((r) => r.id);
+  if (!ids.length && !quota.length) return false;
+  tx(db, () => {
+    settle(db, { sessions: ids, quota }, secret, 1);
+    hook?.();
+    removeSessions(db, ids);
+    for (const id of quota) db.prepare('DELETE FROM usage_history WHERE id = ?').run(id);
+  });
+  return true;
+}
