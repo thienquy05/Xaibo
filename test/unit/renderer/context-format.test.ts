@@ -3,7 +3,9 @@
 // an old meter; out-of-range readings keep their numbers without a meter; the category ledger stays unavailable (v1-B).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { CATEGORY_ROWS, contextView, percentText } from '../../../src/renderer/workspace/context/format.ts';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { CATEGORY_ROWS, contextView, percentText, percentWords } from '../../../src/renderer/workspace/context/format.ts';
 import { formatTime } from '../../../src/renderer/model.ts';
 import type { ContextReading } from '../../../src/shared/ipc.ts';
 
@@ -13,6 +15,18 @@ const read = (o: Partial<ContextReading> = {}): ContextReading => ({ generation:
 
 test('percent: one decimal, trailing .0 dropped, a nonzero value below 0.1 is <0.1%, zero stays 0%', () => {
   assert.deepEqual([0, 0.04, 20, 12.34, 99.96, 100].map(percentText), ['0%', '<0.1%', '20%', '12.3%', '100%', '100%']);
+});
+
+test('percent words: the spoken form of percentText', () => {
+  assert.deepEqual([0, 0.04, 12.34].map(percentWords), ['0 percent', 'less than 0.1 percent', '12.3 percent']);
+});
+
+// CodeQL js/incomplete-sanitization: a string-pattern .replace() swaps only the first match; use replaceAll or a /g regex.
+test('src/ has no first-match-only string .replace()', () => {
+  const src = join(import.meta.dirname, '..', '..', '..', 'src');
+  const hits = (readdirSync(src, { recursive: true }) as string[]).filter((f) => /\.tsx?$/.test(f))
+    .filter((f) => /\.replace\(\s*['"`]/.test(readFileSync(join(src, f), 'utf8')));
+  assert.deepEqual(hits, []);
 });
 
 test('a reported reading: abbreviated visible value, exact integers in accessible text, meter, generation 1-based', () => {
