@@ -7,6 +7,12 @@ import { contextText, costText, formatTime, markers, originText } from './model.
 import { Icon, StatusLine } from './status/StatusBadge.tsx';
 import { show, visible } from './text.ts';
 
+/** XAIBO-PROD-509 (EC-66): the native title, else "Untitled" followed by a muted first-prompt excerpt (in-app only). */
+export function Title({ row }: { row: Pick<SessionRow, 'title' | 'excerpt'> }) {
+  if (row.title) return <>{visible(row.title)}</>;
+  return <>Untitled{row.excerpt ? <span className="x-excerpt" data-field="excerpt"> · {visible(row.excerpt)}</span> : null}</>;
+}
+
 /** One session record; `lastKnown` qualifies its status while the collector is not running (design §3.2, §6.0). */
 /** `openLabel` (XAIBO-PROD-437): the Open session button's name, naming this record among repeated actions. */
 export function Record({ row, lastKnown = false, onOpen, openLabel }: { row: SessionRow; lastKnown?: boolean; onOpen?: (row: SessionRow) => void; openLabel?: string }) {
@@ -14,7 +20,7 @@ export function Record({ row, lastKnown = false, onOpen, openLabel }: { row: Ses
   return (
     <article className="x-record">
       <p className="x-record-head">
-        <span className="x-record-title" data-field="title">{show(row.title, 'Untitled')}</span>
+        <span className="x-record-title" data-field="title"><Title row={row} /></span>
         <span data-field="agent">{visible(row.agent)}</span>
         <span className="x-record-path" data-field="folder">{show(row.cwd, 'Unknown')}</span>
       </p>

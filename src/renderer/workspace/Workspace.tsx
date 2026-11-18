@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { SessionRow } from '../../shared/ipc.ts';
 import { VirtualList } from '../components/VirtualList.tsx';
+import { Title } from '../SessionList.tsx';
 import { findingBadges, formatTime, recordLabel, type ListState } from '../model.ts';
 import { Icon } from '../status/StatusBadge.tsx';
 import { show, visible } from '../text.ts';
@@ -16,7 +17,7 @@ function Row({ row, open, lastKnown, onOpen }: { row: SessionRow; open: boolean;
   const status = compactStatus(row.live);
   return (
     <button type="button" className="x-srow" aria-current={open || undefined} onClick={() => onOpen(row)}>
-      <span className="x-s-title" data-field="title">{show(row.title, 'Untitled')}</span>
+      <span className="x-s-title" data-field="title"><Title row={row} /></span>
       <span className="x-s-meta">
         <span className={`x-dot x-dot-${status.tone}`} aria-hidden="true" />
         <span data-field="agent">{visible(row.agent)}</span>

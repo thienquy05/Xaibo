@@ -89,6 +89,8 @@ export function parseHealth(x: unknown): Health | null {
 export interface Cursor { lastActivity: number | null; id: number }
 export interface SessionRow {
   id: number; agent: string; entrypoint: string | null; cwd: string | null; title: string | null;
+  /** XAIBO-PROD-509 (EC-66): an untitled session's first-prompt excerpt, in-app only; absent or null = none. */
+  excerpt?: string | null;
   /** Catalog origin badge, null for an unknown kind; interactive null when unknown (P2-T04). */
   origin: string | null; interactive: boolean | null;
   /** "<display name> · <effort>", the raw id, or "Model unavailable" (P2-T08). */
@@ -283,7 +285,9 @@ function parseRow(x: unknown): SessionRow | null {
   if (live === undefined || !(r.contextPct === null || (Number.isFinite(r.contextPct) && (r.contextPct as number) >= 0 && (r.contextPct as number) <= 100))) return null;
   if (!(r.costUsd === null || (Number.isFinite(r.costUsd) && (r.costUsd as number) >= 0)) || !oneOf(COSTS, r.costCoverage)) return null;
   if (!(r.tokens === null || count(r.tokens)) || typeof r.tokensComplete !== 'boolean') return null;
-  return { id: r.id, agent: r.agent, entrypoint: r.entrypoint, origin: r.origin, interactive: r.interactive, model: r.model, cwd: r.cwd, title: r.title, lastActivity: r.lastActivity, drift: r.drift, compressed: r.compressed, quarantined: r.quarantined,
+  if (r.excerpt !== undefined && !textOrNull(r.excerpt)) return null;
+  return { id: r.id, agent: r.agent, entrypoint: r.entrypoint, origin: r.origin, interactive: r.interactive, model: r.model, cwd: r.cwd, title: r.title,
+    ...(r.excerpt !== undefined ? { excerpt: r.excerpt } : {}), lastActivity: r.lastActivity, drift: r.drift, compressed: r.compressed, quarantined: r.quarantined,
     live, contextPct: r.contextPct as number | null, costUsd: r.costUsd as number | null, costCoverage: r.costCoverage, tokens: r.tokens as number | null, tokensComplete: r.tokensComplete };
 }
 

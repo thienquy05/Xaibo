@@ -285,7 +285,22 @@ async function focusProblems(page: Page, where: string, max = 60): Promise<strin
       const outside = (c: { left: number; top: number; right: number; bottom: number }) =>
         (need.right - need.left <= c.right - c.left && (need.left < c.left || need.right > c.right))
         || (need.bottom - need.top <= c.bottom - c.top && (need.top < c.top || need.bottom > c.bottom));
-      if (outside({ left: 0, top: 0, right: innerWidth, bottom: innerHeight })) return { key, problem: `${key}: focus ring within 4 px of the window edge` };
+      // XAIBO-PROD-509: the same skip for the window when a clipping ancestor is already smaller than the ring box in that
+      // dimension (a record taller than its list scroller at 200 % text): the ring is cut there whatever the window shows
+      const clips: DOMRect[] = [];
+      for (let a = ring.parentElement; a; a = a.parentElement) {
+        const s = getComputedStyle(a);
+        if (s.overflowX !== 'visible' || s.overflowY !== 'visible') clips.push(a.getBoundingClientRect());
+      }
+      const tooWide = clips.some((c) => need.right - need.left > c.width), tooTall = clips.some((c) => need.bottom - need.top > c.height);
+      const win = { left: tooWide ? need.left : 0, top: tooTall ? need.top : 0, right: tooWide ? need.right : innerWidth, bottom: tooTall ? need.bottom : innerHeight };
+      if (outside(win)) return { key, problem: `${key}: focus ring within 4 px of the window edge` };
+      // review M1: in a skipped dimension the control must still be in view (overlap the window and every clipping box)
+      const vis = clips.reduce((v, c) => ({ left: Math.max(v.left, c.left), top: Math.max(v.top, c.top), right: Math.min(v.right, c.right), bottom: Math.min(v.bottom, c.bottom) }),
+        { left: 0, top: 0, right: innerWidth, bottom: innerHeight });
+      if ((tooTall && (need.bottom <= vis.top || need.top >= vis.bottom)) || (tooWide && (need.right <= vis.left || need.left >= vis.right))) {
+        return { key, problem: `${key}: focused control out of view` };
+      }
       for (let a = ring.parentElement; a; a = a.parentElement) {
         const s = getComputedStyle(a);
         if (s.overflowX === 'visible' && s.overflowY === 'visible') continue;
@@ -389,7 +404,7 @@ test('T15b: aria snapshots of Live sessions and Usage and history (Observed hist
     - region "Live sessions":
       - heading "Live sessions" [level=2]
       - list "Live sessions":
-        - listitem /^Untitled · claude · \\/tmp\\/xaibo-fixture\\/a11y/:
+        - listitem /^Untitled · Summarize the notes · claude · \\/tmp\\/xaibo-fixture\\/a11y/:
           - article:
             - button /^Open session. claude · \\/tmp\\/xaibo-fixture\\/a11y/
   `);

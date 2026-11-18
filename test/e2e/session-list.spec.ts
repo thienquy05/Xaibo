@@ -31,8 +31,11 @@ test('backfill rows, health and the agent strip; a live append updates the row',
   await expect(rows).toHaveCount(1);
   await expect(rows.first()).toContainText('/tmp/xaibo-fixture/alpha');
   await expect(rows.first()).toContainText('Untitled');
+  // XAIBO-PROD-509 (EC-66): an untitled session shows its first-prompt excerpt, in the row and the open-session header
+  await expect(rows.first().locator('[data-field="excerpt"]')).toHaveText(' · fixture prompt');
   // P2-T04 origin badge (claude -p fixture); P4-T05d: shown in the open session's Details drawer
   await rows.first().getByRole('button').first().click();
+  await expect(page.locator('#open-session-title')).toHaveText('Untitled · fixture prompt');
   await page.getByRole('button', { name: 'Details' }).click();
   await expect(page.locator('#session-details [data-field="origin"]')).toHaveText('CLI -p · Non-interactive');
   await page.keyboard.press('Escape');

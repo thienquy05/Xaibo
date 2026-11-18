@@ -205,6 +205,10 @@ test('recordLabel: title (capped at 80 characters), agent and folder; fallbacks 
   const long = recordLabel(r(1, 5, { title: 'a'.repeat(200) }));
   assert.equal(long.split(' · ')[0], `${'a'.repeat(79)}…`);
   assert.doesNotMatch(recordLabel(r(1, 5, { title: 'x‮y' })), /‮/, 'bidi controls are escaped');
+  // XAIBO-PROD-509 (EC-66): an untitled record names its first-prompt excerpt (cut at 80), so repeated Untitled rows differ.
+  assert.equal(recordLabel(r(1, 5, { title: null, excerpt: 'Fix the flaky test', cwd: '/tmp/x' })), 'Untitled · Fix the flaky test · claude · /tmp/x');
+  assert.equal(recordLabel(r(1, 5, { title: 'Named', excerpt: 'ignored', cwd: '/tmp/x' })), 'Named · claude · /tmp/x');
+  assert.equal(recordLabel(r(1, 5, { title: null, excerpt: 'b'.repeat(200), cwd: '/tmp/x' })).split(' · ')[1], `${'b'.repeat(79)}…`);
 });
 
 // XAIBO-PROD-437 review L4: label parts are cut by code points before escaping (never mid-escape or mid-pair) and every

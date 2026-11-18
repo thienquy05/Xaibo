@@ -132,6 +132,7 @@ body {
   max-height: 70vh;
   overflow-y: auto;
   overscroll-behavior: contain;
+  overflow-anchor: none; /* VirtualList keeps its own scroll anchor; the browser's would adjust it a second time */
 }
 .x-vlist-items {
   position: relative;
@@ -377,6 +378,8 @@ summary:hover { background: var(--x-tint); }
 .x-srow:hover { background: var(--x-tint); }
 .x-srow[aria-current="true"] { background: var(--x-selected); box-shadow: inset 2px 0 0 var(--x-accent); }
 .x-s-title { font-weight: var(--x-weight-strong); overflow-wrap: anywhere; }
+/* XAIBO-PROD-509 (EC-66): the first-prompt excerpt after "Untitled" reads as secondary text */
+.x-excerpt { color: var(--x-muted); font-weight: var(--x-weight-normal); font-size: var(--x-text-body); }
 .x-s-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--x-space-1) var(--x-space-2); color: var(--x-muted); font-size: var(--x-text-small); line-height: var(--x-leading-small); }
 .x-s-path { font-family: var(--x-font-mono); font-size: var(--x-text-small); line-height: var(--x-leading-small); color: var(--x-muted); overflow-wrap: anywhere; }
 .x-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--x-line); }

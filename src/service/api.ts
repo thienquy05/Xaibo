@@ -1,6 +1,6 @@
 // Read-only session list API (P1-T12, S-29, FR-09): keyset pages over (last_activity DESC with unknown last, id),
 // default 50 rows, hard cap 100; rows by session key for the coalesced deltas the service pushes after commits.
-import type { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync, StatementSync } from 'node:sqlite';
 import { IPC_VERSION, isObj } from '../shared/ipc.ts';
 import type { ContextReading, CoverageCode, Credits, Cursor, HistoryCursor, LiveStatus, Page, PortMessage, PortRequest, SessionRow, TCursor, TranscriptItem, UsageRecord, UsageScope } from '../shared/ipc.ts';
 import { COST_CODE, COST_COMPONENTS, MAX_COST_CODES, MAX_COST_GROUPS, MAX_ITEMS, MAX_RECORDS, MAX_REFERENCES, MAX_SCOPES, parseContext, parseCost, PREVIEW_BYTES,
@@ -49,6 +49,28 @@ const display = (s: string | null): string | null => (s === null ? null : cut(s,
 // label is "<display name> · <effort>", the raw id when unlisted, "Model unavailable" without evidence (P2-T08).
 // P3-T10: live status from the engine, the latest context percentage (clamped to the 0–100 the IPC accepts) and the
 // session ~$ estimate (Phase 2 selection; an unreadable estimate is unavailable, never zero).
+// XAIBO-PROD-509 (P5-T02c, EC-66): an untitled session's first prompt, in-app only (notifications never see it): the first
+// record the transcript classifier calls a prompt among the first PROMPT_SCAN visible user records, whitespace collapsed,
+// cut to EXCERPT_MAX. ponytail: computed per untitled row on each list read (an index walk plus a few small parses);
+// store it on the session if list reads slow down.
+export const EXCERPT_MAX = 120;
+const PROMPT_SCAN = 8;
+const excerptStatements = new WeakMap<DatabaseSync, StatementSync>(); // prepared once per connection (review L1)
+function excerptOf(db: DatabaseSync, agent: string, session: number): string | null {
+  try {
+    const q = excerptStatements.get(db) ?? excerptStatements.set(db, db.prepare(`SELECT e.kind, e.role, e.content, e.raw FROM events e
+      WHERE ${VISIBLE} AND (e.role = 'user' OR e.kind = 'user') ORDER BY e.source_seq, e.id LIMIT ${PROMPT_SCAN}`)).get(db)!;
+    for (const row of q.iterate(session) as Iterable<Pick<TrRow, 'kind' | 'role' | 'content' | 'raw'>>) {
+      const it = classifyItem(stored(agent, row));
+      if (it?.kind !== 'prompt' || !it.text) continue;
+      // Collapse a bounded prefix (a prompt can be megabytes); drop a surrogate half left by the slice.
+      const t = it.text.slice(0, 8 * EXCERPT_MAX).replace(/\s+/g, ' ').trim().replace(/[\uD800-\uDBFF]$/, '');
+      if (t) return cut(it.text.length > 8 * EXCERPT_MAX ? `${t}…` : t, EXCERPT_MAX);
+    }
+  } catch { /* an unreadable session has no excerpt */ }
+  return null;
+}
+
 export const toRow = (db: DatabaseSync, kinds: SessionKind[], models: ModelEntry[], live?: LiveOf) => (r: Raw): SessionRow => {
   const k = sessionKind(kinds, r);
   let cost: { amountUsd: number | null; coverage: SessionRow['costCoverage'] };
@@ -57,7 +79,7 @@ export const toRow = (db: DatabaseSync, kinds: SessionKind[], models: ModelEntry
   const usable = cost.amountUsd !== null && Number.isFinite(cost.amountUsd) && cost.amountUsd >= 0;
   return {
     id: r.id, agent: r.agent, entrypoint: display(r.entrypoint), origin: k?.badge ?? null, interactive: k?.interactive ?? null,
-    model: display(modelLabel(displayName(models, r.current_model), r.current_effort))!, cwd: display(r.cwd), title: display(r.title), lastActivity: r.last_activity,
+    model: display(modelLabel(displayName(models, r.current_model), r.current_effort))!, cwd: display(r.cwd), title: display(r.title), excerpt: r.title === null ? excerptOf(db, r.agent, r.id) : null, lastActivity: r.last_activity,
     drift: r.drift === 1, compressed: r.compressed === 1, quarantined: r.quarantined_count,
     live: live?.(r.agent, r.native_session_id, r.profile_id) ?? null,
     contextPct: pct === null || !Number.isFinite(pct) ? null : Math.min(100, Math.max(0, pct)),

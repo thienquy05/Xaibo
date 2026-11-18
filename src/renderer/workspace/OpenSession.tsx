@@ -7,6 +7,7 @@ import type { CostDetail, FileItem, ModelMarker, SessionDetail, SessionRow, Suba
 import type { Client } from '../client.ts';
 import { contextText, costText, formatTime, markers as rowMarkers, originText } from '../model.ts';
 import { RetryNotice } from '../components/RetryNotice.tsx';
+import { Title } from '../SessionList.tsx';
 import { rovingKey } from '../components/virtual-list-model.ts';
 import { retryIdle, retryStep } from '../retry.ts';
 import { Icon, StatusLine } from '../status/StatusBadge.tsx';
@@ -215,7 +216,6 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const onTabKey = (e: KeyboardEvent, i: number) => rovingKey(e, i, SECTIONS.length, tabRefs.current);
   const count = (s: Section) => (s === 'tools' ? tools : s === 'subagents' ? subagents : s === 'files' ? files : null);
-  const title = row.title ? visible(row.title) : 'Untitled';
   const status = compactStatus(row.live);
 
   return (
@@ -225,7 +225,7 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
           <button type="button" className="x-btn x-btn-quiet x-icon-btn x-narrow-only" aria-label="Back to session list" onClick={onBack}><Icon id="back" /></button>
           {!listShown ? <button type="button" className="x-btn x-btn-quiet x-icon-btn x-wide-only" aria-label="Show session list" onClick={onShowList}><Icon id="session" /></button> : null}
           {onReturn ? <button type="button" className="x-btn x-btn-quiet x-return" onClick={onReturn}><Icon id="dashboard" />Return to Dashboard</button> : null}
-          <h2 id="open-session-title" ref={titleRef} tabIndex={-1}>{title}</h2>
+          <h2 id="open-session-title" ref={titleRef} tabIndex={-1}><Title row={row} /></h2>
         </div>
         <div className="x-actions">
           <button type="button" ref={detailsRef} className="x-btn x-btn-quiet" aria-expanded={drawer} aria-controls="session-details" onClick={() => openDrawer(!drawer)}><Icon id="information" />Details</button>

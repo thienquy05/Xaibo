@@ -188,8 +188,10 @@ export function restoreFocus(current: readonly number[], before: readonly number
 
 /** XAIBO-PROD-437 (design §8.1): the name of a focusable record row: title · agent · folder, the title cut at 80
  *  characters so a first-prompt title never becomes a whole prompt in a label. */
-export function recordLabel(r: Pick<SessionRow, 'title' | 'agent' | 'cwd'>): string {
-  return `${r.title ? capText(r.title, 80) : 'Untitled'} · ${capText(r.agent, 60)} · ${r.cwd ? capText(r.cwd, 120) : 'Unknown folder'}`;
+export function recordLabel(r: Pick<SessionRow, 'title' | 'excerpt' | 'agent' | 'cwd'>): string {
+  // XAIBO-PROD-509 (EC-66): an untitled record names its first-prompt excerpt, so repeated Untitled rows differ.
+  const title = r.title ? capText(r.title, 80) : r.excerpt ? `Untitled · ${capText(r.excerpt, 80)}` : 'Untitled';
+  return `${title} · ${capText(r.agent, 60)} · ${r.cwd ? capText(r.cwd, 120) : 'Unknown folder'}`;
 }
 
 /** XAIBO-PROD-437 review L4: untrusted text for a label, at most `n` code points (cut before escaping, so never inside
