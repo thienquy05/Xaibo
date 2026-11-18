@@ -1,24 +1,21 @@
 // XAIBO-PROD-409 (P4-T05a2): read-time derivations for the session workspace port. Stored rows stay as they are; the
 // raw record, timestamps and status evidence already hold what the workspace shows. Unknown stays null or absent.
+import { isObj } from '../shared/ipc.ts';
 import { CONFIRMED_ONLY, type Confidence, type Ev } from './status/engine.ts';
 
 type Obj = Record<string, unknown>;
-const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
 const nonEmpty = (v: unknown): v is string => typeof v === 'string' && v !== '';
 
-function message(raw: string): Obj | undefined {
+/** The `message` object of a Claude record, or undefined for anything unparsable. */
+export function message(raw: string): Obj | undefined {
   try {
     const r: unknown = JSON.parse(raw);
     return isObj(r) && isObj(r.message) ? r.message : undefined;
   } catch { return undefined; }
 }
 
-/** Claude record: visible text and available reasoning (thinking blocks) apart (PRD §5.6); tool blocks belong to tools. */
-export function claudeMessageParts(raw: string): { text: string | null; reasoning: string | null } {
-  return claudeMessagePartsOf(message(raw));
-}
-
-/** The same split from an already parsed `message` object, so a caller parses each record once (T05b1 review 1). */
+/** Claude `message`: visible text and available reasoning (thinking blocks) apart (PRD §5.6); tool blocks belong to
+ *  tools. Takes the parsed object, so a caller parses each record once (T05b1 review 1). */
 export function claudeMessagePartsOf(msg: unknown): { text: string | null; reasoning: string | null } {
   const content = isObj(msg) ? msg.content : undefined;
   if (nonEmpty(content)) return { text: content, reasoning: null };
@@ -98,12 +95,3 @@ export function callApprovals(evs: ConfEv[]): Map<string, Approval> {
 }
 
 export const MAX_MODEL = 200;
-/** The latest reported model across a Claude subagent's own records; nothing is inferred from the parent. */
-export function subagentModel(raws: string[]): string | null {
-  let model: string | null = null;
-  for (const raw of raws) {
-    const m = message(raw)?.model;
-    if (nonEmpty(m) && m.length <= MAX_MODEL) model = m;
-  }
-  return model;
-}

@@ -1,7 +1,7 @@
 // Read-only session list API (P1-T12, S-29, FR-09): keyset pages over (last_activity DESC with unknown last, id),
 // default 50 rows, hard cap 100; rows by session key for the coalesced deltas the service pushes after commits.
 import type { DatabaseSync } from 'node:sqlite';
-import { IPC_VERSION } from '../shared/ipc.ts';
+import { IPC_VERSION, isObj } from '../shared/ipc.ts';
 import type { ContextReading, CoverageCode, Credits, Cursor, HistoryCursor, LiveStatus, Page, PortMessage, PortRequest, SessionRow, TCursor, TranscriptItem, UsageRecord, UsageScope } from '../shared/ipc.ts';
 import { COST_CODE, COST_COMPONENTS, MAX_COST_CODES, MAX_COST_GROUPS, MAX_ITEMS, MAX_RECORDS, MAX_REFERENCES, MAX_SCOPES, parseContext, parseCost, PREVIEW_BYTES,
   REFERENCE_MAX, SLICE_BYTES } from '../shared/ipc.ts';
@@ -9,9 +9,9 @@ import type { CostDetail, CostGroup, PriceRevisionInfo } from '../shared/ipc.ts'
 import type { FileItem, MCursor, ModelMarker, SubagentItem, ToolItem } from '../shared/ipc.ts';
 import { classifyItem, utf8Slice, type StoredRecord } from './transcript.ts';
 import { blockText } from './adapters/claude/parse.ts';
-import { callApprovals, callDuration, claudeCallError, MAX_MODEL, type ConfEv } from './session-detail.ts';
+import { callApprovals, callDuration, claudeCallError, MAX_MODEL, message, type ConfEv } from './session-detail.ts';
 import { deriveFileTouches, FILE_TOOLS } from './filetouch.ts';
-import type { Confidence, Ev } from './status/engine.ts';
+import { parseEvidence, type Confidence } from './status/engine.ts';
 import type { SessionKind } from './catalog/validate.ts';
 import { sessionKind } from './resume.ts';
 import { LIVE_WINDOW_MS } from './status/feed.ts'; // D-P3-09 feed eligibility
@@ -42,11 +42,9 @@ const ORDER = 'ORDER BY s.last_activity DESC, s.id LIMIT ?';
 /** The status engine's view of a session by agent and native id (P3-T10); null when it has no evidence. */
 export type LiveOf = (agent: string, nativeSessionId: string, profileId: string) => LiveStatus | null;
 interface Raw { tokens: number | null; tokens_gap: number; id: number; agent: string; profile_id: string; native_session_id: string; context_pct: number | null; entrypoint: string | null; originator: string | null; current_model: string | null; current_effort: string | null; cwd: string | null; title: string | null; last_activity: number | null; drift: number; quarantined_count: number; compressed: number }
-const display = (s: string | null): string | null => {
-  if (s === null || s.length <= DISPLAY_MAX) return s;
-  const c = s.charCodeAt(DISPLAY_MAX - 1);
-  return `${s.slice(0, c >= 0xd800 && c < 0xdc00 ? DISPLAY_MAX - 1 : DISPLAY_MAX)}…`; // never ends inside a surrogate pair
-};
+/** At most `max` UTF-16 units, ending in "…" when cut; never ends inside a surrogate pair. */
+const cut = (s: string, max: number) => (s.length <= max ? s : `${s.slice(0, (s.charCodeAt(max - 2) & 0xfc00) === 0xd800 ? max - 2 : max - 1)}…`);
+const display = (s: string | null): string | null => (s === null ? null : cut(s, DISPLAY_MAX + 1));
 // Origin badge and interactive flag come from the catalog kind (P2-T04); an unknown kind leaves both null. The model
 // label is "<display name> · <effort>", the raw id when unlisted, "Model unavailable" without evidence (P2-T08).
 // P3-T10: live status from the engine, the latest context percentage (clamped to the 0–100 the IPC accepts) and the
@@ -322,7 +320,7 @@ export function answerTranscript(db: DatabaseSync, req: PortRequest & { type: 't
     for (const k of consumed) {
       if (!k.item) continue;
       const callId = k.item.kind === 'tool-call' || k.item.kind === 'tool-result' ? ((call.get(req.session, k.id, k.id) as { id: string | null } | undefined)?.id ?? null) : null;
-      items.push({ event: k.id, seq: k.seq, ts: k.ts, ...k.item, callId: callId !== null && callId !== '' && callId.length <= 256 ? callId : null });
+      items.push({ event: k.id, seq: k.seq, ts: k.ts, ...k.item, callId: callIdOf(callId) });
     }
     return {
       v: IPC_VERSION, type: 'transcript', id: req.id, items,
@@ -336,8 +334,7 @@ export function answerTranscript(db: DatabaseSync, req: PortRequest & { type: 't
  *  (or for reasoning, which no tool block has). */
 function claudeCallText(raw: string | null, call: string, part: 'text' | 'reasoning'): string | null {
   if (part !== 'text' || raw === null) return null;
-  let content: unknown;
-  try { const r: unknown = JSON.parse(raw); content = isObj(r) && isObj(r.message) ? r.message.content : undefined; } catch { return null; }
+  const content = message(raw)?.content;
   const b: unknown = Array.isArray(content)
     ? content.find((x) => isObj(x) && ((x.type === 'tool_use' && x.id === call) || (x.type === 'tool_result' && x.tool_use_id === call))) : undefined;
   return blockText(b) ?? null;
@@ -392,8 +389,7 @@ const isLive = (s: Sess, live: LiveOf | undefined, now: number) => {
   const st = live?.(s.agent, s.native_session_id, s.profile_id);
   return !!st && st.lifecycle !== 'ended' && s.last_activity !== null && s.last_activity >= now - LIVE_WINDOW_MS;
 };
-const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
-const callIdOf = (id: string) => (id !== '' && id.length <= 256 ? id : null);
+const callIdOf = (id: string | null) => (id !== null && id !== '' && id.length <= 256 ? id : null);
 /** The session's status evidence in the engine's order, or null past EVIDENCE_MAX rows or RAW_BUDGET characters: a cut
  *  history could show a stale state (e.g. `requested` whose answer lies beyond the cut), so callers report unknown.
  *  Review M2: the size is checked before the sorted read, so an oversized history is never sorted.
@@ -408,11 +404,8 @@ function sessionEvidence(db: DatabaseSync, s: Sess): ConfEv[] | null {
   for (const r of db.prepare(`SELECT ev, confidence FROM status_evidence WHERE ${WHERE} ORDER BY ts, rank, seq, coalesce(producer_seq, 0), id`)
     .iterate(s.agent, s.profile_id, s.native_session_id) as Iterable<{ ev: string; confidence: Confidence }>) {
     if (++rows > EVIDENCE_MAX || (read += r.ev.length) > RAW_BUDGET) return null; // rows added since the size check
-    try {
-      const a: unknown = JSON.parse(r.ev);
-      // a malformed row is skipped, as the engine does; XAIBO-PROD-444: each keeps its row's confidence
-      if (Array.isArray(a) && a.every((e) => isObj(e) && typeof e.k === 'string')) for (const e of a as Ev[]) evs.push({ ...e, conf: r.confidence });
-    } catch { /* corrupt row skipped */ }
+    // a malformed row is skipped, as the engine does; XAIBO-PROD-444: each keeps its row's confidence
+    for (const e of parseEvidence(r.ev) ?? []) evs.push({ ...e, conf: r.confidence });
   }
   return evs;
 }
@@ -637,7 +630,6 @@ const COST_GROUPS_SQL = `SELECT json_extract(e.coverage, '$.model') AS model, e.
     AND u.identity = substr(e.covered_scope, length(e.source) + 8)
   WHERE e.session_id = ? AND e.basis <> 'agent_reported' AND e.covered_scope = 'usage:' || e.source || ':' || u.identity
   GROUP BY 1, 2, 3 ORDER BY MIN(e.as_of) IS NULL, MIN(e.as_of), rev, model LIMIT ${MAX_COST_GROUPS + 1}`;
-const clip = (s: string, max: number) => (s.length <= max ? s : `${s.slice(0, (s.charCodeAt(max - 2) & 0xfc00) === 0xd800 ? max - 2 : max - 1)}…`);
 const safeCount = (x: unknown): number | null => (Number.isSafeInteger(x) && (x as number) >= 0 ? (x as number) : null);
 const finiteUsd = (x: unknown): number | null => (typeof x === 'number' && Number.isFinite(x) && x >= 0 ? x : null);
 
@@ -702,9 +694,9 @@ export function answerCost(db: DatabaseSync, req: PortRequest & { type: 'cost' }
         if (g.basis === 'owner_fallback') { refs.add('Owner-set fallback'); continue; }
         const m = listed.find((x) => x?.id === g.model);
         const src = m && sources.find((x) => x?.id === m.source);
-        if (src) refs.add(clip(`${String(src.id)}: ${String(src.url)} (retrieved ${String(src.retrieved)})`, REFERENCE_MAX));
+        if (src) refs.add(cut(`${String(src.id)}: ${String(src.url)} (retrieved ${String(src.retrieved)})`, REFERENCE_MAX));
       }
-      revisions.push({ id, label: clip(String(p.revision), REFERENCE_MAX), pricesAsOf: p.asOf === null ? null : clip(String(p.asOf), 64), source: p.source,
+      revisions.push({ id, label: cut(String(p.revision), REFERENCE_MAX), pricesAsOf: p.asOf === null ? null : cut(String(p.asOf), 64), source: p.source,
         references: [...refs].slice(0, MAX_REFERENCES) });
     }
     const full = parseCost({ ...out, groups, more: rows.length > MAX_COST_GROUPS, revisions });

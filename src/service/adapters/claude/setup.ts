@@ -12,6 +12,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { chmodSync, constants, copyFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { isObj } from '../../../shared/ipc.ts';
 import { isProfileKey } from '../../../shared/hook-protocol.ts';
 import type { Logger } from '../../../shared/log.ts';
 import { STATUSLINE_BIN, teeCommand } from '../../../forwarder/statusline-tee.ts';
@@ -130,7 +131,6 @@ function confine(o: PluginOptions) {
   }
 }
 
-const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 /** Any decoded key or string value equal to `name`, at any depth (the registry layouts are Claude's, not a contract);
  *  an explicit stack, so deeply nested JSON cannot overflow the call stack. */
 function mentions(root: unknown, name: string): boolean {
@@ -139,7 +139,7 @@ function mentions(root: unknown, name: string): boolean {
     const v = stack.pop();
     if (v === name) return true;
     if (Array.isArray(v)) for (const x of v) stack.push(x); // no spread: a wide array would exceed the argument limit
-    else if (isObject(v)) for (const [k, x] of Object.entries(v)) { if (k === name) return true; stack.push(x); }
+    else if (isObj(v)) for (const [k, x] of Object.entries(v)) { if (k === name) return true; stack.push(x); }
   }
   return false;
 }
@@ -238,10 +238,10 @@ export function teePlan(o: TeeOptions): Plan {
   const cur = readFile(target);
   let doc: unknown = {};
   if (cur) { try { doc = JSON.parse(cur.bytes.toString('utf8')); } catch { fail('invalid-json'); } }
-  const s = isObject(doc) && Object.hasOwn(doc, 'statusLine') ? doc['statusLine'] : undefined;
+  const s = isObj(doc) && Object.hasOwn(doc, 'statusLine') ? doc['statusLine'] : undefined;
   let ops: Op[];
   if (s === undefined) ops = [{ op: 'set', pointer: '/statusLine', value: { type: 'command', command } }];
-  else if (isObject(s) && s['type'] === 'command' && typeof s['command'] === 'string') {
+  else if (isObj(s) && s['type'] === 'command' && typeof s['command'] === 'string') {
     if (TEE.test(s['command'])) fail('duplicate');
     ops = [{ op: 'set', pointer: '/statusLine/command', value: command }];
   } else return fail('statusline');

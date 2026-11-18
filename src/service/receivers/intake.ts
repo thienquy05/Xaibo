@@ -7,6 +7,7 @@
 // as an exact hook-only gap, one per delivery_id, written once a commit succeeds again and dropped when that delivery is
 // later accepted (a retry or the spool replay; G3b-2).
 import type { DatabaseSync } from 'node:sqlite';
+import { isObj } from '../../shared/ipc.ts';
 import { errorCode } from '../../shared/crash.ts';
 import type { Envelope } from '../../shared/hook-protocol.ts';
 import type { Logger } from '../../shared/log.ts';
@@ -32,7 +33,6 @@ export interface Intake {
 }
 
 type Obj = Record<string, unknown>;
-const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
 const text = (v: unknown, max: number) => (typeof v === 'string' && v !== '' && v.length <= max && v.isWellFormed() ? v : null);
 const idOf = (v: unknown, key: string, max: number) => text(v, max) ?? (isObj(v) ? text(v[key], max) : null);
 

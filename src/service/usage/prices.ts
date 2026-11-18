@@ -7,6 +7,7 @@
 import { createHash } from 'node:crypto';
 import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
+import { isObj } from '../../shared/ipc.ts';
 import type { Logger } from '../../shared/log.ts';
 import { loadModels, validateModels, type ModelEntry, type ModelList, type Rates } from './models.ts';
 
@@ -49,8 +50,7 @@ function readOverride(file: string): { value: unknown } | { error: PriceError } 
 /** The override merged onto the bundled list, or null when it is invalid (schema, unknown source, duplicate id). */
 function merge(bundled: ModelList, value: unknown): ModelList | null {
   const o = value as ModelList;
-  const isObject = typeof value === 'object' && value !== null && !Array.isArray(value);
-  const sources = isObject && Array.isArray(o.sources)
+  const sources = isObj(value) && Array.isArray(o.sources)
     ? [...bundled.sources.filter((s) => !o.sources.some((x) => x?.id === s.id)), ...o.sources] : undefined;
   // The override is checked as written, except that its entries may cite bundled source ids.
   if (validateModels(sources ? { ...o, sources } : value).length) return null;

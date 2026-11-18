@@ -3,6 +3,7 @@
 // Claude maps directly (S9/S13). Codex: cached ⊂ input, reasoning ⊂ output (S9); cache_write has no established
 // relation to input (S13), so it stays NULL with a gap and the raw value is kept by the caller. agy (D-P2-02):
 // cache read inside input, no cache-write component, reasoning unavailable.
+import { isObj } from '../../shared/ipc.ts';
 export type Completeness = 'reported' | 'missing' | 'relation-unverified' | 'unavailable';
 export interface Usage {
   uncachedInput: number | null; cacheRead: number | null; cacheWrite: number | null; cacheWriteClasses: Record<string, number> | null;
@@ -10,7 +11,6 @@ export interface Usage {
 }
 
 type Obj = Record<string, unknown>;
-const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
 const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null);
 const c = (v: number | null): Completeness => (v === null ? 'missing' : 'reported');
 

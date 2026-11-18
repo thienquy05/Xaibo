@@ -4,6 +4,9 @@
 // ponytail: only fixture-verified shapes (Claude Read/Write/Edit with file_path); add others (MultiEdit, Codex
 // apply_patch, agy) when a fixture verifies their input and result shapes.
 
+import { isObj } from '../shared/ipc.ts';
+import { message } from './session-detail.ts';
+
 export type FileTouchKind = 'read' | 'write_attempted' | 'write_confirmed';
 export interface ToolEvidence { agent: string; callId: string; argsRaw?: string; resultRaw?: string }
 export interface FileTouch { path: string; kind: FileTouchKind; callId: string }
@@ -15,16 +18,11 @@ const WRITES = new Set(['Write', 'Edit']);
 export const FILE_TOOLS = [...READS, ...WRITES];
 
 type Obj = Record<string, unknown>;
-const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 /** The content blocks of a Claude record, or [] for anything unparsable. */
 function blocks(raw: string | undefined): unknown[] {
-  if (raw === undefined) return [];
-  try {
-    const r: unknown = JSON.parse(raw);
-    const content = isObj(r) && isObj(r.message) ? r.message.content : undefined;
-    return Array.isArray(content) ? content : [];
-  } catch { return []; }
+  const content = raw === undefined ? undefined : message(raw)?.content;
+  return Array.isArray(content) ? content : [];
 }
 
 function claudeTouches(e: ToolEvidence): FileTouch[] {

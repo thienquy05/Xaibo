@@ -43,6 +43,8 @@ const text = (x: unknown, max = MAX_TEXT): x is string => typeof x === 'string' 
 const textOrNull = (x: unknown): x is string | null => x === null || text(x);
 const boolOrNull = (x: unknown): x is boolean | null => x === null || typeof x === 'boolean';
 const count = (x: unknown): x is number => Number.isSafeInteger(x) && (x as number) >= 0;
+/** A plain object (not null, not an array); the one shared guard for untrusted JSON (the SEA mains keep a copy). */
+export const isObj = (x: unknown): x is Msg => typeof x === 'object' && x !== null && !Array.isArray(x);
 const timeOrNull = (x: unknown): x is number | null => x === null || Number.isFinite(x);
 
 export function parseServiceCommand(x: unknown): ServiceCommand | null {
@@ -244,14 +246,12 @@ export type PortMessage =
 
 function parseCursor(x: unknown): Cursor | null | undefined { // undefined = invalid
   if (x === null) return null;
-  if (typeof x !== 'object' || Array.isArray(x)) return undefined;
-  const c = x as Msg;
-  return count(c.id) && timeOrNull(c.lastActivity) ? { lastActivity: c.lastActivity, id: c.id } : undefined;
+  return isObj(x) && count(x.id) && timeOrNull(x.lastActivity) ? { lastActivity: x.lastActivity, id: x.id } : undefined;
 }
 
 function parseRow(x: unknown): SessionRow | null {
-  if (typeof x !== 'object' || x === null || Array.isArray(x)) return null;
-  const r = x as Msg;
+  if (!isObj(x)) return null;
+  const r = x;
   if (!count(r.id) || !text(r.agent, 64) || !textOrNull(r.entrypoint) || !textOrNull(r.cwd) || !textOrNull(r.title)) return null;
   if (!(r.origin === null || text(r.origin, 64)) || !boolOrNull(r.interactive) || !text(r.model)) return null;
   if (!timeOrNull(r.lastActivity) || typeof r.drift !== 'boolean' || typeof r.compressed !== 'boolean' || !count(r.quarantined)) return null;
@@ -299,20 +299,23 @@ function parseRows(x: unknown): SessionRow[] | null {
 }
 
 function parseAgent(x: unknown): AgentStatus | null {
-  if (typeof x !== 'object' || x === null || Array.isArray(x)) return null;
-  const a = x as Msg;
+  if (!isObj(x)) return null;
+  const a = x;
   if (!text(a.agent) || !AGENT_ID.test(a.agent) || !text(a.name, 128) || !oneOf(['detected', 'not-detected'] as const, a.state)) return null;
   return a.version === null || text(a.version, 64) ? { agent: a.agent, name: a.name, state: a.state, version: a.version } : null;
 }
 
-const isObj = (x: unknown): x is Msg => typeof x === 'object' && x !== null && !Array.isArray(x);
 const finite = (x: unknown): x is number => Number.isFinite(x);
 const numOrNull = (x: unknown, ok: (n: number) => boolean) => x === null || (finite(x) && ok(x));
 const percentOk = (n: number) => n >= 0 && n <= 10_000; // the service's stored bound (spend above 100 % is kept)
-function parseHistoryCursor(x: unknown): HistoryCursor | null | undefined { // undefined = invalid
-  if (x === null) return null;
-  return isObj(x) && finite(x.measuredAt) && count(x.id) ? { measuredAt: x.measuredAt, id: x.id } : undefined;
-}
+/** A `{ <key>, id }` keyset cursor: null stays null, an invalid one is undefined; a fresh object, never `x` itself. */
+const keyset = <K extends string>(key: K, keyOk: (v: unknown) => v is number, idOk: (v: unknown) => v is number) =>
+  (x: unknown): ({ [P in K]: number } & { id: number }) | null | undefined => {
+    if (x === null) return null;
+    return isObj(x) && keyOk(x[key]) && idOk(x.id) ? ({ [key]: x[key], id: x.id } as { [P in K]: number } & { id: number }) : undefined;
+  };
+const safeInt = (x: unknown): x is number => Number.isSafeInteger(x);
+const parseHistoryCursor = keyset('measuredAt', finite, count);
 function parseCredits(x: unknown): Credits | null | undefined {
   if (x === null) return null;
   if (!isObj(x) || !boolOrNull(x.hasCredits) || !boolOrNull(x.unlimited) || !(x.balance === null || text(x.balance, 32))) return undefined;
@@ -344,21 +347,19 @@ const all = <T>(xs: unknown, max: number, parse: (x: unknown) => T | null): T[] 
 
 const positive = (x: unknown): x is number => count(x) && x > 0;
 const limitOk = (x: unknown): x is number => Number.isSafeInteger(x) && (x as number) >= 1;
-function parseTCursor(x: unknown): TCursor | null | undefined { // undefined = invalid
-  if (x === null) return null;
-  return isObj(x) && Number.isSafeInteger(x.seq) && positive(x.id) ? { seq: x.seq as number, id: x.id } : undefined;
-}
+const parseTCursor = keyset('seq', safeInt, positive);
 function parseAt(x: unknown): TranscriptAt | null {
   if (x === 'first' || x === 'latest') return x;
   if (!isObj(x) || Object.keys(x).length !== 1) return null;
-  const c = parseTCursor('after' in x ? x.after : x.before);
+  const after = Object.hasOwn(x, 'after');
+  const c = parseTCursor(after ? x.after : x.before);
   if (!c) return null;
-  return 'after' in x ? { after: c } : 'before' in x ? { before: c } : null;
+  return after ? { after: c } : Object.hasOwn(x, 'before') ? { before: c } : null;
 }
 function parseItem(x: unknown): TranscriptItem | null {
   if (!isObj(x) || !positive(x.event) || !Number.isSafeInteger(x.seq) || !timeOrNull(x.ts) || !oneOf(ITEM_KINDS, x.kind)) return null;
   if (!(x.preview === null || text(x.preview, PREVIEW_BYTES)) || !count(x.length) || typeof x.reasoning !== 'boolean') return null;
-  if (!(x.callId === null || (text(x.callId, MAX_CALL_ID) && x.callId !== ''))) return null;
+  if (!callIdOk(x.callId)) return null;
   return { event: x.event, seq: x.seq as number, ts: x.ts, kind: x.kind, preview: x.preview, length: x.length, reasoning: x.reasoning, callId: x.callId };
 }
 function parseDetail(x: unknown): SessionDetail | null | undefined { // undefined = invalid
@@ -371,7 +372,7 @@ function parseDetail(x: unknown): SessionDetail | null | undefined { // undefine
 }
 const CONTEXT_KEYS = ['generation', 'used', 'window', 'basis', 'source', 'asOf', 'observedAt'];
 export function parseContext(x: unknown): ContextReading | undefined {
-  if (!isObj(x) || Object.keys(x).length !== CONTEXT_KEYS.length || !CONTEXT_KEYS.every((k) => k in x)) return undefined;
+  if (!exactKeys(x, CONTEXT_KEYS)) return undefined;
   if (!count(x.generation) || !(x.used === null || count(x.used)) || !(x.window === null || count(x.window))) return undefined;
   if (!oneOf(WINDOW_BASES, x.basis) || !oneOf(CONTEXT_SOURCES, x.source) || !timeOrNull(x.asOf) || !Number.isFinite(x.observedAt)) return undefined;
   if ((x.window === null) !== (x.basis === 'unavailable')) return undefined; // review M1: no meter for a window called unavailable
@@ -417,10 +418,7 @@ const idOrNull = (x: unknown): x is number | null => x === null || positive(x);
 const label = (x: unknown): x is string => text(x, MAX_LABEL) && x !== '';
 const labelOrNull = (x: unknown): x is string | null => x === null || label(x);
 const callIdOk = (x: unknown): x is string | null => x === null || (text(x, MAX_CALL_ID) && x !== '');
-function parseMCursor(x: unknown): MCursor | null | undefined { // undefined = invalid
-  if (x === null) return null;
-  return isObj(x) && Number.isSafeInteger(x.ts) && positive(x.id) ? { ts: x.ts as number, id: x.id } : undefined;
-}
+const parseMCursor = keyset('ts', safeInt, positive);
 function parseTool(x: unknown): ToolItem | null {
   if (!isObj(x) || !positive(x.call) || !callIdOk(x.callId) || !labelOrNull(x.tool) || !idOrNull(x.argsEvent) || !idOrNull(x.resultEvent)) return null;
   const s = x.sources;
@@ -469,12 +467,12 @@ export function parsePortRequest(x: unknown): PortRequest | null {
   if (m?.type === 'usageHistory') {
     const cursor = parseHistoryCursor(m.cursor);
     if (!count(m.id) || !count(m.scope) || !text(m.stream, MAX_STREAM) || !m.stream || !finite(m.from) || !finite(m.to) || m.from > m.to) return null;
-    if (cursor === undefined || !Number.isSafeInteger(m.limit) || (m.limit as number) < 1) return null;
-    return { v: 1, type: 'usageHistory', id: m.id, scope: m.scope, stream: m.stream, from: m.from, to: m.to, cursor, limit: m.limit as number };
+    if (cursor === undefined || !limitOk(m.limit)) return null;
+    return { v: 1, type: 'usageHistory', id: m.id, scope: m.scope, stream: m.stream, from: m.from, to: m.to, cursor, limit: m.limit };
   }
-  if (!m || m.type !== 'listSessions' || !count(m.id) || !Number.isSafeInteger(m.limit) || (m.limit as number) < 1) return null;
+  if (!m || m.type !== 'listSessions' || !count(m.id) || !limitOk(m.limit)) return null;
   const cursor = parseCursor(m.cursor);
-  return cursor === undefined ? null : { v: 1, type: 'listSessions', id: m.id, cursor, limit: m.limit as number };
+  return cursor === undefined ? null : { v: 1, type: 'listSessions', id: m.id, cursor, limit: m.limit };
 }
 
 export function parsePortMessage(x: unknown): PortMessage | null {

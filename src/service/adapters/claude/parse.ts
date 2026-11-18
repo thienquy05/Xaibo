@@ -1,6 +1,7 @@
 // Claude Code transcript parser (P1-T09): one raw JSONL line + file context -> normalized record, or a malformed
 // outcome for quarantine. Pure and tolerant. Known types, injected prefixes: S9 facts for Claude 2.1.319.
 import { createHash } from 'node:crypto';
+import { isObj } from '../../../shared/ipc.ts';
 import { utcMs } from '../../time.ts';
 
 // S9 2.6: the 2.1.319 observations plus the record type names from the owner's real-store audit. The audit kept
@@ -46,7 +47,6 @@ export interface ClaudeRecord {
 export type ParseResult = { ok: true; record: ClaudeRecord } | { ok: false; reason: 'malformed' };
 
 type Obj = Record<string, unknown>;
-const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
 const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
 const joined = (parts: (string | undefined)[]) => parts.filter((p) => p).join('\n') || undefined;
 

@@ -2,6 +2,7 @@
 // quarantine. Pure and tolerant, like the Claude parser. Record types and shapes: S9 facts for Codex 0.160.0
 // (spikes/s9/evidence/facts.json, re-extracted 2026-11-11); payload types never observed there are kept raw only.
 import { createHash } from 'node:crypto';
+import { isObj } from '../../../shared/ipc.ts';
 import { utcMs } from '../../time.ts';
 import { accountMarker } from '../../usage/snapshots.ts';
 
@@ -46,7 +47,6 @@ export interface CodexRecord {
 export type ParseResult = { ok: true; record: CodexRecord } | { ok: false; reason: 'malformed' };
 
 type Obj = Record<string, unknown>;
-const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
 const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
 const joined = (parts: (string | undefined)[]) => parts.filter((p) => p).join('\n') || undefined;
 const texts = (v: unknown) => (typeof v === 'string' ? v : Array.isArray(v) ? joined(v.map((c) => (isObj(c) ? str(c.text) : undefined))) : undefined);
