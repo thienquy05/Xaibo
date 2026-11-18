@@ -2,6 +2,7 @@
 // live batches are committed ahead of backfill; flush at the S12 bounds (100 rows, 1 MiB or 50 ms).
 import type { DatabaseSync } from 'node:sqlite';
 import { byRank, mergeToolCalls, type ToolCallObservation } from '../normalize.ts';
+import { resolveRepository, type Grouping } from '../history/repository.ts';
 import { cwdKey } from '../paths.ts';
 import { isDiskFull } from './db.ts';
 import { agyUsage, claudeUsage, codexRateLimits, codexStep, codexUsage, tokenRecordDrift, type Usage } from '../usage/tokens.ts';
@@ -114,9 +115,12 @@ function prepare(db: DatabaseSync) {
   return {
     // ponytail: native_archived only rises (a rollout seen under archived_sessions/); unarchiving needs a scan-level check.
     upsertSession: db.prepare(`INSERT INTO sessions (agent, profile_id, native_session_id, cwd, cwd_key, entrypoint, interactive, title, started_at, last_activity,
-        originator, native_archived, native_available, account_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, coalesce(?, 1), ?)
+        originator, native_archived, native_available, account_epoch, repo_key, worktree, repo_reason)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, coalesce(?, 1), ?, ?, ?, ?)
       ON CONFLICT (agent, profile_id, native_session_id) DO UPDATE SET
+        repo_key = CASE WHEN sessions.cwd IS NULL THEN excluded.repo_key ELSE sessions.repo_key END,
+        worktree = CASE WHEN sessions.cwd IS NULL THEN excluded.worktree ELSE sessions.worktree END,
+        repo_reason = CASE WHEN sessions.cwd IS NULL THEN excluded.repo_reason ELSE sessions.repo_reason END,
         account_epoch = coalesce(sessions.account_epoch, excluded.account_epoch),
         cwd = coalesce(sessions.cwd, excluded.cwd), cwd_key = coalesce(sessions.cwd_key, excluded.cwd_key),
         entrypoint = coalesce(sessions.entrypoint, excluded.entrypoint), interactive = coalesce(sessions.interactive, excluded.interactive),
@@ -330,8 +334,27 @@ function context(st: ReturnType<typeof prepare>, sid: number | bigint, e: EventR
   }
 }
 
+// XAIBO-PROD-506 (P5-T01b; FR-53): a session's repository grouping is resolved from its cwd before the transaction and
+// stored only with the cwd's first value (the upsert's CASE), so it is set once and never regrouped (Q24, EC-108).
+// ponytail: memoized per cwd for the process lifetime (capped, cleared when full; an unreadable answer is not kept, so a
+// mount that was not ready is tried again); a directory that becomes a repository later is seen as one after a restart.
+// Resolution is sync file metadata I/O on the writer path: a hung network mount above a cwd would stall the writer;
+// move it to a worker if that is ever seen.
+const GROUP_MEMO_MAX = 512;
+const groupMemo = new Map<string, Grouping>();
+function groupingOf(cwd: string): Grouping {
+  let g = groupMemo.get(cwd);
+  if (!g) {
+    if (groupMemo.size >= GROUP_MEMO_MAX) groupMemo.clear();
+    g = resolveRepository(cwd);
+    if (!(g.kind === 'cwd' && g.reason === 'unreadable')) groupMemo.set(cwd, g); // overlong cwds are unreadable: never kept
+  }
+  return g;
+}
+
 export function commitBatch(db: DatabaseSync, batch: Batch): void {
   const st = statements(db);
+  const groups = batch.sessions.map((s) => (s.cwd ? groupingOf(s.cwd) : null)); // file metadata reads, outside the transaction
   db.exec('BEGIN IMMEDIATE');
   try {
     const d = batch.delivery;
@@ -349,10 +372,12 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
     const np = batch.profile;
     if (np) st.newProfile.run(np.id, np.agent, np.root, np.origin);
     const ids = new Map<string, number | bigint>();
-    for (const s of batch.sessions) {
+    for (const [i, s] of batch.sessions.entries()) {
+      const g = groups[i] ?? null;
       const row = st.upsertSession.get(batch.agent, batch.profileId, s.nativeSessionId, s.cwd ?? null, s.cwdKey ?? null, s.entrypoint ?? null,
         b(s.interactive), s.title ?? null, s.startedAt ?? null, s.lastActivity ?? null, s.originator ?? null, s.nativeArchived ? 1 : 0,
-        b(s.nativeAvailable), s.accountEpoch ?? null, b(s.nativeAvailable)) as { id: number };
+        b(s.nativeAvailable), s.accountEpoch ?? null, g?.kind === 'repository' ? g.key : null, g?.kind === 'repository' ? g.worktree : null,
+        g?.kind === 'cwd' ? g.reason : null, b(s.nativeAvailable)) as { id: number };
       ids.set(s.nativeSessionId, row.id);
       for (const c of s.cwds ?? []) st.cwd.run(row.id, SCHEMA_VERSION, c.source, c.cwd, c.cwdKey, c.firstSeen ?? null);
     }

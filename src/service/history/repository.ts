@@ -8,6 +8,7 @@ export type CwdReason = 'no-git' | 'unreadable' | 'inconsistent' | 'back-pointer
 export type Grouping = { kind: 'repository'; key: string; worktree: string } | { kind: 'cwd'; reason: CwdReason };
 
 const POINTER_MAX = 4096; // git's .git, gitdir and commondir files hold one path
+export const CWD_MAX = 4096; // an untrusted cwd longer than any real path is never resolved
 const cwdOnly = (reason: CwdReason): Grouping => ({ kind: 'cwd', reason });
 const code = (e: unknown) => (e as NodeJS.ErrnoException).code;
 const missing = (e: unknown) => code(e) === 'ENOENT' || code(e) === 'ENOTDIR';
@@ -40,6 +41,8 @@ export function resolveRepository(cwd: string): Grouping {
 }
 
 function resolve(cwd: string): Grouping {
+  // Review of XAIBO-PROD-506: a relative cwd would resolve against the service's own directory.
+  if (!path.isAbsolute(cwd) || cwd.length > CWD_MAX) return cwdOnly('unreadable');
   const start = real(cwd);
   if (start === null) return cwdOnly('unreadable');
   let worktree = start;

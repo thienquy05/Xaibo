@@ -19,14 +19,15 @@ test('014: backup first, every session kept, overlay values constrained; native 
   const before = await openStore({ ...opts, migrations: loadMigrations().filter((m) => m.version < 14) });
   before.db.prepare("INSERT INTO profiles (id, agent, root, origin) VALUES ('p1', 'claude', '/tmp/xaibo-fixture/root', 'default')").run();
   before.db.prepare("INSERT INTO sessions (agent, profile_id, native_session_id, cwd, last_activity) VALUES ('claude', 'p1', 's1', '/tmp/xaibo-fixture/alpha', 1)").run();
-  const sessions = JSON.stringify(before.db.prepare('SELECT * FROM sessions').all());
+  const COLS = 'SELECT id, agent, profile_id, native_session_id, cwd, last_activity FROM sessions'; // later migrations may add columns
+  const sessions = JSON.stringify(before.db.prepare(COLS).all());
   before.db.close();
 
   const s = await openStore(opts);
   assert.equal(s.readOnly, false);
   assert.ok(Number(one(s.db, 'PRAGMA user_version')) >= 14);
   assert.deepEqual(readdirSync(opts.backupDir), ['xaibo-v13.db'], 'the recovery path backed up the v13 database first');
-  assert.equal(JSON.stringify(s.db.prepare('SELECT * FROM sessions').all()), sessions);
+  assert.equal(JSON.stringify(s.db.prepare(COLS).all()), sessions);
   assert.throws(() => s.db.prepare("INSERT INTO overlays (agent, profile_id, native_session_id, pinned) VALUES ('claude', 'p1', 's1', 2)").run(), /CHECK/);
   assert.throws(() => s.db.prepare("INSERT INTO projects (name, created_at) VALUES ('', 1)").run(), /CHECK/);
 

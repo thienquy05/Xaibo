@@ -122,6 +122,11 @@ test('review: an oversized commondir is inconsistent; trailing whitespace and CR
   assert.deepEqual(resolveRepository(spaced), repo(common, spaced));
 });
 
+// Review of XAIBO-PROD-506: an untrusted cwd that is relative or overlong is never resolved.
+test('review: a relative or overlong cwd is unreadable, never resolved against the service directory', () => {
+  for (const cwd of ['.', 'src', '../x', `/${'a'.repeat(5000)}`]) assert.deepEqual(resolveRepository(cwd), { kind: 'cwd', reason: 'unreadable' }, cwd.slice(0, 20));
+});
+
 test('metadata files only: the resolver never starts a process', () => {
   const src = readFileSync(new URL('../../../src/service/history/repository.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(src, /child_process|\bspawn(Sync)?\(|\bexecFile|\bexecSync|\bfork\(/); // RegExp#exec is not a process

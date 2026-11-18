@@ -211,11 +211,12 @@ CREATE TABLE sessions (
   record_count INTEGER NOT NULL DEFAULT 0,
   unknown_count INTEGER NOT NULL DEFAULT 0,
   quarantined_count INTEGER NOT NULL DEFAULT 0,
-  drift INTEGER NOT NULL DEFAULT 0, originator TEXT, source_kind TEXT, native_archived INTEGER NOT NULL DEFAULT 0, current_model TEXT, current_effort TEXT, current_model_ts INTEGER, account_epoch TEXT,
+  drift INTEGER NOT NULL DEFAULT 0, originator TEXT, source_kind TEXT, native_archived INTEGER NOT NULL DEFAULT 0, current_model TEXT, current_effort TEXT, current_model_ts INTEGER, account_epoch TEXT, repo_key TEXT, worktree TEXT, repo_reason TEXT,
   UNIQUE (agent, profile_id, native_session_id)
 );
 CREATE INDEX sessions_activity ON sessions (last_activity DESC, id);
 CREATE INDEX sessions_agent_activity ON sessions (agent, last_activity DESC, id);
+CREATE INDEX sessions_repo ON sessions (repo_key, worktree);
 CREATE TABLE source_files (
   id INTEGER PRIMARY KEY,
   profile_id TEXT NOT NULL REFERENCES profiles(id),
