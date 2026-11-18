@@ -122,17 +122,23 @@ export function appendLive<W extends { items: TranscriptItem[]; next: TCursor | 
 export const liveAppend = <W extends { items: TranscriptItem[]; next: TCursor | null }>(w: W, last: TranscriptItem, page: { items: TranscriptItem[]; next: TCursor | null }): W =>
   (w.items.at(-1) === last ? appendLive(w, page) : w);
 
-/** XAIBO-PROD-451 (G4d-3): forward pages from the start, up to `want` pages; null when `live()` turns false (a newer
- *  load superseded it). A rejected page rejects the whole load. */
-export async function loadPages<T, C>(fetch: (c: C | null) => Promise<{ items: T[]; next: C | null }>, want: number, live: () => boolean = () => true):
-  Promise<{ items: T[]; next: C | null; pages: number } | null> {
-  let items: T[] = [];
-  let c: C | null = null;
+/** Where a loaded page starts: the cursor that fetched it (null for the first page) and the items before it. */
+export interface PageStart<C> { from: C | null; at: number }
+
+/** XAIBO-PROD-451 (G4d-3): forward pages from `from` (the start by default), up to `want` pages; null when `live()` turns
+ *  false (a newer load superseded it). A rejected page rejects the whole load. XAIBO-PROD-457: `starts` records each page's
+ *  start, `at` counted within this load. */
+export async function loadPages<T, C>(fetch: (c: C | null) => Promise<{ items: T[]; next: C | null }>, want: number, live: () => boolean = () => true, from: C | null = null):
+  Promise<{ items: T[]; next: C | null; pages: number; starts: PageStart<C>[] } | null> {
+  const items: T[] = [];
+  const starts: PageStart<C>[] = [];
+  let c = from;
   for (let pages = 1; ; pages++) {
     const p = await fetch(c);
     if (!live()) return null;
-    items = [...items, ...p.items];
-    if (p.next === null || pages >= want) return { items, next: p.next, pages };
+    starts.push({ from: c, at: items.length });
+    items.push(...p.items);
+    if (p.next === null || pages >= want) return { items, next: p.next, pages, starts };
     c = p.next;
   }
 }
@@ -141,11 +147,19 @@ export async function loadPages<T, C>(fetch: (c: C | null) => Promise<{ items: T
 export const MARKER_PAGES = 10;
 export const RELOAD_MAX = 5; // pages refetched per live reload (re-review)
 
-/** Pages a live reload refetches. ponytail: a ledger refetches at most RELOAD_MAX, so pages loaded beyond that drop back on
- *  activity (refresh only the last loaded page if users page that far through busy sessions). A list whose own budget is
- *  above the cap (model markers) keeps every loaded page (XAIBO-PROD-454 review M1), or Load more is undone at once. */
-export function reloadPages(pages: number, loaded: number): number {
-  return Math.max(pages, pages > RELOAD_MAX ? loaded : Math.min(loaded, RELOAD_MAX));
+/** What a live reload refetches: keep the first `keep` pages (items before `at`), then fetch `want` pages from `from`.
+ *  A ledger (budget ≤ RELOAD_MAX; its records change status) refetches from the first page, at most RELOAD_MAX pages.
+ *  ponytail: so ledger pages loaded beyond that drop back on activity (refresh only the last page if users page that far).
+ *  XAIBO-PROD-457: model markers (budget above the cap) keep every page before the last loaded one and refetch from its
+ *  cursor (answerMarkers scans turns in (started_at, id) order, so that returns the page plus anything appended), at
+ *  most RELOAD_MAX pages; Load more is never undone (XAIBO-PROD-454 review M1). ponytail: a turn backfilled before the
+ *  last loaded page shows only after the session is reopened. */
+export function reloadPlan<C>(pages: number, starts: PageStart<C>[]): { keep: number; at: number; from: C | null; want: number } {
+  const loaded = starts.length;
+  if (pages <= RELOAD_MAX || loaded === 0) return { keep: 0, at: 0, from: null, want: Math.max(pages, Math.min(loaded, RELOAD_MAX)) };
+  const keep = loaded - 1;
+  const { at, from } = starts[keep];
+  return { keep, at, from, want: Math.min(RELOAD_MAX, Math.max(1, pages - keep)) };
 }
 
 /** XAIBO-PROD-437 (design §8.1): the name of a focusable Conversation/Activity entry: its kind and clock time, never its

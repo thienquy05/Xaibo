@@ -2,7 +2,7 @@
 // never claim success without evidence; a live session opens on its latest page; coverage codes name what is missing.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { argFor, clock, compactStatus, countText, incompleteReasons, initialAt, isoTime, liveAction, openChange, sizeText, toolMeta, toolTone, trimWindow, appendLive, WINDOW_MAX, reloadPages, RELOAD_MAX, MARKER_PAGES } from '../../../src/renderer/workspace/view.ts';
+import { argFor, clock, compactStatus, countText, incompleteReasons, initialAt, isoTime, liveAction, openChange, sizeText, toolMeta, toolTone, trimWindow, appendLive, WINDOW_MAX, reloadPlan, loadPages, RELOAD_MAX, MARKER_PAGES } from '../../../src/renderer/workspace/view.ts';
 import type { FileItem, LiveStatus, ModelMarker, SessionRow, SubagentItem, ToolItem, TranscriptItem } from '../../../src/shared/ipc.ts';
 import type { SessionChanges } from '../../../src/renderer/workspace/view.ts';
 
@@ -199,13 +199,45 @@ test('the transcript Retry repeats the failed request', async () => {
   assert.deepEqual(retryRequest('before'), { grow: 'before' });
 });
 
-// XAIBO-PROD-454 (review M1): a live reload never drops pages a list loaded beyond a budget already above the reload cap
-// (model markers: MARKER_PAGES > RELOAD_MAX), or "Load more model markers" is undone on the next activity.
-test('reloadPages: ledgers cap at RELOAD_MAX; a budget above the cap keeps every loaded page', () => {
-  assert.equal(reloadPages(1, 0), 1);
-  assert.equal(reloadPages(1, 8), RELOAD_MAX);
-  assert.equal(reloadPages(3, 2), 3);
+// XAIBO-PROD-457 (Codex re-review 2, G4d-3): a live reload of model markers (MARKER_PAGES > RELOAD_MAX) keeps the pages
+// before the last loaded one and refetches from that page's cursor, at most RELOAD_MAX pages; ledgers (records change
+// status) still refetch from the first page, capped at RELOAD_MAX. XAIBO-PROD-454 review M1: Load more is never undone.
+const starts = (n: number) => Array.from({ length: n }, (_, i) => ({ from: i === 0 ? null : i * 10, at: i * 100 }));
+test('reloadPlan: ledgers refetch from the first page, capped at RELOAD_MAX', () => {
+  assert.deepEqual(reloadPlan(1, starts(0)), { keep: 0, at: 0, from: null, want: 1 });
+  assert.deepEqual(reloadPlan(1, starts(8)), { keep: 0, at: 0, from: null, want: RELOAD_MAX });
+  assert.deepEqual(reloadPlan(3, starts(2)), { keep: 0, at: 0, from: null, want: 3 });
+  assert.deepEqual(reloadPlan(RELOAD_MAX, starts(RELOAD_MAX)), { keep: 0, at: 0, from: null, want: RELOAD_MAX });
+});
+test('reloadPlan: markers keep pages 1..k-1 and refetch from page k, bounded; Load more is not undone', () => {
   assert.ok(MARKER_PAGES > RELOAD_MAX);
-  assert.equal(reloadPages(MARKER_PAGES, MARKER_PAGES), MARKER_PAGES);
-  assert.equal(reloadPages(MARKER_PAGES, MARKER_PAGES + 1), MARKER_PAGES + 1);
+  assert.deepEqual(reloadPlan(MARKER_PAGES, starts(0)), { keep: 0, at: 0, from: null, want: MARKER_PAGES }); // initial load
+  assert.deepEqual(reloadPlan(MARKER_PAGES, starts(12)), { keep: 11, at: 1100, from: 110, want: 1 });
+  assert.deepEqual(reloadPlan(MARKER_PAGES, starts(MARKER_PAGES)), { keep: 9, at: 900, from: 90, want: 1 });
+  assert.deepEqual(reloadPlan(MARKER_PAGES, starts(3)), { keep: 2, at: 200, from: 20, want: RELOAD_MAX });
+  for (let n = 1; n <= 30; n++) {
+    const p = reloadPlan(MARKER_PAGES, starts(n));
+    assert.ok(p.want >= 1 && p.want <= RELOAD_MAX, `bounded at ${n}`);
+    assert.ok(p.keep + p.want >= n, `Load more kept at ${n}`);
+    assert.ok(p.keep + p.want <= Math.max(MARKER_PAGES, n), `no automatic growth past the budget at ${n}`);
+  }
+});
+test('reloadPlan + loadPages: after 12 marker pages a refresh asks only from page 12 and keeps pages 1-11', async () => {
+  // 13 pages of 2 markers each; page i (0-based) starts at cursor i (null for the first)
+  let calls: (number | null)[] = [];
+  const fetch = async (c: number | null) => { const i = c ?? 0; calls.push(c); return { items: [`m${i}a`, `m${i}b`], next: i + 1 < 13 ? i + 1 : null }; };
+  const first = (await loadPages(fetch, 12))!;
+  assert.equal(first.pages, 12);
+  assert.deepEqual(first.starts.map((s) => s.from), [null, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+  assert.deepEqual(first.starts.map((s) => s.at), [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22]);
+  calls = [];
+  const plan = reloadPlan(MARKER_PAGES, first.starts);
+  const again = (await loadPages(fetch, plan.want, () => true, plan.from))!;
+  assert.ok(calls.length <= RELOAD_MAX);
+  assert.equal(calls[0], 11);
+  assert.deepEqual(again.starts[0], { from: 11, at: 0 });
+  const items = [...first.items.slice(0, plan.at), ...again.items];
+  assert.deepEqual(items.slice(0, 22), first.items.slice(0, 22)); // pages 1-11 kept
+  assert.deepEqual(items.slice(22), ['m11a', 'm11b']);
+  assert.equal(again.next, 12); // the continuation stays with Load more model markers
 });

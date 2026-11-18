@@ -15,7 +15,7 @@ import { ContextPane } from './context/ContextSection.tsx';
 import { CostPane } from './cost/CostSection.tsx';
 import { Conversation, Files, MarkerNotice, Subagents, Timeline, Tools, type Anchor, type Paged, type SliceFn } from './sections.tsx';
 import { mergeTimeline } from './timeline.ts';
-import { compactStatus, countText, incompleteReasons, initialAt, liveAction, liveAppend, loadAnchor, loadPages, MARKER_PAGES, reloadPages, retryRequest, settled, trimWindow, WINDOW_MAX } from './view.ts';
+import { compactStatus, countText, incompleteReasons, initialAt, liveAction, liveAppend, loadAnchor, loadPages, MARKER_PAGES, reloadPlan, retryRequest, settled, trimWindow, WINDOW_MAX, type PageStart } from './view.ts';
 
 import type { WorkspaceApi } from './workspace-api.ts';
 export type { WorkspaceApi };
@@ -39,25 +39,25 @@ const LEDGER_PAGE = 100;
 // sessions that long are common.
 const TOOL_PAGES = 5;
 
-/** A forward-paged list loaded on mount (up to `pages` pages) and reloaded when `key` changes. Review M2: a reload
- *  fetches as many pages as were loaded, so live activity never drops pages the user loaded. Review L5: Retry after a
+/** A forward-paged list loaded on mount (up to `pages` pages) and reloaded when `key` changes. Review M2: a reload never
+ *  drops pages the user loaded; XAIBO-PROD-457: what it refetches is bounded by reloadPlan. Review L5: Retry after a
  *  failed (re)load reloads instead of appending page 1 again. */
 function usePaged<T, C>(fetch: (c: C | null) => Promise<{ items: T[]; next: C | null }>, pages: number, key: unknown): Paged<T> {
   const [s, setS] = useState<{ items: T[]; next: C | null; loading: boolean; failed: boolean; reloadFailed: boolean }>({ items: [], next: null, loading: true, failed: false, reloadFailed: false });
   const [retry, setRetry] = useState(0);
   const [rt, rtDo] = useReducer(retryStep, retryIdle); // XAIBO-PROD-438: Retry state for the notice
   const gen = useRef(0);
-  const loaded = useRef(0); // pages currently shown
+  const starts = useRef<PageStart<C>[]>([]); // the pages currently shown
   const fetchRef = useRef(fetch);
   fetchRef.current = fetch;
   useEffect(() => {
     const g = ++gen.current;
-    const want = reloadPages(pages, loaded.current);
+    const plan = reloadPlan(pages, starts.current);
     setS((x) => ({ ...x, loading: true }));
-    loadPages((c: C | null) => fetchRef.current(c), want, () => gen.current === g).then((r) => {
+    loadPages((c: C | null) => fetchRef.current(c), plan.want, () => gen.current === g, plan.from).then((r) => {
       if (!r) return;
-      loaded.current = r.pages;
-      setS({ items: r.items, next: r.next, loading: false, failed: false, reloadFailed: false });
+      starts.current = [...starts.current.slice(0, plan.keep), ...r.starts.map((p) => ({ from: p.from, at: p.at + plan.at }))];
+      setS((x) => ({ items: [...x.items.slice(0, plan.at), ...r.items], next: r.next, loading: false, failed: false, reloadFailed: false }));
       rtDo({ type: 'ok' });
     }, () => { if (gen.current === g) { setS((x) => ({ ...x, loading: false, failed: true, reloadFailed: true })); rtDo({ type: 'fail', at: Date.now() }); } });
   }, [key, pages, retry]);
@@ -67,10 +67,11 @@ function usePaged<T, C>(fetch: (c: C | null) => Promise<{ items: T[]; next: C | 
     if (s.reloadFailed) { setRetry((r) => r + 1); return; }
     if (s.next === null) return;
     const g = gen.current;
+    const start = { from: s.next, at: s.items.length }; // items stay put while loading: no reload or Load more lands
     setS((x) => ({ ...x, loading: true }));
     fetchRef.current(s.next).then((p) => {
       if (gen.current !== g) return;
-      loaded.current++;
+      starts.current = [...starts.current, start];
       setS((x) => ({ items: [...x.items, ...p.items], next: p.next, loading: false, failed: false, reloadFailed: false }));
       rtDo({ type: 'ok' });
     }, () => { if (gen.current === g) { setS((x) => ({ ...x, loading: false, failed: true })); rtDo({ type: 'fail', at: Date.now() }); } });
