@@ -97,6 +97,12 @@ export function revealDue(prevSig: string, sig: string, now: number, until: numb
 export const revealPort = (scroller: { top: number; bottom: number }, windowHeight: number, padTop: number): { top: number; bottom: number } =>
   ({ top: Math.max(scroller.top, padTop), bottom: Math.min(scroller.bottom, windowHeight) });
 
+/** XAIBO-PROD-530 (D-P5-11): a focused element starting above the reveal port (under the sticky top band). A record
+ *  taller than the room there keeps its top hidden under the browser's nearest-edge focus scroll; it is shown from its
+ *  start instead. Half a pixel of rounding is not hidden. `moved`: focus came from another element; the window
+ *  regaining focus (review M1) never undoes the user's own scrolling. */
+export const startHidden = (el: { top: number }, port: { top: number }, moved: boolean): boolean => moved && el.top < port.top - 0.5;
+
 /** XAIBO-PROD-439: whether the window (or the sticky frame's padding) clips a list's scroller; only then does arrow-key
  *  focus also move the page, otherwise the virtualizer's own scroll is left alone. */
 export const scrollerClipped = (scroller: { top: number; bottom: number }, windowHeight: number, padTop: number): boolean =>

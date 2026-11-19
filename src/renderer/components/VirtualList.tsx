@@ -5,7 +5,7 @@
 // it in place. Offsets are CSSOM style properties, which the CSP allows (no inline style blocks).
 import { defaultRangeExtractor, useVirtualizer, type Range } from '@tanstack/react-virtual';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
-import { anchorShift, createEdgeFetch, focusIndex, layoutSignature, nextFocus, pageAnnouncement, pickAnchor, revealDelta, revealDue, revealPort, scrollerClipped, shouldReveal } from './virtual-list-model.ts';
+import { anchorShift, createEdgeFetch, focusIndex, layoutSignature, nextFocus, pageAnnouncement, pickAnchor, revealDelta, revealDue, revealPort, scrollerClipped, shouldReveal, startHidden } from './virtual-list-model.ts';
 
 type Key = string | number; // our keys; the library's own key type also allows bigint
 
@@ -33,6 +33,16 @@ const OVERSCAN = 3;
 const framePadPx = () => parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--x-frame-pad')) || 8;
 function outOfView(el: HTMLElement, scroller: HTMLElement): boolean {
   return revealDelta(el.getBoundingClientRect(), revealPort(scroller.getBoundingClientRect(), innerHeight, framePadPx())) !== 0;
+}
+
+/** XAIBO-PROD-530 (D-P5-11): keyboard focus on something in the list whose top is hidden shows it from its start, every
+ *  scroller's scroll padding included (a 200 % text record taller than the room below the top band). Synchronous, so the
+ *  browser's own nearest-edge focus scroll, before or after it, keeps that start. Mouse focus never scrolls; nor does
+ *  the window regaining focus (no related target). */
+function showStart(el: Element, from: EventTarget | null) {
+  const sc = el.closest('.x-vlist');
+  if (!(el instanceof HTMLElement) || !sc || !el.matches(':focus-visible')) return;
+  if (startHidden(el.getBoundingClientRect(), revealPort(sc.getBoundingClientRect(), innerHeight, framePadPx()), from !== null)) el.scrollIntoView({ block: 'start' });
 }
 
 export function VirtualList<T>({ items, getKey, render, label, itemLabel, initialFocusKey = null, estimateSize, hasMore, loading, onLoadMore, anchor = null }: VirtualListProps<T>) {
@@ -163,7 +173,7 @@ export function VirtualList<T>({ items, getKey, render, label, itemLabel, initia
       <div className="x-vlist" ref={scrollRef} onScroll={record}>
         <ul
           className="x-vlist-items" ref={listRef} aria-label={label} data-count={count} onKeyDown={onKeyDown}
-          onFocus={() => { listHadFocus.current = true; }} onBlur={(e) => { if (!listRef.current?.contains(e.relatedTarget as Node | null)) listHadFocus.current = false; }}
+          onFocus={(e) => { listHadFocus.current = true; showStart(e.target, e.relatedTarget); }} onBlur={(e) => { if (!listRef.current?.contains(e.relatedTarget as Node | null)) listHadFocus.current = false; }}
           style={{ height: `${v.getTotalSize()}px` }}
         >
           {v.getVirtualItems().map((vi) => (
