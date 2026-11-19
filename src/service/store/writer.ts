@@ -14,7 +14,7 @@ import { LAST_RUN_KEY, QUOTA_MS } from '../retention/policy.ts';
 export const SCHEMA_VERSION = 1;
 // The FTS row of an event is its ftsPrefix; deletes (revisions, purge) must pass that same text, so changing this bound
 // leaves rows indexed under the old one undeletable (XAIBO-PROD-515 review M5).
-const FTS_MAX_BYTES = 64 * 1024;
+export const FTS_MAX_BYTES = 64 * 1024;
 /** P4-T08: model evidence relayed by Xaibo's own channels (not the agent's file) and the effort fill window. */
 const RELAYED = new Set(['hook', 'report', 'statusline']);
 const FILL_MS = 60_000;

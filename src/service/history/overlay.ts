@@ -106,6 +106,19 @@ export function approvedLabel(db: DatabaseSync, agent: string, profileId: string
 interface HistoryRaw extends Raw { pinned: number; archived_at: number | null; trashed_at: number | null; p_id: number | null; p_name: string | null; f_id: number | null; f_name: string | null }
 const named = (id: number | null, name: string | null): Named | null => (id === null || name === null ? null : { id, name });
 
+/** The session list scope over `s` (sessions) and `o` (its overlay row): mode all leaves Trash out, archived and trash
+ *  restrict; agent, project, folder, map group. Without overlay tables only the agent applies (callers refuse the rest).
+ *  Shared by listHistory and search (P5-T14, Q-5.3). */
+export function scopeWhere(f: HistoryFilter, overlay: boolean): { where: string[]; args: (string | number)[] } {
+  const where: string[] = [], args: (string | number)[] = [];
+  if (overlay) where.push(f.mode === 'trash' ? 'o.trashed_at IS NOT NULL' : f.mode === 'archived' ? 'o.archived_at IS NOT NULL AND o.trashed_at IS NULL' : 'o.trashed_at IS NULL');
+  if (f.agent !== null) { where.push('s.agent = ?'); args.push(f.agent); }
+  if (f.project !== null) { where.push('o.project_id = ?'); args.push(f.project); }
+  if (f.folder !== null) { where.push('o.folder_id = ?'); args.push(f.folder); }
+  if (f.group) { const g = groupWhere(f.group); where.push(...g.where); args.push(...g.args); } // P5-T01c: one map group's scope
+  return { where, args };
+}
+
 /** Pinned first, then last activity descending (unknown last), then id; mode all leaves Trash out. Without overlay tables
  *  (a read-only older schema) the list degrades to sessions with no overlay data. */
 export function listHistory(db: DatabaseSync, f: HistoryFilter, cursor: HistoryKey | null, limit: number,
@@ -118,12 +131,8 @@ export function listHistory(db: DatabaseSync, f: HistoryFilter, cursor: HistoryK
     : '0 AS pinned, NULL AS archived_at, NULL AS trashed_at, NULL AS p_id, NULL AS p_name, NULL AS f_id, NULL AS f_name, ';
   const joins = overlay ? ` LEFT JOIN overlays o ON o.agent = s.agent AND o.profile_id = s.profile_id AND o.native_session_id = s.native_session_id
     LEFT JOIN projects p ON p.id = o.project_id LEFT JOIN folders d ON d.id = o.folder_id` : '';
-  const where: string[] = [], args: (string | number | null)[] = [];
-  if (overlay) where.push(f.mode === 'trash' ? 'o.trashed_at IS NOT NULL' : f.mode === 'archived' ? 'o.archived_at IS NOT NULL AND o.trashed_at IS NULL' : 'o.trashed_at IS NULL');
-  if (f.agent !== null) { where.push('s.agent = ?'); args.push(f.agent); }
-  if (f.project !== null) { where.push('o.project_id = ?'); args.push(f.project); }
-  if (f.folder !== null) { where.push('o.folder_id = ?'); args.push(f.folder); }
-  if (f.group) { const g = groupWhere(f.group); where.push(...g.where); args.push(...g.args); } // P5-T01c: one map group's scope
+  const s = scopeWhere(f, overlay);
+  const where = s.where, args: (string | number | null)[] = s.args;
   if (cursor) {
     const p = cursor.pinned ? 1 : 0;
     const after = cursor.lastActivity === null ? '(s.last_activity IS NULL AND s.id > ?)' : '(s.last_activity < ? OR s.last_activity IS NULL OR (s.last_activity = ? AND s.id > ?))';
