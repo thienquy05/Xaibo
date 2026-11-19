@@ -28,7 +28,7 @@ interface Who { agent: string; profileKey: string }
 export type Contribution = { key: string; at: Bucket } & (
   | ({ kind: 'u'; model: string; tokens: (number | null)[]; usd: number | null; coverage: Coverage; rev: number | null } & Who)
   | ({ kind: 't'; model: string } & Who)
-  | ({ kind: 'm'; model: string } & Who)
+  | ({ kind: 'm'; model: string; session: string } & Who) // session: its session-month key (P5-T16 review M2)
   | ({ kind: 's' } & Who)
   | { kind: 'q'; agent: string; scopeKey: string; limitId: string; window: number; verified: boolean; percent: number });
 
@@ -108,16 +108,17 @@ export function* sessionContributions(db: DatabaseSync, secret: Buffer, ids: num
       // a session with no turn or request: a month-free key, so a settled one keeps its month across a time-zone change
       const key = keyOf(secret, 's0', id), at = bucket(key, fallback);
       yield { kind: 's', key, at, ...who };
-      yield { kind: 'm', key: keyOf(secret, 'm', [...id, at.month, '']), at, ...who, model: '' };
+      yield { kind: 'm', key: keyOf(secret, 'm', [...id, at.month, '']), at, ...who, model: '', session: key };
       continue;
     }
     for (const [month, m] of months) {
-      yield { kind: 's', key: keyOf(secret, 's', [...id, month]), at: m.at, ...who };
+      const sessionKey = keyOf(secret, 's', [...id, month]);
+      yield { kind: 's', key: sessionKey, at: m.at, ...who };
       // review L3: "model unavailable" only when the month has no known model.
       // ponytail: the model is part of the key, so a kept settled session whose model id later resolves (alias, '' to a
       // name) adds one per-model session count; tokens and cost are unaffected. Read models from settled keys if it matters.
       const models = m.models.size > 1 ? [...m.models].filter((x) => x !== '') : [...m.models];
-      for (const model of models) yield { kind: 'm', key: keyOf(secret, 'm', [...id, month, model]), at: m.at, ...who, model };
+      for (const model of models) yield { kind: 'm', key: keyOf(secret, 'm', [...id, month, model]), at: m.at, ...who, model, session: sessionKey };
     }
   }
 }
@@ -214,10 +215,18 @@ export function frozen(db: DatabaseSync): Totals {
 export function liveMonthly(db: DatabaseSync, secret: Buffer): Monthly {
   const t = frozen(db);
   const settled = db.prepare('SELECT 1 FROM settled_contributions WHERE key = ?');
+  const cleared = clearedSession(db);
   for (const gen of [sessionContributions(db, secret, null), quotaContributions(db, secret, null)]) {
-    for (const c of gen) if (!settled.get(c.key)) t.add(c);
+    for (const c of gen) if (!settled.get(c.key) && !cleared(c)) t.add(c);
   }
   return t.result();
+}
+
+/** XAIBO-PROD-525 review M2: a session's per-model count in a month whose session count was cleared (Clear usage
+ *  history) stays cleared, even when a model resolves only afterwards (a new per-model key). */
+export function clearedSession(db: DatabaseSync): (c: Contribution) => boolean {
+  const q = db.prepare('SELECT 1 FROM settled_contributions WHERE key = ? AND cleared = 1');
+  return (c) => c.kind === 'm' && q.get(c.session) !== undefined;
 }
 
 /** XAIBO-PROD-514 (P5-T06; US-20): the agent filter applies to usage, sessions and quota; the model filter to usage and

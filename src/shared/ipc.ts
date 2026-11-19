@@ -264,9 +264,14 @@ export interface LedgerQuota { month: string; scope: number; label: string | nul
 /** older/newer: the `end` month of the previous/next page, null at either end. */
 export interface LedgerPage { months: LedgerMonth[]; quota: LedgerQuota[]; older: string | null; newer: string | null; agents: string[]; models: string[] }
 export interface LedgerFilter { agent: string | null; model: string | null }
+/** P5-T16: cleared; read-only = the store refused writes; failed = the transaction did not commit (nothing changed). */
+export const CLEAR_USAGE_RESULTS = ['cleared', 'read-only', 'failed'] as const;
+export type ClearUsageResult = (typeof CLEAR_USAGE_RESULTS)[number];
 export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Cursor | null; limit: number }
   /** P5-T17a: the ledger page of at most `limit` (1..12) observed months ending at `end` (null = the latest). */
   | { v: 1; type: 'monthly'; id: number; filter: LedgerFilter; end: string | null; limit: number }
+  /** P5-T16: Clear usage history (Settings, after the owner's confirmation). */
+  | { v: 1; type: 'clearUsage'; id: number }
   | { v: 1; type: 'history'; id: number; filter: HistoryFilter; cursor: HistoryKey | null; limit: number }
   | { v: 1; type: 'projects'; id: number; cursor: number | null; limit: number }
   | { v: 1; type: 'folders'; id: number; project: number; cursor: number | null; limit: number }
@@ -290,6 +295,7 @@ export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Curs
 export type PortMessage =
   // P5-T17a: failed = the store could not answer (the renderer offers Retry), never an empty ledger
   | ({ v: 1; type: 'monthly'; id: number; failed?: true } & LedgerPage)
+  | { v: 1; type: 'clearUsage'; id: number; result: ClearUsageResult }
   | { v: 1; type: 'history'; id: number; rows: HistoryRow[]; next: HistoryKey | null }
   | { v: 1; type: 'projects'; id: number; projects: Named[]; next: number | null }
   | { v: 1; type: 'folders'; id: number; folders: Named[]; next: number | null }
@@ -668,6 +674,7 @@ export function parsePortRequest(x: unknown): PortRequest | null {
     if (cursor === undefined || !limitOk(m.limit)) return null;
     return { v: 1, type: 'usageHistory', id: m.id, scope: m.scope, stream: m.stream, from: m.from, to: m.to, cursor, limit: m.limit };
   }
+  if (m?.type === 'clearUsage') return count(m.id) ? { v: 1, type: 'clearUsage', id: m.id } : null;
   if (m?.type === 'monthly') {
     const filter = parseLedgerFilter(m.filter);
     return count(m.id) && filter && monthOrNull(m.end) && Number.isSafeInteger(m.limit) && (m.limit as number) >= 1 && (m.limit as number) <= LEDGER_MONTHS
@@ -738,6 +745,7 @@ export function parsePortMessage(x: unknown): PortMessage | null {
     const next = parseCursor(m.next);
     return count(m.id) && rows && next !== undefined ? { v: 1, type: 'page', id: m.id, rows, next } : null;
   }
+  if (m.type === 'clearUsage') return count(m.id) && oneOf(CLEAR_USAGE_RESULTS, m.result) ? { v: 1, type: 'clearUsage', id: m.id, result: m.result } : null;
   if (m.type === 'monthly') {
     const months = all(m.months, LEDGER_MONTHS, parseLedgerMonth), quota = all(m.quota, MAX_LEDGER_QUOTA, parseLedgerQuota);
     // review L10: unique ascending months, quota only for listed months, a failed reply carries nothing

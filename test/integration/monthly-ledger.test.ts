@@ -78,6 +78,34 @@ test('concurrent requests share one run; invalidate, a month change and the maxi
   assert.equal(cache.runs, 4, 'past the maximum age');
 });
 
+test('XAIBO-PROD-525 (P5-T16): a request after an invalidate never joins a run that started before it (the chart is current right after a clear)', async () => {
+  const s = await store();
+  const cache = new MonthlyCache({ file: s.file, secret: SECRET, home: HOME, now: () => T });
+  const early = answerMonthly(cache, req()); // a run in flight
+  s.add('2026-04'); // a commit (e.g. Clear usage history) lands meanwhile
+  cache.invalidate();
+  const after = answerMonthly(cache, req());
+  assert.deepEqual(months(await after), ['2026-03', '2026-04'], 'the later request sees the commit');
+  await early;
+  assert.equal(cache.runs, 2);
+  const [x, y] = await Promise.all([answerMonthly(cache, req()), answerMonthly(cache, req())]);
+  assert.deepEqual(months(x), months(y));
+  assert.equal(cache.runs, 2, 'still cached and shared afterwards');
+});
+
+test('XAIBO-PROD-525 review M1: after an invalidate, a request during the recompute never gets the old cached value', async () => {
+  const s = await store();
+  const cache = new MonthlyCache({ file: s.file, secret: SECRET, home: HOME, now: () => T });
+  assert.deepEqual(months(await answerMonthly(cache, req())), ['2026-03']); // cached
+  s.add('2026-04');
+  cache.invalidate();
+  const a = answerMonthly(cache, req()); // starts the recompute
+  const b = answerMonthly(cache, req()); // arrives while it runs
+  assert.deepEqual(months(await b), ['2026-03', '2026-04'], 'not the value cached before the invalidate');
+  assert.deepEqual(months(await a), months(await b));
+  assert.equal(cache.runs, 2);
+});
+
 test('review M1/L5: a worker past its deadline is stopped and the reply says failed; a clock that went back recomputes', async () => {
   const s = await store();
   const logged: [string, object][] = [];

@@ -38,6 +38,8 @@ const GEOMETRY = {
   'clock-gap': [line([12, 3], [5, 3], [3, 10], [5, 18], [12, 21], [20, 17], [21, 10]), line([12, 7], [12, 12], [16, 12])],
   // XAIBO-PROD-438 (D-P4-10): in progress; turns per design §2.3 (tokens.css .x-loading)
   loading: [{ kind: 'path', d: 'M12 4 A8 8 0 1 1 4 12' }],
+  // XAIBO-PROD-525 (P5-T16): the Settings navigation icon of design §4
+  settings: [{ kind: 'rect', x: 4, y: 4, w: 16, h: 16 }, line([4, 9], [20, 9]), line([9, 4], [9, 9]), line([4, 15], [20, 15]), line([15, 15], [15, 20])],
 } satisfies Record<string, Shape[]>;
 
 export type IconId = keyof typeof GEOMETRY;

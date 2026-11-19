@@ -67,6 +67,8 @@ export function createClient(port: PortLike, push: Pushes) {
       const { v: _v, type: _t, id: _i, ...page } = await ask({ type: 'monthly', filter, end, limit }, 'monthly');
       return page;
     },
+    /** P5-T16: Clear usage history (after the owner's confirmation). */
+    async clearUsage() { return (await ask({ type: 'clearUsage' }, 'clearUsage')).result; },
     /** P4-T04b1: one scope+stream's observations in [from, to). */
     async usageHistory(scope: number, stream: string, from: number, to: number, cursor: HistoryCursor | null, limit: number): Promise<{ records: UsageRecord[]; next: HistoryCursor | null }> {
       const m = await ask({ type: 'usageHistory', scope, stream, from, to, cursor, limit }, 'usageHistory');

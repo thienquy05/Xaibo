@@ -228,6 +228,16 @@ body {
 .x-main section { min-width: 0; }
 .x-main > section > h1 { margin-bottom: var(--x-space-4); }
 .x-dashboard { display: grid; gap: var(--x-space-6); }
+/* XAIBO-PROD-525 (P5-T16; design §6.6): Settings, ruled sections, 240 px leading column at >= 800 px; §4.x dialog */
+.x-settings { display: grid; gap: var(--x-space-6); max-width: 880px; }
+.x-settings-section { display: grid; gap: var(--x-space-4); padding-top: var(--x-space-4); border-top: 1px solid var(--x-divider); }
+.x-settings-section h2, .x-dialog h2 { margin: 0 0 var(--x-space-2); font-size: var(--x-text-section); line-height: var(--x-leading-section); font-weight: var(--x-weight-strong); }
+.x-settings-section p, .x-dialog p { margin: 0 0 var(--x-space-2); }
+.x-settings-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--x-space-3); align-self: start; }
+@media (min-width: 800px) { .x-settings-section { grid-template-columns: 240px minmax(0, 1fr); } }
+.x-dialog { max-width: min(560px, calc(100vw - 32px)); padding: var(--x-space-5); color: var(--x-ink); background: var(--x-surface); border: 1px solid var(--x-line); border-radius: var(--x-radius-panel); }
+.x-dialog::backdrop { background: transparent; }
+.x-dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--x-space-3); margin-top: var(--x-space-4); }
 .x-dashboard-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--x-space-4); }
 .x-views { display: flex; flex-wrap: wrap; gap: var(--x-space-2); padding: var(--x-space-1); }
 .x-view { font-family: var(--x-font-ui); }
@@ -372,7 +382,7 @@ summary:hover { background: var(--x-tint); }
 .x-btn-quiet { color: var(--x-muted); background: transparent; border: 1px solid transparent; font-weight: var(--x-weight-normal); }
 .x-btn-quiet:hover { color: var(--x-ink); background: var(--x-tint); }
 .x-btn-quiet[aria-expanded="true"] { color: var(--x-accent); background: var(--x-selected); }
-.x-btn[aria-disabled="true"] { cursor: not-allowed; filter: none; opacity: 1; color: var(--x-muted); border-color: var(--x-line); background: var(--x-tint); }
+.x-btn[aria-disabled="true"], .x-btn:disabled { cursor: not-allowed; filter: none; opacity: 1; color: var(--x-muted); border-color: var(--x-line); background: var(--x-tint); }
 .x-icon-btn { width: var(--x-target-min); padding: 0; justify-content: center; }
 .x-record-open { margin-top: var(--x-space-3); }
 

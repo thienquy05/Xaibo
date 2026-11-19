@@ -16,6 +16,7 @@ import { framePad } from './frame-pad.ts';
 import { openOrder } from './overview/queue.ts';
 import { retryIdle, retryStep } from './retry.ts';
 import { firstUsablePage, LONG_FRAME, watchLongFrames } from './perf-marks.ts';
+import { Settings, type SettingsApi } from './settings/Settings.tsx';
 import { Workspace } from './workspace/Workspace.tsx';
 import type { SessionChanges } from './workspace/view.ts';
 import type { WorkspaceApi } from './workspace/OpenSession.tsx';
@@ -31,6 +32,9 @@ const DELTA_MAX = 1000;
 const onListCommit = firstUsablePage({ raf: (cb) => requestAnimationFrame(cb), mark: (n) => performance.mark(n) });
 watchLongFrames((start, duration) => performance.measure(LONG_FRAME, { start, duration }), globalThis.PerformanceObserver);
 
+type Area = 'dashboard' | 'session' | 'settings';
+const HEADING: Record<Area, string> = { dashboard: 'dashboard-heading', session: 'sessions-heading', settings: 'settings-heading' };
+
 function App() {
   const [health, setHealth] = useState<Health | null>(null);
   const [agents, setAgents] = useState<AgentStatus[] | null>(null);
@@ -38,7 +42,7 @@ function App() {
   const [banners, setBanners] = useState<Banner[]>([]);
   const [loading, setLoading] = useState(false);
   const [liveSet, setLiveSet] = useState<LiveSetState>(emptyLiveSet);
-  const [area, setArea] = useState<'dashboard' | 'session'>('dashboard');
+  const [area, setArea] = useState<Area>('dashboard');
   const [tick, setTick] = useState(0); // session activity: the usage view refreshes on it (throttled there)
   const [collector, setCollector] = useState(emptyCollector); // the Last known qualifier (design §6.0)
   const [liveFailed, setLiveFailed] = useState(false); // the live set could not be loaded: Retry
@@ -147,6 +151,8 @@ function App() {
     history: (scope, stream, from, to, cursor) => client.current?.usageHistory(scope, stream, from, to, cursor, PAGE) ?? Promise.reject(new Error('no service')),
     monthly: (filter, end, limit) => client.current?.monthly(filter, end, limit) ?? Promise.reject(new Error('no service')),
   }), []);
+  // review L5: with no service connection nothing is sent, so the outcome is known: not cleared
+  const settingsApi = useMemo<SettingsApi>(() => ({ clearUsage: () => client.current?.clearUsage() ?? Promise.resolve('failed' as const) }), []);
   // P4-T05d: the Session workspace's page requests go to the current client (a restart brings a new one).
   const workspaceApi = useMemo<WorkspaceApi>(() => workspaceApiOf(() => client.current), []);
   const clearRequest = useCallback(() => setRequest(null), []);
@@ -190,11 +196,11 @@ function App() {
   };
   // review L3: leaving through the Areas links or opening from the Session list ends the Dashboard's Return
   const clearReturn = useCallback(() => { origin.current = null; setReturnFor(null); setFocusId(null); }, []);
-  const go = (to: 'dashboard' | 'session') => (e: MouseEvent) => {
+  const go = (to: Area) => (e: MouseEvent) => {
     e.preventDefault();
     clearReturn();
     setArea(to);
-    requestAnimationFrame(() => document.getElementById(to === 'dashboard' ? 'dashboard-heading' : 'sessions-heading')?.focus());
+    requestAnimationFrame(() => document.getElementById(HEADING[to])?.focus());
   };
   return (
     <div className={`x-shell${area === 'session' ? ' x-fixed' : ''}`}>
@@ -240,14 +246,16 @@ function App() {
             </svg>
             Xaibo
           </span>
-          {/* ponytail: Agent Map and Settings links arrive with their areas (Phases 5–6); no placeholder links now. */}
+          {/* ponytail: the Agent Map link arrives with its area (P5-T18a); no placeholder link now. */}
           <a href="#dashboard" aria-current={area === 'dashboard' ? 'page' : undefined} onClick={go('dashboard')}><Icon id="dashboard" />Dashboard</a>
           <a href="#session" aria-current={area === 'session' ? 'page' : undefined} onClick={go('session')}><Icon id="session" />Session</a>
+          <a href="#settings" aria-current={area === 'settings' ? 'page' : undefined} onClick={go('settings')}><Icon id="settings" />Settings</a>
         </nav>
       </header>
       <div className="x-health"><HealthStatus health={health} banners={banners} /></div>
       <main id="main" className="x-main" tabIndex={-1}>
-        {area === 'dashboard'
+        {area === 'settings' ? <Settings api={settingsApi} readOnly={!!health?.readOnly} />
+          : area === 'dashboard'
           ? <Dashboard live={liveSet} liveFailed={liveFailed} liveRetry={liveRetry} onRetryLive={retryLive} lastKnown={lastKnown} agents={agents} banners={banners} api={api} tick={tick}
             onSetPath={(agent) => window.xaibo?.setAgentPath(agent)} onOpen={openSession} view={dashView} onView={setDashView} focusId={focusId} />
           : <Workspace list={list} changes={changes} loading={loading} onLoadMore={loadMore} lastKnown={lastKnown !== null} api={workspaceApi} request={request} onRequestDone={clearRequest}

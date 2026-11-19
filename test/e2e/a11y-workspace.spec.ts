@@ -292,7 +292,12 @@ async function focusProblems(page: Page, where: string, max = 60): Promise<strin
         const s = getComputedStyle(a);
         if (s.overflowX !== 'visible' || s.overflowY !== 'visible') clips.push(a.getBoundingClientRect());
       }
-      const tooWide = clips.some((c) => need.right - need.left > c.width), tooTall = clips.some((c) => need.bottom - need.top > c.height);
+      // XAIBO-PROD-525: the same for a record taller than the window below the sticky top band (frame-pad scroll padding
+      // and 8 px scroll margin above, 8 px below): no scroll position shows its whole ring (a 466 px row at 200 % text
+      // under a wrapped navigation band). The leading rail (>= 1200 px) is not a top band.
+      const band = document.querySelector('.x-frame')!.getBoundingClientRect();
+      const under = band.width >= innerWidth - 1 ? innerHeight - band.bottom - 16 : innerHeight;
+      const tooWide = clips.some((c) => need.right - need.left > c.width), tooTall = need.bottom - need.top > under || clips.some((c) => need.bottom - need.top > c.height);
       const win = { left: tooWide ? need.left : 0, top: tooTall ? need.top : 0, right: tooWide ? need.right : innerWidth, bottom: tooTall ? need.bottom : innerHeight };
       if (outside(win)) return { key, problem: `${key}: focus ring within 4 px of the window edge` };
       // review M1: in a skipped dimension the control must still be in view (overlap the window and every clipping box)
@@ -304,7 +309,14 @@ async function focusProblems(page: Page, where: string, max = 60): Promise<strin
       for (let a = ring.parentElement; a; a = a.parentElement) {
         const s = getComputedStyle(a);
         if (s.overflowX === 'visible' && s.overflowY === 'visible') continue;
-        if (outside(a.getBoundingClientRect())) return { key, problem: `${key}: focus ring clipped by ${desc(a)}` };
+        // a skipped dimension is skipped for a clipping box only when the ring cannot fit in its part visible below the top
+        // band either (re-review LOW-1: a box with room still catches a cut ring, e.g. lost scroll padding)
+        const c = a.getBoundingClientRect();
+        const room = Math.min(c.bottom, innerHeight) - Math.max(c.top, band.width >= innerWidth - 1 ? band.bottom + 8 : 0);
+        const skipY = tooTall && need.bottom - need.top > room;
+        if (outside({ left: tooWide ? need.left : c.left, right: tooWide ? need.right : c.right, top: skipY ? need.top : c.top, bottom: skipY ? need.bottom : c.bottom })) {
+          return { key, problem: `${key}: focus ring clipped by ${desc(a)}` };
+        }
       }
       // covered: something else is drawn over the control itself (an outline cannot be hit-tested, its box can)
       const box = el.getBoundingClientRect();

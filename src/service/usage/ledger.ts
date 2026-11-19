@@ -77,7 +77,7 @@ function compute(file: string, secret: Buffer, home: string, now: number): Ledge
 }
 
 // ponytail: settlement and purge commit without a batch notice; totals are unchanged by design, detail labels may lag this
-// long. A request arriving after a commit but during a run gets that run's (pre-commit) result; the next one corrects it.
+// long. A request arriving after an invalidate during a run waits for a follow-up run (P5-T16; earlier: review L6).
 // Back-to-back commits under live load can mean back-to-back runs (off the service loop); add a minimum interval if a
 // core stays busy (review L6/L11).
 export const MAX_AGE_MS = 5 * 60_000;
@@ -88,6 +88,7 @@ export class MonthlyCache {
   #value: { input: LedgerInput; at: number; month: string } | null = null;
   #dirty = true;
   #running: Promise<LedgerInput> | null = null;
+  #followUp = false; // #running is a run queued behind an older one (not started yet)
   /** Worker runs started (diagnostics and tests). */
   runs = 0;
   constructor(o: { file: string; secret: Buffer; home: string; now?: () => number; maxAgeMs?: number; timeoutMs?: number; log?: (event: string, fields: LogFields) => void }) {
@@ -95,13 +96,25 @@ export class MonthlyCache {
   }
 
   /** A commit changed the store: the next request recomputes. */
-  invalidate(): void { this.#dirty = true; }
+  invalidate(): void { this.#dirty = true; this.#value = null; } // review M1: nothing read before it is served again
 
   get(): Promise<LedgerInput> {
     const now = this.#o.now(), v = this.#value;
     // review L5: a clock that went back (now < at) recomputes too
     if (v && !this.#dirty && now >= v.at && now - v.at < this.#o.maxAgeMs && monthOf(now).month === v.month) return Promise.resolve(v.input);
-    this.#running ??= this.#run(now).finally(() => { this.#running = null; });
+    // XAIBO-PROD-525 (P5-T16): invalidated since the running worker started (a clear, a commit): wait for it, then run
+    // again, so a request after a commit never gets a result read before it. Requests meanwhile share the follow-up run.
+    if (this.#running && this.#dirty && !this.#followUp) {
+      const after = this.#running.then(() => undefined, () => undefined);
+      this.#followUp = true;
+      const p: Promise<LedgerInput> = after.then(() => { this.#followUp = false; return this.#run(this.#o.now()); })
+        .finally(() => { if (this.#running === p) this.#running = null; });
+      this.#running = p;
+    }
+    if (!this.#running) {
+      const p: Promise<LedgerInput> = this.#run(now).finally(() => { if (this.#running === p) this.#running = null; });
+      this.#running = p;
+    }
     return this.#running;
   }
 
@@ -120,7 +133,7 @@ export class MonthlyCache {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        this.#value = { input: m.input, at: now, month: monthOf(now).month };
+        if (!this.#dirty) this.#value = { input: m.input, at: now, month: monthOf(now).month }; // review M1: not one invalidated meanwhile
         resolve(m.input);
       });
       w.once('error', () => fail('error'));

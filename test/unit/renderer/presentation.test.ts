@@ -85,5 +85,7 @@ test('icon geometry is exactly design §4 (review of P4-T01)', () => {
     'clock-gap': [P('M12 3 L5 3 L3 10 L5 18 L12 21 L20 17 L21 10'), P('M12 7 L12 12 L16 12')],
     // XAIBO-PROD-438 (D-P4-10): the loading glyph of design §4
     loading: [P('M12 4 A8 8 0 1 1 4 12')],
+    // XAIBO-PROD-525 (P5-T16): Settings navigation
+    settings: [R(4, 4, 16, 16), P('M4 9 L20 9'), P('M9 4 L9 9'), P('M4 15 L20 15'), P('M15 15 L15 20')],
   });
 });

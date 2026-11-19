@@ -85,6 +85,11 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
       case 'cost': port.postMessage(answerCost(db, req, s.models())); break;
       // P5-T17a: computed in a worker and cached (ledger.ts); failed when the store cannot answer
       case 'monthly': void answerMonthly(ledger!, req).then((m) => port.postMessage(m)); break;
+      case 'clearUsage': { // P5-T16: the ledger recomputes on the next request (never from a run read before the clear)
+        const result = s.clearUsage();
+        if (result === 'cleared') ledger?.invalidate();
+        port.postMessage({ v: IPC_VERSION, type: 'clearUsage', id: req.id, result } satisfies PortMessage); break;
+      }
       // XAIBO-PROD-504 (P5-T01): history overlay; a store that cannot answer gives an empty page or the store error
       case 'history': {
         let page: Omit<Extract<PortMessage, { type: 'history' }>, 'v' | 'type' | 'id'> = { rows: [], next: null };

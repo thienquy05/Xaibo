@@ -5,7 +5,7 @@
 // listens and the spool replays, before the file backfill; a full disk is logged and its hook-only gap written on recovery.
 import { statSync } from 'node:fs';
 import path from 'node:path';
-import { OUTCOMES, REASONS, RULES, type AgentStatus, type Banner, type LiveStatus, type NotifyState, type ServiceMetrics } from '../shared/ipc.ts';
+import { OUTCOMES, REASONS, RULES, type AgentStatus, type Banner, type ClearUsageResult, type LiveStatus, type NotifyState, type ServiceMetrics } from '../shared/ipc.ts';
 import type { Logger } from '../shared/log.ts';
 import { AgyAdapter } from './adapters/agy/index.ts';
 import { ClaudeAdapter } from './adapters/claude/index.ts';
@@ -30,6 +30,7 @@ import { openStore, type Store } from './store/db.ts';
 import { startHooks, type Hooks } from './receivers/intake.ts';
 import { Writer, type Batch } from './store/writer.ts';
 import { loadScopeSalt } from './usage/snapshots.ts';
+import { clearUsageHistory } from './usage/clear.ts';
 
 export interface BootOptions {
   dataDir: string; home: string; shell?: string | undefined; catalog?: Catalog; intervalMs?: number; log?: Logger;
@@ -80,6 +81,8 @@ export interface Service {
   wake(): Promise<void>;
   /** P5-T09: one retention run now (joins a run in progress); null for a read-only or stopped store. */
   retention(): Promise<RetentionResult | null>;
+  /** P5-T16 (FR-52, Q-5.8): Clear usage history in one writer transaction; read-only when the store refuses writes. */
+  clearUsage(): ClearUsageResult;
   stop(): void;
 }
 
@@ -362,6 +365,16 @@ export async function boot(o: BootOptions): Promise<Service> {
     suspend: (at) => engine?.suspend(at ?? clock()),
     wake: async () => { scheduler.wake(); engine?.resume(clock()); await Promise.all(adapters.map((a) => a.wake())); }, // sleep is no clock jump
     retention,
+    clearUsage: () => {
+      if (readOnly) return 'read-only';
+      if (stopped || !db.isOpen) return 'failed';
+      try { // review L5: the event only (no count from the machine in logs)
+        writer.transact((t) => clearUsageHistory(t, loadInstallSecret(o.dataDir), clock()));
+        o.log?.log('usage_cleared', {});
+        return 'cleared';
+      }
+      catch (e) { o.log?.log('clear_usage_failed', { error: errorCode(e) }); return 'failed'; }
+    },
     stop: () => {
       stopped = true;
       if (due) clearTimeout(due.timer);

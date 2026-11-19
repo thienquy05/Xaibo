@@ -4,7 +4,7 @@
 // has full detail; some gone → "some details expired"; none retained → "details expired, totals only". Cleared
 // contributions (Clear usage history) do not count.
 import type { DatabaseSync } from 'node:sqlite';
-import { monthOf, quotaContributions, sessionContributions } from './monthly.ts';
+import { clearedSession, monthOf, quotaContributions, sessionContributions } from './monthly.ts';
 
 export type Detail = 'full' | 'some-expired' | 'totals-only';
 export interface MonthStatus { month: string; monthToDate: boolean; detail: Detail }
@@ -12,10 +12,11 @@ export interface MonthStatus { month: string; monthToDate: boolean; detail: Deta
 export function monthStatus(db: DatabaseSync, secret: Buffer, now: number): MonthStatus[] {
   const settled = db.prepare('SELECT cleared FROM settled_contributions WHERE key = ?');
   const retained = new Map<string, { all: number; settled: number }>();
+  const cleared = clearedSession(db);
   for (const gen of [sessionContributions(db, secret, null), quotaContributions(db, secret, null)]) {
     for (const c of gen) {
       const s = settled.get(c.key) as { cleared: number } | undefined;
-      if (s?.cleared === 1) continue; // review: cleared contributions are not shown, retained or not (as in liveMonthly)
+      if (s?.cleared === 1 || cleared(c)) continue; // P5-T16 review M2: a per-model key of a cleared session-month too // review: cleared contributions are not shown, retained or not (as in liveMonthly)
       let r = retained.get(c.at.month);
       if (!r) retained.set(c.at.month, r = { all: 0, settled: 0 });
       r.all++;
