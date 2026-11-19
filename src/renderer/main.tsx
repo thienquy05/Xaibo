@@ -152,7 +152,16 @@ function App() {
     monthly: (filter, end, limit) => client.current?.monthly(filter, end, limit) ?? Promise.reject(new Error('no service')),
   }), []);
   // review L5: with no service connection nothing is sent, so the outcome is known: not cleared
-  const settingsApi = useMemo<SettingsApi>(() => ({ clearUsage: () => client.current?.clearUsage() ?? Promise.resolve('failed' as const) }), []);
+  const settingsApi = useMemo<SettingsApi>(() => {
+    const none = () => Promise.reject(new Error('no service connection'));
+    return {
+      clearUsage: () => client.current?.clearUsage() ?? Promise.resolve('failed' as const),
+      // XAIBO-PROD-528 (P5-T18 part 2): retention and storage; without a connection the sections say unavailable
+      retention: () => client.current?.retention() ?? none(),
+      setRetention: (v) => client.current?.setRetention(v) ?? Promise.resolve('failed' as const),
+      storage: (refresh) => client.current?.storage(refresh) ?? none(),
+    };
+  }, []);
   // P4-T05d: the Session workspace's page requests go to the current client (a restart brings a new one).
   const workspaceApi = useMemo<WorkspaceApi>(() => workspaceApiOf(() => client.current), []);
   const clearRequest = useCallback(() => setRequest(null), []);

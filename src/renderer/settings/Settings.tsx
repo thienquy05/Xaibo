@@ -4,10 +4,20 @@
 // a failure or an unknown outcome stays in the dialog with Close. Cancel, Close and success return focus to the Clear
 // usage history button; success is announced next to it (the health band keeps the only status role). A read-only store
 // disables the button and says why.
-import { useRef, useState } from 'react';
-import type { ClearUsageResult } from '../../shared/ipc.ts';
+// XAIBO-PROD-528 (P5-T18 part 2; design §6.6, §5.1; look D-P5-09): Session retention, Trash and Storage come before Usage
+// history. Retention errors show on blur or Save (never on first focus), are tied to the field through aria-describedby
+// with a matching aria-invalid, and are never clamped; a failed Save focuses the invalid field. Storage is passive service
+// data (one measurement per 60 s at most in the service) and never shows a disk capacity.
+import { useEffect, useId, useReducer, useRef, useState } from 'react';
+import type { ClearUsageResult, RetentionSetting, SAVE_RESULTS, StorageReport } from '../../shared/ipc.ts';
+import { initialRetention, lastRunText, measureStorage, retentionReducer, saveText, storageView, storageWhen, toSend, type Draft, type RetentionState, type StorageRow } from './retention-view.ts';
 
-export interface SettingsApi { clearUsage(): Promise<ClearUsageResult> }
+export interface SettingsApi {
+  clearUsage(): Promise<ClearUsageResult>;
+  retention(): Promise<{ setting: RetentionSetting | null; lastRunAt: number | null }>;
+  setRetention(value: RetentionSetting): Promise<(typeof SAVE_RESULTS)[number]>;
+  storage(refresh: boolean): Promise<{ report: StorageReport | null; failed: boolean }>;
+}
 type Phase = 'applying' | ClearUsageResult | 'unavailable' | null;
 
 export function clearStatusText(p: Phase): string {
@@ -57,6 +67,15 @@ export function Settings({ api, readOnly }: { api: SettingsApi; readOnly: boolea
   return (
     <div className="x-settings">
       <h1 id="settings-heading" tabIndex={-1}>Settings</h1>
+      <RetentionSection api={api} readOnly={readOnly} />
+      <section className="x-settings-section" aria-labelledby="trash-heading">
+        <div>
+          <h2 id="trash-heading">Trash</h2>
+          <p className="x-hint">Sessions in Trash are emptied 30 days after they were moved there. Keep and Never above do not change this.</p>
+        </div>
+        <div className="x-settings-controls"><p>Auto-empty after <strong>30 days</strong></p></div>
+      </section>
+      <StorageSection api={api} />
       <section className="x-settings-section" aria-labelledby="usage-history-heading">
         <div>
           <h2 id="usage-history-heading">Usage history</h2>
@@ -92,5 +111,134 @@ export function Settings({ api, readOnly }: { api: SettingsApi; readOnly: boolea
         </div>
       </dialog>
     </div>
+  );
+}
+
+/** `initial` is the reducer's starting state (a test renders a shown error through it). */
+export function RetentionSection({ api, readOnly, initial = initialRetention }: { api: SettingsApi; readOnly: boolean; initial?: RetentionState }) {
+  const id = useId();
+  // state in retention-view.ts (security review of run 159): frozen while applying, stale replies ignored, a late load
+  // never overwrites the user's choice, focus after the error renders
+  const [s, dispatch] = useReducer(retentionReducer, initial);
+  const { loaded, draft, error, phase, announce } = s;
+  const days = useRef<HTMLInputElement>(null);
+  const first = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    let live = true;
+    api.retention().then((r) => { if (live) dispatch({ type: 'loaded', ...r }); }, () => { if (live) dispatch({ type: 'loadFailed' }); });
+    return () => { live = false; };
+  }, [api]);
+  useEffect(() => { if (s.focus) (s.focus.target === 'days' ? days : first).current?.focus(); }, [s.focus]);
+  const change = (d: Draft) => dispatch({ type: 'change', draft: d });
+  const save = () => { if (!readOnly) dispatch({ type: 'save' }); };
+  // re-review L-A: the request follows the reducer's pending Save (never a render snapshot), once per seq
+  const sent = useRef(0);
+  useEffect(() => {
+    const p = toSend(s, sent.current);
+    if (!p) return;
+    sent.current = p.seq;
+    api.setRetention(p.value).then((result) => dispatch({ type: 'saved', seq: p.seq, result }), () => dispatch({ type: 'saved', seq: p.seq, result: 'unavailable' }));
+  }, [s.pending, api]); // s.pending is the trigger
+  const daysError = error !== null && draft.choice === 'other';
+  const choiceError = error !== null && draft.choice === null;
+  const note = loaded === 'loading' ? 'Loading the current setting…' : loaded === 'failed' ? 'The current setting is unavailable.'
+    : loaded.setting === null ? 'The stored setting is unreadable, so no session retention runs. Choose one and Save.' : null;
+  const radio = (choice: Draft['choice'], label: string, ref?: typeof first) => ( // review L4: the error on each radio
+    <label className="x-radio"><input ref={ref} type="radio" name={`${id}-retention`} checked={draft.choice === choice}
+      aria-describedby={choiceError ? `${id}-error` : undefined} onChange={() => change({ choice, days: draft.days })} /> {label}</label>
+  );
+  return (
+    <section className="x-settings-section" aria-labelledby="retention-heading">
+      <div>
+        <h2 id="retention-heading">Session retention</h2>
+        <p className="x-hint" id={`${id}-hint`}>
+          Xaibo permanently purges inactive session history this many days after its last activity. Live sessions and sessions
+          marked Keep are never purged. Each session shows its purge date.
+        </p>
+      </div>
+      <div className="x-settings-controls x-stack">
+        {note ? <p className="x-hint">{note}</p> : null}
+        <fieldset className="x-radios" disabled={phase === 'applying'} aria-describedby={choiceError ? `${id}-error ${id}-hint` : `${id}-hint`}>
+          <legend>Purge inactive history after</legend>
+          {radio('default', '45 days (default)', first)}
+          {radio('never', 'Never')}
+          {radio('other', 'Other')}
+          <div className="x-other">
+            <input ref={days} className="x-input" inputMode="numeric" autoComplete="off" aria-label="Number of days" value={draft.days}
+              aria-describedby={daysError ? `${id}-error ${id}-days` : `${id}-days`} aria-invalid={daysError || undefined}
+              onChange={(e) => change({ choice: 'other', days: e.target.value })} onBlur={() => dispatch({ type: 'blur' })} />
+            <span id={`${id}-days`}>days</span>
+          </div>
+        </fieldset>
+        <div className="x-save-row">
+          <button type="button" className="x-btn x-btn-primary" disabled={readOnly} aria-disabled={phase === 'applying' || undefined}
+            aria-busy={phase === 'applying' || undefined} onClick={save}>Save</button>
+          <span aria-live="polite">{phase !== null ? saveText(phase) : announce}</span>
+        </div>
+        {/* below Save, on a reserved line (E2E-found, re-review L-B): an error shown on the field's blur at mousedown moves
+            no button before the mouseup; the id exists only while there is an error to point at */}
+        <p className="x-error" id={error !== null ? `${id}-error` : undefined}>{error}</p>
+        {readOnly ? <p>Unavailable while the store is read-only.</p> : null}
+        {typeof loaded === 'object' ? <p className="x-hint">{lastRunText(loaded.lastRunAt)}</p> : null}
+      </div>
+    </section>
+  );
+}
+
+function StorageTable({ caption, rows }: { caption: string; rows: StorageRow[] }) {
+  return (
+    <table>
+      <caption>{caption}</caption>
+      <tbody>
+        {rows.map((r) => (
+          <tr key={r.key}>
+            <th scope="row">{r.label}</th>
+            <td className="x-bar-cell">{r.share === null ? null : (
+              <span className="x-meter" aria-hidden="true"><span className="x-meter-used" style={{ width: `${Math.min(100, r.share)}%` }} /></span>)}</td>
+            <td className={r.share === null && r.text === 'Unavailable' ? 'x-un' : undefined}>{r.text}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function StorageSection({ api }: { api: SettingsApi }) {
+  const [state, setState] = useState<{ report: StorageReport | null; failed: boolean } | 'loading'>('loading');
+  const [busy, setBusy] = useState(false);
+  const live = useRef(true);
+  const load = () => {
+    setBusy(true);
+    void measureStorage(api).then((r) => { if (live.current) { setState(r); setBusy(false); } });
+  };
+  useEffect(() => { live.current = true; load(); return () => { live.current = false; }; }, [api]);
+  const v = storageView(state === 'loading' ? null : state.report);
+  return (
+    <section className="x-settings-section" aria-labelledby="storage-heading">
+      <div>
+        <h2 id="storage-heading">Storage</h2>
+        <p className="x-hint">
+          Space Xaibo's own data uses on this Mac. Account usage is kept for 45 days regardless of Keep or Never; monthly totals do
+          not expire.
+        </p>
+      </div>
+      <div className="x-settings-controls x-stack">
+        <div className="x-storage">
+          <div>
+            <p className="x-hint">Storage used</p>
+            <p className="x-storage-total">{state === 'loading' ? 'Loading…' : v.total}</p>
+            <p className="x-hint x-storage-when">
+              <span>{state === 'loading' ? '' : storageWhen(state)}</span>
+              <button type="button" className="x-btn x-btn-quiet" aria-disabled={busy || undefined} aria-busy={busy || undefined}
+                onClick={() => { if (!busy) load(); }}>Refresh</button>
+              <span aria-live="polite">{busy && state !== 'loading' ? 'Measuring…' : ''}</span>
+            </p>
+          </div>
+          {v.disk.length ? <StorageTable caption="On disk" rows={v.disk} /> : null}
+          {v.inside ? <StorageTable caption="Inside the database" rows={v.inside} />
+            : state !== 'loading' && v.disk.length ? <p className="x-hint">Inside the database: Unavailable</p> : null}
+        </div>
+      </div>
+    </section>
   );
 }

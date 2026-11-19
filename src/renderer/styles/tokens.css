@@ -235,6 +235,32 @@ body {
 .x-settings-section p, .x-dialog p { margin: 0 0 var(--x-space-2); }
 .x-settings-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--x-space-3); align-self: start; }
 @media (min-width: 800px) { .x-settings-section { grid-template-columns: 240px minmax(0, 1fr); } }
+/* XAIBO-PROD-528 (P5-T18 part 2; D-P5-09): retention radios, validation error, storage parts as shares (never capacity) */
+.x-hint { color: var(--x-muted); font-size: var(--x-text-small); line-height: var(--x-leading-small); }
+.x-settings-controls.x-stack { display: grid; justify-items: start; gap: var(--x-space-2); min-width: 0; }
+.x-settings-controls.x-stack > p { margin: 0; }
+.x-input { min-height: var(--x-control-height); padding: 0 var(--x-space-3); font: inherit; color: var(--x-ink); background: var(--x-surface); border: var(--x-border); border-radius: var(--x-radius-control); }
+.x-input[aria-invalid="true"] { border-color: var(--x-danger); }
+.x-radios { display: grid; gap: var(--x-space-2); margin: 0; padding: 0; border: 0; min-width: 0; }
+.x-radios legend { padding: 0; margin-bottom: var(--x-space-2); color: var(--x-muted); font-size: var(--x-text-small); }
+.x-radio { display: flex; align-items: center; gap: var(--x-space-2); min-height: var(--x-target-min); }
+.x-radio input { width: 16px; height: 16px; margin: 0; accent-color: var(--x-accent); }
+.x-other { display: flex; align-items: center; gap: var(--x-space-2); padding-left: var(--x-space-6); }
+.x-other .x-input { width: 96px; font-variant-numeric: tabular-nums; }
+.x-main .x-error { margin: 0; min-height: var(--x-leading-body); color: var(--x-danger); } /* a reserved line: nothing below moves */
+.x-save-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--x-space-3); margin-top: var(--x-space-2); }
+.x-storage { width: 100%; min-width: 0; display: grid; gap: var(--x-space-4); }
+.x-main .x-storage p { margin: 0; }
+.x-storage-total { font-size: var(--x-text-value); line-height: var(--x-leading-value); font-weight: var(--x-weight-strong); font-variant-numeric: tabular-nums; }
+.x-storage-when { display: flex; flex-wrap: wrap; align-items: center; gap: var(--x-space-2); }
+.x-storage table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: var(--x-text-small); line-height: var(--x-leading-small); }
+.x-storage caption { text-align: left; font-weight: var(--x-weight-strong); padding-bottom: var(--x-space-1); }
+.x-storage th { width: 40%; text-align: left; font-weight: var(--x-weight-normal); padding: 6px 0; border-top: 1px solid var(--x-divider); overflow-wrap: anywhere; }
+.x-storage td { padding: 6px 0 6px var(--x-space-3); border-top: 1px solid var(--x-divider); text-align: right; font-variant-numeric: tabular-nums; }
+.x-storage td.x-bar-cell { width: 40%; }
+.x-storage .x-meter { display: block; height: 8px; max-width: none; }
+.x-storage .x-un { color: var(--x-muted); }
+@media (max-width: 479px) { .x-storage th { width: 55%; } .x-storage td.x-bar-cell { width: 15%; } }
 .x-dialog { max-width: min(560px, calc(100vw - 32px)); padding: var(--x-space-5); color: var(--x-ink); background: var(--x-surface); border: 1px solid var(--x-line); border-radius: var(--x-radius-panel); }
 .x-dialog::backdrop { background: transparent; }
 .x-dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--x-space-3); margin-top: var(--x-space-4); }
