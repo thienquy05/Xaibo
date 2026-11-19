@@ -3,6 +3,7 @@
 // are counted; an invalid reply rejects its request, so the caller can recover. A service restart brings a new port
 // and a new client; replies owed on the old one never arrive.
 import { accept, IPC_VERSION, isObj, parsePortMessage } from '../shared/ipc.ts';
+import type { RetentionSetting, SearchKey, SuppressedCursor } from '../shared/ipc.ts';
 import type { AgentStatus, Banner, CostDetail, Cursor, FileItem, HistoryCursor, HistoryFilter, HistoryKey, HistoryRow, LedgerFilter, MapGroup, MapNode, MCursor, ModelMarker, Named, OverlayOp, OverlayResult, Page, PortMessage, PortRequest, SessionDetail, SessionRow, SubagentItem, TCursor, ToolItem, TranscriptAt, TranscriptItem, UsageRecord, UsageScope } from '../shared/ipc.ts';
 
 export interface LiveSet { rows: SessionRow[]; more: boolean }
@@ -69,6 +70,20 @@ export function createClient(port: PortLike, push: Pushes) {
     },
     /** P5-T16: Clear usage history (after the owner's confirmation). */
     async clearUsage() { return (await ask({ type: 'clearUsage' }, 'clearUsage')).result; },
+    // XAIBO-PROD-527 (P5-T18 part 1): history tools and retention/storage settings
+    async search(query: string, filter: HistoryFilter, cursor: SearchKey | null, limit: number) {
+      const { v: _v, type: _t, id: _i, ...page } = await ask({ type: 'search', query, filter, cursor, limit }, 'search');
+      return page;
+    },
+    async purge(session: number) { return (await ask({ type: 'purge', session }, 'purge')).result; },
+    async suppressed(cursor: SuppressedCursor | null, limit: number) {
+      const { v: _v, type: _t, id: _i, ...page } = await ask({ type: 'suppressed', cursor, limit }, 'suppressed');
+      return page;
+    },
+    async reimport(key: string) { return (await ask({ type: 'reimport', key }, 'reimport')).result; },
+    async retention() { const { setting, lastRunAt } = await ask({ type: 'retention' }, 'retention'); return { setting, lastRunAt }; },
+    async setRetention(value: RetentionSetting) { return (await ask({ type: 'setRetention', value }, 'setRetention')).result; },
+    async storage(refresh: boolean) { const { report, failed } = await ask({ type: 'storage', refresh }, 'storage'); return { report, failed: failed === true }; },
     /** P4-T04b1: one scope+stream's observations in [from, to). */
     async usageHistory(scope: number, stream: string, from: number, to: number, cursor: HistoryCursor | null, limit: number): Promise<{ records: UsageRecord[]; next: HistoryCursor | null }> {
       const m = await ask({ type: 'usageHistory', scope, stream, from, to, cursor, limit }, 'usageHistory');

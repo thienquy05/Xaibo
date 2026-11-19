@@ -11,7 +11,8 @@ import type { Writer } from '../store/writer.ts';
  *  native-gone: none of the session's native files exist any more (review L2), the marker stays. */
 export type ReimportResult = 'ok' | 'none' | 'pending' | 'native-gone';
 
-export function reimport(writer: Writer, who: Identity, o: FileOptions): ReimportResult {
+/** keep: also set Keep in the transaction that clears the marker (XAIBO-PROD-527 review M1, D-P5-08). */
+export function reimport(writer: Writer, who: Identity, o: FileOptions & { keep?: boolean }): ReimportResult {
   const live = () => writer.transact((db) => db.prepare('SELECT 1 FROM suppressions WHERE agent = ? AND profile_id = ? AND native_session_id = ? AND cleared_at IS NULL')
     .get(who.agent, who.profile, who.native) !== undefined);
   if (!live()) return 'none';
@@ -23,6 +24,9 @@ export function reimport(writer: Writer, who: Identity, o: FileOptions): Reimpor
       .get(who.agent, who.profile, who.native) as { n: number }).n;
     if (listed > 0 && !paths.some((p) => existsSync(p.path))) return 'native-gone';
     clear(db, who, o.now);
+    if (o.keep) {
+      db.prepare('INSERT INTO overlays (agent, profile_id, native_session_id, keep) VALUES (?, ?, ?, 1) ON CONFLICT DO UPDATE SET keep = 1').run(who.agent, who.profile, who.native);
+    }
     return 'ok';
   });
 }

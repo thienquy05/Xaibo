@@ -5,7 +5,7 @@
 // listens and the spool replays, before the file backfill; a full disk is logged and its hook-only gap written on recovery.
 import { statSync } from 'node:fs';
 import path from 'node:path';
-import { OUTCOMES, REASONS, RULES, type AgentStatus, type Banner, type ClearUsageResult, type LiveStatus, type NotifyState, type ServiceMetrics } from '../shared/ipc.ts';
+import { OUTCOMES, REASONS, RULES, type AgentStatus, type Banner, type ClearUsageResult, type PURGE_RESULTS, type REIMPORT_RESULTS, type RetentionSetting, type SAVE_RESULTS, type LiveStatus, type NotifyState, type ServiceMetrics } from '../shared/ipc.ts';
 import type { Logger } from '../shared/log.ts';
 import { AgyAdapter } from './adapters/agy/index.ts';
 import { ClaudeAdapter } from './adapters/claude/index.ts';
@@ -31,6 +31,7 @@ import { startHooks, type Hooks } from './receivers/intake.ts';
 import { Writer, type Batch } from './store/writer.ts';
 import { loadScopeSalt } from './usage/snapshots.ts';
 import { applyClear, keysInWorker } from './usage/clear.ts';
+import { PurgeLimit, purgeManual, reimportKey, rerunner, saveRetention } from './history/tools.ts';
 
 export interface BootOptions {
   dataDir: string; home: string; shell?: string | undefined; catalog?: Catalog; intervalMs?: number; log?: Logger;
@@ -83,8 +84,17 @@ export interface Service {
   retention(): Promise<RetentionResult | null>;
   /** P5-T16 (FR-52, Q-5.8): Clear usage history in one writer transaction; read-only when the store refuses writes. */
   clearUsage(): Promise<ClearUsageResult>;
+  /** XAIBO-PROD-527 (P5-T18 part 1): a confirmed manual purge (capped per minute), Re-import by opaque key (sets Keep,
+   *  then reconciles), and the retention setting saved through the writer. */
+  purge(session: number): PurgeResult;
+  reimport(key: string): ReimportOutcome;
+  saveRetention(value: RetentionSetting): SaveOutcome;
   stop(): void;
 }
+
+type PurgeResult = (typeof PURGE_RESULTS)[number];
+type ReimportOutcome = (typeof REIMPORT_RESULTS)[number];
+type SaveOutcome = (typeof SAVE_RESULTS)[number];
 
 /** The turn-settle interval (PRD §6.2/§6.3, Q8 default; a setting with the Settings screen after Gate D, Q3-14). */
 const SETTLE_MS = 4000;
@@ -316,6 +326,17 @@ export async function boot(o: BootOptions): Promise<Service> {
   // first), then daily; a run whose wall clock ran more than 1 h ahead of the monotonic clock is skipped (review H3).
   let retentionRun: Promise<RetentionResult | null> | null = null;
   let clearing: Promise<ClearUsageResult> | null = null; // XAIBO-PROD-526: Clear usage history in progress
+  const purgeLimit = new PurgeLimit(() => performance.now()); // XAIBO-PROD-527 (D-P5-07); review L2: a monotonic clock
+  // re-review M1: after a Re-import every adapter backfills against the reset checkpoints, one adapter and one sweep at a
+  // time (as the boot backfill, P3-T16e); Re-imports during a sweep merge into one more. ponytail: every adapter, not only
+  // the re-imported session's profile; narrow it if many profiles make sweeps slow.
+  const resync = rerunner(async () => {
+    for (const a of adapters) {
+      if (stopped) return;
+      try { await a.backfill(); } catch (e) { o.log?.log('reimport_sync_failed', { error: errorCode(e) }); }
+    }
+  });
+  const files = () => ({ dataDir: o.dataDir, backupDir: path.join(o.dataDir, 'backups'), secret: loadInstallSecret(o.dataDir), now: clock() });
   const retention = (): Promise<RetentionResult | null> => {
     if (readOnly || stopped || !db.isOpen) return Promise.resolve(null);
     // diff review M1: everything, the secret's read included, inside the chain: a failure is a logged rejection
@@ -380,6 +401,28 @@ export async function boot(o: BootOptions): Promise<Service> {
       }
       catch (e) { o.log?.log('clear_usage_failed', { error: errorCode(e) }); return 'failed'; }
     })().finally(() => { clearing = null; }),
+    // XAIBO-PROD-527: fixed codes and result enums only in the log (design review L6)
+    // review L3: anything that throws (the secret's read included) still answers failed
+    purge: (session) => {
+      let result: PurgeResult = 'failed';
+      try { result = readOnly ? 'read-only' : stopped || !db.isOpen ? 'failed' : purgeManual(writer, session, { ...files(), limit: purgeLimit }); } catch (e) { o.log?.log('purge_failed', { error: errorCode(e) }); }
+      o.log?.log('purge_manual', { result });
+      return result;
+    },
+    reimport: (key) => {
+      let result: ReimportOutcome = 'failed';
+      try { result = readOnly ? 'read-only' : stopped || !db.isOpen ? 'failed' : reimportKey(writer, db, key, files()); } catch (e) { o.log?.log('reimport_failed', { error: errorCode(e) }); }
+      o.log?.log('reimport', { result });
+      // review H2: backfill syncs against the stored checkpoints (reset by the Re-import); a scan only sees changed files
+      if (result === 'ok') resync();
+      return result;
+    },
+    saveRetention: (value) => {
+      let result: SaveOutcome = 'failed';
+      try { result = readOnly ? 'read-only' : stopped || !db.isOpen ? 'failed' : saveRetention(writer, value); } catch (e) { o.log?.log('retention_set_failed', { error: errorCode(e) }); }
+      o.log?.log('retention_set', { result });
+      return result;
+    },
     stop: () => {
       stopped = true;
       if (due) clearTimeout(due.timer);

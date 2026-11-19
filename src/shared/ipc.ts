@@ -241,14 +241,39 @@ export interface HistoryKey { pinned: boolean; lastActivity: number | null; id: 
 export interface Named { id: number; name: string }
 export interface HistoryRow extends SessionRow { project: Named | null; folder: Named | null; pinned: boolean; archivedAt: number | null;
   /** P5-T03: when the session went to Trash, and when Trash auto-empty makes it eligible for purge (30 × 24 h later). */
-  trashedAt: number | null; trashPurgeAt: number | null }
+  trashedAt: number | null; trashPurgeAt: number | null;
+  /** XAIBO-PROD-527 (P5-T18 part 1; US-6): Keep, and when retention makes the session eligible (null: Keep, Never, an
+   *  unreadable setting, no time, or a Trash row, which has trashPurgeAt). */
+  keep: boolean; purgeAt: number | null }
 export type OverlayOp =
   | { kind: 'pin'; session: number; on: boolean } | { kind: 'archive'; session: number; on: boolean } | { kind: 'trash'; session: number; on: boolean }
+  | { kind: 'keep'; session: number; on: boolean }
   | { kind: 'move'; session: number; project: number | null; folder: number | null }
   | { kind: 'newProject'; name: string } | { kind: 'newFolder'; project: number; name: string } | { kind: 'confirmLabel'; session: number };
 export const OVERLAY_ERRORS = ['not-found', 'invalid', 'read-only', 'disk-full', 'store', 'limit'] as const;
 /** `id`: the project or folder a create or confirmLabel produced or reused. */
 export type OverlayResult = { ok: true; id?: number } | { ok: false; error: (typeof OVERLAY_ERRORS)[number] };
+// XAIBO-PROD-527 (P5-T18 part 1; design §6.4, §6.6): search, purge, suppressed sessions, Re-import, retention, storage.
+export const QUERY_MAX = 256, SNIPPET_MAX = 200, RETENTION_MAX = 3650;
+export interface SearchKey { rank: number; session: number }
+export interface SearchHit { row: HistoryRow; event: number; snippet: string }
+export const PURGE_RESULTS = ['purged', 'not-found', 'busy', 'read-only', 'disk-full', 'failed'] as const;
+export const REIMPORT_RESULTS = ['ok', 'none', 'pending', 'native-gone', 'not-found', 'read-only', 'disk-full', 'failed'] as const;
+export const SAVE_RESULTS = ['saved', 'invalid', 'read-only', 'disk-full', 'failed'] as const;
+/** A suppressed (purged) session: key = opaque HMAC handle; profile = its label, 'Unavailable' when the profile is gone. */
+export interface SuppressedRow { key: string; agent: string; profile: string; reason: 'manual' | 'retention'; at: number; filesPending: boolean }
+export interface SuppressedCursor { at: number; key: string }
+export type RetentionSetting = { days: number } | 'never';
+export const STORAGE_CATEGORIES = ['content', 'search', 'usage', 'prices', 'other', 'free'] as const;
+export type StorageCategory = (typeof STORAGE_CATEGORIES)[number];
+export interface StorageReport {
+  measuredAt: number;
+  /** Bytes on disk per part; null = unavailable. */
+  files: { database: number | null; wal: number | null; contentChunks: number | null; spool: number | null; backups: number | null };
+  total: number | null;
+  /** page_count x page_size and its DBSTAT breakdown (tables with their indexes); null = unavailable. */
+  database: { bytes: number; categories: Record<StorageCategory, number> } | null;
+}
 /** XAIBO-PROD-523 (P5-T17a; design §6.1.1, US-20, FR-52): one month of the usage ledger. observed false = no observations
  *  under the filter (every value null), never a zero; cost usd null = nothing priced (coverage counts say why). */
 export const LEDGER_MONTHS = 12;
@@ -272,6 +297,14 @@ export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Curs
   | { v: 1; type: 'monthly'; id: number; filter: LedgerFilter; end: string | null; limit: number }
   /** P5-T16: Clear usage history (Settings, after the owner's confirmation). */
   | { v: 1; type: 'clearUsage'; id: number }
+  /** XAIBO-PROD-527 (P5-T18 part 1): history tools and retention/storage settings. */
+  | { v: 1; type: 'search'; id: number; query: string; filter: HistoryFilter; cursor: SearchKey | null; limit: number }
+  | { v: 1; type: 'purge'; id: number; session: number }
+  | { v: 1; type: 'suppressed'; id: number; cursor: SuppressedCursor | null; limit: number }
+  | { v: 1; type: 'reimport'; id: number; key: string }
+  | { v: 1; type: 'retention'; id: number }
+  | { v: 1; type: 'setRetention'; id: number; value: RetentionSetting }
+  | { v: 1; type: 'storage'; id: number; refresh: boolean }
   | { v: 1; type: 'history'; id: number; filter: HistoryFilter; cursor: HistoryKey | null; limit: number }
   | { v: 1; type: 'projects'; id: number; cursor: number | null; limit: number }
   | { v: 1; type: 'folders'; id: number; project: number; cursor: number | null; limit: number }
@@ -296,6 +329,14 @@ export type PortMessage =
   // P5-T17a: failed = the store could not answer (the renderer offers Retry), never an empty ledger
   | ({ v: 1; type: 'monthly'; id: number; failed?: true } & LedgerPage)
   | { v: 1; type: 'clearUsage'; id: number; result: ClearUsageResult }
+  | { v: 1; type: 'search'; id: number; hits: SearchHit[]; next: SearchKey | null; failed?: true }
+  | { v: 1; type: 'purge'; id: number; result: (typeof PURGE_RESULTS)[number] }
+  | { v: 1; type: 'suppressed'; id: number; rows: SuppressedRow[]; next: SuppressedCursor | null; failed?: true }
+  | { v: 1; type: 'reimport'; id: number; result: (typeof REIMPORT_RESULTS)[number] }
+  /** setting null = the stored value is unreadable (no session retention runs on it). */
+  | { v: 1; type: 'retention'; id: number; setting: RetentionSetting | null; lastRunAt: number | null }
+  | { v: 1; type: 'setRetention'; id: number; result: (typeof SAVE_RESULTS)[number] }
+  | { v: 1; type: 'storage'; id: number; report: StorageReport | null; failed?: true }
   | { v: 1; type: 'history'; id: number; rows: HistoryRow[]; next: HistoryKey | null }
   | { v: 1; type: 'projects'; id: number; projects: Named[]; next: number | null }
   | { v: 1; type: 'folders'; id: number; folders: Named[]; next: number | null }
@@ -565,7 +606,7 @@ function parseOp(x: unknown): OverlayOp | null {
   if (!isObj(x)) return null;
   const keys = (...k: string[]) => exactKeys(x, ['kind', ...k]);
   switch (x.kind) {
-    case 'pin': case 'archive': case 'trash': return keys('session', 'on') && positive(x.session) && typeof x.on === 'boolean' ? { kind: x.kind, session: x.session, on: x.on } : null;
+    case 'pin': case 'archive': case 'trash': case 'keep': return keys('session', 'on') && positive(x.session) && typeof x.on === 'boolean' ? { kind: x.kind, session: x.session, on: x.on } : null;
     case 'move': return keys('session', 'project', 'folder') && positive(x.session) && idOrNull(x.project) && idOrNull(x.folder)
       ? { kind: 'move', session: x.session, project: x.project, folder: x.folder } : null;
     case 'newProject': return keys('name') && nameOk(x.name) ? { kind: 'newProject', name: x.name } : null;
@@ -578,8 +619,41 @@ const parseNamed = (x: unknown): Named | null => (isObj(x) && positive(x.id) && 
 function parseHistoryRow(x: unknown): HistoryRow | null {
   const row = parseRow(x);
   if (!row || !isObj(x) || typeof x.pinned !== 'boolean' || !timeOrNull(x.archivedAt) || !timeOrNull(x.trashedAt) || !timeOrNull(x.trashPurgeAt)) return null;
+  if (typeof x.keep !== 'boolean' || !timeOrNull(x.purgeAt)) return null;
   const project = x.project === null ? null : parseNamed(x.project), folder = x.folder === null ? null : parseNamed(x.folder);
-  return (x.project === null || project) && (x.folder === null || folder) ? { ...row, project, folder, pinned: x.pinned, archivedAt: x.archivedAt, trashedAt: x.trashedAt, trashPurgeAt: x.trashPurgeAt } : null;
+  return (x.project === null || project) && (x.folder === null || folder)
+    ? { ...row, project, folder, pinned: x.pinned, archivedAt: x.archivedAt, trashedAt: x.trashedAt, trashPurgeAt: x.trashPurgeAt, keep: x.keep, purgeAt: x.purgeAt } : null;
+}
+// XAIBO-PROD-527: strict shapes for the history tools (design review L1: finite numbers, safe-integer ids, hex keys)
+const KEY = /^[0-9a-f]{64}$/;
+const keyOk = (x: unknown): x is string => typeof x === 'string' && KEY.test(x);
+const parseSearchKey = (x: unknown): SearchKey | null | undefined => (x === null ? null
+  : exactKeys(x, ['rank', 'session']) && finite(x.rank) && positive(x.session) ? { rank: x.rank, session: x.session } : undefined);
+const parseSuppressedCursor = (x: unknown): SuppressedCursor | null | undefined => (x === null ? null
+  : exactKeys(x, ['at', 'key']) && finite(x.at) && keyOk(x.key) ? { at: x.at, key: x.key } : undefined);
+export function parseRetentionSetting(x: unknown): RetentionSetting | null {
+  if (x === 'never') return 'never';
+  return exactKeys(x, ['days']) && Number.isInteger(x.days) && (x.days as number) >= 1 && (x.days as number) <= RETENTION_MAX ? { days: x.days as number } : null;
+}
+function parseSearchHit(x: unknown): SearchHit | null {
+  // review H1: the service caps a snippet in code points (an emoji is two UTF-16 units)
+  if (!exactKeys(x, ['row', 'event', 'snippet']) || !positive(x.event) || !text(x.snippet, 2 * SNIPPET_MAX) || [...x.snippet].length > SNIPPET_MAX) return null;
+  const row = parseHistoryRow(x.row);
+  return row ? { row, event: x.event, snippet: x.snippet } : null;
+}
+const parseSuppressedRow = (x: unknown): SuppressedRow | null => (exactKeys(x, ['key', 'agent', 'profile', 'reason', 'at', 'filesPending']) && keyOk(x.key)
+  && agentOk(x.agent) && text(x.profile, MAX_LABEL) && oneOf(['manual', 'retention'] as const, x.reason) && finite(x.at) && typeof x.filesPending === 'boolean'
+  ? { key: x.key, agent: x.agent, profile: x.profile, reason: x.reason, at: x.at, filesPending: x.filesPending } : null);
+const bytesOrNull = (x: unknown): x is number | null => x === null || count(x);
+function parseStorage(x: unknown): StorageReport | null | undefined {
+  if (x === null) return null;
+  if (!exactKeys(x, ['measuredAt', 'files', 'total', 'database']) || !finite(x.measuredAt) || !bytesOrNull(x.total)) return undefined;
+  const f = x.files;
+  if (!exactKeys(f, ['database', 'wal', 'contentChunks', 'spool', 'backups']) || !Object.values(f).every(bytesOrNull)) return undefined;
+  const d = x.database;
+  if (d !== null && !(exactKeys(d, ['bytes', 'categories']) && count(d.bytes) && exactKeys(d.categories, [...STORAGE_CATEGORIES])
+    && Object.values(d.categories).every(count))) return undefined;
+  return x as unknown as StorageReport;
 }
 // P5-T17a: the ledger. A month is YYYY-MM; observed false carries nulls only; observed true carries counts, and tokens and
 // cost unless no usage request was seen (review L7: no evidence is unavailable, not 0); total = the sum. The service
@@ -675,6 +749,23 @@ export function parsePortRequest(x: unknown): PortRequest | null {
     return { v: 1, type: 'usageHistory', id: m.id, scope: m.scope, stream: m.stream, from: m.from, to: m.to, cursor, limit: m.limit };
   }
   if (m?.type === 'clearUsage') return count(m.id) ? { v: 1, type: 'clearUsage', id: m.id } : null;
+  if (m?.type === 'search') { // the query length first (design review L1)
+    if (!count(m.id) || typeof m.query !== 'string' || m.query.length < 1 || m.query.length > QUERY_MAX) return null;
+    const filter = parseFilter(m.filter), cursor = parseSearchKey(m.cursor);
+    return filter && cursor !== undefined && pageLimit(m.limit) ? { v: 1, type: 'search', id: m.id, query: m.query, filter, cursor, limit: m.limit } : null;
+  }
+  if (m?.type === 'purge') return count(m.id) && positive(m.session) ? { v: 1, type: 'purge', id: m.id, session: m.session } : null;
+  if (m?.type === 'suppressed') {
+    const cursor = parseSuppressedCursor(m.cursor);
+    return count(m.id) && cursor !== undefined && pageLimit(m.limit) ? { v: 1, type: 'suppressed', id: m.id, cursor, limit: m.limit } : null;
+  }
+  if (m?.type === 'reimport') return count(m.id) && keyOk(m.key) ? { v: 1, type: 'reimport', id: m.id, key: m.key } : null;
+  if (m?.type === 'retention') return count(m.id) ? { v: 1, type: 'retention', id: m.id } : null;
+  if (m?.type === 'setRetention') {
+    const value = parseRetentionSetting(m.value);
+    return count(m.id) && value ? { v: 1, type: 'setRetention', id: m.id, value } : null;
+  }
+  if (m?.type === 'storage') return count(m.id) && typeof m.refresh === 'boolean' ? { v: 1, type: 'storage', id: m.id, refresh: m.refresh } : null;
   if (m?.type === 'monthly') {
     const filter = parseLedgerFilter(m.filter);
     return count(m.id) && filter && monthOrNull(m.end) && Number.isSafeInteger(m.limit) && (m.limit as number) >= 1 && (m.limit as number) <= LEDGER_MONTHS
@@ -746,6 +837,27 @@ export function parsePortMessage(x: unknown): PortMessage | null {
     return count(m.id) && rows && next !== undefined ? { v: 1, type: 'page', id: m.id, rows, next } : null;
   }
   if (m.type === 'clearUsage') return count(m.id) && oneOf(CLEAR_USAGE_RESULTS, m.result) ? { v: 1, type: 'clearUsage', id: m.id, result: m.result } : null;
+  // review L1: failed only where it is defined; a failed page carries nothing
+  const failedOf = (empty: boolean) => (m.failed === undefined ? {} : m.failed === true && empty ? { failed: true as const } : null);
+  if (m.type === 'search') {
+    const hits = all(m.hits, MAX_ITEMS, parseSearchHit), next = parseSearchKey(m.next), failed = failedOf(hits !== null && hits.length === 0 && next === null);
+    return count(m.id) && hits && next !== undefined && failed ? { v: 1, type: 'search', id: m.id, hits, next, ...failed } : null;
+  }
+  if (m.type === 'suppressed') {
+    const rows = all(m.rows, MAX_ITEMS, parseSuppressedRow), next = parseSuppressedCursor(m.next), failed = failedOf(rows !== null && rows.length === 0 && next === null);
+    return count(m.id) && rows && next !== undefined && failed ? { v: 1, type: 'suppressed', id: m.id, rows, next, ...failed } : null;
+  }
+  if (m.type === 'purge') return count(m.id) && m.failed === undefined && oneOf(PURGE_RESULTS, m.result) ? { v: 1, type: 'purge', id: m.id, result: m.result } : null;
+  if (m.type === 'reimport') return count(m.id) && m.failed === undefined && oneOf(REIMPORT_RESULTS, m.result) ? { v: 1, type: 'reimport', id: m.id, result: m.result } : null;
+  if (m.type === 'setRetention') return count(m.id) && m.failed === undefined && oneOf(SAVE_RESULTS, m.result) ? { v: 1, type: 'setRetention', id: m.id, result: m.result } : null;
+  if (m.type === 'retention') {
+    const setting = m.setting === null ? null : parseRetentionSetting(m.setting);
+    return count(m.id) && m.failed === undefined && (m.setting === null || setting) && timeOrNull(m.lastRunAt) ? { v: 1, type: 'retention', id: m.id, setting, lastRunAt: m.lastRunAt } : null;
+  }
+  if (m.type === 'storage') {
+    const report = parseStorage(m.report), failed = failedOf(true); // a failed refresh still carries the last report
+    return count(m.id) && report !== undefined && failed ? { v: 1, type: 'storage', id: m.id, report, ...failed } : null;
+  }
   if (m.type === 'monthly') {
     const months = all(m.months, LEDGER_MONTHS, parseLedgerMonth), quota = all(m.quota, MAX_LEDGER_QUOTA, parseLedgerQuota);
     // review L10: unique ascending months, quota only for listed months, a failed reply carries nothing

@@ -107,6 +107,15 @@ test('review H2: a session that became ineligible after it was picked (Keep set 
   assert.ok(left(h.db).includes('trash-expired'));
 });
 
+test('XAIBO-PROD-527 (design review H1): a setting changed to Never while a run is under way stops it purging', async () => {
+  const h = await seeded();
+  let asked = 0;
+  const r = await h.run({ active: () => { if (asked++ === 0) setRetention(h.db, 'never'); return false; } }); // the owner saves Never as the first candidate comes up
+  assert.equal(r.sessions, 0, 'no session purged under the old setting');
+  assert.ok(left(h.db).includes('old'));
+  assert.equal(r.trash, 2, 'Trash auto-empty is separate from the session setting');
+});
+
 test('review H3: a run whose clock is behind the last run purges nothing', async () => {
   const h = await seeded();
   await h.run();

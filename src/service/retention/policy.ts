@@ -2,11 +2,10 @@
 // 1-3650 or Never, default 45; a session is eligible N x 24 h of elapsed time after its last activity unless it is kept,
 // in Trash (its own 30-day timer), live, or active within the last 24 h. Elapsed milliseconds only: no zone or DST.
 import type { DatabaseSync } from 'node:sqlite';
-import type { LiveStatus } from '../../shared/ipc.ts';
+import { RETENTION_MAX, type LiveStatus } from '../../shared/ipc.ts';
 
 export const DAY = 24 * 3600_000;
 export const RETENTION_DEFAULT = 45;
-const RETENTION_MAX = 3650;
 /** No automatic purge of a session active within this (EC-22). */
 export const RECENT_MS = DAY;
 /** Account-level usage history expires this long after its measurement (§5.11). */
@@ -41,6 +40,10 @@ export function setRetention(db: DatabaseSync, v: unknown): boolean {
 
 /** When retention makes the session eligible (US-6 "Purge scheduled"); null for Never or unknown activity. */
 export const purgeAt = (lastActivity: number | null, r: Retention): number | null => (r === 'never' || lastActivity === null ? null : lastActivity + r.days * DAY);
+/** XAIBO-PROD-527 (design review M1): a history row's purge date, from the time the job keys on (last activity, else the
+ *  start); none for Keep, Trash (its own timer) or an unreadable setting. */
+export const sessionPurgeAt = (s: { lastActivity: number | null; startedAt: number | null; keep: boolean; trashed: boolean }, r: Retention | null): number | null =>
+  (r === null || s.keep || s.trashed ? null : purgeAt(s.lastActivity ?? s.startedAt, r));
 
 export interface Candidate { lastActivity: number | null; keep: boolean; trashed: boolean; active: boolean }
 /** EC-22: never kept, in Trash, live or recently active sessions; activity in the future (a clock set back) never. */

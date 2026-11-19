@@ -74,7 +74,10 @@ export async function runRetention(writer: Writer, db: DatabaseSync, o: Retentio
     const changed = (id: number) => (fileTimes.all(id) as { path: string }[]).some((f) => { try { return statSync(f.path).mtimeMs > cutoff; } catch { return false; } });
     const guard = (gdb: DatabaseSync, id: number) => {
       const s = recheck.get(id) as { last: number | null; keep: number; trashed_at: number | null } | undefined;
-      return !!s && gdb.isOpen && eligible({ lastActivity: s.last, keep: s.keep === 1, trashed: s.trashed_at !== null, active: false }, policy, o.now);
+      // XAIBO-PROD-527 (design review H1): eligible under the setting as stored now, so a change during a long run (Never,
+      // a longer period, unreadable) stops purges under the old one
+      const current = retentionOf(gdb);
+      return !!s && gdb.isOpen && current !== null && eligible({ lastActivity: s.last, keep: s.keep === 1, trashed: s.trashed_at !== null, active: false }, current, o.now);
     };
     let at = -Infinity, id = 0;
     for (;;) {

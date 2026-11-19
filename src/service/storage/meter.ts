@@ -9,16 +9,8 @@ import { lstatSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
-
-export type StorageCategory = 'content' | 'search' | 'usage' | 'prices' | 'other' | 'free';
-export interface StorageReport {
-  measuredAt: number;
-  /** Bytes on disk per part; null = unavailable. */
-  files: { database: number | null; wal: number | null; contentChunks: number | null; spool: number | null; backups: number | null };
-  total: number | null;
-  /** page_count x page_size and its DBSTAT breakdown (tables with their indexes); null = unavailable. */
-  database: { bytes: number; categories: Record<StorageCategory, number> } | null;
-}
+import type { StorageCategory, StorageReport } from '../../shared/ipc.ts';
+export type { StorageCategory, StorageReport }; // XAIBO-PROD-527: shared with the renderer
 
 const USAGE = new Set(['usage', 'usage_history', 'usage_scopes', 'usage_snapshots', 'context_snapshots', 'cost_estimates', 'monthly_quota_peaks',
   'monthly_sessions', 'monthly_usage', 'settled_contributions']);

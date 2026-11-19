@@ -371,7 +371,8 @@ test('P5-T01: overlay ops are exact shapes; names are bounded strings; session i
 test('P5-T01: history, projects, folders and overlay replies validated', () => {
   const row = { id: 1, agent: 'claude', entrypoint: null, origin: null, interactive: null, model: 'Model unavailable', cwd: null, title: null, lastActivity: 1,
     drift: false, compressed: false, quarantined: 0, live: null, contextPct: null, costUsd: null, costCoverage: 'unavailable', tokens: null, tokensComplete: false };
-  const h = { ...row, project: { id: 2, name: 'Alpha' }, folder: null, pinned: true, archivedAt: null, trashedAt: null, trashPurgeAt: null };
+  const h = { ...row, project: { id: 2, name: 'Alpha' }, folder: null, pinned: true, archivedAt: null, trashedAt: null, trashPurgeAt: null,
+    keep: false, purgeAt: null }; // XAIBO-PROD-527 (P5-T18 part 1): Keep and the retention purge date are part of every row
   const msg = { v: 1, type: 'history', id: 1, rows: [h], next: { pinned: true, lastActivity: 1, id: 1 } };
   assert.deepEqual(parsePortMessage(msg), msg);
   const trashed = { ...msg, rows: [{ ...h, trashedAt: 10, trashPurgeAt: 20 }] }; // P5-T03

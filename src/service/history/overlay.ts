@@ -10,6 +10,7 @@ import type { SessionKind } from '../catalog/validate.ts';
 import { isDiskFull } from '../store/db.ts';
 import { groupWhere } from './map.ts';
 import { trashPurgeAt } from './trash.ts';
+import { retentionOf, sessionPurgeAt } from '../retention/policy.ts';
 import type { ModelEntry } from '../usage/models.ts';
 
 // ponytail: fixed caps bound what a renderer can create; make them settings if an owner ever needs more.
@@ -50,6 +51,7 @@ function run(db: DatabaseSync, op: OverlayOp, now: number): OverlayResult {
     case 'archive': set(op.on ? 'archived_at = coalesce(archived_at, ?)' : 'archived_at = ?', op.on ? now : null); return { ok: true };
     // P5-T03 (FR-11): Delete moves to Trash (the 30-day timer starts at the first deletion); Undo and Restore clear it
     case 'trash': set(op.on ? 'trashed_at = coalesce(trashed_at, ?)' : 'trashed_at = ?', op.on ? now : null); return { ok: true };
+    case 'keep': set('keep = ?', op.on ? 1 : 0); return { ok: true }; // XAIBO-PROD-527 (US-6): retention leaves it alone
     case 'move': {
       if (op.project === null) {
         if (op.folder !== null) return fail('invalid');
@@ -103,7 +105,7 @@ export function approvedLabel(db: DatabaseSync, agent: string, profileId: string
   } catch { return null; }
 }
 
-interface HistoryRaw extends Raw { pinned: number; archived_at: number | null; trashed_at: number | null; p_id: number | null; p_name: string | null; f_id: number | null; f_name: string | null }
+interface HistoryRaw extends Raw { pinned: number; archived_at: number | null; trashed_at: number | null; keep: number; started_at: number | null; p_id: number | null; p_name: string | null; f_id: number | null; f_name: string | null }
 const named = (id: number | null, name: string | null): Named | null => (id === null || name === null ? null : { id, name });
 
 /** The session list scope over `s` (sessions) and `o` (its overlay row): mode all leaves Trash out, archived and trash
@@ -127,10 +129,7 @@ export function listHistory(db: DatabaseSync, f: HistoryFilter, cursor: HistoryK
   if (!overlay && (f.mode !== 'all' || f.project !== null || f.folder !== null || f.group)) return { rows: [], next: null };
   const n = clamp(limit);
   const P = overlay ? 'coalesce(o.pinned, 0)' : '0';
-  const cols = overlay ? `${P} AS pinned, o.archived_at, o.trashed_at, p.id AS p_id, p.name AS p_name, d.id AS f_id, d.name AS f_name, `
-    : '0 AS pinned, NULL AS archived_at, NULL AS trashed_at, NULL AS p_id, NULL AS p_name, NULL AS f_id, NULL AS f_name, ';
-  const joins = overlay ? ` LEFT JOIN overlays o ON o.agent = s.agent AND o.profile_id = s.profile_id AND o.native_session_id = s.native_session_id
-    LEFT JOIN projects p ON p.id = o.project_id LEFT JOIN folders d ON d.id = o.folder_id` : '';
+  const { cols, joins } = historySql(overlay, P);
   const s = scopeWhere(f, overlay);
   const where = s.where, args: (string | number | null)[] = s.args;
   if (cursor) {
@@ -140,12 +139,35 @@ export function listHistory(db: DatabaseSync, f: HistoryFilter, cursor: HistoryK
     args.push(p, p, ...(cursor.lastActivity === null ? [cursor.id] : [cursor.lastActivity, cursor.lastActivity, cursor.id]));
   }
   const sql = `${ROW.replace(/^SELECT /, `SELECT ${cols}`)}${joins}${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY ${P} DESC, s.last_activity DESC, s.id LIMIT ?`;
-  const raw = db.prepare(sql).all(...args, n) as unknown as HistoryRaw[];
-  const base = toRow(db, kinds, models, live);
-  const rows = raw.map((r): HistoryRow => ({ ...base(r), project: named(r.p_id, r.p_name), folder: named(r.f_id, r.f_name), pinned: r.pinned === 1, archivedAt: r.archived_at,
-    trashedAt: r.trashed_at, trashPurgeAt: r.trashed_at === null ? null : trashPurgeAt(r.trashed_at) }));
+  const rows = historyOf(db, kinds, models, live)(db.prepare(sql).all(...args, n) as unknown as HistoryRaw[]);
   const last = rows.at(-1);
   return { rows, next: rows.length === n && last ? { pinned: last.pinned, lastActivity: last.lastActivity, id: last.id } : null };
+}
+
+function historySql(overlay: boolean, P = overlay ? 'coalesce(o.pinned, 0)' : '0') {
+  const cols = overlay ? `${P} AS pinned, o.archived_at, o.trashed_at, coalesce(o.keep, 0) AS keep, s.started_at, p.id AS p_id, p.name AS p_name, d.id AS f_id, d.name AS f_name, `
+    : '0 AS pinned, NULL AS archived_at, NULL AS trashed_at, 0 AS keep, s.started_at, NULL AS p_id, NULL AS p_name, NULL AS f_id, NULL AS f_name, ';
+  const joins = overlay ? ` LEFT JOIN overlays o ON o.agent = s.agent AND o.profile_id = s.profile_id AND o.native_session_id = s.native_session_id
+    LEFT JOIN projects p ON p.id = o.project_id LEFT JOIN folders d ON d.id = o.folder_id` : '';
+  return { cols, joins };
+}
+
+/** Raw history rows to HistoryRow, with Keep and the retention purge date (XAIBO-PROD-527; the job's rule: sessionPurgeAt). */
+function historyOf(db: DatabaseSync, kinds: SessionKind[], models: ModelEntry[], live?: LiveOf) {
+  const base = toRow(db, kinds, models, live);
+  const policy = retentionOf(db);
+  return (raw: HistoryRaw[]) => raw.map((r): HistoryRow => ({ ...base(r), project: named(r.p_id, r.p_name), folder: named(r.f_id, r.f_name), pinned: r.pinned === 1,
+    archivedAt: r.archived_at, trashedAt: r.trashed_at, trashPurgeAt: r.trashed_at === null ? null : trashPurgeAt(r.trashed_at), keep: r.keep === 1,
+    purgeAt: sessionPurgeAt({ lastActivity: r.last_activity, startedAt: r.started_at, keep: r.keep === 1, trashed: r.trashed_at !== null }, policy) }));
+}
+
+/** XAIBO-PROD-527: the history rows of `ids` (search hits), in no particular order; ids no longer present are absent. */
+export function historyRows(db: DatabaseSync, ids: number[], kinds: SessionKind[] = [], models: ModelEntry[] = [], live?: LiveOf): Map<number, HistoryRow> {
+  if (!ids.length) return new Map();
+  const overlay = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'overlays'").get() !== undefined;
+  const { cols, joins } = historySql(overlay);
+  const sql = `${ROW.replace(/^SELECT /, `SELECT ${cols}`)}${joins} WHERE s.id IN (${ids.map(() => '?').join(', ')})`;
+  return new Map(historyOf(db, kinds, models, live)(db.prepare(sql).all(...ids) as unknown as HistoryRaw[]).map((r) => [r.id, r]));
 }
 
 function idPage(db: DatabaseSync, sql: string, args: number[], cursor: number | null, limit: number): { list: Named[]; next: number | null } {

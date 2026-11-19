@@ -11,6 +11,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { boot, parseLagOf } from '../../src/service/boot.ts';
 import { loadCatalog, type Catalog } from '../../src/service/catalog/validate.ts';
 import { openStore } from '../../src/service/store/db.ts';
+import { suppressedPage } from '../../src/service/history/tools.ts';
+import { loadInstallSecret } from '../../src/shared/log.ts';
 import { count, FIXTURES, until } from '../helpers/claude-profile.ts';
 
 const SESSION = '00000000-0000-4000-8000-000000001000';
@@ -80,6 +82,25 @@ test('XAIBO-PROD-526 (review M1/L2): clearUsage runs through the worker; overlap
   other.stop(); // while the worker scans
   assert.equal(await p, 'failed');
   assert.equal(settled(t.dataDir).n, 0, 'nothing written');
+});
+
+test('XAIBO-PROD-527 (review H2/M1): manual purge, then Re-import by key through the service: the session comes back from its native file, with Keep', async () => {
+  const s = setup();
+  const svc = await boot({ dataDir: s.dataDir, home: s.home, catalog, intervalMs: 60_000 });
+  try {
+    await svc.done;
+    const db = svc.store.db;
+    const id = (db.prepare('SELECT id FROM sessions WHERE native_session_id = ?').get(SESSION) as { id: number }).id;
+    assert.equal(svc.purge(id), 'purged');
+    assert.equal(count(db, 'SELECT count(*) FROM sessions WHERE native_session_id = ?', SESSION), 0);
+    const { rows } = suppressedPage(db, loadInstallSecret(s.dataDir), s.home, null, 10);
+    assert.equal(rows.length, 1);
+    assert.equal(svc.reimport(rows[0]!.key), 'ok');
+    await until(() => count(db, 'SELECT count(*) FROM sessions WHERE native_session_id = ?', SESSION) === 1, 10_000); // no restart needed
+    assert.equal(count(db, 'SELECT keep FROM overlays WHERE native_session_id = ?', SESSION), 1, 'kept (D-P5-08)');
+  } finally {
+    svc.stop();
+  }
 });
 
 test('P5-T09: boot runs retention after the backfill (review H1); a session past 45 days is purged and stays out', async () => {
