@@ -87,5 +87,9 @@ test('icon geometry is exactly design §4 (review of P4-T01)', () => {
     loading: [P('M12 4 A8 8 0 1 1 4 12')],
     // XAIBO-PROD-525 (P5-T16): Settings navigation
     settings: [R(4, 4, 16, 16), P('M4 9 L20 9'), P('M9 4 L9 9'), P('M4 15 L20 15'), P('M15 15 L15 20')],
+    // XAIBO-PROD-529 (P5-T18 part 3a): search, pin and folder rows of design §4
+    search: [C(10, 10, 6), P('M15 15 L21 21')],
+    pin: [P('M7 4 L17 4 L15 11 L19 15 L5 15 L9 11 L7 4'), P('M12 15 L12 22')],
+    folder: [P('M3 6 L10 6 L12 9 L21 9 L21 20 L3 20 L3 6')],
   });
 });

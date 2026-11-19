@@ -40,6 +40,10 @@ const GEOMETRY = {
   loading: [{ kind: 'path', d: 'M12 4 A8 8 0 1 1 4 12' }],
   // XAIBO-PROD-525 (P5-T16): the Settings navigation icon of design §4
   settings: [{ kind: 'rect', x: 4, y: 4, w: 16, h: 16 }, line([4, 9], [20, 9]), line([9, 4], [9, 9]), line([4, 15], [20, 15]), line([15, 15], [15, 20])],
+  // XAIBO-PROD-529 (P5-T18 part 3a): the Session list's search, pin and folder rows of design §4
+  search: [{ kind: 'circle', cx: 10, cy: 10, r: 6 }, line([15, 15], [21, 21])],
+  pin: [line([7, 4], [17, 4], [15, 11], [19, 15], [5, 15], [9, 11], [7, 4]), line([12, 15], [12, 22])],
+  folder: [line([3, 6], [10, 6], [12, 9], [21, 9], [21, 20], [3, 20], [3, 6])],
 } satisfies Record<string, Shape[]>;
 
 export type IconId = keyof typeof GEOMETRY;

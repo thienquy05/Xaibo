@@ -17,6 +17,7 @@ import { openOrder } from './overview/queue.ts';
 import { retryIdle, retryStep } from './retry.ts';
 import { firstUsablePage, LONG_FRAME, watchLongFrames } from './perf-marks.ts';
 import { Settings, type SettingsApi } from './settings/Settings.tsx';
+import type { BrowseApi } from './history/SessionBrowser.tsx';
 import { Workspace } from './workspace/Workspace.tsx';
 import type { SessionChanges } from './workspace/view.ts';
 import type { WorkspaceApi } from './workspace/OpenSession.tsx';
@@ -40,7 +41,6 @@ function App() {
   const [agents, setAgents] = useState<AgentStatus[] | null>(null);
   const [list, setList] = useState<ListState>(emptyList);
   const [banners, setBanners] = useState<Banner[]>([]);
-  const [loading, setLoading] = useState(false);
   const [liveSet, setLiveSet] = useState<LiveSetState>(emptyLiveSet);
   const [area, setArea] = useState<Area>('dashboard');
   const [tick, setTick] = useState(0); // session activity: the usage view refreshes on it (throttled there)
@@ -106,7 +106,6 @@ function App() {
         client.current?.close();
         const c = createClient(e.ports[0] as unknown as PortLike, { sessions, agents: setAgents, coverage: setBanners, resync });
         client.current = c;
-        setLoading(false);
         if (!visible()) c.setLive(false);
         // An invalid first page leaves the list empty; deltas and the next restart still fill it.
         reload(c);
@@ -135,16 +134,15 @@ function App() {
     return () => { o.disconnect(); removeEventListener('resize', set); };
   }, []);
 
-  const loadMore = () => {
-    const c = client.current;
-    if (!c || !list.next || loading) return;
-    setLoading(true);
-    c.listSessions(list.next, PAGE).then((page) => {
-      if (client.current !== c) return;
-      setList((s) => applyPage(s, page, true));
-      setLoading(false);
-    }, () => { if (client.current === c) setLoading(false); }); // an invalid page: "Load more" works again
-  };
+  // XAIBO-PROD-529 (P5-T18 part 3a): the Session list pages the history itself; this feed keeps the open row current
+  const browseApi = useMemo<BrowseApi>(() => {
+    const none = () => Promise.reject(new Error('no service connection'));
+    return {
+      history: (filter, cursor, limit) => client.current?.history(filter, cursor, limit) ?? none(),
+      search: (query, filter, cursor, limit) => client.current?.search(query, filter, cursor, limit) ?? none(),
+      mapGroups: (parent, cursor, limit) => client.current?.mapGroups(parent, cursor, limit) ?? none(),
+    };
+  }, []);
 
   const api = useMemo<UsageApi>(() => ({
     usage: () => client.current?.usage() ?? Promise.reject(new Error('no service')),
@@ -267,7 +265,7 @@ function App() {
           : area === 'dashboard'
           ? <Dashboard live={liveSet} liveFailed={liveFailed} liveRetry={liveRetry} onRetryLive={retryLive} lastKnown={lastKnown} agents={agents} banners={banners} api={api} tick={tick}
             onSetPath={(agent) => window.xaibo?.setAgentPath(agent)} onOpen={openSession} view={dashView} onView={setDashView} focusId={focusId} />
-          : <Workspace list={list} changes={changes} loading={loading} onLoadMore={loadMore} lastKnown={lastKnown !== null} api={workspaceApi} request={request} onRequestDone={clearRequest}
+          : <Workspace list={list} changes={changes} browse={browseApi} agents={agents ?? []} live={{ rows: liveSet.rows, loaded: liveSet.loaded, failed: liveFailed, more: liveSet.more }} lastKnown={lastKnown !== null} api={workspaceApi} request={request} onRequestDone={clearRequest}
             returnFor={returnFor} onReturn={returnToDashboard} onListOpen={clearReturn} />}
       </main>
     </div>

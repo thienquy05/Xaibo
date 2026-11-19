@@ -2,37 +2,16 @@
 // beside the open session; the page itself does not scroll, each pane does. Below 800 px one region shows at a time.
 // Every transcript-derived string is a React text node through visible() (EC-55).
 import { useEffect, useRef, useState } from 'react';
-import type { SessionRow } from '../../shared/ipc.ts';
-import { VirtualList } from '../components/VirtualList.tsx';
-import { Title } from '../SessionList.tsx';
-import { findingBadges, formatTime, recordLabel, type ListState } from '../model.ts';
-import { Icon } from '../status/StatusBadge.tsx';
-import { show, visible } from '../text.ts';
+import type { AgentStatus, SessionRow } from '../../shared/ipc.ts';
+import { SessionBrowser, type BrowseApi, type LiveRows } from '../history/SessionBrowser.tsx';
+import type { ListState } from '../model.ts';
 import { OpenSession, type WorkspaceApi } from './OpenSession.tsx';
-import { compactStatus, openChange, type SessionChanges } from './view.ts';
+import { openChange, type SessionChanges } from './view.ts';
 
-const keyOf = (r: SessionRow) => r.id;
-
-function Row({ row, open, lastKnown, onOpen }: { row: SessionRow; open: boolean; lastKnown: boolean; onOpen: (r: SessionRow) => void }) {
-  const status = compactStatus(row.live);
-  return (
-    <button type="button" className="x-srow" aria-current={open || undefined} onClick={() => onOpen(row)}>
-      <span className="x-s-title" data-field="title"><Title row={row} /></span>
-      <span className="x-s-meta">
-        <span className={`x-dot x-dot-${status.tone}`} aria-hidden="true" />
-        <span data-field="agent">{visible(row.agent)}</span>
-        <span data-field="status">{lastKnown ? 'Last known: ' : null}{status.text}
-          {findingBadges(row.live).map((t) => <span key={t} className="x-tone-warning"> · {t}</span>)}</span>
-        <span data-field="activity">{formatTime(row.lastActivity)}</span>
-      </span>
-      <span className="x-s-path" data-field="folder">{show(row.cwd, 'Unknown')}</span>
-    </button>
-  );
-}
-
-
-export function Workspace({ list, changes, loading, onLoadMore, lastKnown, api, request, onRequestDone, returnFor, onReturn, onListOpen }: {
-  list: ListState; changes: SessionChanges; loading: boolean; onLoadMore: () => void; lastKnown: boolean; api: WorkspaceApi;
+// XAIBO-PROD-529 (P5-T18 part 3a): the list pane is the history browser (history/SessionBrowser.tsx); `list` (the live
+// session feed) still keeps the open session's row current.
+export function Workspace({ list, changes, browse, agents, live, lastKnown, api, request, onRequestDone, returnFor, onReturn, onListOpen }: {
+  list: ListState; changes: SessionChanges; browse: BrowseApi; agents: AgentStatus[]; live: LiveRows; lastKnown: boolean; api: WorkspaceApi;
   /** A session to open, e.g. from a Dashboard record; it may be outside the loaded list. */
   request: SessionRow | null;
   /** Called once the request is open, so a later visit does not reopen it (review L9). */
@@ -67,21 +46,12 @@ export function Workspace({ list, changes, loading, onLoadMore, lastKnown, api, 
     <section className="x-session-area" aria-labelledby="sessions-heading">
       <div className="x-area-head"><h1 id="sessions-heading" tabIndex={-1}>Session</h1></div>
       <div className={`x-workspace${showList ? '' : ' x-no-list'}${row ? ' x-has-open' : ''}`}>
-        {showList ? (
-          <section className="x-pane x-list-pane" aria-labelledby="session-list-heading">
-            <div className="x-pane-head">
-              <h2 id="session-list-heading">Session list</h2>
-              {/* XAIBO-PROD-452 (G4d-1): only while a session is open, whose header offers Show session list */}
-              {row ? <button type="button" className="x-btn x-btn-quiet x-icon-btn x-wide-only" aria-label="Hide session list" onClick={() => setShowList(false)}><Icon id="back" /></button> : null}
-            </div>
-            <div className="x-section-list">
-              {list.loaded && list.rows.length === 0 ? <p className="x-empty-note">No sessions yet.</p> : (
-                <VirtualList items={list.rows} getKey={keyOf} label="Sessions" itemLabel={recordLabel} estimateSize={76} hasMore={list.next !== null} loading={loading} onLoadMore={onLoadMore}
-                  render={(r) => <Row row={r} open={r.id === row?.id} lastKnown={lastKnown} onOpen={(r) => { setOpened(r); onListOpen(); }} />} />
-              )}
-            </div>
-          </section>
-        ) : null}
+        {/* XAIBO-PROD-452 (G4d-1): Hide only while a session is open, whose header offers Show session list; the browser
+            stays mounted while hidden so its mode, search and filters survive */}
+        <div hidden={!showList} className="x-list-slot">
+          <SessionBrowser api={browse} agents={agents} live={live} changes={changes} lastKnown={lastKnown} openId={row?.id ?? null}
+            onOpen={(r) => { setOpened(r); onListOpen(); }} hide={row ? () => setShowList(false) : null} />
+        </div>
         {row ? <OpenSession key={row.id} row={row} changed={gen} api={api} lastKnown={lastKnown} listShown={showList} onShowList={() => setShowList(true)} onBack={back}
           onReturn={row.id === returnFor ? onReturn : undefined} />
           : <section className="x-pane x-choose" aria-label="Open session"><p>Choose a session to read its conversation</p></section>}

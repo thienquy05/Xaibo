@@ -400,7 +400,10 @@ for (const theme of ['light', 'dark'] as Theme[]) {
       expect(errors, 'console errors').toEqual([]);
       // Known, recorded in docs/plans/xaibo_progress.md (P4-T15b open item): at 320 CSS px the pane's last control's ring
       // touches the pane edge after focus scrolling, though the pane has 8 px scroll padding. Anything else fails.
-      const KNOWN = mode === 'reflow' ? [/^session-[a-z]+: button\.x-btn\.x-btn-primary\|Go to latest: focus ring clipped by section\.x-pane\.x-open$/] : [];
+      // D-P5-11 (owner, 2026-11-19; P5-T18 part 3a): at 200 % text in 960×640 a Tab-focused Session list record can sit
+      // partly under the sticky top band (seen in every Session stage); fixed first in part 3b.
+      const KNOWN = mode === 'reflow' ? [/^session-[a-z]+: button\.x-btn\.x-btn-primary\|Go to latest: focus ring clipped by section\.x-pane\.x-open$/]
+        : mode === 'text200' ? [/^session-[a-z]+: button\.x-srow\|[^:]*: covered by a$/] : [];
       const open = problems.filter((p) => !KNOWN.some((k) => k.test(p)));
       expect(open, `layout and focus problems at ${JSON.stringify(viewport)}`).toEqual([]);
     });
