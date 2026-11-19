@@ -323,6 +323,22 @@ body {
 .x-micro { display: block; width: 100%; height: 46px; margin-top: var(--x-space-4); fill: var(--x-chart); }
 .x-chart-caption, .x-micro-details { font-size: var(--x-text-small); line-height: var(--x-leading-small); color: var(--x-muted); }
 .x-micro-details { margin-top: var(--x-space-2); }
+/* P5-T17b monthly usage ledger (design §6.1.1): bars in the chart color on the canvas, numbers above, months below. */
+.x-monthly { display: grid; gap: var(--x-space-4); min-width: 0; }
+.x-monthly-controls, .x-monthly-paging, .x-monthly-months { display: flex; flex-wrap: wrap; align-items: end; gap: var(--x-space-3); }
+.x-monthly-controls label { display: grid; gap: var(--x-space-1); color: var(--x-muted); font-size: var(--x-text-small); }
+.x-monthly-controls select { min-height: var(--x-control-height); padding: var(--x-space-2); color: var(--x-ink); background: var(--x-surface); border: var(--x-border); border-radius: var(--x-radius-control); font: inherit; }
+.x-monthly-chart { display: block; width: 100%; height: auto; max-height: 260px; }
+.x-monthly-bar { fill: var(--x-chart); }
+.x-monthly-value, .x-monthly-month { fill: var(--x-ink); font-size: 12px; font-variant-numeric: tabular-nums; }
+.x-monthly-month { fill: var(--x-muted); }
+.x-monthly-detail { padding: var(--x-space-4); background: var(--x-inset); border-radius: var(--x-radius-control); }
+.x-monthly-detail dl { display: grid; gap: var(--x-space-2); margin: 0; }
+.x-monthly-detail dd { margin: 0; overflow-wrap: anywhere; }
+.x-monthly-table, .x-monthly-quota .x-table { max-width: none; }
+.x-monthly-scroll { max-width: 100%; overflow-x: auto; padding: var(--x-space-1); }
+.x-monthly-table th[scope="row"] { white-space: normal; }
+.x-monthly-controls select { max-width: 100%; }
 summary { min-height: var(--x-control-height); padding: var(--x-space-2) var(--x-space-1); color: var(--x-accent); cursor: pointer; border-radius: var(--x-radius-control); }
 summary:hover { background: var(--x-tint); }
 .x-state-list { margin: 0; padding-left: var(--x-space-5); }

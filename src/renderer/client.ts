@@ -3,7 +3,7 @@
 // are counted; an invalid reply rejects its request, so the caller can recover. A service restart brings a new port
 // and a new client; replies owed on the old one never arrive.
 import { accept, IPC_VERSION, isObj, parsePortMessage } from '../shared/ipc.ts';
-import type { AgentStatus, Banner, CostDetail, Cursor, FileItem, HistoryCursor, HistoryFilter, HistoryKey, HistoryRow, MapGroup, MapNode, MCursor, ModelMarker, Named, OverlayOp, OverlayResult, Page, PortMessage, PortRequest, SessionDetail, SessionRow, SubagentItem, TCursor, ToolItem, TranscriptAt, TranscriptItem, UsageRecord, UsageScope } from '../shared/ipc.ts';
+import type { AgentStatus, Banner, CostDetail, Cursor, FileItem, HistoryCursor, HistoryFilter, HistoryKey, HistoryRow, LedgerFilter, MapGroup, MapNode, MCursor, ModelMarker, Named, OverlayOp, OverlayResult, Page, PortMessage, PortRequest, SessionDetail, SessionRow, SubagentItem, TCursor, ToolItem, TranscriptAt, TranscriptItem, UsageRecord, UsageScope } from '../shared/ipc.ts';
 
 export interface LiveSet { rows: SessionRow[]; more: boolean }
 export interface PortLike { onmessage: ((e: { data: unknown }) => void) | null; postMessage(m: unknown): void; close(): void }
@@ -62,6 +62,11 @@ export function createClient(port: PortLike, push: Pushes) {
     },
     /** P4-T04b1: usage scopes with their newest measurements. */
     async usage(): Promise<UsageScope[]> { return (await ask({ type: 'usage' }, 'usage')).scopes; },
+    /** P5-T17a/b: one page of the monthly usage ledger (failed = the store could not answer). */
+    async monthly(filter: LedgerFilter, end: string | null, limit: number) {
+      const { v: _v, type: _t, id: _i, ...page } = await ask({ type: 'monthly', filter, end, limit }, 'monthly');
+      return page;
+    },
     /** P4-T04b1: one scope+stream's observations in [from, to). */
     async usageHistory(scope: number, stream: string, from: number, to: number, cursor: HistoryCursor | null, limit: number): Promise<{ records: UsageRecord[]; next: HistoryCursor | null }> {
       const m = await ask({ type: 'usageHistory', scope, stream, from, to, cursor, limit }, 'usageHistory');

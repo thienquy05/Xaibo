@@ -51,3 +51,11 @@ test('L3: initial load failure has no cached values or fabricated Last known dat
   assert.match(html, /Couldn&#x27;t load live sessions/);
   assert.doesNotMatch(html, /data-field="tokens"|Last known live-session set/);
 });
+
+test('XAIBO-PROD-524 (design §6.1.1): the monthly ledger sits in the Usage and history view body, below usage scopes, not in the side column', () => {
+  const html = renderToStaticMarkup(createElement(Dashboard, { live: { rows: [], more: false, loaded: true }, liveFailed: false, lastKnown: null, onRetryLive() {}, agents: [],
+    banners: [], api: { async usage() { return []; }, async history() { return { records: [], next: null }; }, async monthly() { return { months: [], quota: [], older: null, newer: null, agents: [], models: [] }; } },
+    tick: 0, onSetPath() {}, view: 'usage', onView() {}, focusId: null }));
+  const body = html.indexOf('id="view-usage"'), monthly = html.indexOf('id="monthly-heading"'), lower = html.indexOf('x-dashboard-lower');
+  assert.ok(body >= 0 && monthly > body && monthly < lower, 'inside the view body, before the lower column');
+});

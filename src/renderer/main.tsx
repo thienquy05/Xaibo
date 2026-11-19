@@ -145,6 +145,7 @@ function App() {
   const api = useMemo<UsageApi>(() => ({
     usage: () => client.current?.usage() ?? Promise.reject(new Error('no service')),
     history: (scope, stream, from, to, cursor) => client.current?.usageHistory(scope, stream, from, to, cursor, PAGE) ?? Promise.reject(new Error('no service')),
+    monthly: (filter, end, limit) => client.current?.monthly(filter, end, limit) ?? Promise.reject(new Error('no service')),
   }), []);
   // P4-T05d: the Session workspace's page requests go to the current client (a restart brings a new one).
   const workspaceApi = useMemo<WorkspaceApi>(() => workspaceApiOf(() => client.current), []);

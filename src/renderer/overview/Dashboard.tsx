@@ -10,6 +10,7 @@ import { VirtualList } from '../components/VirtualList.tsx';
 import { retryIdle, retryStep, type Retry } from '../retry.ts';
 import { rovingKey } from '../components/virtual-list-model.ts';
 import { Coverage } from '../Coverage.tsx';
+import { MonthlyChart, type MonthlyApi } from '../history/MonthlyChart.tsx';
 import { AgentStrip } from '../Health.tsx';
 import { capText, clock, costText, formatTime, openSessionLabels, recordLabel, type LiveSetState } from '../model.ts';
 import { Record as SessionRecord } from '../SessionList.tsx';
@@ -24,6 +25,8 @@ import { abbreviate, liveSetSummary, type Summary } from './totals.ts';
 export interface UsageApi {
   usage(): Promise<UsageScope[]>;
   history(scope: number, stream: string, from: number, to: number, cursor: HistoryCursor | null): Promise<{ records: UsageRecord[]; next: HistoryCursor | null }>;
+  /** P5-T17b: the monthly usage ledger (optional where a caller has no service, e.g. render tests). */
+  monthly?: MonthlyApi;
 }
 export type View = 'live' | 'attention' | 'usage';
 const VIEWS: View[] = ['live', 'attention', 'usage'];
@@ -88,7 +91,14 @@ export function Dashboard(p: {
         <section id={`view-${view}`} aria-labelledby={`view-${view}-heading`} className="x-view-body">
           {view === 'live' ? <LiveView live={p.live} lastKnown={lastKnown} focusId={p.focusId} onOpen={p.onOpen} />
             : view === 'attention' ? <AttentionView queue={queue} loaded={p.live.loaded} failed={p.liveFailed} lastKnown={lastKnown} name={name} onShowLive={showLive} onOpen={p.onOpen} />
-              : <UsageView api={p.api} tick={p.tick} name={name} lastKnown={lastKnown} />}
+              : <>
+                <UsageView api={p.api} tick={p.tick} name={name} lastKnown={lastKnown} />
+                {/* P5-T17b (design §6.1.1): the ledger lives in this view below usage scopes, at the view's full width */}
+                <section aria-labelledby="monthly-heading">
+                  <h2 id="monthly-heading">Monthly usage</h2>
+                  {p.api.monthly ? <MonthlyChart api={p.api.monthly} name={name} /> : <p>Monthly usage unavailable</p>}
+                </section>
+              </>}
         </section>
         {view === 'usage' ? <div className="x-dashboard-lower">
           <section className="x-panel" aria-labelledby="current-state-heading">
@@ -96,10 +106,6 @@ export function Dashboard(p: {
             {p.live.loaded ? <><p className="x-chart-caption">{p.live.more ? 'Loaded subset' : 'Loaded live-session set'}{lastKnown ? ` · ${lastKnown}` : ''}</p><StateCounts data={series.states} /></> : <p>Current state unavailable</p>}
           </section>
           <AgentStrip agents={p.agents} onSetPath={p.onSetPath} />
-          <section className="x-panel" aria-labelledby="monthly-heading">
-            <h2 id="monthly-heading">Monthly usage</h2>
-            <p>No observations yet — monthly totals are not available in this phase.</p>
-          </section>
         </div> : <AgentStrip agents={p.agents} onSetPath={p.onSetPath} />}
       </div>
     </div>

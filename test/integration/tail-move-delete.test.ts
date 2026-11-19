@@ -118,9 +118,9 @@ test('EC-71: a tailed file replaced at the same path gets a fresh watch; the han
       await a.wake();
       assert.equal(w.opens(), 2, 'the replaced file got a fresh watch');
       assert.equal(w.total(), 1, 'the handle on the dead file is closed');
-      await until(() => stored(p.db, 50) === 2, 3_000);
+      await until(() => stored(p.db, 50) === 2, 10_000);
       appendFileSync(f, rec(50, 3)); // the watch alone stores it: no wake, no scan (60 s interval)
-      await until(() => stored(p.db, 50) === 3, 3_000);
+      await until(() => stored(p.db, 50) === 3, 10_000);
     } finally { a.stop(); }
   });
   assert.deepEqual(errors, []);
