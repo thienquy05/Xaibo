@@ -1,9 +1,10 @@
 // XAIBO-PROD-423 (P4-T10a; S12 watcher strategy, FR-02): at most maxWatched fs.watch handles; at the cap the least
 // recently active watched file is dropped for a newer active one (S12: least-recently-active first); an older one stays
-// to the scan. Equal activity never churns. watched() is the open handle count.
+// to the scan. Equal activity never churns. watched() is the open handle count. XAIBO-PROD-520 (EC-71): handles on vanished
+// paths are released.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Watcher, type Closable } from '../../src/service/watch.ts';
@@ -82,6 +83,55 @@ test('review M2: a watch event refreshes its file activity, so a busy watched fi
   await watcher.scan();
   assert.deepEqual([...open], [a!.path], 'A keeps its watch');
   watcher.stop();
+});
+
+test('EC-71: a forgotten (failed-sync) path that vanishes, or a listed path that is gone, releases its watch', async () => {
+  const now = Date.now();
+  const [a, b] = files(2, () => 1000, now);
+  const w = fakeWatch();
+  const list = [a!, b!];
+  const watcher = new Watcher({ list: async () => list, onChange: () => undefined, watch: w.watch, now: () => now });
+  await watcher.start();
+  assert.equal(w.open.size, 2);
+  watcher.forget(a!.path); // a sync of A failed (the file was renamed mid-read)
+  list.splice(0, 1); // A is no longer listed
+  await watcher.scan();
+  assert.deepEqual([...w.open], [b!.path], "the forgotten path's watch is released");
+  unlinkSync(b!.path); // B is still listed, but gone
+  await watcher.scan();
+  assert.deepEqual([...w.open], [], 'a listed path that is gone releases its watch');
+  watcher.stop();
+});
+
+test('EC-71 review: a file replaced at the same path (new inode) gets a fresh watch; the old handle is closed', async () => {
+  const now = Date.now();
+  const [a] = files(1, () => 1000, now);
+  let opens = 0, closes = 0; // counted per handle (re-review LOW-1: a path-keyed set cannot see a leaked handle)
+  const watch = (): Closable => { opens++; return { close: () => { closes++; }, on: () => undefined }; };
+  const watcher = new Watcher({ list: async () => [a!], onChange: () => undefined, watch, now: () => now });
+  await watcher.start();
+  unlinkSync(a!.path);
+  writeFileSync(a!.path, 'y\n'); // APFS gives the new file a new inode number
+  await watcher.scan();
+  assert.equal(opens, 2, 'reopened on the new inode');
+  assert.equal(closes, 1, 'the old handle is closed');
+  await watcher.scan();
+  assert.equal(opens, 2, 'no reopen while the inode is unchanged');
+  watcher.stop();
+});
+
+test('EC-71 review M: stop() during a running scan opens no watch afterwards', async () => {
+  const now = Date.now();
+  const f = files(2, () => 1000, now);
+  const w = fakeWatch();
+  let stopInList = false;
+  const watcher: Watcher<{ path: string }> = new Watcher({ list: async () => { if (stopInList) watcher.stop(); return f; }, onChange: () => undefined, watch: w.watch, now: () => now });
+  await watcher.start();
+  watcher.stop();
+  assert.equal(w.open.size, 0);
+  stopInList = true; // the scan is past list() when stop() lands, before its stat and watch steps
+  await watcher.scan();
+  assert.equal(w.open.size, 0, 'no handle opened after stop');
 });
 
 test('an unwatched file is still reported by the scan when it changes', async () => {

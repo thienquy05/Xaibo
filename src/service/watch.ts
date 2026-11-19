@@ -22,9 +22,10 @@ interface Seen { size: number; mtime: number; ino: number }
 export class Watcher<E extends { path: string }> {
   readonly #o: Required<WatcherOptions<E>>;
   readonly #seen = new Map<string, Seen>();
-  readonly #watchers = new Map<string, { w: Closable; mtime: number }>();
+  readonly #watchers = new Map<string, { w: Closable; mtime: number; ino: number }>();
   #timer: NodeJS.Timeout | undefined;
   #scan: Promise<void> | undefined;
+  #stopped = false; // one-way: an adapter is never restarted after stop
 
   constructor(o: WatcherOptions<E>) {
     this.#o = {
@@ -41,6 +42,7 @@ export class Watcher<E extends { path: string }> {
   }
 
   stop(): void {
+    this.#stopped = true; // review M: a scan already running opens no watch after this
     clearInterval(this.#timer);
     for (const x of this.#watchers.values()) x.w.close();
     this.#watchers.clear();
@@ -67,19 +69,22 @@ export class Watcher<E extends { path: string }> {
     for (const e of entries) {
       present.add(e.path);
       let st;
-      try { st = await stat(e.path); } catch { continue; }
+      try { st = await stat(e.path); } catch { this.#seen.delete(e.path); this.#unwatch(e.path); continue; } // gone since listing, or unreadable (EC-71; any errno: the next good scan re-reports it from its checkpoint)
       const prev = this.#seen.get(e.path);
       this.#seen.set(e.path, { size: st.size, mtime: st.mtimeMs, ino: st.ino });
       if (!initial && (!prev || prev.size !== st.size || prev.mtime !== st.mtimeMs || prev.ino !== st.ino)) this.#o.onChange(e);
-      this.#manageWatch(e, this.#o.now() - st.mtimeMs < this.#o.activeMs, st.mtimeMs);
+      this.#manageWatch(e, this.#o.now() - st.mtimeMs < this.#o.activeMs, st.mtimeMs, st.ino);
     }
-    for (const path of [...this.#seen.keys()]) if (!present.has(path)) { this.#seen.delete(path); this.#unwatch(path); }
+    // EC-71: a forgotten path (failed sync) has no seen entry but may still hold a watch, so both maps are swept
+    for (const path of new Set([...this.#seen.keys(), ...this.#watchers.keys()])) if (!present.has(path)) { this.#seen.delete(path); this.#unwatch(path); }
   }
 
-  #manageWatch(e: E, active: boolean, mtime: number): void {
-    if (!active) return this.#unwatch(e.path); // inactive handles close
+  #manageWatch(e: E, active: boolean, mtime: number, ino: number): void {
+    if (!active || this.#stopped) return this.#unwatch(e.path); // inactive handles close
     const held = this.#watchers.get(e.path);
-    if (held) { held.mtime = Math.max(held.mtime, mtime); return; } // activity only moves forward (a watch event may be newer)
+    // EC-71: a watch follows the inode, so a file replaced at the same path drops the handle on the dead file
+    if (held && held.ino !== ino) this.#unwatch(e.path);
+    else if (held) { held.mtime = Math.max(held.mtime, mtime); return; } // activity only moves forward (a watch event may be newer)
     // P4-T10a (S12): at the FD cap the least recently active watched file gives way to a more recent one; an older or
     // equally recent file stays to the scan (no churn). ponytail: an O(cap) scan for the oldest per new active file;
     // keep a heap if the cap grows far past S12's ~200.
@@ -92,7 +97,7 @@ export class Watcher<E extends { path: string }> {
     // ponytail: the victim is closed before the new watch opens (never above the cap); if that open fails, both files
     // are left to the scan until the next one.
     try {
-      const held = { w: undefined as unknown as Closable, mtime };
+      const held = { w: undefined as unknown as Closable, mtime, ino };
       held.w = this.#o.watch(e.path, () => {
         held.mtime = Math.max(held.mtime, this.#o.now()); // review M2: a change through the watch is fresh activity
         this.#o.onChange(e);
