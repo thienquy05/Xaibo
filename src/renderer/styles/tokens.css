@@ -434,6 +434,23 @@ summary:hover { background: var(--x-tint); }
 .x-excerpt { color: var(--x-muted); font-weight: var(--x-weight-normal); font-size: var(--x-text-body); }
 .x-s-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--x-space-1) var(--x-space-2); color: var(--x-muted); font-size: var(--x-text-small); line-height: var(--x-leading-small); }
 .x-s-path { font-family: var(--x-font-mono); font-size: var(--x-text-small); line-height: var(--x-leading-small); color: var(--x-muted); overflow-wrap: anywhere; }
+/* XAIBO-PROD-532 (P5-T18 part 3b-3; design §5.1, §6.4): the record's More actions beside its primary control; one
+   popover menu in the top layer at its trigger (implicit popover anchor), flipped above when the room below is short;
+   the Undo notice fixed at the bottom trailing edge */
+.x-srow-wrap { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: var(--x-space-1); }
+.x-srow-more { margin-top: var(--x-space-1); }
+.x-menu { inset: auto; margin: var(--x-space-1) 0; position-area: block-end span-inline-start; position-try-fallbacks: flip-block; min-width: 12rem;
+  max-width: calc(100vw - 32px); max-height: 320px; overflow-y: auto; padding: var(--x-space-1); color: var(--x-ink); background: var(--x-surface);
+  border: var(--x-border); border-radius: var(--x-radius-control); }
+.x-menu > .x-hint { margin: 0; padding: var(--x-space-2) var(--x-space-3); }
+.x-menu-item { display: flex; align-items: center; gap: var(--x-space-2); width: 100%; min-height: 32px; padding: var(--x-space-1) var(--x-space-3) var(--x-space-1) var(--x-space-2);
+  font: inherit; text-align: left; color: var(--x-ink); background: transparent; border: 0; border-radius: var(--x-radius-badge); cursor: pointer; }
+.x-menu-item:hover { background: var(--x-tint); }
+.x-menu-check { display: inline-flex; width: 16px; flex: none; }
+.x-action-note { margin: 0; padding: 0 var(--x-space-4); font-size: var(--x-text-small); }
+.x-undo { position: fixed; right: var(--x-space-4); bottom: var(--x-space-4); z-index: var(--x-z-toast); width: min(360px, calc(100vw - 32px)); display: grid; gap: var(--x-space-2);
+  padding: var(--x-space-3) var(--x-space-4); color: var(--x-ink); background: var(--x-surface); border: var(--x-border); border-radius: var(--x-radius-panel); }
+.x-undo p { margin: 0; }
 .x-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--x-line); }
 .x-dot-ok { background: var(--x-success); }
 .x-dot-busy { background: var(--x-accent); }

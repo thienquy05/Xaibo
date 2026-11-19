@@ -43,6 +43,7 @@ const GEOMETRY = {
   // XAIBO-PROD-529 (P5-T18 part 3a): the Session list's search, pin and folder rows of design §4
   search: [{ kind: 'circle', cx: 10, cy: 10, r: 6 }, line([15, 15], [21, 21])],
   pin: [line([7, 4], [17, 4], [15, 11], [19, 15], [5, 15], [9, 11], [7, 4]), line([12, 15], [12, 22])],
+  more: [{ kind: 'circle', cx: 5, cy: 12, r: 1 }, { kind: 'circle', cx: 12, cy: 12, r: 1 }, { kind: 'circle', cx: 19, cy: 12, r: 1 }], // XAIBO-PROD-532
   folder: [line([3, 6], [10, 6], [12, 9], [21, 9], [21, 20], [3, 20], [3, 6])],
 } satisfies Record<string, Shape[]>;
 

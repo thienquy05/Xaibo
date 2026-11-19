@@ -141,6 +141,9 @@ function App() {
       history: (filter, cursor, limit) => client.current?.history(filter, cursor, limit) ?? none(),
       search: (query, filter, cursor, limit) => client.current?.search(query, filter, cursor, limit) ?? none(),
       mapGroups: (parent, cursor, limit) => client.current?.mapGroups(parent, cursor, limit) ?? none(),
+      // XAIBO-PROD-532: row actions; without a connection nothing is sent, so nothing changed
+      overlay: (op) => client.current?.overlay(op) ?? Promise.resolve({ ok: false as const, error: 'store' as const }),
+      historyRow: (session) => client.current?.historyRow(session) ?? none(),
     };
   }, []);
 

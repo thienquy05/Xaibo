@@ -3,8 +3,13 @@
 // Projects and folders (map groups on demand) above a paged record list. Rows keep the compact record and add the
 // history lines; snippets are text runs with the terms emphasized. Every transcript-derived string is a React text node
 // through visible() (EC-55). Logic lives in browse.ts.
+// XAIBO-PROD-532 (P5-T18 part 3b-3; design §6.4, §5.1, §5.4): each record outside Trash has More actions (Pin, Archive,
+// Keep, Move to Trash) from the session's fresh history row; outcomes are polite and in words; Move to Trash shows the
+// Undo notice. Logic lives in actions.ts.
 import { useEffect, useRef, useState } from 'react';
-import { QUERY_MAX, type AgentStatus, type HistoryFilter, type HistoryKey, type HistoryRow, type MapGroup, type MapNode, type SearchKey, type SessionRow } from '../../shared/ipc.ts';
+import { QUERY_MAX, type AgentStatus, type HistoryFilter, type HistoryKey, type HistoryRow, type MapGroup, type MapNode, type OverlayOp, type OverlayResult, type SearchKey,
+  type SessionRow } from '../../shared/ipc.ts';
+import { Menu, type MenuEntry } from '../components/Menu.tsx';
 import { VirtualList } from '../components/VirtualList.tsx';
 import { Title } from '../SessionList.tsx';
 import { findingBadges, formatTime, PAGE, recordLabel } from '../model.ts';
@@ -13,25 +18,33 @@ import { show, visible } from '../text.ts';
 import { compactStatus, type SessionChanges } from '../workspace/view.ts';
 import { canLoadMore, capped, COVERAGE, emphasis, failureNote, filterOf, freshList, groupLabel, initialQuery, isPlain, listTexts, mergeLive, mergeRows, MODES, modeKey,
   refill, rowLines, startLoad, type BrowseRow, type ListState, type LiveState, type Query } from './browse.ts';
+import { doneText, errorText, menuClosed, menuItems, NOTICE, opOf, place, trashed, undoLabel, undone, type ActionKind, type Undo } from './actions.ts';
 
 export interface BrowseApi {
   history(filter: HistoryFilter, cursor: HistoryKey | null, limit: number): Promise<{ rows: HistoryRow[]; next: HistoryKey | null }>;
   search(query: string, filter: HistoryFilter, cursor: SearchKey | null, limit: number): Promise<{ hits: { row: HistoryRow; snippet: string }[]; next: SearchKey | null; failed?: true }>;
   mapGroups(parent: MapGroup | null, cursor: MapGroup | null, limit: number): Promise<{ groups: MapNode[]; next: MapGroup | null }>;
+  /** XAIBO-PROD-532: an overlay op, and one session's fresh history row (null = gone; throws when unavailable). */
+  overlay(op: OverlayOp): Promise<OverlayResult>;
+  historyRow(session: number): Promise<HistoryRow | null>;
 }
+const MENU = 'session-row-menu';
 /** The Dashboard's live set as Live mode shows it. */
 export type LiveRows = LiveState & { rows: SessionRow[] };
 
 const keyOf = (r: BrowseRow) => r.id;
 const sameGroup = (a: MapGroup | null, b: MapGroup | null) => JSON.stringify(a) === JSON.stringify(b);
 
-function Row({ row, open, lastKnown, search, snippet, onOpen }: {
+function Row({ row, open, lastKnown, search, snippet, onOpen, onMore }: {
   row: BrowseRow; open: boolean; lastKnown: boolean; search: string; snippet: string | undefined; onOpen: (r: HistoryRow) => void;
+  /** More actions (null for a Trash row: Restore and Purge instead). */
+  onMore: ((r: BrowseRow) => void) | null;
 }) {
   const status = compactStatus(row.live);
   const lines = rowLines(row);
   return (
-    <button type="button" className="x-srow" aria-current={open || undefined} onClick={() => onOpen(row)}>
+    <div className="x-srow-wrap">
+    <button type="button" className="x-srow" data-row={row.id} aria-current={open || undefined} onClick={() => onOpen(row)}>
       <span className="x-s-title" data-field="title">
         {row.pinned ? <span className="x-pin"><Icon id="pin" /><span className="x-sr-only">Pinned: </span></span> : null}<Title row={row} />
       </span>
@@ -54,6 +67,11 @@ function Row({ row, open, lastKnown, search, snippet, onOpen }: {
         </span>
       ) : null}
     </button>
+    {onMore ? (
+      <button type="button" className="x-btn x-btn-quiet x-icon-btn x-srow-more" popoverTarget={MENU} aria-haspopup="menu" aria-label={`More actions for ${recordLabel(row)}`}
+        onClick={() => onMore(row)}><Icon id="more" /></button>
+    ) : null}
+    </div>
   );
 }
 
@@ -131,6 +149,78 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
   // review M3 (as main.tsx holds, XAIBO-PROD-447): live updates flushed while a first page or a resync loads are replayed
   // on its reply (the page may be older than an update)
   const held = useRef<Map<number, SessionRow> | null>(null);
+  const query = useRef(q);
+  query.current = q;
+
+  // XAIBO-PROD-532: row actions. The menu shows the session's fresh row (the list's copy may be stale); an action's
+  // refreshed row is placed back (actions.place); a failed refresh keeps the record and says so (design review L3).
+  const [menu, setMenu] = useState<{ id: number; row: HistoryRow | null; status: 'loading' | 'ready' | 'failed' } | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [undo, setUndo] = useState<Undo | null>(null);
+  const [restored, setRestored] = useState<HistoryRow | null>(null);
+  const menuGen = useRef(0);
+  // a restored record to focus once the list holds it (Undo); not rendered (outside the virtual window: review L5),
+  // the heading and Open restored session
+  const focusRow = useRef<HistoryRow | null>(null);
+  useEffect(() => {
+    const row = focusRow.current;
+    if (row === null) return;
+    focusRow.current = null;
+    const el = document.querySelector<HTMLElement>(`.x-list-pane [data-row="${row.id}"]`);
+    if (el) el.focus(); else { setRestored(row); heading.current?.focus(); }
+  }, [list]);
+  /** The refreshed row (null = gone) into the list; true when the row is in it. Live shows the live set: nothing to place. */
+  const applyRow = (id: number, row: HistoryRow | null): boolean => {
+    if (query.current.mode === 'live') return false;
+    const p = place(current.current.rows, id, row, query.current, current.current.next !== null);
+    current.current = { ...current.current, rows: p.rows };
+    setList((x) => ({ ...x, rows: place(x.rows, id, row, query.current, x.next !== null).rows }));
+    if (!p.rows.length) requestAnimationFrame(() => heading.current?.focus()); // design §5.4: the list heading when nothing is left
+    return p.placed;
+  };
+  const openMenu = (r: BrowseRow) => {
+    const g = ++menuGen.current;
+    setMenu({ id: r.id, row: null, status: 'loading' });
+    api.historyRow(r.id).then((row) => {
+      if (g !== menuGen.current) return;
+      const closed = menuClosed(row); // review M3: gone, or in Trash since the list was read
+      if (closed) { document.getElementById(MENU)?.hidePopover(); setMenu(null); applyRow(r.id, row); setNote(closed); return; }
+      setMenu({ id: r.id, row, status: 'ready' });
+      applyRow(r.id, row);
+    }, () => { if (g === menuGen.current) setMenu({ id: r.id, row: null, status: 'failed' }); });
+  };
+  const refresh = (id: number) => api.historyRow(id).then((row) => applyRow(id, row), () => {
+    setNote((n) => `${n ?? ''} The list could not be refreshed.`.trim());
+    return false;
+  });
+  const run = async (kind: ActionKind, row: HistoryRow) => {
+    const op = opOf(kind, row);
+    setNote(null);
+    const r = await api.overlay(op).catch(() => null);
+    if (!r) { setNote('The result is unavailable.'); void refresh(row.id); return; } // a lost reply never means success
+    if (!r.ok) { setNote(errorText(r.error)); if (r.error === 'not-found') void refresh(row.id); return; } // review L6: a gone record leaves
+    if (op.kind === 'trash') { setRestored(null); setUndo((u) => trashed(u, row.id)); } else if ('on' in op) setNote(doneText(kind as Exclude<ActionKind, 'trash'>, op.on));
+    void refresh(row.id);
+  };
+  const undoTrash = async () => {
+    const u = undo;
+    if (!u || u.status === 'undoing' || u.status === 'restored') return;
+    // review M1: each reply changes the notice only while it is still this session's (a newer Trash keeps its Undo)
+    setUndo((cur) => undone(cur, u.id, { status: 'undoing', note: null }));
+    const r = await api.overlay({ kind: 'trash', session: u.id, on: false }).catch(() => null);
+    if (!r || !r.ok) { setUndo((cur) => undone(cur, u.id, { status: 'failed', note: r && !r.ok ? errorText(r.error) : 'The result is unavailable.' })); return; }
+    let row: HistoryRow | null = null;
+    try { row = await api.historyRow(u.id); } catch { /* restored; the row could not be read */ }
+    const placed = row ? applyRow(u.id, row) : false;
+    setUndo((cur) => undone(cur, u.id, { status: 'restored', note: row ? null : 'The list could not be refreshed.' }));
+    // design §5.4: Undo focuses the restored record; outside the current list, the list heading and Open restored session
+    setRestored(placed ? null : row);
+    if (placed) focusRow.current = row; else heading.current?.focus();
+  };
+  const menuRow = menu?.status === 'ready' ? menu.row : null;
+  const entries: MenuEntry[] = menu?.status === 'failed'
+    ? [{ key: 'retry', label: 'Retry', checked: null, keepOpen: true, onSelect: () => { const r = current.current.rows.find((x) => x.id === menu.id); if (r) openMenu(r); } }]
+    : menuRow ? menuItems(menuRow).map((i) => ({ key: i.kind, label: i.label, checked: i.checked, onSelect: () => void run(i.kind, menuRow) })) : [];
 
   const fetchPage = (query: Query, f: HistoryFilter, cursor: HistoryKey | SearchKey | null, limit: number): Promise<Page> => query.search
     ? api.search(query.search, f, cursor as SearchKey | null, limit).then((r) => {
@@ -259,6 +349,7 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
         {t.order ? <span>{t.order}</span> : null}
         <span className="x-sr-only" aria-live="polite">{ready ? `${t.title}: ${rows.length}${more ? ' or more' : ''} shown` : ''}</span>
       </div>
+      <p className="x-action-note" aria-live="polite">{note}</p>
       <div className="x-section-list">
         {/* re-review N4: a failed live set says so even while its last rows are shown */}
         {isLive && live.failed && rows.length > 0 ? <p className="x-empty-note">{t.empty}</p> : null}
@@ -267,13 +358,29 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
         ) : rows.length === 0 && (ready || isLive) ? <p className="x-empty-note">{t.empty}</p> : (
           <VirtualList key={JSON.stringify(q)} items={rows} getKey={keyOf} label="Sessions" itemLabel={recordLabel} estimateSize={t.searching ? 112 : 76}
             hasMore={!isLive && list.next !== null} loading={!isLive && (list.status === 'more' || list.status === 'loading')} onLoadMore={() => load(q, 'more')}
-            render={(r) => <Row row={r} open={r.id === openId} lastKnown={lastKnown} search={q.search} snippet={t.searching ? list.snippets.get(r.id) : undefined} onOpen={onOpen} />} />
+            render={(r) => <Row row={r} open={r.id === openId} lastKnown={lastKnown} search={q.search} snippet={t.searching ? list.snippets.get(r.id) : undefined} onOpen={onOpen}
+              onMore={r.trashedAt != null ? null : openMenu} />} />
         )}
         {!isLive && list.status === 'failed' && list.rows.length > 0 ? ( // re-review N2: Retry repeats what failed
           <p className="x-empty-note">{failureNote(list)} <button type="button" className="x-btn x-btn-quiet" onClick={() => load(q, list.failed === 'more' ? 'more' : 'resync')}>Retry</button></p>
         ) : null}
       </div>
       {t.searching ? <p className="x-list-foot">{COVERAGE}</p> : null}
+      <Menu id={MENU} label="More actions" entries={entries} note={menu?.status === 'loading' ? <p className="x-hint">Loading actions…</p>
+        : menu?.status === 'failed' ? <p className="x-hint">Actions could not be loaded.</p> : null} />
+      {/* design §5.1 Undo notice: one at a time, polite (aria-live: the one status role is health, P4-T03), no timer, no
+          focus theft; the live region stays mounted so the first notice is read (review M2) */}
+      <div aria-live="polite">{undo ? (
+        <div className="x-undo">
+          <p>{undo.status === 'restored' ? 'Restored from Trash.' : NOTICE}</p>
+          {undo.note ? <p className="x-tone-warning">{undo.note}</p> : null}
+          <div className="x-acts">
+            {undo.status !== 'restored' ? <button type="button" className="x-btn x-btn-secondary" aria-disabled={undo.status === 'undoing' || undefined} onClick={() => void undoTrash()}>{undoLabel(undo)}</button>
+              : restored ? <button type="button" className="x-btn x-btn-secondary" onClick={() => onOpen(restored)}>Open restored session</button> : null}
+            <button type="button" className="x-btn x-btn-quiet" onClick={() => { setUndo(null); setRestored(null); heading.current?.focus(); }}>Dismiss</button>
+          </div>
+        </div>
+      ) : null}</div>
     </section>
   );
 }
