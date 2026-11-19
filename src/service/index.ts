@@ -15,6 +15,7 @@ import { applyOverlay, listFolders, listHistory, listProjects } from './history/
 import { mapGroups } from './history/map.ts';
 import type { Batch } from './store/writer.ts';
 import { traceableIds } from './trace-ids.ts';
+import { answerMonthly, MonthlyCache } from './usage/ledger.ts';
 
 // P3-T10: 50 ms keeps one push per window while leaving most of M1's 250 ms hook-to-paint budget; the tick re-reads
 // sessions whose status changes with time alone (settle within interval + 250 ms, M1), coverage is re-read slowly.
@@ -24,6 +25,7 @@ const COVERAGE_MS = 5000;
 const parent = process.parentPort;
 const hub = createHub<MessagePortMain>();
 let svc: Service | undefined;
+let ledger: MonthlyCache | undefined; // P5-T17a: the monthly ledger cache, created before boot
 let resolveBooted: (s: Service) => void = () => {};
 const booted = new Promise<Service>((resolve) => { resolveBooted = resolve; });
 const live: LiveOf = (agent, sid, profileId) => svc?.status(agent, sid, profileId) ?? null;
@@ -81,6 +83,8 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
       case 'files': port.postMessage(answerFiles(db, req)); break;
       case 'markers': port.postMessage(answerMarkers(db, req, s.models())); break;
       case 'cost': port.postMessage(answerCost(db, req, s.models())); break;
+      // P5-T17a: computed in a worker and cached (ledger.ts); failed when the store cannot answer
+      case 'monthly': void answerMonthly(ledger!, req).then((m) => port.postMessage(m)); break;
       // XAIBO-PROD-504 (P5-T01): history overlay; a store that cannot answer gives an empty page or the store error
       case 'history': {
         let page: Omit<Extract<PortMessage, { type: 'history' }>, 'v' | 'type' | 'id'> = { rows: [], next: null };
@@ -119,6 +123,7 @@ function connect(port: MessagePortMain) {
 }
 
 function committed(b: Batch) {
+  ledger?.invalidate();
   const keys = new Set(b.sessions.map((s) => `${b.agent}\0${b.profileId}\0${s.nativeSessionId}`));
   for (const k of keys) changed(k);
   if (!trace) return;
@@ -140,13 +145,14 @@ const command = accept(parseServiceCommand, (m, transferred: MessagePortMain[]) 
 parent.on('message', (e) => command(e.data, e.ports));
 
 async function main(dataDir: string, log: Logger) {
+  ledger = new MonthlyCache({ file: path.join(dataDir, 'xaibo.db'), secret: loadInstallSecret(dataDir), home: homedir(), log: (e, f) => log.log(e, f) });
   svc = await boot({
     dataDir, home: homedir(), shell: process.env.SHELL, log,
     onCommit: committed,
     onAgents: (agents) => broadcast({ v: IPC_VERSION, type: 'agents', agents }),
     onNotify: (n) => parent.postMessage({ v: IPC_VERSION, type: 'notify', ...n } satisfies ServiceEvent), // P3-T11
     onTick: (keys) => { for (const k of keys) changed(k); }, // P3-T16e: a settle at its deadline, not the next tick
-    onPriced: () => { if (hub.anyLive()) hub.sessions({ v: IPC_VERSION, type: 'resync' }); }, // XAIBO-PROD-445: one per sliced job
+    onPriced: () => { ledger?.invalidate(); if (hub.anyLive()) hub.sessions({ v: IPC_VERSION, type: 'resync' }); }, // XAIBO-PROD-445: one per sliced job
   });
   resolveBooted(svc);
   setInterval(() => { for (const k of svc?.ticking() ?? []) changed(k); }, TICK_MS);

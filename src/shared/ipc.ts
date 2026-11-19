@@ -249,7 +249,24 @@ export type OverlayOp =
 export const OVERLAY_ERRORS = ['not-found', 'invalid', 'read-only', 'disk-full', 'store', 'limit'] as const;
 /** `id`: the project or folder a create or confirmLabel produced or reused. */
 export type OverlayResult = { ok: true; id?: number } | { ok: false; error: (typeof OVERLAY_ERRORS)[number] };
+/** XAIBO-PROD-523 (P5-T17a; design §6.1.1, US-20, FR-52): one month of the usage ledger. observed false = no observations
+ *  under the filter (every value null), never a zero; cost usd null = nothing priced (coverage counts say why). */
+export const LEDGER_MONTHS = 12;
+export const LEDGER_DETAIL = ['full', 'some-expired', 'totals-only'] as const;
+export interface LedgerTokens { uncachedInput: number; cacheRead: number; cacheWrite: number; output: number; total: number; gaps: number }
+export interface LedgerCost { usd: number | null; full: number; partial: number; none: number; pending: number }
+export interface LedgerMonth {
+  month: string; monthToDate: boolean; detail: (typeof LEDGER_DETAIL)[number]; observed: boolean;
+  sessions: number | null; turns: number | null; tokens: LedgerTokens | null; cost: LedgerCost | null; priceRevisions: number[];
+}
+/** A quota peak; scope is a response-local ordinal (never an identity), label a current scope's label or null. */
+export interface LedgerQuota { month: string; scope: number; label: string | null; agent: string | null; limitId: string; windowMinutes: number | null; verified: boolean; peakPercent: number; observations: number }
+/** older/newer: the `end` month of the previous/next page, null at either end. */
+export interface LedgerPage { months: LedgerMonth[]; quota: LedgerQuota[]; older: string | null; newer: string | null; agents: string[]; models: string[] }
+export interface LedgerFilter { agent: string | null; model: string | null }
 export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Cursor | null; limit: number }
+  /** P5-T17a: the ledger page of at most `limit` (1..12) observed months ending at `end` (null = the latest). */
+  | { v: 1; type: 'monthly'; id: number; filter: LedgerFilter; end: string | null; limit: number }
   | { v: 1; type: 'history'; id: number; filter: HistoryFilter; cursor: HistoryKey | null; limit: number }
   | { v: 1; type: 'projects'; id: number; cursor: number | null; limit: number }
   | { v: 1; type: 'folders'; id: number; project: number; cursor: number | null; limit: number }
@@ -271,6 +288,8 @@ export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Curs
   | { v: 1; type: 'markers'; id: number; session: number; cursor: MCursor | null; limit: number }
   | { v: 1; type: 'cost'; id: number; session: number };
 export type PortMessage =
+  // P5-T17a: failed = the store could not answer (the renderer offers Retry), never an empty ledger
+  | ({ v: 1; type: 'monthly'; id: number; failed?: true } & LedgerPage)
   | { v: 1; type: 'history'; id: number; rows: HistoryRow[]; next: HistoryKey | null }
   | { v: 1; type: 'projects'; id: number; projects: Named[]; next: number | null }
   | { v: 1; type: 'folders'; id: number; folders: Named[]; next: number | null }
@@ -556,6 +575,47 @@ function parseHistoryRow(x: unknown): HistoryRow | null {
   const project = x.project === null ? null : parseNamed(x.project), folder = x.folder === null ? null : parseNamed(x.folder);
   return (x.project === null || project) && (x.folder === null || folder) ? { ...row, project, folder, pinned: x.pinned, archivedAt: x.archivedAt, trashedAt: x.trashedAt, trashPurgeAt: x.trashPurgeAt } : null;
 }
+// P5-T17a: the ledger. A month is YYYY-MM; observed false carries nulls only; observed true carries counts, and tokens and
+// cost unless no usage request was seen (review L7: no evidence is unavailable, not 0); total = the sum. The service
+// applies the same bounds before it replies (review M2), so agent-supplied values never make the whole reply unreadable.
+const MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
+const monthOk = (x: unknown): x is string => typeof x === 'string' && MONTH.test(x);
+const monthOrNull = (x: unknown): x is string | null => x === null || monthOk(x);
+export const MAX_MODEL = 256, MAX_LEDGER_AGENTS = 64, MAX_LEDGER_MODELS = 256, MAX_REVISIONS = 64, MAX_LEDGER_QUOTA = LEDGER_MONTHS * MAX_SCOPES;
+const modelOk = (x: unknown): x is string => text(x, MAX_MODEL);
+function parseLedgerFilter(x: unknown): LedgerFilter | null {
+  return exactKeys(x, ['agent', 'model']) && (x.agent === null || agentOk(x.agent)) && (x.model === null || modelOk(x.model)) ? { agent: x.agent, model: x.model } : null;
+}
+function parseLedgerMonth(x: unknown): LedgerMonth | null {
+  if (!exactKeys(x, ['month', 'monthToDate', 'detail', 'observed', 'sessions', 'turns', 'tokens', 'cost', 'priceRevisions'])) return null;
+  if (!monthOk(x.month) || typeof x.monthToDate !== 'boolean' || !oneOf(LEDGER_DETAIL, x.detail) || typeof x.observed !== 'boolean') return null;
+  const revisions = all(x.priceRevisions, MAX_REVISIONS, (r) => (positive(r) ? r : null));
+  if (!revisions) return null;
+  const base = { month: x.month, monthToDate: x.monthToDate, detail: x.detail };
+  if (!x.observed) return x.sessions === null && x.turns === null && x.tokens === null && x.cost === null && !revisions.length
+    ? { ...base, observed: false, sessions: null, turns: null, tokens: null, cost: null, priceRevisions: [] } : null;
+  const t = x.tokens, c = x.cost;
+  if (!count(x.sessions) || !count(x.turns)) return null;
+  let tokens: LedgerTokens | null = null, cost: LedgerCost | null = null;
+  if (t !== null) {
+    if (!exactKeys(t, ['uncachedInput', 'cacheRead', 'cacheWrite', 'output', 'total', 'gaps']) || ![t.uncachedInput, t.cacheRead, t.cacheWrite, t.output, t.total, t.gaps].every(count)) return null;
+    tokens = { uncachedInput: t.uncachedInput as number, cacheRead: t.cacheRead as number, cacheWrite: t.cacheWrite as number, output: t.output as number, total: t.total as number, gaps: t.gaps as number };
+    if (tokens.total !== tokens.uncachedInput + tokens.cacheRead + tokens.cacheWrite + tokens.output) return null;
+  }
+  if (c !== null) {
+    if (!exactKeys(c, ['usd', 'full', 'partial', 'none', 'pending']) || !usd(c.usd) || ![c.full, c.partial, c.none, c.pending].every(count)) return null;
+    cost = { usd: c.usd, full: c.full as number, partial: c.partial as number, none: c.none as number, pending: c.pending as number };
+  }
+  return { ...base, observed: true, sessions: x.sessions, turns: x.turns, tokens, cost, priceRevisions: revisions };
+}
+function parseLedgerQuota(x: unknown): LedgerQuota | null {
+  if (!exactKeys(x, ['month', 'scope', 'label', 'agent', 'limitId', 'windowMinutes', 'verified', 'peakPercent', 'observations'])) return null;
+  return monthOk(x.month) && positive(x.scope) && (x.label === null || label(x.label)) && (x.agent === null || agentOk(x.agent)) && text(x.limitId, MAX_STREAM) && x.limitId !== ''
+    && (x.windowMinutes === null || count(x.windowMinutes)) && typeof x.verified === 'boolean' && finite(x.peakPercent) && percentOk(x.peakPercent) && count(x.observations)
+    ? { month: x.month, scope: x.scope, label: x.label, agent: x.agent, limitId: x.limitId, windowMinutes: x.windowMinutes, verified: x.verified, peakPercent: x.peakPercent, observations: x.observations }
+    : null;
+}
+
 function parseResult(x: unknown): OverlayResult | null {
   if (!isObj(x)) return null;
   if (x.ok === true) return x.id === undefined ? { ok: true } : positive(x.id) ? { ok: true, id: x.id } : null;
@@ -607,6 +667,11 @@ export function parsePortRequest(x: unknown): PortRequest | null {
     if (!count(m.id) || !count(m.scope) || !text(m.stream, MAX_STREAM) || !m.stream || !finite(m.from) || !finite(m.to) || m.from > m.to) return null;
     if (cursor === undefined || !limitOk(m.limit)) return null;
     return { v: 1, type: 'usageHistory', id: m.id, scope: m.scope, stream: m.stream, from: m.from, to: m.to, cursor, limit: m.limit };
+  }
+  if (m?.type === 'monthly') {
+    const filter = parseLedgerFilter(m.filter);
+    return count(m.id) && filter && monthOrNull(m.end) && Number.isSafeInteger(m.limit) && (m.limit as number) >= 1 && (m.limit as number) <= LEDGER_MONTHS
+      ? { v: 1, type: 'monthly', id: m.id, filter, end: m.end, limit: m.limit as number } : null;
   }
   if (!m || m.type !== 'listSessions' || !count(m.id) || !limitOk(m.limit)) return null;
   const cursor = parseCursor(m.cursor);
@@ -672,6 +737,17 @@ export function parsePortMessage(x: unknown): PortMessage | null {
     const rows = parseRows(m.rows);
     const next = parseCursor(m.next);
     return count(m.id) && rows && next !== undefined ? { v: 1, type: 'page', id: m.id, rows, next } : null;
+  }
+  if (m.type === 'monthly') {
+    const months = all(m.months, LEDGER_MONTHS, parseLedgerMonth), quota = all(m.quota, MAX_LEDGER_QUOTA, parseLedgerQuota);
+    // review L10: unique ascending months, quota only for listed months, a failed reply carries nothing
+    if (months && months.some((x, i) => i > 0 && x.month <= months[i - 1]!.month)) return null;
+    if (months && quota && quota.some((x) => !months.some((y) => y.month === x.month))) return null;
+    if (m.failed === true && (months?.length || quota?.length || (m.agents as unknown[] | undefined)?.length || (m.models as unknown[] | undefined)?.length || m.older !== null || m.newer !== null)) return null;
+    const agents = all(m.agents, MAX_LEDGER_AGENTS, (a) => (agentOk(a) ? a : null)), models = all(m.models, MAX_LEDGER_MODELS, (x) => (modelOk(x) ? x : null));
+    if (m.failed !== undefined && m.failed !== true) return null;
+    return count(m.id) && months && quota && agents && models && monthOrNull(m.older) && monthOrNull(m.newer)
+      ? { v: 1, type: 'monthly', id: m.id, months, quota, older: m.older, newer: m.newer, agents, models, ...(m.failed ? { failed: true as const } : {}) } : null;
   }
   if (m.type === 'usage') {
     const scopes = all(m.scopes, MAX_SCOPES, parseScope);

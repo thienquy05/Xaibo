@@ -422,3 +422,42 @@ test('P5-T01c: mapGroups replies: counts are counts or null, agents ids or null,
   assert.equal(parsePortMessage({ ...msg, next: { project: null, at: null } }), null);
   assert.equal(parsePortMessage({ ...msg, groups: Array.from({ length: 101 }, () => node) }), null);
 });
+
+// XAIBO-PROD-523 (P5-T17a): the monthly ledger request and reply are validated field by field and bounded.
+test('monthly: request filter, end month and limit checked; reply months, quota and cursors validated', () => {
+  const req = { v: 1, type: 'monthly', id: 3, filter: { agent: 'codex', model: 'model-a' }, end: '2026-03', limit: 12 };
+  assert.deepEqual(parsePortRequest(req), req);
+  assert.deepEqual(parsePortRequest({ ...req, filter: { agent: null, model: null }, end: null }), { ...req, filter: { agent: null, model: null }, end: null });
+  for (const bad of [{ limit: 0 }, { limit: 13 }, { end: '2026-3' }, { end: '2026-13' }, { end: 202603 }, { filter: { agent: 'Bad Agent', model: null } },
+    { filter: { agent: null } }, { filter: { agent: null, model: null, extra: 1 } }, { filter: { agent: null, model: 'x'.repeat(300) } }])
+    assert.equal(parsePortRequest({ ...req, ...bad }), null, JSON.stringify(bad));
+  const month = { month: '2026-03', monthToDate: false, detail: 'full', observed: true, sessions: 1, turns: 2,
+    tokens: { uncachedInput: 1, cacheRead: 2, cacheWrite: 3, output: 4, total: 10, gaps: 0 }, cost: { usd: 0.25, full: 3, partial: 0, none: 0, pending: 0 }, priceRevisions: [1] };
+  const empty = { ...month, month: '2026-02', observed: false, sessions: null, turns: null, tokens: null, cost: null, priceRevisions: [] };
+  const quota = { month: '2026-03', scope: 1, label: 'Default profile', agent: 'codex', limitId: 'primary', windowMinutes: 300, verified: true, peakPercent: 61, observations: 2 };
+  const msg = { v: 1, type: 'monthly', id: 3, months: [empty, month], quota: [quota], older: null, newer: '2026-05', agents: ['codex'], models: ['model-a', ''] };
+  assert.deepEqual(parsePortMessage(msg), msg);
+  assert.deepEqual(parsePortMessage({ v: 1, type: 'monthly', id: 3, months: [], quota: [], older: null, newer: null, agents: [], models: [], failed: true }),
+    { v: 1, type: 'monthly', id: 3, months: [], quota: [], older: null, newer: null, agents: [], models: [], failed: true });
+  for (const bad of [{ month: '2026-3' }, { detail: 'gone' }, { sessions: -1 }, { tokens: { ...month.tokens, output: -1 } }, { tokens: { ...month.tokens, total: 1 } },
+    { cost: { ...month.cost, usd: -1 } }, { priceRevisions: [0] }, { observed: false }, { extra: 1 }])
+    assert.equal(parsePortMessage({ ...msg, months: [{ ...month, ...bad }] }), null, JSON.stringify(bad));
+  for (const bad of [{ scope: 0 }, { peakPercent: 10_001 }, { label: '' }, { windowMinutes: -1 }, { agent: 'Bad Agent' }, { extra: 1 }])
+    assert.equal(parsePortMessage({ ...msg, quota: [{ ...quota, ...bad }] }), null, JSON.stringify(bad));
+  assert.equal(parsePortMessage({ ...msg, months: Array.from({ length: 13 }, () => month) }), null, 'at most 12 months');
+  assert.equal(parsePortMessage({ ...msg, older: '2026' }), null);
+  assert.equal(parsePortMessage({ ...msg, failed: false }), null);
+});
+
+test('P5-T17a review L10: monthly replies need unique ascending months, quota inside the page, and empty arrays when failed', () => {
+  const month = (m: string) => ({ month: m, monthToDate: false, detail: 'full', observed: false, sessions: null, turns: null, tokens: null, cost: null, priceRevisions: [] });
+  const quota = { month: '2026-03', scope: 1, label: null, agent: null, limitId: 'primary', windowMinutes: null, verified: false, peakPercent: 5, observations: 1 };
+  const msg = { v: 1, type: 'monthly', id: 1, months: [month('2026-02'), month('2026-03')], quota: [quota], older: null, newer: null, agents: [], models: [] };
+  assert.ok(parsePortMessage(msg));
+  assert.equal(parsePortMessage({ ...msg, months: [month('2026-03'), month('2026-02')] }), null, 'descending');
+  assert.equal(parsePortMessage({ ...msg, months: [month('2026-03'), month('2026-03')] }), null, 'duplicate');
+  assert.equal(parsePortMessage({ ...msg, quota: [{ ...quota, month: '2026-04' }] }), null, 'quota outside the page');
+  assert.equal(parsePortMessage({ ...msg, failed: true }), null, 'failed with content');
+  const observed = { ...month('2026-03'), observed: true, sessions: 1, turns: 0, tokens: null, cost: null };
+  assert.ok(parsePortMessage({ ...msg, months: [month('2026-02'), observed] }), 'sessions without usage: tokens and cost unavailable');
+});

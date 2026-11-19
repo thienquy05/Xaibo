@@ -38,7 +38,7 @@ const mac = (secret: Buffer, label: string, parts: (string | number)[]) =>
   createHmac('sha256', secret).update(JSON.stringify([label, ...parts])).digest('hex');
 const keyOf = (secret: Buffer, kind: string, parts: (string | number)[]) => mac(secret, `xaibo-contribution/${kind}`, parts);
 export const profileKey = (secret: Buffer, profileId: string) => mac(secret, 'xaibo-profile', [profileId]);
-const scopeKey = (secret: Buffer, key: string) => mac(secret, 'xaibo-usage-scope', [key]);
+export const scopeKey = (secret: Buffer, key: string) => mac(secret, 'xaibo-usage-scope', [key]);
 
 interface SessionRow { id: number; agent: string; profile_id: string; native_session_id: string; last_activity: number | null; started_at: number | null }
 interface UsageRow {
