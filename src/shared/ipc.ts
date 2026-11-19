@@ -300,6 +300,8 @@ export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Curs
   /** XAIBO-PROD-527 (P5-T18 part 1): history tools and retention/storage settings. */
   | { v: 1; type: 'search'; id: number; query: string; filter: HistoryFilter; cursor: SearchKey | null; limit: number }
   | { v: 1; type: 'purge'; id: number; session: number }
+  /** XAIBO-PROD-531 (P5-T18 part 3b-2): one session's history row (row actions, the open session's Keep and purge date). */
+  | { v: 1; type: 'historyRow'; id: number; session: number }
   | { v: 1; type: 'suppressed'; id: number; cursor: SuppressedCursor | null; limit: number }
   | { v: 1; type: 'reimport'; id: number; key: string }
   | { v: 1; type: 'retention'; id: number }
@@ -331,6 +333,8 @@ export type PortMessage =
   | { v: 1; type: 'clearUsage'; id: number; result: ClearUsageResult }
   | { v: 1; type: 'search'; id: number; hits: SearchHit[]; next: SearchKey | null; failed?: true }
   | { v: 1; type: 'purge'; id: number; result: (typeof PURGE_RESULTS)[number] }
+  /** row null = no such session (gone: purged); failed (row null) = the store could not answer (keep the record, Retry). */
+  | { v: 1; type: 'historyRow'; id: number; row: HistoryRow | null; failed?: true }
   | { v: 1; type: 'suppressed'; id: number; rows: SuppressedRow[]; next: SuppressedCursor | null; failed?: true }
   | { v: 1; type: 'reimport'; id: number; result: (typeof REIMPORT_RESULTS)[number] }
   /** setting null = the stored value is unreadable (no session retention runs on it). */
@@ -755,6 +759,9 @@ export function parsePortRequest(x: unknown): PortRequest | null {
     return filter && cursor !== undefined && pageLimit(m.limit) ? { v: 1, type: 'search', id: m.id, query: m.query, filter, cursor, limit: m.limit } : null;
   }
   if (m?.type === 'purge') return count(m.id) && positive(m.session) ? { v: 1, type: 'purge', id: m.id, session: m.session } : null;
+  if (m?.type === 'historyRow') { // design review L4: exact keys
+    return exactKeys(m, ['v', 'type', 'id', 'session']) && count(m.id) && positive(m.session) ? { v: 1, type: 'historyRow', id: m.id, session: m.session } : null;
+  }
   if (m?.type === 'suppressed') {
     const cursor = parseSuppressedCursor(m.cursor);
     return count(m.id) && cursor !== undefined && pageLimit(m.limit) ? { v: 1, type: 'suppressed', id: m.id, cursor, limit: m.limit } : null;
@@ -848,6 +855,11 @@ export function parsePortMessage(x: unknown): PortMessage | null {
     return count(m.id) && rows && next !== undefined && failed ? { v: 1, type: 'suppressed', id: m.id, rows, next, ...failed } : null;
   }
   if (m.type === 'purge') return count(m.id) && m.failed === undefined && oneOf(PURGE_RESULTS, m.result) ? { v: 1, type: 'purge', id: m.id, result: m.result } : null;
+  if (m.type === 'historyRow') { // design review L1: failed only with no row; a malformed row rejects, never reads as gone
+    const row = m.row === null ? null : parseHistoryRow(m.row), failed = failedOf(m.row === null);
+    const keys = ['v', 'type', 'id', 'row', ...(m.failed === undefined ? [] : ['failed'])];
+    return exactKeys(m, keys) && count(m.id) && (m.row === null || row) && failed ? { v: 1, type: 'historyRow', id: m.id, row, ...failed } : null;
+  }
   if (m.type === 'reimport') return count(m.id) && m.failed === undefined && oneOf(REIMPORT_RESULTS, m.result) ? { v: 1, type: 'reimport', id: m.id, result: m.result } : null;
   if (m.type === 'setRetention') return count(m.id) && m.failed === undefined && oneOf(SAVE_RESULTS, m.result) ? { v: 1, type: 'setRetention', id: m.id, result: m.result } : null;
   if (m.type === 'retention') {

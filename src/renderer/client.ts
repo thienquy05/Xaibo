@@ -76,6 +76,14 @@ export function createClient(port: PortLike, push: Pushes) {
       return page;
     },
     async purge(session: number) { return (await ask({ type: 'purge', session }, 'purge')).result; },
+    /** XAIBO-PROD-531: one session's history row; null = gone; failed throws (keep the record, offer Retry); a row for
+     *  another session throws (design review L2: the parser never sees the request). */
+    async historyRow(session: number): Promise<HistoryRow | null> {
+      const m = await ask({ type: 'historyRow', session }, 'historyRow');
+      if (m.failed) throw new Error('history row unavailable');
+      if (m.row && m.row.id !== session) throw new Error('history row for another session');
+      return m.row;
+    },
     async suppressed(cursor: SuppressedCursor | null, limit: number) {
       const { v: _v, type: _t, id: _i, ...page } = await ask({ type: 'suppressed', cursor, limit }, 'suppressed');
       return page;

@@ -7,7 +7,7 @@
 // thread, so they never overlap; moving either to a worker needs a per-identity lock (design review L7).
 import { createHmac } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import { MAX_ITEMS, PURGE_RESULTS, REIMPORT_RESULTS, SAVE_RESULTS, parseRetentionSetting, type HistoryFilter, type RetentionSetting, type SearchHit, type SearchKey,
+import { MAX_ITEMS, PURGE_RESULTS, REIMPORT_RESULTS, SAVE_RESULTS, parseRetentionSetting, type HistoryFilter, type HistoryRow, type RetentionSetting, type SearchHit, type SearchKey,
   type SuppressedCursor, type SuppressedRow } from '../../shared/ipc.ts';
 import { profileLabel, type LiveOf } from '../api.ts';
 import type { SessionKind } from '../catalog/validate.ts';
@@ -36,6 +36,12 @@ export function answerSearch(db: DatabaseSync, q: { query: string; filter: Histo
     const rows = historyRows(db, r.hits.map((h) => h.session), kinds, models, live);
     return { hits: r.hits.flatMap((h) => { const row = rows.get(h.session); return row ? [{ row, event: h.event, snippet: h.snippet }] : []; }), next: r.next };
   } finally { if (began && db.isTransaction) db.exec('COMMIT'); }
+}
+
+/** XAIBO-PROD-531 (P5-T18 part 3b-2): one session's history row, the same row the list shows; null = no such session
+ *  (purged); a closed or failing store says failed, never a fabricated row. */
+export function answerHistoryRow(db: DatabaseSync, session: number, kinds: SessionKind[] = [], models: ModelEntry[] = [], live?: LiveOf): { row: HistoryRow | null; failed?: true } {
+  try { return db.isOpen ? { row: historyRows(db, [session], kinds, models, live).get(session) ?? null } : { row: null, failed: true }; } catch { return { row: null, failed: true }; }
 }
 
 /** The opaque handle of a suppression (design review L2: domain-separated, full HMAC-SHA256). Never logged. */

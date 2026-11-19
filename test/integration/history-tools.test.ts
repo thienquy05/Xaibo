@@ -14,7 +14,7 @@ import { profileLabel } from '../../src/service/api.ts';
 import { applyOverlay, listHistory } from '../../src/service/history/overlay.ts';
 import { purgeSession } from '../../src/service/history/purge.ts';
 import { clear } from '../../src/service/history/suppression.ts';
-import { answerSearch, findSuppressed, PurgeLimit, purgeManual, reimportKey, rerunner, retentionState, saveRetention, suppressedPage, suppressionKey } from '../../src/service/history/tools.ts';
+import { answerHistoryRow, answerSearch, findSuppressed, PurgeLimit, purgeManual, reimportKey, rerunner, retentionState, saveRetention, suppressedPage, suppressionKey } from '../../src/service/history/tools.ts';
 import { DAY } from '../../src/service/retention/policy.ts';
 import { ftsPrefix } from '../../src/service/store/writer.ts';
 import { parsePortMessage, parsePortRequest, RETENTION_MAX, type HistoryFilter } from '../../src/shared/ipc.ts';
@@ -212,4 +212,31 @@ test('IPC: the new requests and replies parse strictly', () => {
   assert.ok(msg({ type: 'storage', report: null }));
   assert.ok(msg({ type: 'storage', report: null, failed: true }));
   assert.equal(msg({ type: 'retention', setting: { days: 0 }, lastRunAt: null }), null);
+});
+
+// XAIBO-PROD-531 (P5-T18 part 3b-2): one session's history row by id, the same row the list shows (row actions refresh
+// their record; the open session shows Keep and the purge date); unknown id null; a store that cannot answer says failed.
+test('historyRow: the list row by id (Keep, purge date, Trash); unknown null; closed or failing store failed; strict IPC', async () => {
+  const s = await store();
+  const a = s.add('one-a', NOW - 10 * DAY), b = s.add('one-b');
+  applyOverlay(s.db, { kind: 'pin', session: a, on: true }, { readOnly: false, now: NOW });
+  applyOverlay(s.db, { kind: 'trash', session: b, on: true }, { readOnly: false, now: NOW });
+  assert.deepEqual(answerHistoryRow(s.db, a), { row: row(s.db, a) });
+  assert.equal(answerHistoryRow(s.db, a).row?.purgeAt, NOW - 10 * DAY + 45 * DAY);
+  assert.deepEqual(answerHistoryRow(s.db, b), { row: row(s.db, b) }, 'a Trash row too');
+  assert.notEqual(answerHistoryRow(s.db, b).row?.trashPurgeAt, null);
+  assert.deepEqual(answerHistoryRow(s.db, 999_999), { row: null }, 'no such session');
+  assert.ok(reply('historyRow', answerHistoryRow(s.db, a)), 'the reply parses');
+  assert.ok(reply('historyRow', { row: null }));
+  assert.ok(reply('historyRow', { row: null, failed: true }));
+  assert.equal(reply('historyRow', { row: row(s.db, a), failed: true }), null, 'failed carries no row');
+  assert.equal(reply('historyRow', { row: { ...row(s.db, a), keep: 'yes' } }), null);
+  assert.equal(reply('historyRow', { rows: [] }), null);
+  const failing = { ...s.db, isOpen: true, prepare: () => { throw new Error('busy'); } } as unknown as DatabaseSync;
+  assert.deepEqual(answerHistoryRow(failing, a), { row: null, failed: true }, 'a throwing store');
+  assert.deepEqual(answerHistoryRow({ isOpen: false } as unknown as DatabaseSync, a), { row: null, failed: true }, 'a closed store');
+  const req = (m: object) => parsePortRequest({ v: 1, id: 2, type: 'historyRow', ...m });
+  assert.deepEqual(req({ session: 4 }), { v: 1, id: 2, type: 'historyRow', session: 4 });
+  for (const bad of [{ session: 0 }, { session: -1 }, { session: 1.5 }, { session: '4' }, { session: [4] }, {}, { session: 4, agent: 'claude' }])
+    assert.equal(req(bad), null, JSON.stringify(bad));
 });

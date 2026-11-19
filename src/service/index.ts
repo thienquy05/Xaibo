@@ -16,7 +16,7 @@ import { mapGroups } from './history/map.ts';
 import type { Batch } from './store/writer.ts';
 import { traceableIds } from './trace-ids.ts';
 import { answerMonthly, MonthlyCache } from './usage/ledger.ts';
-import { answerSearch, retentionState, suppressedPage } from './history/tools.ts';
+import { answerHistoryRow, answerSearch, retentionState, suppressedPage } from './history/tools.ts';
 import { StorageMeter } from './storage/meter.ts';
 
 // P3-T10: 50 ms keeps one push per window while leaving most of M1's 250 ms hook-to-paint budget; the tick re-reads
@@ -106,6 +106,7 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
         try { if (db.isOpen) page = suppressedPage(db, secret!, homedir(), req.cursor, req.limit); } catch { /* failed */ }
         port.postMessage({ v: IPC_VERSION, type: 'suppressed', id: req.id, ...page } satisfies PortMessage); break;
       }
+      case 'historyRow': port.postMessage({ v: IPC_VERSION, type: 'historyRow', id: req.id, ...answerHistoryRow(db, req.session, s.kinds(), s.models(), live) } satisfies PortMessage); break;
       case 'reimport': port.postMessage({ v: IPC_VERSION, type: 'reimport', id: req.id, result: s.reimport(req.key) } satisfies PortMessage); break;
       case 'retention': {
         let state: { setting: RetentionSetting | null; lastRunAt: number | null } = { setting: null, lastRunAt: null };
