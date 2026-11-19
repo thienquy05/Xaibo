@@ -16,7 +16,7 @@ import { DAY } from '../../src/service/retention/policy.ts';
 import { openStore } from '../../src/service/store/db.ts';
 import { Writer } from '../../src/service/store/writer.ts';
 import { monthStatus } from '../../src/service/usage/availability.ts';
-import { clearUsageHistory } from '../../src/service/usage/clear.ts';
+import { applyClear, clearKeys, clearUsageHistory, keysInWorker } from '../../src/service/usage/clear.ts';
 import { priceUsage } from '../../src/service/usage/cost.ts';
 import { liveMonthly } from '../../src/service/usage/monthly.ts';
 import { loadPrices } from '../../src/service/usage/prices.ts';
@@ -171,6 +171,44 @@ test('review M2: a model that resolves after the clear does not bring back the c
   assert.deepEqual(monthStatus(h.db, SECRET, NOW), [], 'no month listed');
   h.writer.transact((db) => { settle(db, { sessions: [s], quota: [] }, SECRET, NOW); removeSessions(db, [s]); });
   assert.equal(frozenRows(h.db), 0, 'nothing frozen either');
+});
+
+test('XAIBO-PROD-526: the key scan runs in a worker on a snapshot while the loop keeps running; same keys as the synchronous scan', async () => {
+  const h = await store();
+  used(h.db, 'w-a', NOV);
+  used(h.db, 'w-b', OCT);
+  sample(h.db, scope(h.db, 'w-scope', true), { percent: 30, at: NOV });
+  let done = false, tickDuring = false;
+  const p = keysInWorker({ file: h.file, secret: SECRET });
+  void p.then(() => { done = true; });
+  setTimeout(() => { tickDuring = !done; }, 0);
+  const marks = await p;
+  assert.ok(tickDuring, 'the service loop is free while the worker scans');
+  assert.ok(marks.length > 0);
+  assert.deepEqual(marks, clearKeys(h.db, SECRET));
+  h.writer.transact((db) => applyClear(db, marks, NOW));
+  assert.deepEqual(liveMonthly(h.db, SECRET), EMPTY);
+});
+
+test('XAIBO-PROD-526: a key settled between the snapshot and the transaction is cleared too; usage first stored after the snapshot counts', async () => {
+  const h = await store();
+  used(h.db, 'gap-a', NOV);
+  const b = used(h.db, 'gap-b', NOV);
+  const marks = await keysInWorker({ file: h.file, secret: SECRET });
+  h.writer.transact((db) => { settle(db, { sessions: [b], quota: [] }, SECRET, NOW); removeSessions(db, [b]); }); // purged meanwhile
+  used(h.db, 'gap-c', DEC); // stored after the snapshot
+  h.writer.transact((db) => applyClear(db, marks, NOW));
+  assert.equal(frozenRows(h.db), 0);
+  assert.deepEqual(liveMonthly(h.db, SECRET).usage.map((u) => u.month), ['2026-12'], 'only the later session');
+});
+
+test('XAIBO-PROD-526: a failing or timed-out worker rejects with a fixed code and changes nothing', async () => {
+  const h = await store();
+  used(h.db, 'fail-a', NOV);
+  const before = dump(h.db);
+  await assert.rejects(keysInWorker({ file: join(h.dir, 'missing.db'), secret: SECRET }), { message: 'store' });
+  await assert.rejects(keysInWorker({ file: h.file, secret: SECRET, timeoutMs: 1 }), { message: 'timeout' });
+  assert.equal(dump(h.db), before);
 });
 
 test('IPC: clearUsage request and reply parse strictly', () => {

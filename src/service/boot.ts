@@ -30,7 +30,7 @@ import { openStore, type Store } from './store/db.ts';
 import { startHooks, type Hooks } from './receivers/intake.ts';
 import { Writer, type Batch } from './store/writer.ts';
 import { loadScopeSalt } from './usage/snapshots.ts';
-import { clearUsageHistory } from './usage/clear.ts';
+import { applyClear, keysInWorker } from './usage/clear.ts';
 
 export interface BootOptions {
   dataDir: string; home: string; shell?: string | undefined; catalog?: Catalog; intervalMs?: number; log?: Logger;
@@ -82,7 +82,7 @@ export interface Service {
   /** P5-T09: one retention run now (joins a run in progress); null for a read-only or stopped store. */
   retention(): Promise<RetentionResult | null>;
   /** P5-T16 (FR-52, Q-5.8): Clear usage history in one writer transaction; read-only when the store refuses writes. */
-  clearUsage(): ClearUsageResult;
+  clearUsage(): Promise<ClearUsageResult>;
   stop(): void;
 }
 
@@ -315,6 +315,7 @@ export async function boot(o: BootOptions): Promise<Service> {
   // P5-T09 (FR-12): retention after the backfill (review H1: a session continued while Xaibo was off has its new records
   // first), then daily; a run whose wall clock ran more than 1 h ahead of the monotonic clock is skipped (review H3).
   let retentionRun: Promise<RetentionResult | null> | null = null;
+  let clearing: Promise<ClearUsageResult> | null = null; // XAIBO-PROD-526: Clear usage history in progress
   const retention = (): Promise<RetentionResult | null> => {
     if (readOnly || stopped || !db.isOpen) return Promise.resolve(null);
     // diff review M1: everything, the secret's read included, inside the chain: a failure is a logged rejection
@@ -365,16 +366,20 @@ export async function boot(o: BootOptions): Promise<Service> {
     suspend: (at) => engine?.suspend(at ?? clock()),
     wake: async () => { scheduler.wake(); engine?.resume(clock()); await Promise.all(adapters.map((a) => a.wake())); }, // sleep is no clock jump
     retention,
-    clearUsage: () => {
+    // XAIBO-PROD-526 review L2: overlapping calls (a second window, a retry) share the run in progress.
+    // ponytail: a stop mid-clear does not terminate the worker; its result is dropped (the store is closed).
+    clearUsage: () => clearing ??= (async (): Promise<ClearUsageResult> => {
       if (readOnly) return 'read-only';
       if (stopped || !db.isOpen) return 'failed';
-      try { // review L5: the event only (no count from the machine in logs)
-        writer.transact((t) => clearUsageHistory(t, loadInstallSecret(o.dataDir), clock()));
+      try { // the scan in a worker, then one writer transaction; review L5: the event only, no count
+        const marks = await keysInWorker({ file: path.join(o.dataDir, 'xaibo.db'), secret: loadInstallSecret(o.dataDir) });
+        if (stopped || !db.isOpen) return 'failed';
+        writer.transact((t) => applyClear(t, marks, clock()));
         o.log?.log('usage_cleared', {});
         return 'cleared';
       }
       catch (e) { o.log?.log('clear_usage_failed', { error: errorCode(e) }); return 'failed'; }
-    },
+    })().finally(() => { clearing = null; }),
     stop: () => {
       stopped = true;
       if (due) clearTimeout(due.timer);

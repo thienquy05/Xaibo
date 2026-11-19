@@ -53,6 +53,35 @@ test('P5-T07 (review H3): boot finishes the file work a committed purge still ow
   }
 });
 
+test('XAIBO-PROD-526 (review M1/L2): clearUsage runs through the worker; overlapping calls share one run; a stop before it applies gives failed and writes nothing', async () => {
+  const settled = (dataDir: string) => {
+    const d = new DatabaseSync(join(dataDir, 'xaibo.db'), { readOnly: true });
+    try { return d.prepare('SELECT count(*) AS n, sum(cleared = 0) AS open FROM settled_contributions').get() as { n: number; open: number | null }; } finally { d.close(); }
+  };
+  const s = setup();
+  const svc = await boot({ dataDir: s.dataDir, home: s.home, catalog, intervalMs: 60_000 });
+  try {
+    await svc.done;
+    assert.ok(count(svc.store.db, "SELECT count(*) FROM usage WHERE scope = 'message'") > 0, 'the fixture has usage');
+    const a = svc.clearUsage(), b = svc.clearUsage();
+    assert.equal(a, b, 'one run for both');
+    assert.equal(await a, 'cleared');
+  } finally {
+    svc.stop();
+  }
+  const done = settled(s.dataDir);
+  assert.ok(done.n > 0);
+  assert.equal(done.open, 0, 'every marker cleared');
+
+  const t = setup();
+  const other = await boot({ dataDir: t.dataDir, home: t.home, catalog, intervalMs: 60_000 });
+  await other.done;
+  const p = other.clearUsage();
+  other.stop(); // while the worker scans
+  assert.equal(await p, 'failed');
+  assert.equal(settled(t.dataDir).n, 0, 'nothing written');
+});
+
 test('P5-T09: boot runs retention after the backfill (review H1); a session past 45 days is purged and stays out', async () => {
   const s = setup();
   const svc = await boot({ dataDir: s.dataDir, home: s.home, catalog, intervalMs: 60_000, retentionDelayMs: 0 });
