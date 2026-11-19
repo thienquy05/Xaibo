@@ -5,7 +5,8 @@
 // payload from stdin, prints `KEY=value` lines the calling shell script
 // `eval`s directly.
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { checkoutAt } from './checkouts.mjs';
 
 let raw = '';
 process.stdin.on('data', (chunk) => {
@@ -14,12 +15,26 @@ process.stdin.on('data', (chunk) => {
 process.stdin.on('end', () => {
   const payload = JSON.parse(raw || '{}');
   const toolName = payload.tool_name || '';
-  const projectPath = payload.cwd || process.cwd();
+  // The hooks' own project is the folder holding this script's .claude/hooks/, never payload.cwd: Claude Code
+  // keeps a `cd` between Bash calls, so the shell can sit in any subfolder. argv[1] is the path the calling
+  // hook passed ("$SCRIPT_DIR/parse-tool-call.mjs"), not symlink-resolved, so it matches the project path
+  // gate-check maps to its /workspaces mount.
+  const hookRoot = dirname(dirname(dirname(process.argv[1])));
   const input = payload.tool_input || {};
   const command = typeof input.command === 'string' ? input.command : '';
 
-  const filePath = typeof input.file_path === 'string' ? input.file_path : extractBashWriteTarget(command);
-  const matchedTestCommand = toolName === 'Bash' ? matchConfiguredTestCommand(projectPath, command) : '';
+  // The shell's folder still matters for what the command itself names: a relative redirect target, and
+  // whether a test command means a checkout's suite. Typed at the root of a checkout (this one, its main
+  // checkout or a Claude Code worktree) it is run there and recorded for that checkout, so a worktree's RED
+  // is its own; from any other folder (perhaps another package's) it runs unrecorded, never opening the gate.
+  const shellDir = resolve(payload.cwd || hookRoot);
+  const target = extractBashWriteTarget(command);
+  const filePath = typeof input.file_path === 'string' ? input.file_path : target && resolve(shellDir, target);
+  const testRoot = toolName === 'Bash' && payload.hook_event_name === 'PreToolUse' ? checkoutAt(shellDir, hookRoot) : null;
+  const matchedTestCommand = testRoot ? matchConfiguredTestCommand(testRoot, command) : '';
+  // Every other check speaks for the hooks' own checkout; gate-check decides which checkout governs a
+  // file it is given (packages/core gates.ts), so a write across checkouts is judged where it lands.
+  const projectPath = matchedTestCommand ? testRoot : hookRoot;
 
   const lines = [
     `HARNESS_TOOL_NAME=${shellEscape(toolName)}`,
