@@ -33,12 +33,17 @@ import {
   writeFileSync,
   writeSync,
 } from 'node:fs';
-import { basename, dirname, join, sep } from 'node:path';
+import { basename, dirname, join, relative, sep } from 'node:path';
+import { checkouts } from './checkouts.mjs';
 
 const CONFIG_FILES = ['.claude/harness.config.json', '.claude/hooks/enforce-gate.sh', '.claude/settings.json'];
 const STALE_MS = 24 * 60 * 60 * 1000; // a blocked call never reaches its post hook; its state goes after a day
 
-const [mode, project, id = 'none', target] = process.argv.slice(2);
+// The checkout these hooks belong to, from this script's own location (argv[1], the path the caller passed),
+// not the caller's project argument: Pre and Post must snapshot and compare the same tree, whatever
+// checkout a call's other checks speak for (a test command typed at a worktree root runs there).
+const [mode, , id = 'none', target] = process.argv.slice(2);
+const project = dirname(dirname(dirname(process.argv[1])));
 const git = (args, input) => execFileSync('git', args, { cwd: project, input, stdio: ['pipe', 'pipe', 'ignore'] });
 
 const head = () => {
@@ -68,7 +73,23 @@ const blobAt = (rev, path) => {
 };
 
 // What git would store for the working-tree file (filters applied), to compare with a commit's blob.
-const storedAs = (path) => git(['hash-object', '--', path]).toString().trim();
+const storedAs = (path) => {
+  try {
+    return git(['hash-object', '--', path]).toString().trim();
+  } catch {
+    return null;
+  }
+};
+
+// Does the working-tree file equal its blob in commit rev? Never for two failed lookups.
+const matchesCommit = (path, rev) => {
+  const stored = storedAs(path);
+  return stored !== null && stored === blobAt(rev, path);
+};
+
+// A path in this checkout itself, not in another one (../ from a worktree, or a Claude Code worktree from
+// the main checkout): only these can be explained by this checkout's HEAD moving.
+const ownCheckout = (path) => !/^(\.\.|\.claude[\\/]worktrees)([\\/]|$)/.test(path);
 
 let gitDir;
 try {
@@ -88,8 +109,13 @@ function gatedGlobs() {
   }
 }
 
+// Gated files in every checkout of the project (the main one and each Claude Code worktree), as paths
+// relative to this one: a command can write across checkouts (`cp x ../../../src/a.ts` from a worktree).
 const listGated = (globs) =>
-  globs.length ? globSync(globs, { cwd: project, exclude: (p) => /(^|\/)(node_modules|\.git)$/.test(p) }) : [];
+  globs.length
+    ? [...new Set(checkouts(project).flatMap((root) =>
+        globSync(globs, { cwd: root, exclude: (p) => /(^|\/)(node_modules|\.git)$/.test(p) }).map((p) => relative(project, join(root, p)))))]
+    : [];
 
 const lstatOrNull = (path) => {
   try {
@@ -195,7 +221,7 @@ if (mode === 'save') {
       continue;
     }
     if (CONFIG_FILES.includes(path)) lines.push(`CONFIG ${path}`);
-    else if (!(existed && blob !== null && storedAs(path) === blobAt(now, path))) lines.push(`GATED ${path}`);
+    else if (!(existed && ownCheckout(path) && blob !== null && matchesCommit(path, now))) lines.push(`GATED ${path}`);
   }
   if (lines.length) process.stdout.write(`${lines.join('\n')}\n`);
 } else if (mode === 'restore') {
