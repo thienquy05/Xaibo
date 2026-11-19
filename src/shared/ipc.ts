@@ -91,6 +91,8 @@ export interface SessionRow {
   id: number; agent: string; entrypoint: string | null; cwd: string | null; title: string | null;
   /** XAIBO-PROD-509 (EC-66): an untitled session's first-prompt excerpt, in-app only; absent or null = none. */
   excerpt?: string | null;
+  /** XAIBO-PROD-519 (P5-T12): absent from older services. */
+  native?: NativeState;
   /** Catalog origin badge, null for an unknown kind; interactive null when unknown (P2-T04). */
   origin: string | null; interactive: boolean | null;
   /** "<display name> · <effort>", the raw id, or "Model unavailable" (P2-T08). */
@@ -158,7 +160,14 @@ export interface ContextReading {
   generation: number; used: number | null; window: number | null; basis: (typeof WINDOW_BASES)[number];
   source: (typeof CONTEXT_SOURCES)[number]; asOf: number | null; observedAt: number;
 }
-export interface SessionDetail { row: SessionRow; coverage: CoverageCode[]; context: ContextReading | null }
+/** XAIBO-PROD-519 (P5-T12; EC-23, EC-24, FR-13): the native transcript's state. available false = the native session's
+ *  files are confirmed gone (Xaibo's copy stays); archived = seen under the agent's archive. */
+export interface NativeState { available: boolean; archived: boolean }
+export const TRANSCRIPT_ONLY = 'Transcript only, not resumable';
+/** Design C15: the native-state marker, never overlay state. */
+export const nativeBadge = (n: NativeState): 'native deleted' | 'native archived' | null => (!n.available ? 'native deleted' : n.archived ? 'native archived' : null);
+/** nativeExpiresAt: when the agent's own cleanup is estimated to delete the native transcript (Claude; an estimate). */
+export interface SessionDetail { row: SessionRow; coverage: CoverageCode[]; context: ContextReading | null; nativeExpiresAt?: number | null }
 
 /** XAIBO-PROD-417 (P4-T07a; design §6.3.2): the session's cost breakdown. Groups are the per-request estimates of one
  *  (model, price revision, basis); a component's ~$ comes only from its applied rate over priced requests. */
@@ -303,8 +312,10 @@ function parseRow(x: unknown): SessionRow | null {
   if (!(r.costUsd === null || (Number.isFinite(r.costUsd) && (r.costUsd as number) >= 0)) || !oneOf(COSTS, r.costCoverage)) return null;
   if (!(r.tokens === null || count(r.tokens)) || typeof r.tokensComplete !== 'boolean') return null;
   if (r.excerpt !== undefined && !textOrNull(r.excerpt)) return null;
+  const n = r.native;
+  if (n !== undefined && !(isObj(n) && typeof n.available === 'boolean' && typeof n.archived === 'boolean')) return null;
   return { id: r.id, agent: r.agent, entrypoint: r.entrypoint, origin: r.origin, interactive: r.interactive, model: r.model, cwd: r.cwd, title: r.title,
-    ...(r.excerpt !== undefined ? { excerpt: r.excerpt } : {}), lastActivity: r.lastActivity, drift: r.drift, compressed: r.compressed, quarantined: r.quarantined,
+    ...(r.excerpt !== undefined ? { excerpt: r.excerpt } : {}), ...(isObj(n) ? { native: { available: n.available as boolean, archived: n.archived as boolean } } : {}), lastActivity: r.lastActivity, drift: r.drift, compressed: r.compressed, quarantined: r.quarantined,
     live, contextPct: r.contextPct as number | null, costUsd: r.costUsd as number | null, costCoverage: r.costCoverage, tokens: r.tokens as number | null, tokensComplete: r.tokensComplete };
 }
 
@@ -413,7 +424,10 @@ function parseDetail(x: unknown): SessionDetail | null | undefined { // undefine
   const row = parseRow(x.row);
   const coverage = all(x.coverage, COVERAGE_CODES.length, (c) => (oneOf(COVERAGE_CODES, c) ? c : null));
   const context = x.context === null ? null : parseContext(x.context);
-  return row && coverage && context !== undefined ? { row, coverage, context } : undefined;
+  const expires = x.nativeExpiresAt;
+  // review L3: a time the renderer's Date can show (0 .. 8.64e15 ms)
+  if (expires !== undefined && !(expires === null || (typeof expires === 'number' && expires >= 0 && expires <= 8.64e15))) return undefined;
+  return row && coverage && context !== undefined ? { row, coverage, context, ...(expires !== undefined ? { nativeExpiresAt: expires } : {}) } : undefined;
 }
 const CONTEXT_KEYS = ['generation', 'used', 'window', 'basis', 'source', 'asOf', 'observedAt'];
 export function parseContext(x: unknown): ContextReading | undefined {

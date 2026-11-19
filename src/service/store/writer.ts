@@ -587,6 +587,10 @@ export class Writer {
     return done;
   }
 
+  /** XAIBO-PROD-519 (P5-T12 re-review M1): announces sessions changed by a transact() as a committed batch, so open
+   *  windows refresh them (onCommit). Call only after the transaction committed. */
+  notify(batch: Batch): void { this.#o.onCommit?.(batch); }
+
   /** XAIBO-PROD-515 (P5-T07, research L6): `fn` in one immediate transaction on the writer's connection, with the same
    *  disk-full state as batches (purge, retention). Any throw rolls back and is rethrown as it was; the work is committed
    *  only when this returns. */

@@ -21,7 +21,7 @@ export interface HookPolicy {
 const MAX_SETTINGS = 1 << 20;
 const absent = (e: unknown) => ['ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException).code ?? '');
 /** null when absent; 'bad' when unreadable (permission denied included), oversized, not JSON or not an object. */
-function settings(file: string): Record<string, unknown> | null | 'bad' {
+export function settings(file: string): Record<string, unknown> | null | 'bad' {
   let st;
   try { st = lstatSync(file); } catch (e) { return absent(e) ? null : 'bad'; }
   if (!st.isFile() || st.size > MAX_SETTINGS) return 'bad';

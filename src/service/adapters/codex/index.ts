@@ -13,6 +13,7 @@ import { noteCwd, type Batch, type EventRow, type QuarantineRow, type SessionUps
 import { readRange, readZstd } from '../../tail.ts';
 import { TailAdapter, type OversizedSink } from '../tail-adapter.ts';
 import { discover, type CodexFile } from './discover.ts';
+import { reconcileNative } from '../../history/native-availability.ts';
 import { parseLine, type CodexRecord } from './parse.ts';
 
 /** Hash of the first line (without its newline) and, when within `cap`, its bytes; undefined until the line is complete. */
@@ -102,7 +103,10 @@ export class CodexAdapter extends TailAdapter<CodexFile, CodexRecord> {
   protected async discover(): Promise<CodexFile[]> {
     // A failed read or commit forgets everything read, so the next scan sends every name again (review M2).
     await this.#threadNames().catch(() => { this.#indexSig = ''; this.#names.clear(); });
-    return discover(this.o.root);
+    const files = await discover(this.o.root);
+    // P5-T12 (EC-24): native availability; a move to archived_sessions/ is listed under the same id, so never a deletion
+    await reconcileNative({ db: this.o.db, writer: this.o.writer, profileId: this.o.profileId, agent: 'codex', kinds: ['rollout'] }, files).catch(() => undefined);
+    return files;
   }
 
   /** Re-reads the index only when its signature changes (a rename changes the inode). One handle, never following a

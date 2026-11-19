@@ -5,6 +5,7 @@ import { cwdKey } from '../../paths.ts';
 import { claudeUsage } from '../../usage/tokens.ts';
 import { noteCwd, type Batch, type EventRow, type QuarantineRow, type SessionUpsert, type SourceFileCheckpoint } from '../../store/writer.ts';
 import { TailAdapter, type OversizedSink, type TailAdapterOptions } from '../tail-adapter.ts';
+import { reconcileNative } from '../../history/native-availability.ts';
 import { discover, type ClaudeFile } from './discover.ts';
 import { OversizedRecord } from './oversized.ts';
 import { parseLine, type ClaudeRecord } from './parse.ts';
@@ -29,7 +30,12 @@ const contextOf = (r: ClaudeRecord): EventRow['context'] => {
 };
 
 export class ClaudeAdapter extends TailAdapter<ClaudeFile, ClaudeRecord> {
-  protected discover(): Promise<ClaudeFile[]> { return discover(this.o.root); }
+  protected async discover(): Promise<ClaudeFile[]> {
+    const files = await discover(this.o.root);
+    // P5-T12 (EC-23/24): native availability; a failed check leaves the stored state for the next scan
+    await reconcileNative({ db: this.o.db, writer: this.o.writer, profileId: this.o.profileId, agent: 'claude', kinds: ['transcript'] }, files).catch(() => undefined);
+    return files;
+  }
 
   protected parse(line: Line, file: ClaudeFile, fileMtime: number, receivedTs: number) {
     return parseLine(line.bytes, { offset: line.offset, fileMtime, receivedTs, subagentNativeId: file.subagentId });

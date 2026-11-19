@@ -49,7 +49,8 @@ test('default and cap: invalid limits clamp; the hard cap is 100', async () => {
 });
 
 // P3-T10: without an engine, estimate or context snapshot these are the defaults.
-const NO_LIVE = { live: null, contextPct: null, costUsd: null, costCoverage: 'unavailable', tokens: null, tokensComplete: true } as const;
+const NO_LIVE = { live: null, contextPct: null, costUsd: null, costCoverage: 'unavailable', tokens: null, tokensComplete: true,
+  native: { available: true, archived: false } } as const; // P5-T12: never confirmed gone
 test('rows carry the list columns and coverage markers', async () => {
   const db = await store(2, (i) => i);
   db.prepare("UPDATE sessions SET drift = 1, quarantined_count = 3, entrypoint = 'cli' WHERE id = 1").run();

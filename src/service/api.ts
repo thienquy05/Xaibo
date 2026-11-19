@@ -1,5 +1,6 @@
 // Read-only session list API (P1-T12, S-29, FR-09): keyset pages over (last_activity DESC with unknown last, id),
 // default 50 rows, hard cap 100; rows by session key for the coalesced deltas the service pushes after commits.
+import { nativeExpiresAt } from './history/native-availability.ts';
 import type { DatabaseSync, StatementSync } from 'node:sqlite';
 import { IPC_VERSION, isObj } from '../shared/ipc.ts';
 import type { ContextReading, CoverageCode, Credits, Cursor, HistoryCursor, LiveStatus, Page, PortMessage, PortRequest, SessionRow, TCursor, TranscriptItem, UsageRecord, UsageScope } from '../shared/ipc.ts';
@@ -27,7 +28,7 @@ export const DISPLAY_MAX = 4096;
 
 export interface SessionKey { agent: string; profileId: string; nativeSessionId: string }
 
-export const ROW = `SELECT s.id, s.agent, s.profile_id, s.native_session_id, s.entrypoint, s.originator, s.current_model, s.current_effort, s.cwd, coalesce(s.title, s.ai_title) AS title, s.last_activity, s.drift, s.quarantined_count,
+export const ROW = `SELECT s.id, s.agent, s.profile_id, s.native_session_id, s.entrypoint, s.originator, s.current_model, s.current_effort, s.cwd, coalesce(s.title, s.ai_title) AS title, s.last_activity, s.drift, s.quarantined_count, s.native_available, s.native_archived,
   EXISTS (SELECT 1 FROM source_files f WHERE f.session_id = s.id AND f.status = 'compressed_not_imported') AS compressed,
   (SELECT c.percentage FROM context_snapshots c WHERE c.session_id = s.id ORDER BY c.generation DESC, c.id DESC LIMIT 1) AS context_pct,
   (SELECT CASE WHEN COUNT(u.uncached_input) + COUNT(u.cache_read) + COUNT(u.cache_write) + COUNT(u.output) = 0 THEN NULL
@@ -41,7 +42,8 @@ const ORDER = 'ORDER BY s.last_activity DESC, s.id LIMIT ?';
 
 /** The status engine's view of a session by agent and native id (P3-T10); null when it has no evidence. */
 export type LiveOf = (agent: string, nativeSessionId: string, profileId: string) => LiveStatus | null;
-export interface Raw { tokens: number | null; tokens_gap: number; id: number; agent: string; profile_id: string; native_session_id: string; context_pct: number | null; entrypoint: string | null; originator: string | null; current_model: string | null; current_effort: string | null; cwd: string | null; title: string | null; last_activity: number | null; drift: number; quarantined_count: number; compressed: number }
+export interface Raw { tokens: number | null; tokens_gap: number; id: number; agent: string; profile_id: string; native_session_id: string; context_pct: number | null; entrypoint: string | null; originator: string | null; current_model: string | null; current_effort: string | null; cwd: string | null; title: string | null; last_activity: number | null; drift: number; quarantined_count: number; compressed: number;
+  native_available: number | null; native_archived: number }
 /** At most `max` UTF-16 units, ending in "…" when cut; never ends inside a surrogate pair. */
 export const cut = (s: string, max: number) => (s.length <= max ? s : `${s.slice(0, (s.charCodeAt(max - 2) & 0xfc00) === 0xd800 ? max - 2 : max - 1)}…`);
 const display = (s: string | null): string | null => (s === null ? null : cut(s, DISPLAY_MAX + 1));
@@ -81,6 +83,7 @@ export const toRow = (db: DatabaseSync, kinds: SessionKind[], models: ModelEntry
     id: r.id, agent: r.agent, entrypoint: display(r.entrypoint), origin: k?.badge ?? null, interactive: k?.interactive ?? null,
     model: display(modelLabel(displayName(models, r.current_model), r.current_effort))!, cwd: display(r.cwd), title: display(r.title), excerpt: r.title === null ? excerptOf(db, r.agent, r.id) : null, lastActivity: r.last_activity,
     drift: r.drift === 1, compressed: r.compressed === 1, quarantined: r.quarantined_count,
+    native: { available: r.native_available !== 0, archived: r.native_archived === 1 }, // P5-T12: false only when confirmed gone
     live: live?.(r.agent, r.native_session_id, r.profile_id) ?? null,
     contextPct: pct === null || !Number.isFinite(pct) ? null : Math.min(100, Math.max(0, pct)),
     costUsd: usable ? cost.amountUsd : null,
@@ -271,7 +274,8 @@ function largeSlice(db: DatabaseSync, session: number, key: string, offset: numb
 }
 const stored = (agent: string, r: Pick<TrRow, 'kind' | 'role' | 'content' | 'raw'>): StoredRecord => ({ agent, kind: r.kind, role: r.role, injected: false, content: r.content, raw: r.raw });
 
-export function answerSession(db: DatabaseSync, req: PortRequest & { type: 'session' }, kinds: SessionKind[] = [], models: ModelEntry[] = [], live?: LiveOf): PortMessage & { type: 'session' } {
+export function answerSession(db: DatabaseSync, req: PortRequest & { type: 'session' }, kinds: SessionKind[] = [], models: ModelEntry[] = [], live?: LiveOf,
+  managedDir?: string): PortMessage & { type: 'session' } {
   try {
     const r = db.prepare(`${ROW} WHERE s.id = ?`).get(req.session) as Raw | undefined;
     if (!r) return { v: IPC_VERSION, type: 'session', id: req.id, detail: null };
@@ -291,7 +295,9 @@ export function answerSession(db: DatabaseSync, req: PortRequest & { type: 'sess
         observed_at AS observedAt FROM context_snapshots WHERE session_id = ? ORDER BY generation DESC, id DESC LIMIT 1`).get(r.id);
       context = ctx ? parseContext({ ...ctx }) ?? null : null;
     } catch { context = null; }
-    return { v: IPC_VERSION, type: 'session', id: req.id, detail: { row, coverage, context } };
+    let nativeExpires: number | null = null; // P5-T12 (EC-23): an estimate; unreadable settings give none
+    try { nativeExpires = nativeExpiresAt(db, r, managedDir); } catch { nativeExpires = null; }
+    return { v: IPC_VERSION, type: 'session', id: req.id, detail: { row, coverage, context, nativeExpiresAt: nativeExpires } };
   } catch { return { v: IPC_VERSION, type: 'session', id: req.id, detail: null }; }
 }
 
