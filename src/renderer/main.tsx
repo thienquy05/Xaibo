@@ -18,6 +18,7 @@ import { retryIdle, retryStep } from './retry.ts';
 import { firstUsablePage, LONG_FRAME, watchLongFrames } from './perf-marks.ts';
 import { Settings, type SettingsApi } from './settings/Settings.tsx';
 import type { BrowseApi } from './history/SessionBrowser.tsx';
+import { AgentMap } from './agent-map/AgentMap.tsx';
 import { Workspace } from './workspace/Workspace.tsx';
 import type { SessionChanges } from './workspace/view.ts';
 import type { WorkspaceApi } from './workspace/OpenSession.tsx';
@@ -33,8 +34,8 @@ const DELTA_MAX = 1000;
 const onListCommit = firstUsablePage({ raf: (cb) => requestAnimationFrame(cb), mark: (n) => performance.mark(n) });
 watchLongFrames((start, duration) => performance.measure(LONG_FRAME, { start, duration }), globalThis.PerformanceObserver);
 
-type Area = 'dashboard' | 'session' | 'settings';
-const HEADING: Record<Area, string> = { dashboard: 'dashboard-heading', session: 'sessions-heading', settings: 'settings-heading' };
+type Area = 'dashboard' | 'session' | 'map' | 'settings';
+const HEADING: Record<Area, string> = { dashboard: 'dashboard-heading', session: 'sessions-heading', map: 'agent-map-heading', settings: 'settings-heading' };
 
 function App() {
   const [health, setHealth] = useState<Health | null>(null);
@@ -212,6 +213,8 @@ function App() {
   };
   // review L3: leaving through the Areas links or opening from the Session list ends the Dashboard's Return
   const clearReturn = useCallback(() => { origin.current = null; setReturnFor(null); setFocusId(null); }, []);
+  // XAIBO-PROD-538: a session leaf opens in Session (design §6.5.1); Return to Agent Map arrives in part 2b
+  const openFromMap = (row: SessionRow) => { clearReturn(); setRequest(row); setArea('session'); };
   const go = (to: Area) => (e: MouseEvent) => {
     e.preventDefault();
     clearReturn();
@@ -262,15 +265,16 @@ function App() {
             </svg>
             Xaibo
           </span>
-          {/* ponytail: the Agent Map link arrives with its area (P5-T18a); no placeholder link now. */}
           <a href="#dashboard" aria-current={area === 'dashboard' ? 'page' : undefined} onClick={go('dashboard')}><Icon id="dashboard" />Dashboard</a>
           <a href="#session" aria-current={area === 'session' ? 'page' : undefined} onClick={go('session')}><Icon id="session" />Session</a>
+          <a href="#agent-map" aria-current={area === 'map' ? 'page' : undefined} onClick={go('map')}><Icon id="branch" />Agent Map</a>
           <a href="#settings" aria-current={area === 'settings' ? 'page' : undefined} onClick={go('settings')}><Icon id="settings" />Settings</a>
         </nav>
       </header>
       <div className="x-health"><HealthStatus health={health} banners={banners} /></div>
       <main id="main" className="x-main" tabIndex={-1}>
         {area === 'settings' ? <Settings api={settingsApi} readOnly={!!health?.readOnly} />
+          : area === 'map' ? <AgentMap api={browseApi} agents={agents ?? []} lastKnown={lastKnown} tick={tick} onOpen={openFromMap} />
           : area === 'dashboard'
           ? <Dashboard live={liveSet} liveFailed={liveFailed} liveRetry={liveRetry} onRetryLive={retryLive} lastKnown={lastKnown} agents={agents} banners={banners} api={api} tick={tick}
             onSetPath={(agent) => window.xaibo?.setAgentPath(agent)} onOpen={openSession} view={dashView} onView={setDashView} focusId={focusId} />

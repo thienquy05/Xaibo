@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { HistoryRow, MapGroup, MapNode } from '../../../src/shared/ipc.ts';
 import { BRANCH_PAGE, collapse, cursorFor, emptyLevel, expand, keyOf, kindOf, LEAF_PAGE, nodeText, pageArrived, pageFailed, pageSize, repoName, ROOT_PAGE,
-  rows, sessionKey, touch, treeKey, type Expansion, type Level } from '../../../src/renderer/agent-map/tree.ts';
+  rows, sessionKey, touch, treeKey, groupDetail, sessionDetail, rowLabel, typeLabel, loadedText, evictedText, REFUSED, nounOf, pagingAnchor, setPositions, type Expansion, type Kids, type Level } from '../../../src/renderer/agent-map/tree.ts';
 
 const repo = (r: string): MapGroup => ({ project: null, at: { repo: r, worktree: null } });
 const wt = (r: string, w: string, project: number | null = null): MapGroup => ({ project, at: { repo: r, worktree: w } });
@@ -294,4 +294,84 @@ test('treeKey on paging rows: Left from a root paging item does nothing; Right o
   assert.deepEqual(treeKey(r, 0, 'ArrowRight'), { move: 1 });
   assert.equal(treeKey(r, 2, 'ArrowLeft'), null);
   assert.deepEqual(treeKey(r, 1, 'ArrowLeft'), { move: 0 });
+});
+
+// --- XAIBO-PROD-538 (P5-T18a part 2a): the screen's pure texts: Details lines, row names, announcements ---
+test('groupDetail: label, membership evidence, path and each count exact or Unavailable on its own', () => {
+  assert.deepEqual(groupDetail(node(wt('/w/example-app/.git', '/w/example-app'), { sessions: 3, live: 2 }), names), {
+    heading: 'example-app',
+    lines: [['Membership evidence', 'Main checkout'], ['Path', '/w/example-app'], ['Sessions', '3'], ['Live', '2'], ['Agents', 'Claude Code, Codex']],
+  });
+  assert.deepEqual(groupDetail(node(cwd(null), { reasons: ['no-git'], sessions: null, live: null, agents: null }), names).lines,
+    [['Membership evidence', 'No git directory observed'], ['Path', 'Unavailable'], ['Sessions', 'Unavailable'], ['Live', 'Unavailable'], ['Agents', 'Unavailable']]);
+  const p = groupDetail(node(proj(7), { project: { id: 7, name: 'Atlas' }, agents: [] }), names);
+  assert.equal(p.heading, 'Project override: Atlas');
+  assert.deepEqual(p.lines, [['Membership evidence', 'Your organization, not repository evidence'], ['Sessions', '3'], ['Live', '1'], ['Agents', 'Unavailable']], 'an override has no path; an empty agent list is unavailable');
+});
+
+test('sessionDetail: agent by name, model, last activity and cwd; nothing guessed', () => {
+  const d = sessionDetail({ ...session(4), title: null, excerpt: 'fix the build', cwd: null }, names);
+  assert.equal(d.heading, 'Untitled · fix the build');
+  assert.deepEqual(d.lines.map(([k]) => k), ['Agent', 'Model', 'Last activity', 'Cwd']);
+  assert.equal(d.lines[0]![1], 'Claude Code');
+  assert.equal(d.lines[3]![1], 'Unavailable');
+});
+
+test('rowLabel and typeLabel: a short stable name per treeitem; typeahead matches the visible label only', () => {
+  const roots = pageArrived(emptyLevel() as Level<MapNode, MapGroup>, 'first', null, [node(repo('/w/example-app/.git'), { sessions: 5 })], repo('/w/z/.git'));
+  const list = rows(roots, {}, []);
+  assert.equal(rowLabel(list[0]!, names), 'example-app · Sessions 5');
+  assert.equal(typeLabel(list[0]!), 'example-app');
+  assert.equal(rowLabel(list[1]!, names), 'Load more groups');
+  const leaf = { type: 'session' as const, key: sessionKey(9), parent: null, level: 3, row: { ...session(9), title: 'Refactor' } };
+  assert.equal(rowLabel(leaf, names), 'Refactor · Claude Code · /w/app');
+  assert.equal(typeLabel(leaf), 'Refactor');
+});
+
+test('announcements: loaded counts with the right noun, eviction names what closed, refusal keeps focus', () => {
+  assert.equal(loadedText('more', 'worktrees', 20), '20 more worktrees loaded');
+  assert.equal(loadedText('prev', 'sessions', 1), '1 earlier session loaded');
+  assert.equal(loadedText('first', 'groups', 0), 'No groups');
+  assert.equal(evictedText(['example-app', 'main']), 'Collapsed example-app, main to keep four branches open');
+  assert.equal(REFUSED, 'Collapse another branch to expand this one');
+  assert.equal(nounOf(null), 'groups');
+  assert.equal(nounOf(wt('/w/a/.git', '/w/a')), 'sessions');
+});
+
+// --- XAIBO-PROD-538 review fixes (M2, M3, L1, L5) ---
+test('review M3: a group treeitem name is escaped and capped like record names; untrusted text never reorders it', () => {
+  const roots = pageArrived(emptyLevel() as Level<MapNode, MapGroup>, 'first', null, [node(cwd(`/tmp/${'x'.repeat(300)}‮`), { reasons: ['no-git'] })], null);
+  const label = rowLabel(rows(roots, {}, [])[0]!, names);
+  assert.ok(!label.includes('‮'), 'the bidi override is escaped');
+  assert.ok(label.length < 300, 'the path is capped');
+  assert.match(label, /^Folder: \/tmp\/x+…/);
+});
+
+test('review L1: the eviction notice escapes and caps labels; a branch no longer shown is named generically', () => {
+  assert.equal(evictedText([`a‮b`]), 'Collapsed a\\u202Eb to keep four branches open');
+  assert.equal(evictedText([null]), 'Collapsed a branch to keep four branches open');
+  assert.ok(evictedText(['y'.repeat(300)]).length < 140);
+});
+
+test('review M2: after Load more focus goes to the last row loaded before it (Down reaches the first new one); after Load previous, to the first', () => {
+  let l = pageArrived(emptyLevel() as Level<MapNode, MapGroup>, 'first', null, [node(repo('/w/a/.git')), node(repo('/w/b/.git'))], repo('/w/b/.git'));
+  assert.equal(pagingAnchor(l, 'more'), keyOf(repo('/w/b/.git')));
+  assert.equal(pagingAnchor(l, 'prev'), keyOf(repo('/w/a/.git')));
+  assert.equal(pagingAnchor(emptyLevel(), 'more'), null);
+  const s = pageArrived(emptyLevel() as Level<HistoryRow, never>, 'first', null, [session(3), session(4)], null);
+  assert.equal(pagingAnchor(s as never, 'more'), sessionKey(4));
+  l = pageFailed(l, 'more');
+  assert.equal(pagingAnchor(l, 'more'), keyOf(repo('/w/b/.git')), 'a Retry anchors the same way');
+});
+
+test('review L5: set position per level, exact only when nothing is paged out before it; size unknown (-1) while more exists', () => {
+  const roots = pageArrived(emptyLevel() as Level<MapNode, MapGroup>, 'first', null, [node(repo('/w/a/.git')), node(repo('/w/b/.git'))], repo('/w/b/.git'));
+  const kids = { [keyOf(repo('/w/a/.git'))]: pageArrived(emptyLevel() as Level<MapNode, MapGroup>, 'first', null, [node(wt('/w/a/.git', '/w/a'))], null) } as Kids;
+  const list = rows(roots, kids, [keyOf(repo('/w/a/.git'))]);
+  const pos = setPositions(list);
+  assert.deepEqual(pos.get(keyOf(repo('/w/a/.git'))), { pos: 1, size: -1 }, 'a Load more sibling: the size is unknown');
+  assert.deepEqual(pos.get(keyOf(wt('/w/a/.git', '/w/a'))), { pos: 1, size: 1 });
+  assert.deepEqual(pos.get('end:'), { pos: 3, size: -1 });
+  const later = { ...roots, before: [null] };
+  assert.deepEqual(setPositions(rows(later, {}, [])).get(keyOf(repo('/w/b/.git'))), { pos: undefined, size: -1 }, 'pages before it were dropped: no exact position');
 });

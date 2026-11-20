@@ -6,6 +6,7 @@
 // eviction, four expanded leafward paths with focus-safe eviction. Rendering lives in AgentMap.tsx (part 2).
 import type { HistoryKey, HistoryRow, MapGroup, MapNode, REPO_REASONS } from '../../shared/ipc.ts';
 import { menuKey } from '../components/menu-model.ts';
+import { capText, formatTime, recordLabel, titleLabel } from '../model.ts';
 
 export const ROOT_PAGE = 10, BRANCH_PAGE = 20, LEAF_PAGE = 50, RESIDENT = 3, PATHS = 4;
 
@@ -18,7 +19,7 @@ export function kindOf(g: MapGroup): Kind {
 /** Worktrees and folders hold sessions; repositories and projects hold groups. */
 export const holdsSessions = (g: MapGroup) => { const k = kindOf(g); return k === 'worktree' || k === 'folder'; };
 export const pageSize = (parent: MapGroup | null) => (parent === null ? ROOT_PAGE : holdsSessions(parent) ? LEAF_PAGE : BRANCH_PAGE);
-const nounOf = (parent: MapGroup | null) => (parent === null ? 'groups' : holdsSessions(parent) ? 'sessions' : 'worktrees');
+export const nounOf = (parent: MapGroup | null) => (parent === null ? 'groups' : holdsSessions(parent) ? 'sessions' : 'worktrees');
 
 /** One stable key per group (property order never matters); sessions use their own key space. */
 export function keyOf(g: MapGroup): string {
@@ -163,6 +164,14 @@ export type Row = (Base & { type: 'group'; node: MapNode; expanded: boolean; loa
   | (Base & { type: 'more' | 'prev' | 'retry'; label: string; dir: Dir; busy: boolean });
 export type Kids = Record<string, Level<Child, MapGroup | HistoryKey>>;
 
+const itemKey = (it: Child) => ('group' in it ? keyOf(it.group) : sessionKey(it.id));
+/** review M2: where focus goes when a paging item's page arrives: the last row loaded before Load more (so Down reaches
+ *  the first new one), the first row before Load previous (so Up reaches the last new one). */
+export function pagingAnchor<T extends Child, C>(l: Level<T, C>, dir: Dir): string | null {
+  const it = dir === 'prev' ? l.pages[0]?.items[0] : l.pages.at(-1)?.items.at(-1);
+  return it ? itemKey(it) : null;
+}
+
 export function rows(roots: Level<MapNode, MapGroup>, kids: Kids, expanded: string[]): Row[] {
   const out: Row[] = [], open = new Set(expanded), seen = new Set<string>(); // review M4: a re-fetched page can overlap a resident one
   const walk = (l: Level<Child, MapGroup | HistoryKey>, parent: string | null, parentGroup: MapGroup | null, level: number) => {
@@ -173,7 +182,7 @@ export function rows(roots: Level<MapNode, MapGroup>, kids: Kids, expanded: stri
     else if (l.before.length) syn('prev', 'prev', `Load previous ${noun}`);
     for (const p of l.pages) {
       for (const it of p.items) {
-        const key = 'group' in it ? keyOf(it.group) : sessionKey(it.id);
+        const key = itemKey(it);
         if (seen.has(key)) continue;
         seen.add(key);
         if (!('group' in it)) { out.push({ type: 'session', key, parent, level, row: it }); continue; }
@@ -216,4 +225,53 @@ export function treeKey(list: Row[], i: number, key: string, label?: (r: Row) =>
   if (!label) return null;
   const j = menuKey(key, i, list.map(label));
   return j === null ? null : { move: j };
+}
+
+// --- XAIBO-PROD-538 (P5-T18a part 2a): the screen's texts. Untrusted strings are escaped (visible()) where rendered. ---
+export interface Detail { heading: string; lines: [string, string][] }
+const num = (n: number | null) => (n === null ? 'Unavailable' : String(n));
+const agentList = (a: string[] | null, name: (agent: string) => string) => (a === null || a.length === 0 ? 'Unavailable' : a.map(name).join(', '));
+
+/** The Details pane for a selected group: evidence, path (none for a Project override) and each exact count. */
+export function groupDetail(n: MapNode, name: (agent: string) => string): Detail {
+  const t = nodeText(n, name), lines: [string, string][] = [['Membership evidence', t.sub]];
+  if (kindOf(n.group) !== 'project') lines.push(['Path', t.path ?? 'Unavailable']);
+  lines.push(['Sessions', num(n.sessions)], ['Live', num(n.live)], ['Agents', agentList(n.agents, name)]);
+  return { heading: t.label, lines };
+}
+const titleOf = titleLabel;
+/** The Details pane for a selected session leaf (Open in Session sits below it). */
+export function sessionDetail(r: HistoryRow, name: (agent: string) => string): Detail {
+  return { heading: titleOf(r), lines: [['Agent', name(r.agent)], ['Model', r.model], ['Last activity', formatTime(r.lastActivity)], ['Cwd', r.cwd ?? 'Unavailable']] };
+}
+/** A treeitem's accessible name: short and stable, never its whole content. */
+export function rowLabel(r: Row, name: (agent: string) => string): string {
+  if (r.type === 'group') { const t = nodeText(r.node, name); return `${capText(t.label, 120)} · ${capText(t.count, 120)}`; } // review M3
+  return r.type === 'session' ? recordLabel({ ...r.row, agent: name(r.row.agent) }) : r.label;
+}
+/** What typeahead matches: the visible label of loaded rows. */
+export const typeLabel = (r: Row) => (r.type === 'group' ? nodeText(r.node, (a) => a).label : r.type === 'session' ? titleOf(r.row) : r.label);
+
+export const REFUSED = 'Collapse another branch to expand this one';
+/** review L1: labels escaped and capped; null = a branch no longer shown. */
+export const evictedText = (labels: (string | null)[]) => `Collapsed ${labels.map((l) => (l === null ? 'a branch' : capText(l, 80))).join(', ')} to keep four branches open`;
+
+/** review L5: each treeitem's position among its level's rows (paging items included). A position is exact only when no
+ *  page before it was dropped (no Load previous / Retry at the level's start); the size is unknown (-1) while a paging item
+ *  says more exists. */
+export function setPositions(list: Row[]): Map<string, { pos: number | undefined; size: number }> {
+  const byParent = new Map<string | null, Row[]>();
+  for (const r of list) { const g = byParent.get(r.parent); if (g) g.push(r); else byParent.set(r.parent, [r]); }
+  const out = new Map<string, { pos: number | undefined; size: number }>();
+  for (const sibs of byParent.values()) {
+    const before = sibs[0]!.type === 'prev' || (sibs[0]!.type === 'retry' && sibs[0]!.dir === 'prev');
+    const paged = sibs.some((r) => r.type === 'more' || r.type === 'prev' || r.type === 'retry');
+    sibs.forEach((r, i) => out.set(r.key, { pos: before ? undefined : i + 1, size: paged ? -1 : sibs.length }));
+  }
+  return out;
+}
+export function loadedText(dir: Dir, noun: string, n: number): string {
+  if (n === 0) return `No ${noun}`;
+  const word = n === 1 ? noun.slice(0, -1) : noun;
+  return dir === 'more' ? `${n} more ${word} loaded` : dir === 'prev' ? `${n} earlier ${word} loaded` : `${n} ${word} loaded`;
 }

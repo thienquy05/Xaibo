@@ -691,3 +691,29 @@ html, .x-shell.x-fixed { scroll-padding-top: var(--x-frame-pad, 8px); } /* clear
 /* the open session's footer actions wrap (and their words) before they overflow the pane at 320 CSS px */
 .x-foot-right { flex-wrap: wrap; min-width: 0; }
 .x-foot .x-btn { white-space: normal; }
+/* XAIBO-PROD-538 (P5-T18a part 2a; design §6.5–6.5.1, D-P5-13): Agent Map. Tree 2fr and Details 1fr at >=1200 px,
+   stacked below; rounded nodes indented 16 px per level (12 px narrow, at most 32 px for the fixed three levels). */
+.x-map-area { display: grid; gap: var(--x-space-4); }
+.x-map { display: grid; gap: var(--x-space-6); }
+@media (min-width: 1200px) { .x-map { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); align-items: start; } }
+.x-map-tree .x-vlist { min-height: 18rem; }
+.x-map-note { margin: 0; padding: var(--x-space-4); }
+.x-map-node { display: flex; align-items: flex-start; gap: var(--x-space-1); min-width: 0; cursor: pointer; }
+.x-map-l2 { padding-inline-start: 16px; }
+.x-map-l3 { padding-inline-start: 32px; }
+@media (max-width: 799px) { .x-map-l2 { padding-inline-start: 12px; } .x-map-l3 { padding-inline-start: 24px; } }
+.x-map-chev { flex: none; width: 24px; min-height: var(--x-target-min); display: inline-flex; align-items: center; justify-content: center; color: var(--x-muted); border-radius: var(--x-radius-control); }
+.x-map-chev:not(:empty):hover { background: var(--x-tint); }
+.x-map-chev[data-open] svg { transform: rotate(90deg); }
+.x-map-box { flex: 1; min-width: 0; display: grid; gap: 2px; padding: var(--x-space-2) var(--x-space-3); background: var(--x-surface); border: 1px solid var(--x-divider); border-radius: 10px; overflow-wrap: anywhere; }
+.x-map-box[data-kind="repo"], .x-map-box[data-kind="project"] { border-radius: 12px; }
+.x-map-label { display: inline-flex; align-items: center; gap: var(--x-space-2); font-weight: var(--x-weight-strong); min-width: 0; }
+.x-map-sub, .x-map-count { color: var(--x-muted); font-size: var(--x-text-small); line-height: var(--x-leading-small); }
+.x-map-count { justify-self: start; padding: 0 var(--x-space-2); background: var(--x-tint); border-radius: var(--x-radius-badge); color: var(--x-ink); }
+.x-map-more { border-style: dashed; color: var(--x-accent); }
+.x-vlist-item[aria-selected="true"] .x-map-box { border-color: var(--x-accent); background: var(--x-tint); }
+.x-map-detail-body { padding: var(--x-space-4); display: grid; gap: var(--x-space-3); justify-items: start; }
+.x-map-detail-body h3 { margin: 0; font-size: var(--x-text-section); line-height: var(--x-leading-section); }
+.x-map-dl { margin: 0; display: grid; gap: var(--x-space-2); }
+.x-map-dl dt { color: var(--x-muted); font-size: var(--x-text-small); }
+.x-map-dl dd { margin: 0; overflow-wrap: anywhere; }
