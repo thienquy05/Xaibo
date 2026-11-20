@@ -1,0 +1,297 @@
+// XAIBO-PROD-537 (P5-T18a part 1; design §6.5.1, S-37, US-21; look D-P5-13): the Agent Map tree model in
+// agent-map/tree.ts: node kinds and evidence labels with exact counts or unavailable words, page sizes, at most three
+// resident pages per level with Load previous after eviction, at most four expanded leafward paths with focus-safe
+// eviction or a refusal, collapse moving focus to the surviving node, the flattened rows with synthetic paging items, and
+// the tree keyboard. Synthetic groups and rows only.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import type { HistoryRow, MapGroup, MapNode } from '../../../src/shared/ipc.ts';
+import { BRANCH_PAGE, collapse, cursorFor, emptyLevel, expand, keyOf, kindOf, LEAF_PAGE, nodeText, pageArrived, pageFailed, pageSize, repoName, ROOT_PAGE,
+  rows, sessionKey, touch, treeKey, type Expansion, type Level } from '../../../src/renderer/agent-map/tree.ts';
+
+const repo = (r: string): MapGroup => ({ project: null, at: { repo: r, worktree: null } });
+const wt = (r: string, w: string, project: number | null = null): MapGroup => ({ project, at: { repo: r, worktree: w } });
+const cwd = (c: string | null, project: number | null = null): MapGroup => ({ project, at: { cwd: c } });
+const proj = (id: number): MapGroup => ({ project: id, at: null });
+const node = (group: MapGroup, extra: Partial<MapNode> = {}): MapNode => ({ group, project: null, reasons: [], sessions: 3, live: 1, agents: ['claude', 'codex'], ...extra });
+const names = (id: string) => ({ claude: 'Claude Code', codex: 'Codex' } as Record<string, string>)[id] ?? id;
+const session = (id: number): HistoryRow => ({ id, agent: 'claude', entrypoint: null, origin: null, interactive: null, model: 'Model unavailable', cwd: '/w/app',
+  title: `Session ${id}`, lastActivity: id, drift: false, compressed: false, quarantined: 0, live: null, contextPct: null, costUsd: null, costCoverage: 'unavailable',
+  tokens: null, tokensComplete: false, project: null, folder: null, pinned: false, archivedAt: null, trashedAt: null, trashPurgeAt: null, keep: false, purgeAt: null });
+
+test('kindOf and pageSize: 10 roots, 20 worktrees or folders under a repository or project, 50 sessions under a worktree or folder', () => {
+  assert.equal(kindOf(repo('/w/app/.git')), 'repo');
+  assert.equal(kindOf(wt('/w/app/.git', '/w/app')), 'worktree');
+  assert.equal(kindOf(cwd('/tmp/notes')), 'folder');
+  assert.equal(kindOf(cwd(null)), 'folder');
+  assert.equal(kindOf(proj(7)), 'project');
+  assert.deepEqual([ROOT_PAGE, BRANCH_PAGE, LEAF_PAGE], [10, 20, 50]);
+  assert.equal(pageSize(null), 10);
+  assert.equal(pageSize(repo('/w/app/.git')), 20);
+  assert.equal(pageSize(proj(7)), 20);
+  assert.equal(pageSize(wt('/w/app/.git', '/w/app')), 50);
+  assert.equal(pageSize(cwd('/tmp/notes')), 50);
+});
+
+test('keyOf: one stable key per group whatever its key order; sessions have their own key space', () => {
+  assert.equal(keyOf({ at: { worktree: '/w/app', repo: '/w/app/.git' }, project: null } as MapGroup), keyOf(wt('/w/app/.git', '/w/app')));
+  assert.notEqual(keyOf(wt('/w/app/.git', '/w/app')), keyOf(wt('/w/app/.git', '/w/app', 7)), 'the same worktree under a project is another node');
+  assert.notEqual(keyOf(cwd(null)), keyOf(cwd('null')));
+  assert.notEqual(sessionKey(5), keyOf(proj(5)));
+});
+
+test('repoName: the evidenced folder of the common git directory (a bare repository without its .git suffix)', () => {
+  assert.equal(repoName('/w/example-app/.git'), 'example-app');
+  assert.equal(repoName('/srv/example-app.git'), 'example-app');
+  assert.equal(repoName('/srv/example-app'), 'example-app');
+});
+
+test('nodeText: repository root and its worktrees, main checkout or linked, with exact counts', () => {
+  assert.deepEqual(nodeText(node(repo('/w/example-app/.git'), { sessions: 5 }), names), { label: 'example-app', sub: 'Repository', path: '/w/example-app', count: 'Sessions 5' });
+  assert.deepEqual(nodeText(node(wt('/w/example-app/.git', '/w/example-app'), { sessions: 3, live: 2 }), names),
+    { label: 'example-app', sub: 'Main checkout', path: '/w/example-app', count: '3 sessions · 2 live · Claude Code, Codex' });
+  assert.deepEqual(nodeText(node(wt('/w/example-app/.git', '/w/example-app-docs'), { sessions: 1, live: 0, agents: ['claude'] }), names),
+    { label: 'example-app-docs', sub: 'Linked worktree', path: '/w/example-app-docs', count: '1 session · 0 live · Claude Code' });
+});
+
+test('nodeText: a worktree under a Project override is qualified by its repository; the override is organization, not evidence', () => {
+  assert.equal(nodeText(node(wt('/w/example-app/.git', '/w/example-app', 7)), names).sub, 'Main checkout · example-app');
+  assert.deepEqual(nodeText(node(proj(7), { project: { id: 7, name: 'Atlas' }, sessions: 4 }), names),
+    { label: 'Project override: Atlas', sub: 'Your organization, not repository evidence', path: null, count: 'Sessions 4' });
+  assert.equal(nodeText(node(proj(7), { project: null }), names).label, 'Project override: Unknown project');
+});
+
+test('nodeText: cwd fallback says why there is no repository; a missing cwd is never merged into a guess', () => {
+  assert.deepEqual(nodeText(node(cwd('/tmp/notes'), { reasons: ['no-git'] }), names),
+    { label: 'Folder: /tmp/notes', sub: 'No git directory observed', path: '/tmp/notes', count: '3 sessions · 1 live · Claude Code, Codex' });
+  assert.equal(nodeText(node(cwd('/tmp/x'), { reasons: ['unreadable', 'back-pointer'] }), names).sub,
+    'Repository grouping unavailable — git metadata unreadable; worktree back-pointer check failed');
+  assert.equal(nodeText(node(cwd('/tmp/x'), { reasons: [null] }), names).sub, 'Repository grouping unavailable — reason not recorded');
+  assert.equal(nodeText(node(cwd('/tmp/x'), { reasons: [] }), names).sub, 'Repository grouping unavailable');
+  assert.deepEqual(nodeText(node(cwd(null), { reasons: ['no-git'] }), names).label, 'Cwd unavailable');
+  assert.equal(nodeText(node(cwd(null)), names).path, null);
+});
+
+test('nodeText: an unavailable count says so, each part on its own, never a sum of loaded rows', () => {
+  assert.equal(nodeText(node(wt('/w/a/.git', '/w/a'), { sessions: null, live: null, agents: null }), names).count, 'Session count unavailable · Live count unavailable · Agents unavailable');
+  assert.equal(nodeText(node(wt('/w/a/.git', '/w/a'), { live: null }), names).count, '3 sessions · Live count unavailable · Claude Code, Codex');
+  assert.equal(nodeText(node(repo('/w/a/.git'), { sessions: null }), names).count, 'Session count unavailable');
+});
+
+type L = Level<number, number>;
+test('paging: at most three resident pages; a fourth drops the first and keeps its cursor for Load previous', () => {
+  let l: L = emptyLevel();
+  assert.equal(cursorFor(l, 'first'), null);
+  l = pageArrived(l, 'first', null, [1, 2], 2);
+  l = pageArrived(l, 'more', 2, [3, 4], 4);
+  l = pageArrived(l, 'more', 4, [5, 6], 6);
+  assert.deepEqual(l.pages.flatMap((p) => p.items), [1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(l.before, []);
+  l = pageArrived(l, 'more', 6, [7, 8], null);
+  assert.deepEqual(l.pages.flatMap((p) => p.items), [3, 4, 5, 6, 7, 8], 'three resident pages');
+  assert.deepEqual(l.before, [null], 'the dropped page started at the first cursor');
+  assert.equal(cursorFor(l, 'prev'), null);
+  assert.equal(l.next, null);
+  // Load previous brings the first page back and drops the last; Load more then fetches it again from its own cursor
+  l = pageArrived(l, 'prev', null, [1, 2], 2);
+  assert.deepEqual(l.pages.flatMap((p) => p.items), [1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(l.before, []);
+  assert.equal(l.next, 6);
+});
+
+test('paging: a failure keeps the pages and the cursor and says which load to retry', () => {
+  let l: L = pageArrived(emptyLevel(), 'first', null, [1, 2], 2);
+  l = pageFailed({ ...l, loading: 'more' }, 'more');
+  assert.equal(l.failed, 'more');
+  assert.equal(l.loading, null);
+  assert.deepEqual(l.pages.flatMap((p) => p.items), [1, 2]);
+  assert.equal(cursorFor(l, 'more'), 2);
+  l = pageArrived(l, 'more', 2, [3], null);
+  assert.equal(l.failed, null);
+});
+
+const ex = (): Expansion => ({ expanded: [], visit: {}, tick: 0 });
+/** A fixed tree of keys: roots ra..re, worktrees wa.. under them, sessions sa.. under worktrees. */
+const P: Record<string, string | null> = { ra: null, rb: null, rc: null, rd: null, re: null, wa: 'ra', wa2: 'ra', wb: 'rb', sa: 'wa', sb: 'wb' };
+const parentOf = (k: string) => P[k] ?? null;
+const run = (keys: string[]) => keys.reduce((e, k) => expand(e, k, parentOf, k).e, ex());
+
+test('expand: a path grows without counting twice; at most four leafward paths', () => {
+  let e = ex();
+  for (const k of ['ra', 'wa', 'rb', 'rc', 'rd']) { const r = expand(e, k, parentOf, k); assert.equal(r.refused, false, k); assert.deepEqual(r.evicted, [], k); e = r.e; }
+  assert.deepEqual(new Set(e.expanded), new Set(['ra', 'wa', 'rb', 'rc', 'rd']), 'ra→wa is one path; rb, rc, rd are three more');
+});
+
+test('expand: a fifth path evicts the least recently visited path that holds neither focus nor the new node\'s ancestors', () => {
+  const r = expand(run(['ra', 'wa', 'rb', 'rc', 'rd']), 're', parentOf, 'rb');
+  assert.equal(r.refused, false);
+  assert.deepEqual(r.evicted, ['ra', 'wa'], 'top first, so the caller can announce the top label');
+  assert.deepEqual(new Set(r.e.expanded), new Set(['rb', 'rc', 'rd', 're']));
+});
+
+test('expand: a path whose descendant has focus is kept; a visit makes a path recent again', () => {
+  const r = expand(run(['ra', 'wa', 'rb', 'rc', 'rd']), 're', parentOf, 'sa'); // focus on a session under wa
+  assert.deepEqual(r.evicted, ['rb']);
+  const t = expand(touch(run(['ra', 'wa', 'rb', 'rc', 'rd']), 'wa', parentOf), 're', parentOf, 'rd');
+  assert.deepEqual(t.evicted, ['rb'], 'ra→wa was visited after rb was expanded');
+});
+
+test('expand: eviction keeps a shared ancestor that another path still uses', () => {
+  const r = expand(run(['ra', 'wa', 'wa2', 'rb', 'rc']), 'rd', parentOf, 'rc'); // ra→wa and ra→wa2 are two paths
+  assert.deepEqual(r.evicted, ['wa'], 'ra stays: wa2 still needs it');
+  assert.ok(r.e.expanded.includes('ra'));
+});
+
+test('expand: refused with nothing changed when every other path holds focus', () => {
+  const one = expand(ex(), 'ra', parentOf, 'ra').e;
+  const r = expand(one, 'rb', parentOf, 'sa', 1); // a one-path limit: the only path holds focus
+  assert.equal(r.refused, true);
+  assert.deepEqual(r.evicted, []);
+  assert.deepEqual(r.e, one);
+});
+
+test('collapse: discards the subtree and moves focus from a descendant to the node', () => {
+  const e = run(['ra', 'wa', 'rb']);
+  const c = collapse(e, 'ra', parentOf, 'sa');
+  assert.deepEqual(new Set(c.removed), new Set(['ra', 'wa']));
+  assert.deepEqual(c.e.expanded, ['rb']);
+  assert.equal(c.focus, 'ra');
+  assert.equal(collapse(e, 'ra', parentOf, 'rb').focus, 'rb', 'focus outside stays');
+});
+
+test('rows: roots, an expanded repository\'s worktrees and an expanded worktree\'s sessions, with synthetic paging items', () => {
+  const A = repo('/w/a/.git'), W = wt('/w/a/.git', '/w/a'), F = cwd('/tmp/n');
+  const roots = pageArrived(emptyLevel(), 'first', null, [node(A), node(F)], F);
+  const kids = {
+    [keyOf(A)]: pageArrived(emptyLevel(), 'first', null, [node(W)], null),
+    [keyOf(W)]: pageArrived(emptyLevel(), 'first', null, [session(1), session(2)], { pinned: false, lastActivity: 2, id: 2 }),
+  };
+  const r = rows(roots, kids, [keyOf(A), keyOf(W)]);
+  assert.deepEqual(r.map((x) => [x.type, x.level, x.type === 'group' || x.type === 'session' ? x.key : x.label]), [
+    ['group', 1, keyOf(A)], ['group', 2, keyOf(W)], ['session', 3, sessionKey(1)], ['session', 3, sessionKey(2)], ['more', 3, 'Load more sessions'],
+    ['group', 1, keyOf(F)], ['more', 1, 'Load more groups'],
+  ]);
+  const g = r[0]!, f = r[5]!;
+  assert.ok(g.type === 'group' && g.expanded === true);
+  assert.ok(f.type === 'group' && f.expanded === false);
+  assert.equal(r[2]!.parent, keyOf(W));
+  assert.equal(r[1]!.parent, keyOf(A));
+  assert.equal(r[0]!.parent, null);
+});
+
+test('rows: Load previous after eviction, Retry in place of the failed load, and a loading branch flagged on its node', () => {
+  const A = repo('/w/a/.git');
+  const roots: Level<MapNode, MapGroup> = { ...pageArrived(emptyLevel(), 'first', null, [node(A)], null), before: [null] };
+  const failing = pageFailed<MapNode, MapGroup>({ ...emptyLevel(), loading: 'first' }, 'first');
+  const r = rows(roots, { [keyOf(A)]: failing }, [keyOf(A)]);
+  assert.deepEqual(r.map((x) => (x.type === 'group' || x.type === 'session' ? x.type : `${x.type}:${x.label}`)),
+    ['prev:Load previous groups', 'group', 'retry:Retry loading worktrees']);
+  const loading = rows(roots, { [keyOf(A)]: { ...emptyLevel(), loading: 'first' } }, [keyOf(A)]);
+  const n = loading.find((x) => x.type === 'group')!;
+  assert.ok(n.type === 'group' && n.loading === true);
+});
+
+test('treeKey: Up/Down/Home/End over loaded rows; Right expands or enters; Left collapses or goes to the parent', () => {
+  const A = repo('/w/a/.git'), W = wt('/w/a/.git', '/w/a'), F = cwd('/tmp/n');
+  const roots = pageArrived(emptyLevel(), 'first', null, [node(A), node(F)], null);
+  const kids = { [keyOf(A)]: pageArrived(emptyLevel(), 'first', null, [node(W)], null) };
+  const r = rows(roots, kids, [keyOf(A)]); // A (expanded), W, F
+  assert.deepEqual(treeKey(r, 0, 'ArrowDown'), { move: 1 });
+  assert.deepEqual(treeKey(r, 2, 'ArrowDown'), { move: 2 }, 'no wrap');
+  assert.deepEqual(treeKey(r, 0, 'ArrowUp'), { move: 0 });
+  assert.deepEqual(treeKey(r, 1, 'Home'), { move: 0 });
+  assert.deepEqual(treeKey(r, 0, 'End'), { move: 2 });
+  assert.deepEqual(treeKey(r, 0, 'ArrowRight'), { move: 1 }, 'expanded: to its first child');
+  assert.deepEqual(treeKey(r, 1, 'ArrowRight'), { expand: keyOf(W) });
+  assert.deepEqual(treeKey(r, 0, 'ArrowLeft'), { collapse: keyOf(A) });
+  assert.deepEqual(treeKey(r, 1, 'ArrowLeft'), { move: 0 }, 'collapsed: to its parent');
+  assert.equal(treeKey(r, 2, 'ArrowLeft'), null, 'a collapsed root has no parent');
+});
+
+test('treeKey: Enter selects a group, opens a session or loads a paging item; Space toggles a branch only', () => {
+  const W = wt('/w/a/.git', '/w/a');
+  const roots = pageArrived(emptyLevel(), 'first', null, [node(W)], W);
+  const kids = { [keyOf(W)]: pageArrived(emptyLevel(), 'first', null, [session(9)], null) };
+  const r = rows(roots, kids, [keyOf(W)]); // W, s9, more (roots)
+  assert.deepEqual(treeKey(r, 0, 'Enter'), { activate: 0 });
+  assert.deepEqual(treeKey(r, 1, 'Enter'), { activate: 1 });
+  assert.deepEqual(treeKey(r, 2, 'Enter'), { activate: 2 });
+  assert.deepEqual(treeKey(r, 0, ' '), { collapse: keyOf(W) });
+  assert.equal(treeKey(r, 1, ' '), null, 'Space on a session selects nothing');
+  assert.deepEqual(treeKey(r, 2, ' '), { activate: 2 });
+  assert.deepEqual(treeKey(r, 1, 'ArrowLeft'), { move: 0 });
+});
+
+test('treeKey: typeahead matches loaded labels after the current row, wrapping, never fetching', () => {
+  const roots = pageArrived(emptyLevel(), 'first', null, [node(repo('/w/alpha/.git')), node(repo('/w/beta/.git')), node(repo('/w/apex/.git'))], null);
+  const r = rows(roots, {}, []);
+  const label = (x: (typeof r)[number]) => (x.type === 'group' ? nodeText(x.node, names).label : '');
+  assert.deepEqual(treeKey(r, 0, 'a', label), { move: 2 });
+  assert.deepEqual(treeKey(r, 2, 'a', label), { move: 0 });
+  assert.equal(treeKey(r, 0, 'z', label), null);
+});
+
+test('review H1: focus on a path\'s middle node keeps that whole path; exactly one other path goes', () => {
+  const r = expand(run(['ra', 'wa', 'rb', 'rc', 'rd']), 're', parentOf, 'ra'); // the chevron of re clicked while ra has focus
+  assert.deepEqual(r.evicted, ['rb']);
+  assert.deepEqual(new Set(r.e.expanded), new Set(['ra', 'wa', 'rc', 'rd', 're']));
+});
+
+test('review M1/M2/L1: only the <worktree>/.git layout proves a main checkout; repositories show their folder; empty names say unavailable', () => {
+  assert.equal(nodeText(node(wt('/w/super/.git/modules/sub', '/w/super/sub')), names).sub, 'Worktree', 'a submodule\'s common directory proves neither');
+  assert.equal(nodeText(node(wt('/srv/app.git', '/w/app')), names).sub, 'Worktree', 'a bare repository has no main checkout');
+  assert.equal(nodeText(node(wt('/w/app/.git/', '/w/app/')), names).sub, 'Main checkout', 'trailing slashes');
+  assert.equal(nodeText(node(wt('/w/app/.git', '/w/app-feature')), names).sub, 'Linked worktree');
+  assert.equal(nodeText(node(repo('/w/a/app/.git')), names).path, '/w/a/app');
+  assert.notEqual(nodeText(node(repo('/w/a/app/.git')), names).path, nodeText(node(repo('/w/b/app/.git')), names).path, 'same name, told apart by path');
+  assert.equal(nodeText(node(repo('/srv/app.git')), names).path, '/srv/app.git');
+  assert.equal(nodeText(node(wt('/.git', '/')), names).label, 'Worktree label unavailable');
+  assert.equal(nodeText(node(repo('/.git')), names).label, 'Repository label unavailable');
+});
+
+test('review L2: an empty agent list is unavailable, never a dangling separator', () => {
+  assert.equal(nodeText(node(wt('/w/a/.git', '/w/a'), { agents: [] }), names).count, '3 sessions · 1 live · Agents unavailable');
+});
+
+test('review M3: a paging item keeps its key when it becomes Retry (focus stays on it)', () => {
+  const A = repo('/w/a/.git');
+  const ok = pageArrived(emptyLevel(), 'first', null, [node(A)], A);
+  const more = rows(ok, {}, []).at(-1)!;
+  const failed = rows(pageFailed(ok, 'more'), {}, []).at(-1)!;
+  assert.equal(more.type, 'more');
+  assert.ok(failed.type === 'retry' && failed.label === 'Retry loading groups' && failed.dir === 'more');
+  assert.equal(failed.key, more.key);
+  const prev: Level<MapNode, MapGroup> = { ...ok, before: [null] };
+  assert.equal(rows(pageFailed(prev, 'prev'), {}, [])[0]!.key, rows(prev, {}, [])[0]!.key);
+  const busy = rows({ ...ok, loading: 'more' }, {}, []).at(-1)!;
+  assert.ok(busy.type === 'more' && busy.busy === true);
+});
+
+test('review M4: a re-fetched page overlapping a resident one never shows a node twice', () => {
+  const A = repo('/w/a/.git'), B = repo('/w/b/.git'), C = repo('/w/c/.git');
+  let l = pageArrived(emptyLevel(), 'first', null, [node(A), node(B)], B);
+  l = pageArrived(l, 'more', B, [node(B), node(C)], null); // B moved across the page boundary meanwhile
+  assert.deepEqual(rows(l, {}, []).map((r) => r.key), [keyOf(A), keyOf(B), keyOf(C)]);
+});
+
+test('paging: Load more after a Load previous continues from the restored cursors', () => {
+  let l: L = emptyLevel();
+  l = pageArrived(l, 'first', null, [1], 1);
+  for (const c of [1, 2, 3]) l = pageArrived(l, 'more', c, [c + 1], c + 1); // pages 2..4 resident, page 1 dropped
+  l = pageArrived(l, 'prev', null, [1], 1); // pages 1..3, page 4 dropped
+  assert.deepEqual(l.before, []);
+  assert.equal(l.next, 3);
+  l = pageArrived(l, 'more', 3, [4], 4);
+  assert.deepEqual(l.pages.flatMap((p) => p.items), [2, 3, 4]);
+  assert.deepEqual(l.before, [null]);
+});
+
+test('treeKey on paging rows: Left from a root paging item does nothing; Right on a node whose first child is a paging row enters it', () => {
+  const A = repo('/w/a/.git');
+  const roots = pageArrived(emptyLevel(), 'first', null, [node(A)], A);
+  const kids = { [keyOf(A)]: pageFailed<MapNode, MapGroup>({ ...emptyLevel(), loading: 'first' }, 'first') };
+  const r = rows(roots, kids, [keyOf(A)]); // A, retry (child), more (root)
+  assert.deepEqual(treeKey(r, 0, 'ArrowRight'), { move: 1 });
+  assert.equal(treeKey(r, 2, 'ArrowLeft'), null);
+  assert.deepEqual(treeKey(r, 1, 'ArrowLeft'), { move: 0 });
+});
