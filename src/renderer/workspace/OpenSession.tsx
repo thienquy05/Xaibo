@@ -4,7 +4,9 @@
 // without moving the reading position.
 import { useEffect, useMemo, useReducer, useRef, useState, type KeyboardEvent } from 'react';
 import type { CostDetail, FileItem, HistoryRow, ModelMarker, SessionDetail, SessionRow, SubagentItem, TCursor, ToolItem, TranscriptItem } from '../../shared/ipc.ts';
-import { doneText, errorText, opOf, retentionLine, sharedRow, type Shared } from '../history/actions.ts';
+import { doneText, errorText, retentionLine, sharedRow, type Shared } from '../history/actions.ts';
+import { PurgeDialog, type PurgeTarget } from '../history/PurgeDialog.tsx';
+import { trashBanner } from '../history/trash.ts';
 import type { Client } from '../client.ts';
 import { contextText, costText, formatTime, markers as rowMarkers, originText } from '../model.ts';
 import { RetryNotice } from '../components/RetryNotice.tsx';
@@ -135,15 +137,17 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
     const s = sharedRow(history, id, histNow.current);
     if (s) { setHist(s); setKeepNote(null); } // review #2: an earlier Keep outcome no longer describes the row
   }, [history, id]);
-  const toggleKeep = async (r: HistoryRow) => {
+  /** Keep, or (XAIBO-PROD-534) Restore from the Trash banner: one overlay op, then the refreshed row (shared). */
+  const runOp = async (r: HistoryRow, kind: 'keep' | 'restore') => {
     if (keepBusy) return;
     setKeepBusy(true);
     setKeepNote(null);
-    const op = opOf('keep', r);
+    const on = kind === 'keep' ? !r.keep : false;
+    const op = kind === 'keep' ? { kind: 'keep' as const, session: r.id, on } : { kind: 'trash' as const, session: r.id, on };
     const res = await api.overlay(op).catch(() => null);
     if (!res) setKeepNote('The result is unavailable.'); // a lost reply never means success
     else if (!res.ok) setKeepNote(errorText(res.error));
-    else if ('on' in op) setKeepNote(doneText('keep', op.on));
+    else setKeepNote(kind === 'restore' ? 'Restored from Trash.' : doneText('keep', on));
     try {
       const fresh = await api.historyRow(id);
       setHist({ row: fresh, failed: false });
@@ -153,6 +157,10 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
   };
   const retention = retentionLine(hist, row.live);
   const keepRow = hist && !hist.failed && hist.row && hist.row.trashedAt === null ? hist.row : null;
+  // XAIBO-PROD-534 (design §6.4): a Trash row's conversation stays readable under an explicit Trash banner
+  const trashRow = hist && !hist.failed && hist.row && hist.row.trashedAt !== null ? hist.row : null;
+  const banner = trashRow ? trashBanner(trashRow) : null;
+  const [purgeTarget, setPurgeTarget] = useState<PurgeTarget>(null);
   // P4-T07b: the cost breakdown is fetched only while the Cost tab is shown, and again on activity or Retry.
   const [cost, setCost] = useState<CostDetail | null | undefined>(undefined);
   const [costFailed, setCostFailed] = useState(false);
@@ -278,18 +286,33 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
           <span className="x-chip">{visible(row.model)}</span>
           <span className="x-chip">{visible(row.agent)}</span>
         </div>
-        {retention !== null ? ( // design §6.3: retention, then the Keep toggle (aria-pressed; §5.4 polite outcome)
+        {trashRow && banner ? ( // design §5.1 Banner: glyph, heading, explanation, actions
+          <section className="x-banner" aria-labelledby="trash-banner-heading">
+            <Icon id="trash" />
+            <div>
+              <h3 id="trash-banner-heading">In Trash</h3>
+              <p>{banner.trashed}. {banner.autoEmpty}. Only the Xaibo copy is affected; native files are untouched.</p>
+              <div className="x-acts">
+                <button type="button" className="x-btn x-btn-secondary" aria-disabled={keepBusy || undefined} onClick={() => void runOp(trashRow, 'restore')}>Restore</button>
+                <button type="button" className="x-btn x-btn-danger" onClick={(e) => setPurgeTarget({ id, trigger: e.currentTarget })}>Purge</button>
+              </div>
+              <span className="x-action-note" aria-live="polite">{keepNote}</span>
+            </div>
+          </section>
+        ) : retention !== null ? ( // design §6.3: retention, then the Keep toggle (aria-pressed; §5.4 polite outcome)
           <div className="x-retention">
             <span data-field="retention">{retention}</span>
             {keepRow ? (
               <button type="button" className="x-btn x-btn-quiet x-keep" aria-pressed={keepRow.keep} aria-disabled={keepBusy || undefined}
-                onClick={() => void toggleKeep(keepRow)}>{keepRow.keep ? <Icon id="check" /> : null}Keep</button>
+                onClick={() => void runOp(keepRow, 'keep')}>{keepRow.keep ? <Icon id="check" /> : null}Keep</button>
             ) : null}
             {hist?.failed ? <button type="button" className="x-btn x-btn-quiet" onClick={() => setHistRetry((n) => n + 1)}>Retry</button> : null}
             <span className="x-action-note" aria-live="polite">{keepNote}</span>
           </div>
         ) : null}
       </div>
+      <PurgeDialog target={purgeTarget} purge={(s) => api.purge(s)} onClosed={() => setPurgeTarget(null)}
+        onDone={(s, to) => { if (to.note) setKeepNote(to.note); if (to.gone) onHistory?.(s, null); }} />{/* gone: Workspace closes this conversation */}
       <div className="x-tabs" role="group" aria-label="Session section" inert={drawer}>
         {SECTIONS.map((s, i) => {
           const p = count(s);

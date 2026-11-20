@@ -455,6 +455,17 @@ summary:hover { background: var(--x-tint); }
 .x-retention { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: var(--x-space-1) var(--x-space-2); color: var(--x-muted); font-size: var(--x-text-small); }
 .x-retention .x-action-note { padding: 0; }
 .x-keep[aria-pressed="true"] { color: var(--x-accent); background: var(--x-selected); }
+/* XAIBO-PROD-534 (design §5.1, §6.4; D-P5-09): Purge as the danger outline button; Trash records' Restore and Purge;
+   the open session's Trash banner (surface, 2 px line border, 4 px leading warning rule, 20 px glyph) */
+.x-btn-danger { color: var(--x-danger); background: var(--x-surface); border: 1px solid var(--x-danger); }
+.x-btn-danger:hover { background: var(--x-tint); }
+.x-srow-trash { grid-column: 1 / -1; padding: 0 var(--x-space-3) var(--x-space-2); }
+.x-banner { grid-column: 1 / -1; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--x-space-3); padding: var(--x-space-3) var(--x-space-4);
+  background: var(--x-surface); border: 2px solid var(--x-line); border-left: 4px solid var(--x-warning); border-radius: var(--x-radius-control); }
+.x-banner > .x-icon { width: 20px; height: 20px; color: var(--x-warning); }
+.x-main .x-banner h3 { margin: 0 0 var(--x-space-1); font-size: var(--x-text-body); }
+.x-banner p { margin: 0 0 var(--x-space-2); }
+.x-banner .x-action-note { display: block; padding: 0; margin-top: var(--x-space-1); }
 .x-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--x-line); }
 .x-dot-ok { background: var(--x-success); }
 .x-dot-busy { background: var(--x-accent); }

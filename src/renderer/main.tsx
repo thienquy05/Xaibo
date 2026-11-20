@@ -144,6 +144,7 @@ function App() {
       // XAIBO-PROD-532: row actions; without a connection nothing is sent, so nothing changed
       overlay: (op) => client.current?.overlay(op) ?? Promise.resolve({ ok: false as const, error: 'store' as const }),
       historyRow: (session) => client.current?.historyRow(session) ?? none(),
+      purge: (session) => client.current?.purge(session) ?? Promise.resolve('failed' as const), // XAIBO-PROD-534: nothing sent, nothing purged
     };
   }, []);
 

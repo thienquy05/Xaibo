@@ -208,6 +208,10 @@ async function openSession(page: Page, cwd: string, status?: RegExp) {
   if (status) await expect(row).toContainText(status, { timeout: 20_000 });
   await row.click({ timeout: 20_000 });
   await expect(page.locator('#open-session-title')).toBeFocused();
+  // XAIBO-PROD-533/534: shots wait for the history row's retention line (the line is reserved while it loads)
+  await expect(page.locator('.x-open-head [data-field="retention"]')).not.toHaveText('Loading retention…', { timeout: 15_000 });
+  // the click scrolled the shell to the record wherever live activity put it; shots start from the top
+  await page.evaluate(() => { const shell = document.querySelector('.x-shell'); if (shell) shell.scrollTop = 0; });
 }
 
 /** Selects a Session section and waits until it has stopped loading. */

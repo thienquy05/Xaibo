@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { HistoryRow } from '../../../src/shared/ipc.ts';
 import { initialQuery } from '../../../src/renderer/history/browse.ts';
-import { doneText, errorText, matches, menuClosed, menuItems, NOTICE, opOf, place, trashed, undoLabel, undone } from '../../../src/renderer/history/actions.ts';
+import { doneText, errorText, goneUndo, GONE_UNDO, matches, menuClosed, menuItems, NOTICE, opOf, place, trashed, undoLabel, undone } from '../../../src/renderer/history/actions.ts';
 
 const at = (d: number) => new Date(2026, 10, d, 12).getTime();
 const hrow = (id: number, extra: Partial<HistoryRow> = {}): HistoryRow => ({ id, agent: 'claude', entrypoint: null, origin: null, interactive: null, model: 'Model unavailable',
@@ -121,7 +121,8 @@ test('retentionLine: Trash, Kept, Active; retention paused, Purge scheduled, No 
   const ok = (row: HistoryRow | null) => ({ row, failed: false });
   const busy = { lifecycle: 'busy' } as unknown as NonNullable<HistoryRow['live']>;
   const idle = { lifecycle: 'idle' } as unknown as NonNullable<HistoryRow['live']>;
-  assert.equal(retentionLine(undefined, null), null, 'not read yet');
+  // E2E-found (visual 640×560): the line is reserved while the row loads, so the header never grows by a line later
+  assert.equal(retentionLine(undefined, null), 'Loading retention…', 'not read yet');
   assert.equal(retentionLine({ row: null, failed: true }, null), 'Retention unavailable');
   assert.equal(retentionLine(ok(null), null), 'Retention unavailable', 'gone');
   assert.equal(retentionLine(ok(hrow(1, { trashedAt: at(2), trashPurgeAt: at(32) })), null), `In Trash · Auto-empty ${day(at(32))}`);
@@ -154,4 +155,17 @@ test('sharedRow: the header\'s own share (the same row object) is not applied ag
   assert.equal(sharedRow({ id: 3, row: null, n: 6 }, 3, { row: null, failed: false }), null);
   assert.deepEqual(sharedRow({ id: 3, row: null, n: 7 }, 3, { row: null, failed: true }), { row: null, failed: false });
   assert.deepEqual(sharedRow({ id: 3, row: null, n: 8 }, 3, { row: mine, failed: false }), { row: null, failed: false });
+});
+
+// XAIBO-PROD-534 review L4: a session that is gone can no longer be undone: the notice says so (a status, not a string),
+// never while its own Undo is in flight or after it restored
+test('goneUndo: gone ends a ready or failed Undo for that session only; never an Undo in flight or restored', () => {
+  const u = trashed(null, 4);
+  assert.deepEqual(goneUndo(u, 4), { ...u, status: 'gone', note: GONE_UNDO });
+  assert.deepEqual(goneUndo({ ...u, status: 'failed', note: 'x' }, 4), { ...u, status: 'gone', note: GONE_UNDO });
+  assert.equal(goneUndo(u, 9), u);
+  assert.equal(goneUndo({ ...u, status: 'undoing' }, 4)!.status, 'undoing');
+  assert.equal(goneUndo({ ...u, status: 'restored' }, 4)!.status, 'restored');
+  assert.equal(goneUndo(null, 4), null);
+  assert.match(GONE_UNDO, /no longer available/);
 });

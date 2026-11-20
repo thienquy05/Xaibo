@@ -137,4 +137,42 @@ test('Session list row actions: menu keys, Pin, Keep, Archive, Move to Trash and
   await menu.getByRole('menuitemcheckbox', { name: 'Keep' }).click();
   await expect(retention).toHaveText('Kept');
   await expect(keep).toHaveAttribute('aria-pressed', 'true');
+
+  // XAIBO-PROD-534: Trash records' Restore and Purge; Purge asks first (Cancel returns to its trigger); a purged record
+  // leaves the list with the heading focused when nothing is left
+  for (const text of ['release checklist', 'meeting notes']) {
+    await more(page, text).click();
+    await menu.getByRole('menuitem', { name: 'Move to Trash' }).click();
+    await expect(records(page).filter({ hasText: text })).toHaveCount(0);
+  }
+  await modes(page).getByRole('button', { name: 'Trash' }).click();
+  await expect(records(page)).toHaveCount(2);
+  await page.getByRole('button', { name: /^Restore .*release checklist/ }).click();
+  await expect(note).toHaveText('Restored from Trash.');
+  await expect(records(page)).toHaveCount(1);
+  const purge = page.getByRole('button', { name: /^Purge .*meeting notes/ });
+  await purge.click();
+  const dialog = page.getByRole('dialog', { name: 'Purge Xaibo copy?' });
+  await expect(dialog).toContainText('1 session.');
+  await expect(dialog).toContainText('Native files are untouched. This is logical deletion, not forensic secure erasure.');
+  await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
+  await shot(page, 'history-actions-purge');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(purge).toBeFocused();
+  // the open session of a Trash row shows the Trash banner; a purge from it closes the conversation
+  await records(page).filter({ hasText: 'meeting notes' }).locator('.x-srow').click();
+  const banner = page.getByRole('region', { name: 'In Trash' });
+  await expect(banner).toContainText('Only the Xaibo copy is affected; native files are untouched.');
+  await expect(banner).toContainText(/Moved to Trash \d{4}-\d{2}-\d{2}\. Auto-empty \d{4}-\d{2}-\d{2}\./);
+  await shot(page, 'history-actions-banner');
+  await banner.getByRole('button', { name: 'Purge' }).click();
+  await dialog.getByRole('button', { name: 'Purge' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByText('Choose a session to read its conversation')).toBeVisible();
+  await expect(pane.getByText('Trash is empty.')).toBeVisible();
+  await expect(pane.getByRole('heading', { name: 'Trash' })).toBeFocused();
+  // the Undo notice for the purged session explains instead of offering Undo (design §5.1)
+  await expect(page.locator('.x-undo')).toContainText('This session is no longer available, so it cannot be restored.');
+  await expect(page.locator('.x-undo').getByRole('button', { name: /Undo/ })).toHaveCount(0);
 });

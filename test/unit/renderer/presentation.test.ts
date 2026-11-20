@@ -91,6 +91,7 @@ test('icon geometry is exactly design §4 (review of P4-T01)', () => {
     search: [C(10, 10, 6), P('M15 15 L21 21')],
     pin: [P('M7 4 L17 4 L15 11 L19 15 L5 15 L9 11 L7 4'), P('M12 15 L12 22')],
     more: [C(5, 12, 1), C(12, 12, 1), C(19, 12, 1)], // XAIBO-PROD-532: design §4 "more"
+    trash: [P('M3 6 L21 6'), P('M8 6 L8 3 L16 3 L16 6'), P('M6 6 L7 21 L17 21 L18 6'), P('M10 10 L10 17'), P('M14 10 L14 17')], // XAIBO-PROD-534: design §4 "trash"
     folder: [P('M3 6 L10 6 L12 9 L21 9 L21 20 L3 20 L3 6')],
   });
 });

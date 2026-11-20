@@ -42,6 +42,14 @@ export function Workspace({ list, changes, browse, agents, live, lastKnown, api,
   // ponytail: one shared value; two shares before a render keep the last (the other side's next refresh corrects it)
   const [history, setHistory] = useState<Shared | null>(null);
   const shareHistory = useCallback((id: number, r: HistoryRow | null) => setHistory((h) => ({ id, row: r, n: (h?.n ?? 0) + 1 })), []);
+  // XAIBO-PROD-534 (design §5.4): a gone (purged) open session closes; focus goes to the list's results heading unless
+  // the purge came from the list, which places focus itself
+  useEffect(() => {
+    if (!history || history.row !== null || opened?.id !== history.id) return;
+    setOpened(null);
+    setShowList(true);
+    requestAnimationFrame(() => { if (!document.querySelector('.x-list-pane')?.contains(document.activeElement)) document.getElementById('results-heading')?.focus(); });
+  }, [history]);
   const back = () => {
     setOpened(null);
     setShowList(true); // review L6: never an empty pane at narrow widths

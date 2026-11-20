@@ -18,7 +18,9 @@ import { show, visible } from '../text.ts';
 import { compactStatus, type SessionChanges } from '../workspace/view.ts';
 import { canLoadMore, capped, COVERAGE, emphasis, failureNote, filterOf, freshList, groupLabel, initialQuery, isPlain, listTexts, mergeLive, mergeRows, MODES, modeKey,
   refill, rowLines, startLoad, type BrowseRow, type ListState, type LiveState, type Query } from './browse.ts';
-import { doneText, errorText, menuClosed, menuItems, NOTICE, opOf, place, trashed, undoLabel, undone, type ActionKind, type Shared, type Undo } from './actions.ts';
+import { doneText, errorText, goneUndo, menuClosed, menuItems, NOTICE, opOf, place, trashed, undoLabel, undone, type ActionKind, type Shared, type Undo } from './actions.ts';
+import { PurgeDialog, type PurgeTarget } from './PurgeDialog.tsx';
+import { neighbourId, type PurgeResult } from './trash.ts';
 
 export interface BrowseApi {
   history(filter: HistoryFilter, cursor: HistoryKey | null, limit: number): Promise<{ rows: HistoryRow[]; next: HistoryKey | null }>;
@@ -27,6 +29,8 @@ export interface BrowseApi {
   /** XAIBO-PROD-532: an overlay op, and one session's fresh history row (null = gone; throws when unavailable). */
   overlay(op: OverlayOp): Promise<OverlayResult>;
   historyRow(session: number): Promise<HistoryRow | null>;
+  /** XAIBO-PROD-534: purge one session (after the confirmation). */
+  purge(session: number): Promise<PurgeResult>;
 }
 const MENU = 'session-row-menu';
 /** The Dashboard's live set as Live mode shows it. */
@@ -35,10 +39,12 @@ export type LiveRows = LiveState & { rows: SessionRow[] };
 const keyOf = (r: BrowseRow) => r.id;
 const sameGroup = (a: MapGroup | null, b: MapGroup | null) => JSON.stringify(a) === JSON.stringify(b);
 
-function Row({ row, open, lastKnown, search, snippet, onOpen, onMore }: {
+function Row({ row, open, lastKnown, search, snippet, onOpen, onMore, trash }: {
   row: BrowseRow; open: boolean; lastKnown: boolean; search: string; snippet: string | undefined; onOpen: (r: HistoryRow) => void;
   /** More actions (null for a Trash row: Restore and Purge instead). */
   onMore: ((r: BrowseRow) => void) | null;
+  /** XAIBO-PROD-534: a Trash row's Restore and Purge (null elsewhere). */
+  trash: { restore: (r: BrowseRow) => void; purge: (r: BrowseRow, trigger: HTMLElement) => void } | null;
 }) {
   const status = compactStatus(row.live);
   const lines = rowLines(row);
@@ -70,6 +76,12 @@ function Row({ row, open, lastKnown, search, snippet, onOpen, onMore }: {
     {onMore ? (
       <button type="button" className="x-btn x-btn-quiet x-icon-btn x-srow-more" popoverTarget={MENU} aria-haspopup="menu" aria-label={`More actions for ${recordLabel(row)}`}
         onClick={() => onMore(row)}><Icon id="more" /></button>
+    ) : null}
+    {trash ? ( // design §6.4: Trash rows offer Restore and Purge (Purge only through its confirmation)
+      <div className="x-acts x-srow-trash">
+        <button type="button" className="x-btn x-btn-secondary" aria-label={`Restore ${recordLabel(row)}`} onClick={() => trash.restore(row)}>Restore</button>
+        <button type="button" className="x-btn x-btn-danger" aria-label={`Purge ${recordLabel(row)}`} onClick={(e) => trash.purge(row, e.currentTarget)}>Purge</button>
+      </div>
     ) : null}
     </div>
   );
@@ -188,6 +200,8 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
     if (!history || seenHistory.current === history.n) return;
     seenHistory.current = history.n;
     if (current.current.rows.some((r) => r.id === history.id)) applyRow(history.id, history.row, false);
+    // design §5.1: an Undo that a purge made impossible explains why instead of offering Undo
+    if (history.row === null) setUndo((u) => goneUndo(u, history.id)); // review L4: never over an Undo in flight
   }, [history]);
   // by session id: Retry works in Live too, whose rows are not the paged list's (3b-3 re-review)
   const openMenu = (id: number) => {
@@ -216,7 +230,7 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
   };
   const undoTrash = async () => {
     const u = undo;
-    if (!u || u.status === 'undoing' || u.status === 'restored') return;
+    if (!u || u.status === 'undoing' || u.status === 'restored' || u.status === 'gone') return;
     // review M1: each reply changes the notice only while it is still this session's (a newer Trash keeps its Undo)
     setUndo((cur) => undone(cur, u.id, { status: 'undoing', note: null }));
     const r = await api.overlay({ kind: 'trash', session: u.id, on: false }).catch(() => null);
@@ -228,6 +242,39 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
     // design §5.4: Undo focuses the restored record; outside the current list, the list heading and Open restored session
     setRestored(placed ? null : row);
     if (placed) focusRow.current = row; else heading.current?.focus();
+  };
+  // XAIBO-PROD-534: Trash rows. Restore is immediate (the record leaves Trash; the list hands focus to its neighbour);
+  // Purge asks first; a purged record leaves the list and, if open, its conversation (shared as gone)
+  const [purgeTarget, setPurgeTarget] = useState<PurgeTarget>(null);
+  const focusAfter = useRef<number | null | undefined>(undefined); // a record (or null: the heading) to focus after a commit
+  useEffect(() => {
+    if (focusAfter.current === undefined) return;
+    const id = focusAfter.current;
+    focusAfter.current = undefined;
+    const el = id === null ? null : document.querySelector<HTMLElement>(`.x-list-pane [data-row="${id}"]`);
+    if (el) el.focus(); else heading.current?.focus();
+  }, [list]);
+  const restoring = useRef(new Set<number>()); // review L3: one Restore per record at a time
+  const restore = async (row: HistoryRow) => {
+    if (restoring.current.has(row.id)) return;
+    restoring.current.add(row.id);
+    try { await restoreNow(row); } finally { restoring.current.delete(row.id); }
+  };
+  const restoreNow = async (row: HistoryRow) => {
+    setNote(null);
+    const r = await api.overlay({ kind: 'trash', session: row.id, on: false }).catch(() => null);
+    if (!r) { setNote('The result is unavailable.'); void refresh(row.id); return; }
+    if (!r.ok) { setNote(errorText(r.error)); if (r.error === 'not-found') void refresh(row.id); return; }
+    setNote('Restored from Trash.');
+    void refresh(row.id);
+  };
+  const purged = (id: number, to: { gone: boolean; note: string | null }) => {
+    if (to.note) setNote(to.note);
+    if (!to.gone) return;
+    // design §5.4: following, previous, then the list heading; only for a record this list shows (review M2: otherwise
+    // nothing changes here and a later unrelated change would take focus)
+    if (query.current.mode !== 'live' && current.current.rows.some((r) => r.id === id)) focusAfter.current = neighbourId(current.current.rows, id);
+    share(id, null);
   };
   const menuRow = menu?.status === 'ready' ? menu.row : null;
   const entries: MenuEntry[] = menu?.status === 'failed'
@@ -371,13 +418,15 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
           <VirtualList key={JSON.stringify(q)} items={rows} getKey={keyOf} label="Sessions" itemLabel={recordLabel} estimateSize={t.searching ? 112 : 76}
             hasMore={!isLive && list.next !== null} loading={!isLive && (list.status === 'more' || list.status === 'loading')} onLoadMore={() => load(q, 'more')}
             render={(r) => <Row row={r} open={r.id === openId} lastKnown={lastKnown} search={q.search} snippet={t.searching ? list.snippets.get(r.id) : undefined} onOpen={onOpen}
-              onMore={r.trashedAt != null ? null : (x) => openMenu(x.id)} />} />
+              onMore={r.trashedAt != null ? null : (x) => openMenu(x.id)}
+              trash={r.trashedAt != null && !isLive ? { restore: (x) => void restore(x), purge: (x, el) => setPurgeTarget({ id: x.id, trigger: el }) } : null} />} />
         )}
         {!isLive && list.status === 'failed' && list.rows.length > 0 ? ( // re-review N2: Retry repeats what failed
           <p className="x-empty-note">{failureNote(list)} <button type="button" className="x-btn x-btn-quiet" onClick={() => load(q, list.failed === 'more' ? 'more' : 'resync')}>Retry</button></p>
         ) : null}
       </div>
       {t.searching ? <p className="x-list-foot">{COVERAGE}</p> : null}
+      <PurgeDialog target={purgeTarget} purge={(id) => api.purge(id)} onDone={purged} onClosed={() => setPurgeTarget(null)} />
       <Menu id={MENU} label="More actions" entries={entries} note={menu?.status === 'loading' ? <p className="x-hint">Loading actions…</p>
         : menu?.status === 'failed' ? <p className="x-hint">Actions could not be loaded.</p> : null} />
       {/* design §5.1 Undo notice: one at a time, polite (aria-live: the one status role is health, P4-T03), no timer, no
@@ -387,7 +436,7 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
           <p>{undo.status === 'restored' ? 'Restored from Trash.' : NOTICE}</p>
           {undo.note ? <p className="x-tone-warning">{undo.note}</p> : null}
           <div className="x-acts">
-            {undo.status !== 'restored' ? <button type="button" className="x-btn x-btn-secondary" aria-disabled={undo.status === 'undoing' || undefined} onClick={() => void undoTrash()}>{undoLabel(undo)}</button>
+            {undo.status === 'gone' ? null : undo.status !== 'restored' ? <button type="button" className="x-btn x-btn-secondary" aria-disabled={undo.status === 'undoing' || undefined} onClick={() => void undoTrash()}>{undoLabel(undo)}</button>
               : restored ? <button type="button" className="x-btn x-btn-secondary" onClick={() => onOpen(restored)}>Open restored session</button> : null}
             <button type="button" className="x-btn x-btn-quiet" onClick={() => { setUndo(null); setRestored(null); heading.current?.focus(); }}>Dismiss</button>
           </div>

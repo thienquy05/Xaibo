@@ -74,8 +74,12 @@ export function errorText(e: (typeof OVERLAY_ERRORS)[number]): string {
 
 export const NOTICE = 'Moved to Trash. Only the Xaibo copy is affected; native files are untouched.';
 /** The Undo notice (design §5.1): one at a time; a Trash while one is shown updates it to undo the latest. */
-export interface Undo { id: number; stacked: boolean; status: 'ready' | 'undoing' | 'failed' | 'restored'; note: string | null }
-export const trashed = (prev: Undo | null, id: number): Undo => ({ id, stacked: prev !== null && prev.status !== 'restored', status: 'ready', note: null });
+export interface Undo { id: number; stacked: boolean; status: 'ready' | 'undoing' | 'failed' | 'restored' | 'gone'; note: string | null }
+export const trashed = (prev: Undo | null, id: number): Undo => ({ id, stacked: prev !== null && prev.status !== 'restored' && prev.status !== 'gone', status: 'ready', note: null });
+/** XAIBO-PROD-534 review L4: a session that is gone (purged) can no longer be undone; never while its own Undo runs. */
+export const GONE_UNDO = 'This session is no longer available, so it cannot be restored.';
+export const goneUndo = (u: Undo | null, id: number): Undo | null =>
+  (u?.id === id && (u.status === 'ready' || u.status === 'failed') ? { ...u, status: 'gone', note: GONE_UNDO } : u);
 /** review M1: an Undo reply for session `id` changes the notice only while it is still that session's. */
 export const undone = (cur: Undo | null, id: number, patch: Pick<Undo, 'status' | 'note'>): Undo | null => (cur?.id === id ? { ...cur, ...patch } : cur);
 export const undoLabel = (u: Undo) => (u.stacked ? 'Undo latest Trash' : 'Undo');
@@ -84,9 +88,9 @@ const day = (ms: number) => formatTime(ms).slice(0, 10);
 /** Retention never purges an active session (EC-22; service retention/policy.isActive). */
 const ACTIVE: readonly LiveStatus['lifecycle'][] = ['busy', 'waiting-for-permission', 'needs-input'];
 /** XAIBO-PROD-533 (design §6.3): the open session's retention line from its fresh history row (undefined = not read
- *  yet) and its current live state. Not read, failed or gone never shows a default (design security review L3). */
-export function retentionLine(h: { row: HistoryRow | null; failed: boolean } | undefined, live: LiveStatus | null): string | null {
-  if (!h) return null;
+ *  yet: Loading) and its current live state. Not read, failed or gone never shows a default (design security review L3). */
+export function retentionLine(h: { row: HistoryRow | null; failed: boolean } | undefined, live: LiveStatus | null): string {
+  if (!h) return 'Loading retention…'; // E2E-found: the line is reserved while the row loads (no later header growth)
   const r = h.row;
   if (h.failed || !r) return 'Retention unavailable';
   if (r.trashedAt !== null) return r.trashPurgeAt !== null ? `In Trash · Auto-empty ${day(r.trashPurgeAt)}` : 'In Trash';
