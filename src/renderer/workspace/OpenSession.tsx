@@ -4,7 +4,9 @@
 // without moving the reading position.
 import { useEffect, useMemo, useReducer, useRef, useState, type KeyboardEvent } from 'react';
 import type { CostDetail, FileItem, HistoryRow, ModelMarker, SessionDetail, SessionRow, SubagentItem, TCursor, ToolItem, TranscriptItem } from '../../shared/ipc.ts';
-import { doneText, errorText, retentionLine, sharedRow, type Shared } from '../history/actions.ts';
+import { doneText, errorText, headerItems, NOTICE, opOf, retentionLine, sharedRow, type Shared, type Toggle } from '../history/actions.ts';
+import { Menu, type MenuEntry } from '../components/Menu.tsx';
+import { MoveDialog, type MoveTarget } from '../history/MoveDialog.tsx';
 import { PurgeDialog, type PurgeTarget } from '../history/PurgeDialog.tsx';
 import { trashBanner } from '../history/trash.ts';
 import type { Client } from '../client.ts';
@@ -24,6 +26,7 @@ import { compactStatus, countText, incompleteReasons, initialAt, liveAction, liv
 import type { WorkspaceApi } from './workspace-api.ts';
 export type { WorkspaceApi };
 const PAGE = 50;
+const OPEN_MENU = 'open-session-menu';
 const SIDE_MS = 1_000; // review M3: refresh cadence of detail, cost and the lists under a burst of changes
 
 /** Review M3: a trailing throttle; a burst of changes yields at most one new value per `ms`, the last one always lands. */
@@ -137,22 +140,27 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
     const s = sharedRow(history, id, histNow.current);
     if (s) { setHist(s); setKeepNote(null); } // review #2: an earlier Keep outcome no longer describes the row
   }, [history, id]);
-  /** Keep, or (XAIBO-PROD-534) Restore from the Trash banner: one overlay op, then the refreshed row (shared). */
-  const runOp = async (r: HistoryRow, kind: 'keep' | 'restore') => {
-    if (keepBusy) return;
-    setKeepBusy(true);
-    setKeepNote(null);
-    const on = kind === 'keep' ? !r.keep : false;
-    const op = kind === 'keep' ? { kind: 'keep' as const, session: r.id, on } : { kind: 'trash' as const, session: r.id, on };
-    const res = await api.overlay(op).catch(() => null);
-    if (!res) setKeepNote('The result is unavailable.'); // a lost reply never means success
-    else if (!res.ok) setKeepNote(errorText(res.error));
-    else setKeepNote(kind === 'restore' ? 'Restored from Trash.' : doneText('keep', on));
+  /** The fresh row read again and shared (null = gone: Workspace closes this conversation). */
+  const reread = async () => {
     try {
       const fresh = await api.historyRow(id);
       setHist({ row: fresh, failed: false });
       onHistory?.(id, fresh);
     } catch { setHist((h) => ({ row: h?.row ?? null, failed: true })); }
+  };
+  /** Keep, (XAIBO-PROD-534) Restore from the Trash banner, or (XAIBO-PROD-535) a header More actions toggle: one overlay
+   *  op, then the refreshed row (shared). */
+  const runOp = async (r: HistoryRow, kind: Toggle | 'restore') => {
+    if (keepBusy) return;
+    setKeepBusy(true);
+    setKeepNote(null);
+    const op = kind === 'restore' ? { kind: 'trash' as const, session: r.id, on: false } : opOf(kind, r);
+    const on = 'on' in op && op.on;
+    const res = await api.overlay(op).catch(() => null);
+    if (!res) setKeepNote('The result is unavailable.'); // a lost reply never means success
+    else if (!res.ok) setKeepNote(errorText(res.error));
+    else setKeepNote(kind === 'restore' ? 'Restored from Trash.' : kind === 'trash' ? NOTICE : doneText(kind, on));
+    await reread();
     setKeepBusy(false);
   };
   const retention = retentionLine(hist, row.live);
@@ -161,6 +169,13 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
   const trashRow = hist && !hist.failed && hist.row && hist.row.trashedAt !== null ? hist.row : null;
   const banner = trashRow ? trashBanner(trashRow) : null;
   const [purgeTarget, setPurgeTarget] = useState<PurgeTarget>(null);
+  // XAIBO-PROD-535 (design §6.3): header More actions (Move to…, Pin, Archive, Move to Trash) from the fresh row
+  const [moveTarget, setMoveTarget] = useState<MoveTarget>(null);
+  const moreRef = useRef<HTMLButtonElement>(null);
+  // review L4 (re-review: after the commit that removed it): Move to Trash unmounts the focused More button; the title takes focus
+  useEffect(() => { if (!keepRow && document.activeElement === document.body) titleRef.current?.focus(); }, [keepRow]);
+  const moreEntries: MenuEntry[] = keepRow ? headerItems(keepRow).map((i) => ({ key: i.kind, label: i.label, checked: i.checked,
+    onSelect: () => (i.kind === 'move' ? setMoveTarget({ row: keepRow, trigger: moreRef.current }) : void runOp(keepRow, i.kind)) })) : [];
   // P4-T07b: the cost breakdown is fetched only while the Cost tab is shown, and again on activity or Retry.
   const [cost, setCost] = useState<CostDetail | null | undefined>(undefined);
   const [costFailed, setCostFailed] = useState(false);
@@ -278,6 +293,8 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
         </div>
         <div className="x-actions">
           <button type="button" ref={detailsRef} className="x-btn x-btn-quiet" aria-expanded={drawer} aria-controls="session-details" onClick={() => openDrawer(!drawer)}><Icon id="information" />Details</button>
+          {keepRow ? <button type="button" ref={moreRef} className="x-btn x-btn-quiet x-icon-btn" popoverTarget={OPEN_MENU} aria-haspopup="menu" aria-label="More actions for this session"
+            aria-disabled={keepBusy || undefined}><Icon id="more" /></button> : null}
         </div>
         <div className="x-chips">
           <span className="x-chip" data-field="status"><span className={`x-dot x-dot-${status.tone}`} aria-hidden="true" />{lastKnown ? 'Last known: ' : null}{status.text}</span>
@@ -311,6 +328,13 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
           </div>
         ) : null}
       </div>
+      <Menu id={OPEN_MENU} label="More actions" entries={moreEntries} note={null} />
+      <MoveDialog target={moveTarget} api={api} onClosed={() => setMoveTarget(null)} onDone={(_s, to) => {
+        if (to.note) setKeepNote(to.note);
+        // design §5.4: the record (this header) stays shown; review M3: a lost reply or not-found reads the row too;
+        // review L1: only a result that closed its dialog places focus
+        if (to.refresh) void reread().then(() => { if (to.close) moreRef.current?.focus(); });
+      }} />
       <PurgeDialog target={purgeTarget} purge={(s) => api.purge(s)} onClosed={() => setPurgeTarget(null)}
         onDone={(s, to) => { if (to.note) setKeepNote(to.note); if (to.gone) onHistory?.(s, null); }} />{/* gone: Workspace closes this conversation */}
       <div className="x-tabs" role="group" aria-label="Session section" inert={drawer}>

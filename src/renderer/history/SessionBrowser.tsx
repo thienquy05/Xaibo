@@ -6,6 +6,8 @@
 // XAIBO-PROD-532 (P5-T18 part 3b-3; design §6.4, §5.1, §5.4): each record outside Trash has More actions (Pin, Archive,
 // Keep, Move to Trash) from the session's fresh history row; outcomes are polite and in words; Move to Trash shows the
 // Undo notice. Logic lives in actions.ts.
+// XAIBO-PROD-535 (P5-T18 part 3b-6; design §5.4): Move to… opens the Move dialog; a moved record is placed back (or
+// leaves a map-group view it no longer belongs to) and takes focus, else the results heading with View moved session.
 import { useEffect, useRef, useState } from 'react';
 import { QUERY_MAX, type AgentStatus, type HistoryFilter, type HistoryKey, type HistoryRow, type MapGroup, type MapNode, type OverlayOp, type OverlayResult, type SearchKey,
   type SessionRow } from '../../shared/ipc.ts';
@@ -18,11 +20,13 @@ import { show, visible } from '../text.ts';
 import { compactStatus, type SessionChanges } from '../workspace/view.ts';
 import { canLoadMore, capped, COVERAGE, emphasis, failureNote, filterOf, freshList, groupLabel, initialQuery, isPlain, listTexts, mergeLive, mergeRows, MODES, modeKey,
   refill, rowLines, startLoad, type BrowseRow, type ListState, type LiveState, type Query } from './browse.ts';
-import { doneText, errorText, goneUndo, menuClosed, menuItems, NOTICE, opOf, place, trashed, undoLabel, undone, type ActionKind, type Shared, type Undo } from './actions.ts';
+import { doneText, errorText, goneUndo, menuClosed, menuItems, NOTICE, opOf, place, trashed, undoLabel, undone, type Shared, type Toggle, type Undo } from './actions.ts';
+import { MoveDialog, type MoveApi, type MoveOutcome, type MoveTarget } from './MoveDialog.tsx';
+import { moveFocus } from './move.ts';
 import { PurgeDialog, type PurgeTarget } from './PurgeDialog.tsx';
 import { neighbourId, type PurgeResult } from './trash.ts';
 
-export interface BrowseApi {
+export interface BrowseApi extends MoveApi {
   history(filter: HistoryFilter, cursor: HistoryKey | null, limit: number): Promise<{ rows: HistoryRow[]; next: HistoryKey | null }>;
   search(query: string, filter: HistoryFilter, cursor: SearchKey | null, limit: number): Promise<{ hits: { row: HistoryRow; snippet: string }[]; next: SearchKey | null; failed?: true }>;
   mapGroups(parent: MapGroup | null, cursor: MapGroup | null, limit: number): Promise<{ groups: MapNode[]; next: MapGroup | null }>;
@@ -41,8 +45,8 @@ const sameGroup = (a: MapGroup | null, b: MapGroup | null) => JSON.stringify(a) 
 
 function Row({ row, open, lastKnown, search, snippet, onOpen, onMore, trash }: {
   row: BrowseRow; open: boolean; lastKnown: boolean; search: string; snippet: string | undefined; onOpen: (r: HistoryRow) => void;
-  /** More actions (null for a Trash row: Restore and Purge instead). */
-  onMore: ((r: BrowseRow) => void) | null;
+  /** More actions (null for a Trash row: Restore and Purge instead), with its button (the Move dialog's trigger). */
+  onMore: ((r: BrowseRow, trigger: HTMLElement) => void) | null;
   /** XAIBO-PROD-534: a Trash row's Restore and Purge (null elsewhere). */
   trash: { restore: (r: BrowseRow) => void; purge: (r: BrowseRow, trigger: HTMLElement) => void } | null;
 }) {
@@ -75,7 +79,7 @@ function Row({ row, open, lastKnown, search, snippet, onOpen, onMore, trash }: {
     </button>
     {onMore ? (
       <button type="button" className="x-btn x-btn-quiet x-icon-btn x-srow-more" popoverTarget={MENU} aria-haspopup="menu" aria-label={`More actions for ${recordLabel(row)}`}
-        onClick={() => onMore(row)}><Icon id="more" /></button>
+        onClick={(e) => onMore(row, e.currentTarget)}><Icon id="more" /></button>
     ) : null}
     {trash ? ( // design §6.4: Trash rows offer Restore and Purge (Purge only through its confirmation)
       <div className="x-acts x-srow-trash">
@@ -219,13 +223,14 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
     setNote((n) => `${n ?? ''} The list could not be refreshed.`.trim());
     return false;
   });
-  const run = async (kind: ActionKind, row: HistoryRow) => {
+  const run = async (kind: Toggle, row: HistoryRow) => {
     const op = opOf(kind, row);
     setNote(null);
+    setMovedRow(null);
     const r = await api.overlay(op).catch(() => null);
     if (!r) { setNote('The result is unavailable.'); void refresh(row.id); return; } // a lost reply never means success
     if (!r.ok) { setNote(errorText(r.error)); if (r.error === 'not-found') void refresh(row.id); return; } // review L6: a gone record leaves
-    if (op.kind === 'trash') { setRestored(null); setUndo((u) => trashed(u, row.id)); } else if ('on' in op) setNote(doneText(kind as Exclude<ActionKind, 'trash'>, op.on));
+    if (op.kind === 'trash') { setRestored(null); setUndo((u) => trashed(u, row.id)); } else if ('on' in op) setNote(doneText(kind as Exclude<Toggle, 'trash'>, op.on));
     void refresh(row.id);
   };
   const undoTrash = async () => {
@@ -276,10 +281,42 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
     if (query.current.mode !== 'live' && current.current.rows.some((r) => r.id === id)) focusAfter.current = neighbourId(current.current.rows, id);
     share(id, null);
   };
+  // XAIBO-PROD-535 (design §5.4): Move. Cancel returns to the More button; a moved record that is shown takes focus,
+  // otherwise the results heading with View moved session
+  const [moveTarget, setMoveTarget] = useState<MoveTarget>(null);
+  const [movedRow, setMovedRow] = useState<HistoryRow | null>(null);
+  const moreTrigger = useRef<HTMLElement | null>(null);
+  const moveTrigger = useRef<HTMLElement | null>(null); // review L2: the trigger of the dialog that was opened
+  const moved = async (id: number, to: MoveOutcome) => {
+    setMovedRow(null);
+    if (to.note) setNote(to.note);
+    if (!to.refresh) return; // review M3: a lost reply or not-found reads the row again too
+    let row: HistoryRow | null;
+    try { row = await api.historyRow(id); } catch {
+      setNote((n) => `${n ?? ''} The list could not be refreshed.`.trim());
+      if (moveFocus(to, 'failed').focus) moveTrigger.current?.focus();
+      return;
+    }
+    if (query.current.mode === 'live') { // Live shows the live set: the record stays where it is
+      onHistory?.(id, row);
+      if (to.close) requestAnimationFrame(() => (document.querySelector<HTMLElement>(`.x-list-pane [data-row="${id}"]`) ?? heading.current)?.focus());
+      return;
+    }
+    onHistory?.(id, row);
+    const placed = applyRow(id, row, moveFocus(to, 'placed').fallback); // review L1: a late result never takes focus
+    const f = moveFocus(to, placed ? 'placed' : 'left').focus;
+    if (f === 'record') focusAfter.current = id;
+    else if (f === 'heading') { if (row) setMovedRow(row); heading.current?.focus(); }
+  };
   const menuRow = menu?.status === 'ready' ? menu.row : null;
   const entries: MenuEntry[] = menu?.status === 'failed'
     ? [{ key: 'retry', label: 'Retry', checked: null, keepOpen: true, onSelect: () => openMenu(menu.id) }]
-    : menuRow ? menuItems(menuRow).map((i) => ({ key: i.kind, label: i.label, checked: i.checked, onSelect: () => void run(i.kind, menuRow) })) : [];
+    : menuRow ? menuItems(menuRow).map((i) => ({ key: i.kind, label: i.label, checked: i.checked,
+      onSelect: () => {
+        if (i.kind !== 'move') { void run(i.kind, menuRow); return; }
+        moveTrigger.current = moreTrigger.current;
+        setMoveTarget({ row: menuRow, trigger: moreTrigger.current });
+      } })) : [];
 
   const fetchPage = (query: Query, f: HistoryFilter, cursor: HistoryKey | SearchKey | null, limit: number): Promise<Page> => query.search
     ? api.search(query.search, f, cursor as SearchKey | null, limit).then((r) => {
@@ -326,7 +363,7 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
     });
   };
   // applying a mode, search or filter resets only this list's cursor (design §6.4); a service resync reloads it
-  useEffect(() => { load(q, 'new'); }, [q]);
+  useEffect(() => { setMovedRow(null); load(q, 'new'); }, [q]); // review L3: View moved session belongs to the list it left
   const resyncs = useRef(changes.resync);
   useEffect(() => { if (resyncs.current !== changes.resync) { resyncs.current = changes.resync; load(q, 'resync'); } }, [changes.resync]);
   const seen = useRef(changes.n);
@@ -409,6 +446,7 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
         <span className="x-sr-only" aria-live="polite">{ready ? `${t.title}: ${rows.length}${more ? ' or more' : ''} shown` : ''}</span>
       </div>
       <p className="x-action-note" aria-live="polite">{note}</p>
+      {movedRow ? <button type="button" className="x-btn x-btn-quiet x-moved-link" onClick={() => onOpen(movedRow)}>View moved session</button> : null}
       <div className="x-section-list">
         {/* re-review N4: a failed live set says so even while its last rows are shown */}
         {isLive && live.failed && rows.length > 0 ? <p className="x-empty-note">{t.empty}</p> : null}
@@ -418,7 +456,7 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
           <VirtualList key={JSON.stringify(q)} items={rows} getKey={keyOf} label="Sessions" itemLabel={recordLabel} estimateSize={t.searching ? 112 : 76}
             hasMore={!isLive && list.next !== null} loading={!isLive && (list.status === 'more' || list.status === 'loading')} onLoadMore={() => load(q, 'more')}
             render={(r) => <Row row={r} open={r.id === openId} lastKnown={lastKnown} search={q.search} snippet={t.searching ? list.snippets.get(r.id) : undefined} onOpen={onOpen}
-              onMore={r.trashedAt != null ? null : (x) => openMenu(x.id)}
+              onMore={r.trashedAt != null ? null : (x, el) => { moreTrigger.current = el; openMenu(x.id); }}
               trash={r.trashedAt != null && !isLive ? { restore: (x) => void restore(x), purge: (x, el) => setPurgeTarget({ id: x.id, trigger: el }) } : null} />} />
         )}
         {!isLive && list.status === 'failed' && list.rows.length > 0 ? ( // re-review N2: Retry repeats what failed
@@ -426,6 +464,7 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
         ) : null}
       </div>
       {t.searching ? <p className="x-list-foot">{COVERAGE}</p> : null}
+      <MoveDialog target={moveTarget} api={api} onDone={(id, to) => void moved(id, to)} onClosed={() => setMoveTarget(null)} />
       <PurgeDialog target={purgeTarget} purge={(id) => api.purge(id)} onDone={purged} onClosed={() => setPurgeTarget(null)} />
       <Menu id={MENU} label="More actions" entries={entries} note={menu?.status === 'loading' ? <p className="x-hint">Loading actions…</p>
         : menu?.status === 'failed' ? <p className="x-hint">Actions could not be loaded.</p> : null} />

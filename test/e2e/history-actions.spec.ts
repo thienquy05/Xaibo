@@ -42,17 +42,18 @@ test('Session list row actions: menu keys, Pin, Keep, Archive, Move to Trash and
   await page.keyboard.press('Enter');
   const menu = page.getByRole('menu', { name: 'More actions' });
   const pin = menu.getByRole('menuitemcheckbox', { name: 'Pin' });
-  await expect(pin).toBeFocused();
+  const moveTo = menu.getByRole('menuitem', { name: 'Move to…' }); // XAIBO-PROD-535: the first item (D-P5-09)
+  await expect(moveTo).toBeFocused();
   await expect(pin).toHaveAttribute('aria-checked', 'false');
   const [t, m] = [await trigger.boundingBox(), await menu.boundingBox()];
   expect(Math.abs(m!.y - (t!.y + t!.height)) < 12 || Math.abs(m!.y + m!.height - t!.y) < 12, 'the menu sits at its trigger').toBe(true);
   await shot(page, 'history-actions-menu');
   await page.keyboard.press('ArrowDown');
-  await expect(menu.getByRole('menuitemcheckbox', { name: 'Archive' })).toBeFocused();
+  await expect(pin).toBeFocused();
   await page.keyboard.press('End');
   await expect(menu.getByRole('menuitem', { name: 'Move to Trash' })).toBeFocused();
   await page.keyboard.press('Home');
-  await expect(pin).toBeFocused();
+  await expect(moveTo).toBeFocused();
   await page.keyboard.press('k');
   await expect(menu.getByRole('menuitemcheckbox', { name: 'Keep' })).toBeFocused();
   await page.keyboard.press('Escape');
@@ -61,7 +62,8 @@ test('Session list row actions: menu keys, Pin, Keep, Archive, Move to Trash and
 
   // Pin: the record moves first with its pin; the outcome is polite; the menu shows it checked
   await page.keyboard.press('Enter');
-  await expect(pin).toBeFocused();
+  await expect(moveTo).toBeFocused();
+  await page.keyboard.press('ArrowDown');
   await page.keyboard.press('Enter');
   await expect(note).toHaveText('Pinned.');
   await expect(records(page).first()).toContainText('Pinned: ');
@@ -95,7 +97,7 @@ test('Session list row actions: menu keys, Pin, Keep, Archive, Move to Trash and
   const following = order[i + 1] ?? order[i - 1]!;
   await more(page, 'meeting notes').focus();
   await page.keyboard.press('Enter');
-  await expect(pin).toBeFocused();
+  await expect(moveTo).toBeFocused();
   await page.keyboard.press('End');
   await page.keyboard.press('Enter');
   const undo = page.locator('.x-undo').filter({ hasText: 'Moved to Trash.' });
@@ -175,4 +177,101 @@ test('Session list row actions: menu keys, Pin, Keep, Archive, Move to Trash and
   // the Undo notice for the purged session explains instead of offering Undo (design §5.1)
   await expect(page.locator('.x-undo')).toContainText('This session is no longer available, so it cannot be restored.');
   await expect(page.locator('.x-undo').getByRole('button', { name: /Undo/ })).toHaveCount(0);
+});
+
+// XAIBO-PROD-535 (P5-T18 part 3b-6; design §5.4 Move to project/folder, §6.3 header More actions): the Move dialog from
+// a record's menu (a new project and folder, the name error, Escape back to the trigger), a map-group view that a moved
+// record leaves (heading and View moved session), and the open session's More actions (Move to…, Pin, Move to Trash).
+test('Move to project or folder from the Session list and the open-session header', async ({ xaibo }) => {
+  test.setTimeout(150_000);
+  xaibo.touchStore(() => {
+    claude(xaibo.home, 1, '/tmp/xaibo-fixture/atlas', 'Add a token bucket rate limiter');
+    claude(xaibo.home, 2, '/tmp/xaibo-fixture/notes', 'Summarize the meeting notes');
+  });
+  const run = await xaibo.launch();
+  const page = await xaibo.window(run);
+  await run.app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(1280, 800));
+  await openSessions(page);
+  const pane = page.getByRole('region', { name: 'Session list' });
+  for (const x of ['rate limiter', 'meeting notes']) await expect(records(page).filter({ hasText: x })).toHaveCount(1, { timeout: 20_000 });
+  const note = pane.locator('.x-action-note');
+  const menu = page.getByRole('menu', { name: 'More actions' });
+  const dialog = page.getByRole('dialog', { name: 'Move to project or folder' });
+  const project = dialog.getByRole('combobox', { name: 'Project', exact: true });
+  const folder = dialog.getByRole('combobox', { name: 'Folder', exact: true });
+  const moved = 'Moved. Only Xaibo\'s organization changed; the working folder and native files are untouched.';
+
+  // Cancel (Escape) returns to the exact More button
+  const notes = more(page, 'meeting notes');
+  await notes.click();
+  await menu.getByRole('menuitem', { name: 'Move to…' }).click();
+  await expect(project).toBeFocused();
+  await expect(project).toHaveValue('none');
+  await expect(dialog).toContainText('the working folder and native files are untouched');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(notes).toBeFocused();
+
+  // a new project and folder: an empty name is refused on Save with the field focused; then the record moves and keeps focus
+  await more(page, 'rate limiter').click();
+  await menu.getByRole('menuitem', { name: 'Move to…' }).click();
+  await project.selectOption('new');
+  await dialog.getByRole('button', { name: 'Save' }).click();
+  const name = dialog.getByRole('textbox', { name: 'Project name' });
+  await expect(name).toBeFocused();
+  await expect(name).toHaveAttribute('aria-invalid', 'true');
+  await expect(dialog).toContainText('Enter a project name.');
+  await name.fill('Atlas');
+  await folder.selectOption('new');
+  await dialog.getByRole('textbox', { name: 'Folder name' }).fill('Limits');
+  await shot(page, 'history-actions-move');
+  await dialog.getByRole('button', { name: 'Save' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(note).toHaveText(moved);
+  await expect(page.locator('.x-list-pane .x-srow').filter({ hasText: 'rate limiter' })).toBeFocused();
+  // the dialog reopens at the current project and folder
+  await more(page, 'rate limiter').click();
+  await menu.getByRole('menuitem', { name: 'Move to…' }).click();
+  await expect(project.locator('option:checked')).toHaveText('Atlas');
+  await expect(folder.locator('option:checked')).toHaveText('Limits');
+  await project.selectOption('new'); // review M2: Atlas's folders never show under a new project
+  await expect(folder.locator('option')).toHaveText(['No folder', 'New folder…']);
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+
+  // in the Atlas group view, moving to No project leaves the view: the heading and View moved session
+  await pane.getByText('Projects and folders').click();
+  await pane.locator('.x-tree-pick').filter({ hasText: 'Atlas' }).click();
+  await expect(records(page)).toHaveCount(1);
+  await more(page, 'rate limiter').click();
+  await menu.getByRole('menuitem', { name: 'Move to…' }).click();
+  await project.selectOption('none');
+  await expect(folder).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Save' }).click();
+  await expect(note).toHaveText(moved);
+  await expect(records(page)).toHaveCount(0);
+  await expect(page.locator('#results-heading')).toBeFocused();
+  await pane.getByRole('button', { name: 'View moved session' }).click();
+  const head = page.locator('.x-open-head');
+  await expect(page.locator('#open-session-title')).toContainText('rate limiter');
+
+  // the open session's More actions: Move to… (back to Atlas), Pin, Move to Trash (the Trash banner follows)
+  const headMore = head.getByRole('button', { name: 'More actions for this session' });
+  await headMore.click();
+  await expect(menu.getByRole('menuitemcheckbox', { name: 'Keep' })).toHaveCount(0); // Keep is the header's own toggle
+  await menu.getByRole('menuitem', { name: 'Move to…' }).click();
+  await expect(project).toHaveValue('none');
+  await project.selectOption({ label: 'Atlas' });
+  await expect(folder.locator('option', { hasText: 'Limits' })).toHaveCount(1);
+  await dialog.getByRole('button', { name: 'Save' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(head.locator('.x-action-note')).toHaveText(moved);
+  await expect(headMore).toBeFocused();
+  await headMore.click();
+  await menu.getByRole('menuitemcheckbox', { name: 'Pin' }).click();
+  await expect(head.locator('.x-action-note')).toHaveText('Pinned.');
+  await headMore.click();
+  await menu.getByRole('menuitem', { name: 'Move to Trash' }).click();
+  await expect(page.getByRole('region', { name: 'In Trash' })).toBeVisible();
+  await expect(headMore).toHaveCount(0);
+  await expect(page.locator('#open-session-title')).toBeFocused(); // re-review L4: the removed More button hands focus to the title
 });

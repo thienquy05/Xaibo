@@ -7,7 +7,7 @@ import type { HistoryRow, LiveStatus, OVERLAY_ERRORS, OverlayOp } from '../../sh
 import { formatTime } from '../model.ts';
 import { order, type BrowseRow, type Query } from './browse.ts';
 
-export type ActionKind = 'pin' | 'archive' | 'keep' | 'trash';
+export type ActionKind = 'move' | 'pin' | 'archive' | 'keep' | 'trash';
 /** checked: a toggle's state (menuitemcheckbox), null for a plain action. */
 export interface MenuItem { kind: ActionKind; label: string; checked: boolean | null }
 
@@ -15,10 +15,14 @@ export interface MenuItem { kind: ActionKind; label: string; checked: boolean | 
 export function menuItems(r: HistoryRow): MenuItem[] {
   if (r.trashedAt !== null) return [];
   return [
+    { kind: 'move', label: 'Move to…', checked: null }, // XAIBO-PROD-535: opens the Move dialog
     { kind: 'pin', label: 'Pin', checked: r.pinned }, { kind: 'archive', label: 'Archive', checked: r.archivedAt !== null },
     { kind: 'keep', label: 'Keep', checked: r.keep }, { kind: 'trash', label: 'Move to Trash', checked: null },
   ];
 }
+
+/** XAIBO-PROD-535 (design §6.3): the open session's More actions; Keep is its own toggle in the header. */
+export const headerItems = (r: HistoryRow): MenuItem[] => menuItems(r).filter((i) => i.kind !== 'keep');
 
 /** review M3: why a fresh row has no menu (gone, or in Trash since the list was read); null = it has one. */
 export function menuClosed(r: HistoryRow | null): string | null {
@@ -26,13 +30,16 @@ export function menuClosed(r: HistoryRow | null): string | null {
   return r.trashedAt !== null ? 'This session is in Trash.' : null;
 }
 
-const isOn = (kind: ActionKind, r: HistoryRow) => (kind === 'pin' ? r.pinned : kind === 'archive' ? r.archivedAt !== null : kind === 'keep' ? r.keep : r.trashedAt !== null);
-export const opOf = (kind: ActionKind, r: HistoryRow): OverlayOp => ({ kind, session: r.id, on: !isOn(kind, r) });
+export type Toggle = Exclude<ActionKind, 'move'>;
+const isOn = (kind: Toggle, r: HistoryRow) => (kind === 'pin' ? r.pinned : kind === 'archive' ? r.archivedAt !== null : kind === 'keep' ? r.keep : r.trashedAt !== null);
+export const opOf = (kind: Toggle, r: HistoryRow): OverlayOp => ({ kind, session: r.id, on: !isOn(kind, r) });
 
-/** Whether a row belongs to the current list by mode and agent. A map-group filter is not re-evaluated: none of these
- *  actions changes a row's group (Trash leaves every group by its mode). */
+/** Whether a row belongs to the current list by mode, agent and map group. Of a map group only the project override is
+ *  re-evaluated (XAIBO-PROD-535: Move changes it; its place, repository or cwd, never changes; Trash leaves every group
+ *  by its mode). */
 export function matches(q: Query, r: HistoryRow): boolean {
   if (q.agent !== null && r.agent !== q.agent) return false;
+  if (q.group && (q.group.project === null ? r.project !== null : r.project?.id !== q.group.project)) return false;
   switch (q.mode) {
     case 'all': return r.trashedAt === null;
     case 'archived': return r.archivedAt !== null && r.trashedAt === null;
@@ -59,10 +66,10 @@ export function place(rows: BrowseRow[], id: number, row: HistoryRow | null, q: 
   return { rows: [...rows, row].sort(order), placed: true };
 }
 
-const DONE: Record<Exclude<ActionKind, 'trash'>, [string, string]> = {
+const DONE: Record<Exclude<Toggle, 'trash'>, [string, string]> = {
   pin: ['Pinned.', 'Unpinned.'], archive: ['Archived.', 'Unarchived.'], keep: ['Kept. Retention will not purge this session.', 'Keep removed.'],
 };
-export const doneText = (kind: Exclude<ActionKind, 'trash'>, on: boolean) => DONE[kind][on ? 0 : 1];
+export const doneText = (kind: Exclude<Toggle, 'trash'>, on: boolean) => DONE[kind][on ? 0 : 1];
 export function errorText(e: (typeof OVERLAY_ERRORS)[number]): string {
   switch (e) {
     case 'read-only': return 'Xaibo is read-only. Nothing was changed.';

@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { HistoryRow } from '../../../src/shared/ipc.ts';
 import { initialQuery } from '../../../src/renderer/history/browse.ts';
-import { doneText, errorText, goneUndo, GONE_UNDO, matches, menuClosed, menuItems, NOTICE, opOf, place, trashed, undoLabel, undone } from '../../../src/renderer/history/actions.ts';
+import { doneText, errorText, goneUndo, GONE_UNDO, headerItems, matches, menuClosed, menuItems, NOTICE, opOf, place, trashed, undoLabel, undone } from '../../../src/renderer/history/actions.ts';
 
 const at = (d: number) => new Date(2026, 10, d, 12).getTime();
 const hrow = (id: number, extra: Partial<HistoryRow> = {}): HistoryRow => ({ id, agent: 'claude', entrypoint: null, origin: null, interactive: null, model: 'Model unavailable',
@@ -15,13 +15,30 @@ const hrow = (id: number, extra: Partial<HistoryRow> = {}): HistoryRow => ({ id,
   costCoverage: 'unavailable', tokens: null, tokensComplete: false, project: null, folder: null, pinned: false, archivedAt: null,
   trashedAt: null, trashPurgeAt: null, keep: false, purgeAt: null, ...extra });
 
-test('menuItems: Pin, Archive and Keep with their state from the fresh row, then Move to Trash; none for a Trash row', () => {
+test('menuItems: Move to…, then Pin, Archive and Keep with their state from the fresh row, then Move to Trash; none for a Trash row', () => {
   assert.deepEqual(menuItems(hrow(1)), [
+    { kind: 'move', label: 'Move to…', checked: null },
     { kind: 'pin', label: 'Pin', checked: false }, { kind: 'archive', label: 'Archive', checked: false },
     { kind: 'keep', label: 'Keep', checked: false }, { kind: 'trash', label: 'Move to Trash', checked: null },
   ]);
-  assert.deepEqual(menuItems(hrow(1, { pinned: true, archivedAt: at(1), keep: true })).map((i) => i.checked), [true, true, true, null]);
+  assert.deepEqual(menuItems(hrow(1, { pinned: true, archivedAt: at(1), keep: true })).map((i) => i.checked), [null, true, true, true, null]);
   assert.deepEqual(menuItems(hrow(1, { trashedAt: at(2), trashPurgeAt: at(30) })), [], 'Trash rows get Restore and Purge instead');
+});
+
+test('headerItems (XAIBO-PROD-535, design §6.3): the open session\'s More actions leave Keep to its own toggle; none in Trash', () => {
+  assert.deepEqual(headerItems(hrow(1, { pinned: true })).map((i) => [i.kind, i.checked]), [['move', null], ['pin', true], ['archive', false], ['trash', null]]);
+  assert.deepEqual(headerItems(hrow(1, { trashedAt: at(2) })), []);
+});
+
+test('matches (XAIBO-PROD-535): a map-group filter keeps a moved row only under its project override', () => {
+  const auto = { ...initialQuery, group: { project: null, at: { cwd: '/w/a' } } };
+  const proj = { ...initialQuery, group: { project: 7, at: null } };
+  const p7 = { id: 7, name: 'P' }, p8 = { id: 8, name: 'Q' };
+  assert.equal(matches(auto, hrow(1)), true, 'automatic grouping holds sessions with no project');
+  assert.equal(matches(auto, hrow(1, { project: p7 })), false, 'moved into a project: it leaves automatic grouping');
+  assert.equal(matches(proj, hrow(1, { project: p7 })), true);
+  assert.equal(matches(proj, hrow(1, { project: p8 })), false);
+  assert.equal(matches(proj, hrow(1)), false, 'moved out of the project');
 });
 
 test('opOf: a toggle sends its opposite state for this session; Move to Trash sends trash on', () => {

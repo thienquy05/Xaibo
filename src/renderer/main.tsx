@@ -145,6 +145,8 @@ function App() {
       overlay: (op) => client.current?.overlay(op) ?? Promise.resolve({ ok: false as const, error: 'store' as const }),
       historyRow: (session) => client.current?.historyRow(session) ?? none(),
       purge: (session) => client.current?.purge(session) ?? Promise.resolve('failed' as const), // XAIBO-PROD-534: nothing sent, nothing purged
+      projects: (cursor, limit) => client.current?.projects(cursor, limit) ?? none(), // XAIBO-PROD-535: the Move dialog's lists
+      folders: (project, cursor, limit) => client.current?.folders(project, cursor, limit) ?? none(),
     };
   }, []);
 
