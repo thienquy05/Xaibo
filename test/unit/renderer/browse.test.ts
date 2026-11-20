@@ -165,6 +165,16 @@ test('groupLabel: project name, repository and worktree base names, cwd groups s
   assert.deepEqual(groupLabel(node({ project: 7, at: null })), { label: 'Unknown project', note: null, kind: 'project' });
 });
 
+test('XAIBO-PROD-540: a repository key is the common git directory, so the label is the repository name, never ".git"', () => {
+  assert.deepEqual(groupLabel(node({ project: null, at: { repo: '/w/atlas-api/.git', worktree: null } })), { label: 'atlas-api', note: null, kind: 'repo' });
+  assert.deepEqual(groupLabel(node({ project: null, at: { repo: '/srv/atlas.git', worktree: null } })), { label: 'atlas', note: null, kind: 'repo' });
+  assert.deepEqual(groupLabel(node({ project: null, at: { repo: '/w/atlas-api/.git', worktree: '/w/atlas-api' } })), { label: 'atlas-api', note: null, kind: 'worktree' });
+  // review L2: a trailing slash and a submodule's common directory; review L1: never a blank label
+  assert.equal(groupLabel(node({ project: null, at: { repo: '/w/atlas-api/.git/', worktree: null } })).label, 'atlas-api');
+  assert.equal(groupLabel(node({ project: null, at: { repo: '/w/atlas-api/.git/modules/vendor', worktree: null } })).label, 'vendor');
+  assert.equal(groupLabel(node({ project: null, at: { repo: '/.git', worktree: null } })).label, 'Repository label unavailable');
+});
+
 test('E2E-found: only search results carry an order label (design §6.4 "Search relevance"); the header stays one line', () => {
   assert.equal(orderLabel({ ...initialQuery, search: 'x' }), 'Search relevance');
   assert.equal(orderLabel(initialQuery), null);

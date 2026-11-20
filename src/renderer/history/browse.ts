@@ -4,6 +4,7 @@
 // nothing guessed; snippets split into text runs with the search terms emphasized (rendered as text, never HTML).
 import { nativeBadge, type HistoryFilter, type HistoryKey, type HistoryRow, type MapGroup, type MapNode, type SessionRow } from '../../shared/ipc.ts';
 import { formatTime, PAGE } from '../model.ts';
+import { repoName } from '../agent-map/tree.ts';
 
 export type Mode = 'all' | 'live' | 'archived' | 'trash' | 'suppressed';
 export const MODES: { mode: Mode; label: string }[] = [
@@ -180,6 +181,7 @@ export interface GroupLabel { label: string; note: string | null; kind: 'project
 export function groupLabel(n: MapNode): GroupLabel {
   const at = n.group.at;
   if (at === null) return { label: n.project?.name ?? 'Unknown project', note: null, kind: 'project' };
-  if ('repo' in at) return at.worktree === null ? { label: base(at.repo), note: null, kind: 'repo' } : { label: base(at.worktree), note: null, kind: 'worktree' };
+  // XAIBO-PROD-540: the key is the common git directory (`<repo>/.git` for a standard checkout), so name it as the Agent Map does
+  if ('repo' in at) return at.worktree === null ? { label: repoName(at.repo) || 'Repository label unavailable', note: null, kind: 'repo' } : { label: base(at.worktree), note: null, kind: 'worktree' };
   return at.cwd === null ? { label: 'Cwd unavailable', note: null, kind: 'folder' } : { label: base(at.cwd), note: 'Repository grouping unavailable', kind: 'folder' };
 }
