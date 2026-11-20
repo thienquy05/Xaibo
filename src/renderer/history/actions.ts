@@ -45,6 +45,7 @@ export function matches(q: Query, r: HistoryRow): boolean {
     case 'archived': return r.archivedAt !== null && r.trashedAt === null;
     case 'trash': return r.trashedAt !== null;
     case 'live': return true;
+    case 'suppressed': return false; // XAIBO-PROD-536: suppression metadata, never history rows
   }
 }
 

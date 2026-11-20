@@ -16,7 +16,7 @@ const hrow = (id: number, extra: Partial<HistoryRow> = {}): HistoryRow => ({ ...
   trashedAt: null, trashPurgeAt: null, keep: false, purgeAt: null, ...extra });
 
 test('modes: All sessions, Live, Archived, Trash in design §6.4 order', () => {
-  assert.deepEqual(MODES.map((m) => m.label), ['All sessions', 'Live', 'Archived', 'Trash']);
+  assert.deepEqual(MODES.map((m) => m.label), ['All sessions', 'Live', 'Archived', 'Trash', 'Suppressed']); // XAIBO-PROD-536: D-P5-09
   assert.equal(initialQuery.mode, 'all');
 });
 
@@ -26,6 +26,7 @@ test('filterOf: the service filter for a query; Live pages nothing (it shows the
   const group = { project: null, at: { repo: '/r/atlas', worktree: null } };
   assert.deepEqual(filterOf({ ...initialQuery, mode: 'archived', group }), { mode: 'archived', agent: null, project: null, folder: null, group });
   assert.equal(filterOf({ ...initialQuery, mode: 'live' }), null);
+  assert.equal(filterOf({ ...initialQuery, mode: 'suppressed' }), null, 'XAIBO-PROD-536: Suppressed pages suppression metadata, not history');
 });
 
 test('isPlain: only the unfiltered All view takes new and reordered sessions from live updates', () => {
@@ -207,4 +208,10 @@ test('re-review N3: while a first page or resync loads (updates held), updates o
 test('fixed texts (design §6.4)', () => {
   assert.equal(NO_MATCH, 'No matches. Change filters or clear search.');
   assert.equal(COVERAGE, 'Search covers retained indexed content; incomplete sources may have gaps.');
+});
+
+test('listTexts (XAIBO-PROD-536): Suppressed has its own title and empty text; search and filters never apply there', () => {
+  const ok = { loaded: true, failed: false, more: false };
+  assert.deepEqual(listTexts({ ...initialQuery, mode: 'suppressed', search: 'x', agent: 'codex' }, ok),
+    { title: 'Suppressed', empty: 'No suppressed sessions.', order: null, searching: false });
 });

@@ -2,9 +2,12 @@
 // beside the open session; the page itself does not scroll, each pane does. Below 800 px one region shows at a time.
 // Every transcript-derived string is a React text node through visible() (EC-55).
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AgentStatus, HistoryRow, SessionRow } from '../../shared/ipc.ts';
+import type { AgentStatus, HistoryRow, SessionRow, SuppressedRow } from '../../shared/ipc.ts';
 import type { Shared } from '../history/actions.ts';
 import { SessionBrowser, type BrowseApi, type LiveRows } from '../history/SessionBrowser.tsx';
+import type { Gone } from '../history/SuppressedList.tsx';
+import { SuppressedPane, type Outcome } from '../history/SuppressedPane.tsx';
+import { deliver, type Settled } from '../history/suppressed.ts';
 import type { ListState } from '../model.ts';
 import { OpenSession, type WorkspaceApi } from './OpenSession.tsx';
 import { openChange, type SessionChanges } from './view.ts';
@@ -50,7 +53,39 @@ export function Workspace({ list, changes, browse, agents, live, lastKnown, api,
     setShowList(true);
     requestAnimationFrame(() => { if (!document.querySelector('.x-list-pane')?.contains(document.activeElement)) document.getElementById('results-heading')?.focus(); });
   }, [history]);
+  // XAIBO-PROD-536 (design §6.4, §5.4): a suppressed record's metadata pane in place of the conversation; a record that
+  // left (Re-import) closes it, and the list heading takes focus when the pane had it
+  const [supp, setSupp] = useState<SuppressedRow | null>(null);
+  const suppNow = useRef(supp);
+  suppNow.current = supp;
+  const [suppGone, setSuppGone] = useState<Gone | null>(null);
+  // ponytail: one shared value; two results settled to the list before a render keep the last (the other record reads
+  // none or not-found when opened, and leaves then)
+  const goneSupp = (key: string, note: string, gone = true) => {
+    setSuppGone((g) => ({ key, note, gone, n: (g?.n ?? 0) + 1 }));
+    if (!gone) return;
+    const shown = suppNow.current?.key === key;
+    setSupp((s) => (s?.key === key ? null : s));
+    if (shown) setShowList(true); // re-review: a result for a pane not shown never reopens a hidden list
+    requestAnimationFrame(() => { if (document.activeElement === document.body) document.getElementById('results-heading')?.focus(); });
+  };
+  // review M1: Re-imports in flight live here, not in the pane (which a record switch unmounts): one per key, and each
+  // result reaches the pane showing its record, else the list heading
+  const reimporting = useRef(new Set<string>());
+  const [outcome, setOutcome] = useState<Outcome | null>(null);
+  const sendReimport = (key: string) => {
+    if (reimporting.current.has(key)) return;
+    reimporting.current.add(key);
+    const settle = (result: Settled) => {
+      reimporting.current.delete(key);
+      const d = deliver(result, key, suppNow.current?.key ?? null);
+      if (d.to === 'pane') setOutcome((o) => ({ key, result, n: (o?.n ?? 0) + 1 }));
+      else goneSupp(key, d.note, d.gone);
+    };
+    browse.reimport(key).then(settle, () => settle('unavailable'));
+  };
   const back = () => {
+    setSupp(null);
     setOpened(null);
     setShowList(true); // review L6: never an empty pane at narrow widths
     requestAnimationFrame(() => document.getElementById('sessions-heading')?.focus());
@@ -58,16 +93,18 @@ export function Workspace({ list, changes, browse, agents, live, lastKnown, api,
   return (
     <section className="x-session-area" aria-labelledby="sessions-heading">
       <div className="x-area-head"><h1 id="sessions-heading" tabIndex={-1}>Session</h1></div>
-      <div className={`x-workspace${showList ? '' : ' x-no-list'}${row ? ' x-has-open' : ''}`}>
+      <div className={`x-workspace${showList ? '' : ' x-no-list'}${row || supp ? ' x-has-open' : ''}`}>
         {/* XAIBO-PROD-452 (G4d-1): Hide only while a session is open, whose header offers Show session list; the browser
             stays mounted while hidden so its mode, search and filters survive */}
         <div hidden={!showList} className="x-list-slot">
           <SessionBrowser api={browse} agents={agents} live={live} changes={changes} lastKnown={lastKnown} openId={row?.id ?? null}
-            onOpen={(r) => { setOpened(r); onListOpen(); }} hide={row ? () => setShowList(false) : null} history={history} onHistory={shareHistory} />
+            onOpen={(r) => { setSupp(null); setOpened(r); onListOpen(); }} hide={row ? () => setShowList(false) : null} history={history} onHistory={shareHistory}
+            onOpenSuppressed={(r) => { if (r) { setOpened(null); onListOpen(); } setSupp(r); }} suppressedOpen={supp?.key ?? null} suppressedGone={suppGone} />
         </div>
         {row ? <OpenSession key={row.id} row={row} changed={gen} api={api} lastKnown={lastKnown} listShown={showList} onShowList={() => setShowList(true)} onBack={back}
           onReturn={row.id === returnFor ? onReturn : undefined} history={history} onHistory={shareHistory} />
-          : <section className="x-pane x-choose" aria-label="Open session"><p>Choose a session to read its conversation</p></section>}
+          : supp ? <SuppressedPane key={supp.key} row={supp} inflight={reimporting.current.has(supp.key)} send={sendReimport} outcome={outcome} onBack={back} onGone={goneSupp} />
+            : <section className="x-pane x-choose" aria-label="Open session"><p>Choose a session to read its conversation</p></section>}
       </div>
     </section>
   );

@@ -5,9 +5,10 @@
 import { nativeBadge, type HistoryFilter, type HistoryKey, type HistoryRow, type MapGroup, type MapNode, type SessionRow } from '../../shared/ipc.ts';
 import { formatTime, PAGE } from '../model.ts';
 
-export type Mode = 'all' | 'live' | 'archived' | 'trash';
+export type Mode = 'all' | 'live' | 'archived' | 'trash' | 'suppressed';
 export const MODES: { mode: Mode; label: string }[] = [
   { mode: 'all', label: 'All sessions' }, { mode: 'live', label: 'Live' }, { mode: 'archived', label: 'Archived' }, { mode: 'trash', label: 'Trash' },
+  { mode: 'suppressed', label: 'Suppressed' }, // XAIBO-PROD-536 (D-P5-09): purged sessions' suppression metadata (suppressed.ts)
 ];
 /** search: the applied query ('' = none); group: the Projects and folders choice (null = all). */
 export interface Query { mode: Mode; search: string; agent: string | null; group: MapGroup | null }
@@ -16,9 +17,9 @@ export const initialQuery: Query = { mode: 'all', search: '', agent: null, group
 export const NO_MATCH = 'No matches. Change filters or clear search.';
 export const COVERAGE = 'Search covers retained indexed content; incomplete sources may have gaps.';
 
-/** The service filter; null for Live, which shows the live set. */
+/** The service filter; null for Live, which shows the live set, and for Suppressed, which pages suppression metadata. */
 export function filterOf(q: Query): HistoryFilter | null {
-  if (q.mode === 'live') return null;
+  if (q.mode === 'live' || q.mode === 'suppressed') return null;
   return { mode: q.mode, agent: q.agent, project: null, folder: null, ...(q.group ? { group: q.group } : {}) };
 }
 /** Only search results carry an order label (design §6.4); the default order needs none, so the header stays one line. */
@@ -89,6 +90,7 @@ export function listTexts(q: Query, live: LiveState): { title: string; empty: st
   if (q.mode === 'live') {
     return { title: label, order: null, searching: false, empty: live.failed ? 'Live sessions are unavailable.' : !live.loaded ? 'Loading live sessions…' : 'No live sessions.' };
   }
+  if (q.mode === 'suppressed') return { title: label, order: null, searching: false, empty: 'No suppressed sessions.' }; // XAIBO-PROD-536
   const searching = q.search !== '';
   const empty = searching ? NO_MATCH : q.agent || q.group ? 'No sessions match these filters.' : q.mode === 'trash' ? 'Trash is empty.'
     : q.mode === 'archived' ? 'No archived sessions.' : 'No sessions yet.';

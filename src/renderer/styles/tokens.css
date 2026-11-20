@@ -271,6 +271,9 @@ body {
 .x-move-form label { display: grid; gap: 2px; color: var(--x-muted); font-size: var(--x-text-small); }
 .x-move-form select { min-height: var(--x-control-height); font: inherit; font-size: var(--x-text-body); color: var(--x-ink); background: var(--x-surface); border: var(--x-border); border-radius: var(--x-radius-control); padding: 0 var(--x-space-2); }
 .x-move-form .x-input { font-size: var(--x-text-body); }
+/* XAIBO-PROD-536 (P5-T18 part 3b-7; D-P5-09): the suppressed record's metadata pane */
+.x-supp-body { display: grid; justify-items: start; gap: var(--x-space-3); padding: 0 var(--x-space-4) var(--x-space-4); }
+.x-supp-body p { margin: 0; }
 .x-dashboard-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--x-space-4); }
 .x-views { display: flex; flex-wrap: wrap; gap: var(--x-space-2); padding: var(--x-space-1); }
 .x-view { font-family: var(--x-font-ui); }

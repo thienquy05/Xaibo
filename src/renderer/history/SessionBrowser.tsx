@@ -10,7 +10,7 @@
 // leaves a map-group view it no longer belongs to) and takes focus, else the results heading with View moved session.
 import { useEffect, useRef, useState } from 'react';
 import { QUERY_MAX, type AgentStatus, type HistoryFilter, type HistoryKey, type HistoryRow, type MapGroup, type MapNode, type OverlayOp, type OverlayResult, type SearchKey,
-  type SessionRow } from '../../shared/ipc.ts';
+  type SessionRow, type SuppressedRow } from '../../shared/ipc.ts';
 import { Menu, type MenuEntry } from '../components/Menu.tsx';
 import { VirtualList } from '../components/VirtualList.tsx';
 import { Title } from '../SessionList.tsx';
@@ -23,10 +23,11 @@ import { canLoadMore, capped, COVERAGE, emphasis, failureNote, filterOf, freshLi
 import { doneText, errorText, goneUndo, menuClosed, menuItems, NOTICE, opOf, place, trashed, undoLabel, undone, type Shared, type Toggle, type Undo } from './actions.ts';
 import { MoveDialog, type MoveApi, type MoveOutcome, type MoveTarget } from './MoveDialog.tsx';
 import { moveFocus } from './move.ts';
+import { SuppressedList, type Gone, type SuppressedApi } from './SuppressedList.tsx';
 import { PurgeDialog, type PurgeTarget } from './PurgeDialog.tsx';
 import { neighbourId, type PurgeResult } from './trash.ts';
 
-export interface BrowseApi extends MoveApi {
+export interface BrowseApi extends MoveApi, SuppressedApi {
   history(filter: HistoryFilter, cursor: HistoryKey | null, limit: number): Promise<{ rows: HistoryRow[]; next: HistoryKey | null }>;
   search(query: string, filter: HistoryFilter, cursor: SearchKey | null, limit: number): Promise<{ hits: { row: HistoryRow; snippet: string }[]; next: SearchKey | null; failed?: true }>;
   mapGroups(parent: MapGroup | null, cursor: MapGroup | null, limit: number): Promise<{ groups: MapNode[]; next: MapGroup | null }>;
@@ -144,13 +145,15 @@ type List = ListState<HistoryKey | SearchKey>;
 type Page = { rows: HistoryRow[]; next: HistoryKey | SearchKey | null; snippets: (readonly [number, string])[] };
 const fresh = (): List => freshList();
 
-export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, onOpen, hide, history = null, onHistory }: {
+export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, onOpen, hide, history = null, onHistory, onOpenSuppressed, suppressedOpen = null, suppressedGone = null }: {
   api: BrowseApi; agents: AgentStatus[]; live: LiveRows; changes: SessionChanges; lastKnown: boolean;
   openId: number | null; onOpen: (r: HistoryRow) => void;
   /** The Hide session list button, shown while a session is open. */
   hide: (() => void) | null;
   /** XAIBO-PROD-533: a history row refreshed elsewhere (the open session), and the way to share one refreshed here. */
   history?: Shared | null; onHistory?: (id: number, r: HistoryRow | null) => void;
+  /** XAIBO-PROD-536: open a suppressed record's metadata pane; the one open; a record that left (Re-import). */
+  onOpenSuppressed?: (r: SuppressedRow | null) => void; suppressedOpen?: string | null; suppressedGone?: Gone | null;
 }) {
   const [q, setQ] = useState<Query>(initialQuery);
   const [list, setList] = useState<List>(fresh);
@@ -375,8 +378,13 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
     setList((x) => ({ ...x, ...mergeLive(x, changes.rows, isPlain(q), holding) })); // the plain view stays within the loaded window
   }, [changes]);
 
+  // XAIBO-PROD-536: a Re-import outcome is said beside the list heading (the pane that asked has closed)
+  useEffect(() => { if (suppressedGone) setNote(suppressedGone.note); }, [suppressedGone]);
+  // review L2: leaving Suppressed closes its pane (a later outcome is said beside the list heading)
+  useEffect(() => { if (q.mode !== 'suppressed' && suppressedOpen) onOpenSuppressed?.(null); }, [q.mode]);
   const apply = (next: Query) => { setQ(next); requestAnimationFrame(() => heading.current?.focus()); };
   const isLive = q.mode === 'live';
+  const isSupp = q.mode === 'suppressed';
   const t = listTexts(q, live);
   const rows: BrowseRow[] = isLive ? (live.rows as HistoryRow[]) : list.rows;
   const ready = isLive ? live.loaded && !live.failed : list.status === 'ready' || list.status === 'more';
@@ -402,8 +410,9 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
           ))}
         </div>
         {isLive ? <p className="x-hint x-browse-note">Sessions active now. Search and filters apply to the other modes.</p> : null}
-        {/* kept mounted in Live (review L10): the drafts, disclosures and tree survive a visit there */}
-        <div className="x-browse-tools" hidden={isLive}>
+        {isSupp ? <p className="x-hint x-browse-note">Purged sessions Xaibo no longer imports. Open one to Re-import it.</p> : null}
+        {/* kept mounted in Live and Suppressed (review L10): the drafts, disclosures and tree survive a visit there */}
+        <div className="x-browse-tools" hidden={isLive || isSupp}>
           <form className="x-search" role="search" aria-label="Search sessions" onSubmit={(e) => { e.preventDefault(); apply({ ...q, search: draft.trim() }); }}>
             <label className="x-search-field">
               <span className="x-sr-only">Search sessions</span>
@@ -443,11 +452,12 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
       <div className="x-results-head" id="session-results">
         <h3 id="results-heading" ref={heading} tabIndex={-1}>{t.title}</h3>
         {t.order ? <span>{t.order}</span> : null}
-        <span className="x-sr-only" aria-live="polite">{ready ? `${t.title}: ${rows.length}${more ? ' or more' : ''} shown` : ''}</span>
+        <span className="x-sr-only" aria-live="polite">{ready && !isSupp ? `${t.title}: ${rows.length}${more ? ' or more' : ''} shown` : ''}</span>
       </div>
       <p className="x-action-note" aria-live="polite">{note}</p>
       {movedRow ? <button type="button" className="x-btn x-btn-quiet x-moved-link" onClick={() => onOpen(movedRow)}>View moved session</button> : null}
       <div className="x-section-list">
+        {isSupp ? <SuppressedList api={api} openKey={suppressedOpen ?? null} gone={suppressedGone ?? null} onOpen={(r) => onOpenSuppressed?.(r)} /> : <>
         {/* re-review N4: a failed live set says so even while its last rows are shown */}
         {isLive && live.failed && rows.length > 0 ? <p className="x-empty-note">{t.empty}</p> : null}
         {!isLive && list.status === 'failed' && list.rows.length === 0 ? (
@@ -462,6 +472,7 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
         {!isLive && list.status === 'failed' && list.rows.length > 0 ? ( // re-review N2: Retry repeats what failed
           <p className="x-empty-note">{failureNote(list)} <button type="button" className="x-btn x-btn-quiet" onClick={() => load(q, list.failed === 'more' ? 'more' : 'resync')}>Retry</button></p>
         ) : null}
+        </>}
       </div>
       {t.searching ? <p className="x-list-foot">{COVERAGE}</p> : null}
       <MoveDialog target={moveTarget} api={api} onDone={(id, to) => void moved(id, to)} onClosed={() => setMoveTarget(null)} />

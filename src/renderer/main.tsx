@@ -147,6 +147,9 @@ function App() {
       purge: (session) => client.current?.purge(session) ?? Promise.resolve('failed' as const), // XAIBO-PROD-534: nothing sent, nothing purged
       projects: (cursor, limit) => client.current?.projects(cursor, limit) ?? none(), // XAIBO-PROD-535: the Move dialog's lists
       folders: (project, cursor, limit) => client.current?.folders(project, cursor, limit) ?? none(),
+      // XAIBO-PROD-536: Suppressed; without a connection nothing is sent, so nothing was re-imported
+      suppressed: (cursor, limit) => client.current?.suppressed(cursor, limit) ?? none(),
+      reimport: (key) => client.current?.reimport(key) ?? Promise.resolve('failed' as const),
     };
   }, []);
 

@@ -275,3 +275,78 @@ test('Move to project or folder from the Session list and the open-session heade
   await expect(headMore).toHaveCount(0);
   await expect(page.locator('#open-session-title')).toBeFocused(); // re-review L4: the removed More button hands focus to the title
 });
+
+// XAIBO-PROD-536 (P5-T18 part 3b-7; design §6.4 Suppressed, §5.4 Re-import; D-P5-08): a purged session is listed in
+// Suppressed by its metadata only; opening it shows the metadata pane (no transcript); Re-import asks first (Cancel back
+// to Re-import), then the record leaves with the list heading focused, and the session returns to All with Keep.
+test('Suppressed: a purged session\'s metadata pane and Re-import', async ({ xaibo }) => {
+  test.setTimeout(150_000);
+  xaibo.touchStore(() => {
+    claude(xaibo.home, 1, '/tmp/xaibo-fixture/atlas', 'Add a token bucket rate limiter');
+    claude(xaibo.home, 2, '/tmp/xaibo-fixture/notes', 'Summarize the meeting notes');
+  });
+  const run = await xaibo.launch();
+  const page = await xaibo.window(run);
+  await run.app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(1280, 800));
+  await openSessions(page);
+  const pane = page.getByRole('region', { name: 'Session list' });
+  for (const x of ['rate limiter', 'meeting notes']) await expect(records(page).filter({ hasText: x })).toHaveCount(1, { timeout: 20_000 });
+  const menu = page.getByRole('menu', { name: 'More actions' });
+
+  // purge one session: Move to Trash, then Purge from Trash
+  await more(page, 'meeting notes').click();
+  await menu.getByRole('menuitem', { name: 'Move to Trash' }).click();
+  await modes(page).getByRole('button', { name: 'Trash' }).click();
+  await page.getByRole('button', { name: /^Purge .*meeting notes/ }).click();
+  await page.getByRole('dialog', { name: 'Purge Xaibo copy?' }).getByRole('button', { name: 'Purge' }).click();
+  await expect(pane.getByText('Trash is empty.')).toBeVisible();
+
+  // Suppressed lists it by metadata only; search and filters are hidden
+  await modes(page).getByRole('button', { name: 'Suppressed' }).click();
+  const supp = page.getByRole('list', { name: 'Suppressed sessions' }).getByRole('listitem');
+  await expect(supp).toHaveCount(1);
+  await expect(supp.first()).toContainText('claude · ');
+  await expect(supp.first()).toContainText('Purged by you');
+  await expect(supp.first()).not.toContainText('meeting notes');
+  await expect(pane.getByRole('search', { name: 'Search sessions' })).toBeHidden();
+  await shot(page, 'history-suppressed-list');
+
+  // the metadata pane: no transcript; Re-import asks first and Cancel returns to Re-import
+  await supp.first().getByRole('button').click();
+  const meta = page.getByRole('region', { name: 'Suppressed session' });
+  await expect(page.locator('#suppressed-title')).toBeFocused();
+  await expect(meta).toContainText('Purged by you');
+  await expect(meta).toContainText('purged content is never reconstructed');
+  await expect(meta).not.toContainText('meeting notes');
+  const reimport = meta.getByRole('button', { name: 'Re-import' });
+  await reimport.click();
+  const dialog = page.getByRole('dialog', { name: 'Re-import this session?' });
+  await expect(dialog).toContainText('removes the suppression');
+  await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
+  await shot(page, 'history-suppressed-reimport');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(reimport).toBeFocused();
+
+  // Re-import: the record leaves, the pane closes, the list heading takes focus with the outcome beside it
+  await reimport.click();
+  await dialog.getByRole('button', { name: 'Re-import' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(meta).toHaveCount(0);
+  await expect(pane.locator('.x-action-note')).toHaveText('Re-imported. The session returns to the list once its native files are read again; Keep is set.');
+  await expect(page.locator('#results-heading')).toBeFocused();
+  await expect(pane.getByText('No suppressed sessions.')).toBeVisible();
+  // the session comes back to All, kept (D-P5-08)
+  await modes(page).getByRole('button', { name: 'All sessions' }).click();
+  await expect(records(page).filter({ hasText: 'meeting notes' })).toHaveCount(1, { timeout: 20_000 });
+  await expect(records(page).filter({ hasText: 'meeting notes' }).locator('[data-field="history"]')).toContainText('Keep');
+  // re-review M: purged again, it is listed in Suppressed again (an earlier Re-import result never hides it)
+  await more(page, 'meeting notes').click();
+  await menu.getByRole('menuitem', { name: 'Move to Trash' }).click();
+  await modes(page).getByRole('button', { name: 'Trash' }).click();
+  await page.getByRole('button', { name: /^Purge .*meeting notes/ }).click();
+  await page.getByRole('dialog', { name: 'Purge Xaibo copy?' }).getByRole('button', { name: 'Purge' }).click();
+  await expect(pane.getByText('Trash is empty.')).toBeVisible();
+  await modes(page).getByRole('button', { name: 'Suppressed' }).click();
+  await expect(supp).toHaveCount(1);
+});

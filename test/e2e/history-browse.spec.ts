@@ -44,6 +44,8 @@ test('Session list browsing: modes, search, agent filter, folder group', async (
   await expect(live).toBeFocused();
   await expect(all).toHaveAttribute('aria-pressed', 'true');
   await page.keyboard.press('End');
+  await expect(modes(page).getByRole('button', { name: 'Suppressed' })).toBeFocused(); // XAIBO-PROD-536: the last mode
+  await page.keyboard.press('ArrowLeft');
   const trash = modes(page).getByRole('button', { name: 'Trash' });
   await expect(trash).toBeFocused();
   await page.keyboard.press('Enter');
