@@ -19,7 +19,7 @@ import { Icon } from '../status/StatusBadge.tsx';
 import { show, visible } from '../text.ts';
 import { compactStatus, type SessionChanges } from '../workspace/view.ts';
 import { canLoadMore, capped, COVERAGE, emphasis, failureNote, filterOf, freshList, groupLabel, initialQuery, isPlain, listTexts, mergeLive, mergeRows, MODES, modeKey,
-  refill, rowLines, startLoad, type BrowseRow, type ListState, type LiveState, type Query } from './browse.ts';
+  lastKnownRows, refill, rowLines, startLoad, type BrowseRow, type ListState, type LiveState, type Query } from './browse.ts';
 import { doneText, errorText, goneUndo, menuClosed, menuItems, NOTICE, opOf, place, trashed, undoLabel, undone, type Shared, type Toggle, type Undo } from './actions.ts';
 import { MoveDialog, type MoveApi, type MoveOutcome, type MoveTarget } from './MoveDialog.tsx';
 import { moveFocus } from './move.ts';
@@ -386,7 +386,8 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
   const isLive = q.mode === 'live';
   const isSupp = q.mode === 'suppressed';
   const t = listTexts(q, live);
-  const rows: BrowseRow[] = isLive ? (live.rows as HistoryRow[]) : list.rows;
+  const fallback = isLive ? null : lastKnownRows(q, list, live.rows, lastKnown); // XAIBO-PROD-541
+  const rows: BrowseRow[] = isLive ? (live.rows as HistoryRow[]) : fallback ? (fallback as HistoryRow[]) : list.rows;
   const ready = isLive ? live.loaded && !live.failed : list.status === 'ready' || list.status === 'more';
   const agentName = q.agent ? (agents.find((a) => a.agent === q.agent)?.name ?? q.agent) : null;
   const more = isLive ? live.more : list.next !== null;
@@ -460,7 +461,7 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
         {isSupp ? <SuppressedList api={api} openKey={suppressedOpen ?? null} gone={suppressedGone ?? null} onOpen={(r) => onOpenSuppressed?.(r)} /> : <>
         {/* re-review N4: a failed live set says so even while its last rows are shown */}
         {isLive && live.failed && rows.length > 0 ? <p className="x-empty-note">{t.empty}</p> : null}
-        {!isLive && list.status === 'failed' && list.rows.length === 0 ? (
+        {!isLive && list.status === 'failed' && list.rows.length === 0 && !fallback ? (
           <p className="x-empty-note">{failureNote(list)} <button type="button" className="x-btn x-btn-quiet" onClick={() => load(q, 'new')}>Retry</button></p>
         ) : rows.length === 0 && (ready || isLive) ? <p className="x-empty-note">{t.empty}</p> : (
           <VirtualList key={JSON.stringify(q)} items={rows} getKey={keyOf} label="Sessions" itemLabel={recordLabel} estimateSize={t.searching ? 112 : 76}
@@ -469,7 +470,10 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
               onMore={r.trashedAt != null ? null : (x, el) => { moreTrigger.current = el; openMenu(x.id); }}
               trash={r.trashedAt != null && !isLive ? { restore: (x) => void restore(x), purge: (x, el) => setPurgeTarget({ id: x.id, trigger: el }) } : null} />} />
         )}
-        {!isLive && list.status === 'failed' && list.rows.length > 0 ? ( // re-review N2: Retry repeats what failed
+        {fallback ? (
+          <p className="x-empty-note">{failureNote(list) ?? 'Loading the list…'} Showing the last-known live sessions.{' '}
+            {list.status === 'failed' ? <button type="button" className="x-btn x-btn-quiet" onClick={() => load(q, 'new')}>Retry</button> : null}</p>
+        ) : !isLive && list.status === 'failed' && list.rows.length > 0 ? ( // re-review N2: Retry repeats what failed
           <p className="x-empty-note">{failureNote(list)} <button type="button" className="x-btn x-btn-quiet" onClick={() => load(q, list.failed === 'more' ? 'more' : 'resync')}>Retry</button></p>
         ) : null}
         </>}

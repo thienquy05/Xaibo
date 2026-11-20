@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { HistoryRow, MapNode, SessionRow } from '../../../src/shared/ipc.ts';
-import { canLoadMore, capped, COVERAGE, emphasis, failureNote, filterOf, groupLabel, initialQuery, isPlain, listTexts, mergeLive, mergeRows, MODES, modeKey, NO_MATCH, order, orderLabel,
+import { canLoadMore, capped, COVERAGE, emphasis, failureNote, filterOf, groupLabel, initialQuery, isPlain, lastKnownRows, listTexts, mergeLive, mergeRows, MODES, modeKey, NO_MATCH, order, orderLabel,
   refill, rowLines, startLoad, type ListState } from '../../../src/renderer/history/browse.ts';
 
 const at = (d: number) => new Date(2026, 10, d, 12).getTime();
@@ -173,6 +173,24 @@ test('XAIBO-PROD-540: a repository key is the common git directory, so the label
   assert.equal(groupLabel(node({ project: null, at: { repo: '/w/atlas-api/.git/', worktree: null } })).label, 'atlas-api');
   assert.equal(groupLabel(node({ project: null, at: { repo: '/w/atlas-api/.git/modules/vendor', worktree: null } })).label, 'vendor');
   assert.equal(groupLabel(node({ project: null, at: { repo: '/.git', worktree: null } })).label, 'Repository label unavailable');
+});
+
+test('XAIBO-PROD-541 (design §6.13 B4): after collector loss, plain All sessions with nothing loaded shows the last-known live rows', () => {
+  const failed = (rows: HistoryRow[] = []): ListState<number> => ({ rows, snippets: new Map(), next: null, status: 'failed', capacity: 2, failed: 'new' });
+  const live = [session(3), session(1)];
+  assert.deepEqual(lastKnownRows(initialQuery, failed(), live, true), live);
+  // D-P4-09: during the gap the first request waits on the dead port, so the list is still loading
+  assert.deepEqual(lastKnownRows(initialQuery, { ...failed(), status: 'loading', failed: null }, live, true), live);
+  // not lost, a page already shown, nothing in memory, or a list that loaded: no fallback
+  assert.equal(lastKnownRows(initialQuery, failed(), live, false), null);
+  assert.equal(lastKnownRows(initialQuery, failed([hrow(8)]), live, true), null);
+  assert.equal(lastKnownRows(initialQuery, failed(), [], true), null);
+  assert.equal(lastKnownRows(initialQuery, { ...failed(), status: 'ready', failed: null }, live, true), null);
+  // live rows cannot answer a search, a filter, a group or another mode
+  assert.equal(lastKnownRows({ ...initialQuery, search: 'x' }, failed(), live, true), null);
+  assert.equal(lastKnownRows({ ...initialQuery, agent: 'codex' }, failed(), live, true), null);
+  assert.equal(lastKnownRows({ ...initialQuery, group: { project: 7, at: null } }, failed(), live, true), null);
+  assert.equal(lastKnownRows({ ...initialQuery, mode: 'archived' }, failed(), live, true), null);
 });
 
 test('E2E-found: only search results carry an order label (design §6.4 "Search relevance"); the header stays one line', () => {

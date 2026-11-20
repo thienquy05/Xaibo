@@ -27,6 +27,12 @@ export function filterOf(q: Query): HistoryFilter | null {
 export const orderLabel = (q: Query) => (q.search && q.mode !== 'live' ? 'Search relevance' : null);
 /** Only the unfiltered All view takes new sessions and reorders on activity. */
 export const isPlain = (q: Query) => q.mode === 'all' && q.search === '' && q.agent === null && q.group === null;
+/** XAIBO-PROD-541 (design §6.13 B4): after collector loss, plain All sessions with no page loaded (its request waits on
+ *  the dead port until the restart, D-P4-09, or failed) falls back to the last-known live rows held in memory; live rows
+ *  cannot answer a search, filter, group or another mode. The resync on reconnect reloads the list. */
+export function lastKnownRows<K>(q: Query, list: ListState<K>, live: SessionRow[], lost: boolean): SessionRow[] | null {
+  return lost && isPlain(q) && (list.status === 'loading' || list.status === 'failed') && list.rows.length === 0 && live.length > 0 ? live : null;
+}
 
 /** Design §6.4 default order: pinned first, then last activity descending (unknown last), then id ascending, exactly the
  *  service's ORDER BY and keyset (review M1: a trimmed tie group continues with id > cursor). */
