@@ -16,7 +16,8 @@ export interface Query { mode: Mode; search: string; agent: string | null; group
 export const initialQuery: Query = { mode: 'all', search: '', agent: null, group: null };
 
 export const NO_MATCH = 'No matches. Change filters or clear search.';
-export const COVERAGE = 'Search covers retained indexed content; incomplete sources may have gaps.';
+// Gate 5 G5c-3 (PRD §5.7): the second sentence is the service's SEARCH_ITEM_LIMIT (service/search/query.ts, FTS_MAX_BYTES)
+export const COVERAGE = 'Search covers retained indexed content; incomplete sources may have gaps. Only the first 64 KiB of each item is searchable.';
 
 /** The service filter; null for Live, which shows the live set, and for Suppressed, which pages suppression metadata. */
 export function filterOf(q: Query): HistoryFilter | null {

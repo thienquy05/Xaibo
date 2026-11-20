@@ -15,7 +15,7 @@ import { show, visible } from '../text.ts';
 import { compactStatus } from '../workspace/view.ts';
 import {
   collapse, cursorFor, emptyLevel, evictedText, expand, groupDetail, holdsSessions, kindOf, loadedText, nodeText, nounOf, pageArrived, pageFailed, pageSize,
-  dropSession, pagingAnchor, resumeLevel, REFUSED, returnTarget, sessionKey, connectorPath, rowLabel, rows as flatten, sessionDetail, setPositions, touch, treeKey, typeLabel, type Detail, type Dir, type Expansion, type Kids, type Level, type Row,
+  dropSession, pageRefreshed, pagingAnchor, refocus, replyApplies, resumeLevel, startRefresh, REFUSED, returnTarget, sessionKey, connectorPath, rowLabel, rows as flatten, sessionDetail, setPositions, touch, treeKey, typeLabel, type Detail, type Dir, type Expansion, type Kids, type Level, type Row,
 } from './tree.ts';
 
 export interface MapApi {
@@ -34,9 +34,8 @@ const rootsEmptyFlag = (x: State) => x.roots.pages.every((p) => p.items.length =
 const start = (): State => ({ roots: { ...(emptyLevel() as Level<MapNode, MapGroup>), loading: 'first' }, kids: {}, exp: { expanded: [], visit: {}, tick: 0 }, selected: null });
 const leafFilter = (group: MapGroup): HistoryFilter => ({ mode: 'all', agent: null, project: null, folder: null, group });
 
-/** `tick` counts session activity: an empty map loads its first page again when sessions arrive (an import after start).
- *  ponytail: a shown tree, and one restored by Return to Agent Map, keeps the counts and live states it loaded until the
- *  map is entered again from the nav link; refresh resident levels when users ask. */
+/** `tick` counts session activity: an empty map loads its first page again when sessions arrive (an import after start);
+ *  Gate 5 G5d-1: a shown map, and one restored (Return or the nav link), fetches its resident pages again instead. */
 export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, restoreId = null, onSave }: {
   api: MapApi; agents: AgentStatus[]; lastKnown: string | null; tick: number; onOpen: (row: HistoryRow) => void;
   /** XAIBO-PROD-539 Return to Agent Map: the map as left and the session to return to; `onSave` keeps it on leaving. */
@@ -59,6 +58,12 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
   const groupOf = (k: string | null): MapGroup | null => { const r = k === null ? null : byKey.get(k); return r?.type === 'group' ? r.node.group : null; };
   const say = (t: string) => setAnnounce((a) => (a === t ? `${t} ` : t)); // a repeated text is announced again
 
+  const fetchLevel = (group: MapGroup | null, cursor: MapGroup | HistoryKey | null): Promise<{ items: Child[]; next: MapGroup | HistoryKey | null }> => {
+    const limit = pageSize(group);
+    return group !== null && holdsSessions(group)
+      ? api.history(leafFilter(group), cursor as HistoryKey | null, limit).then((r) => ({ items: r.rows, next: r.next }))
+      : api.mapGroups(group, cursor as MapGroup | null, limit).then((r) => ({ items: r.groups, next: r.next }));
+  };
   const load = (parent: string | null, group: MapGroup | null, dir: Dir, note = '') => {
     const level = parent === null ? sRef.current.roots : sRef.current.kids[parent];
     if (dir !== 'first' && (!level || level.loading)) return;
@@ -71,11 +76,8 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
       return l ? { ...x, kids: { ...x.kids, [parent]: f(l) } } : x; // collapsed meanwhile: nothing to update
     });
     put((l) => ({ ...l, loading: dir, failed: null }));
-    const noun = nounOf(group), limit = pageSize(group);
-    const req: Promise<{ items: Child[]; next: MapGroup | HistoryKey | null }> = group !== null && holdsSessions(group)
-      ? api.history(leafFilter(group), cursor as HistoryKey | null, limit).then((r) => ({ items: r.rows, next: r.next }))
-      : api.mapGroups(group, cursor as MapGroup | null, limit).then((r) => ({ items: r.groups, next: r.next }));
-    req.then((r) => {
+    const noun = nounOf(group);
+    fetchLevel(group, cursor).then((r) => {
       if (tokens.current.get(id) !== token) return;
       // review M2: focus on the paging item moves to the row before the new ones, so the next arrow reaches them
       const old = parent === null ? sRef.current.roots : sRef.current.kids[parent];
@@ -115,18 +117,82 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
     });
     return () => { live = false; };
   }, []);
-  // review L2: at most one empty-map reload every 2 s, the last tick of a burst still served
+  // Gate 5 G5d-1: each resident page of the root and of every expanded level is fetched again from its own cursor and
+  // replaced in place (bounded by the state itself: RESIDENT pages a level, PATHS paths). A level with a load in flight is
+  // skipped, a reply after a newer load of its level is dropped, and a failed refresh keeps what is shown. Review M: a run
+  // starts only once the previous one settled, and a reply applies only while its run is the latest.
+  // `refreshed`: a refresh reply was applied, and whether focus was in the tree just before (review L: only then it moves)
+  const refreshed = useRef<{ inTree: boolean } | null>(null);
+  const gate = useRef({ gen: 0, pending: false });
+  const refresh = () => {
+    const g = startRefresh(gate.current);
+    if (!g) return;
+    gate.current = g;
+    const run: Promise<unknown>[] = [];
+    const x = sRef.current;
+    const groups = new Map(flatten(x.roots, x.kids, x.exp.expanded).flatMap((r) => (r.type === 'group' ? [[r.key, r.node.group] as const] : [])));
+    const levels: [string | null, Level<Child, MapGroup | HistoryKey>][] = [[null, x.roots as Level<Child, MapGroup | HistoryKey>],
+      ...x.exp.expanded.flatMap((k) => { const l = x.kids[k]; return l && groups.has(k) ? [[k, l] as [string, Level<Child, MapGroup | HistoryKey>]] : []; })];
+    for (const [parent, l] of levels) {
+      if (l.loading) continue;
+      const id = parent ?? '', token = tokens.current.get(id), group = parent === null ? null : groups.get(parent)!;
+      for (const { from } of l.pages) {
+        run.push(fetchLevel(group, from).then((r) => {
+          if (tokens.current.get(id) !== token || !replyApplies(gate.current, g.gen)) return;
+          const inTree = document.activeElement !== null && hostRef.current?.contains(document.activeElement) === true;
+          refreshed.current = { inTree: (refreshed.current?.inTree ?? false) || inTree };
+          setS((y) => {
+            if (parent === null) return { ...y, roots: pageRefreshed(y.roots as Level<Child, MapGroup | HistoryKey>, from, r.items, r.next) as Level<MapNode, MapGroup> };
+            const k = y.kids[parent];
+            return k ? { ...y, kids: { ...y.kids, [parent]: pageRefreshed(k, from, r.items, r.next) } } : y;
+          });
+        }, () => undefined));
+      }
+    }
+    void Promise.allSettled(run).then(() => { if (gate.current.gen === g.gen) gate.current = { ...gate.current, pending: false }; });
+  };
+  // a focused or selected row a refresh removed hands over to its nearest surviving ancestor (focus only moves when it was
+  // in the tree: a refresh never takes focus from elsewhere)
+  const prevList = useRef(list);
+  useEffect(() => {
+    const before = prevList.current;
+    prevList.current = list;
+    const r = refreshed.current;
+    if (!r) return;
+    refreshed.current = null;
+    const k = focusKey.current;
+    if (k && !byKey.has(k)) {
+      const to = refocus(before, list, k);
+      if (to) {
+        focusKey.current = to;
+        if (r.inTree) setFocusReq((f) => ({ key: to, n: (f?.n ?? 0) + 1 }));
+      }
+    }
+    const sel = sRef.current.selected;
+    if (sel !== null && !byKey.has(sel)) setS((x) => ({ ...x, selected: refocus(before, list, sel) }));
+  }, [list]);
+  // review L2: at most one empty-map reload or refresh every 2 s, the last tick of a burst still served; on mount this
+  // refreshes a restored map once (Return, or the nav link)
   const lastReload = useRef(0), reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
+    if (reloadTimer.current) return;
     const r = sRef.current.roots;
-    if (r.loading || r.failed || r.next !== null || !r.pages.every((p) => p.items.length === 0) || reloadTimer.current) return;
+    if (r.loading || r.failed || (r.next !== null && r.pages.every((p) => p.items.length === 0))) return;
     const wait = Math.max(0, lastReload.current + 2000 - Date.now());
-    reloadTimer.current = setTimeout(() => { reloadTimer.current = null; lastReload.current = Date.now(); loadRef.current(null, null, 'first'); }, wait);
+    reloadTimer.current = setTimeout(() => {
+      reloadTimer.current = null;
+      lastReload.current = Date.now();
+      const now = sRef.current.roots;
+      if (now.pages.some((p) => p.items.length > 0)) refreshRef.current();
+      else if (!now.loading && !now.failed && now.next === null) loadRef.current(null, null, 'first');
+    }, wait);
   }, [tick]);
   useEffect(() => () => { if (reloadTimer.current) clearTimeout(reloadTimer.current); }, []);
 
   const loadRef = useRef(load);
   loadRef.current = load;
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
   const doExpand = (key: string) => {
     setNotice(null); // review L3 (part 2b): a Return notice lasts until the next tree action
     const r = expand(s.exp, key, parentOf, focusKey.current || key);

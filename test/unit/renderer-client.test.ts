@@ -215,6 +215,26 @@ test('markers: a failed reply rejects; an ok reply without the flag resolves', a
   await assert.rejects(odd, /invalid reply/);
 });
 
+// Gate 5 G5b2-5: a history, projects or folders reply that says failed rejects, so the Session list keeps its loaded rows
+// and shows the failure note with Retry (as search, map groups and markers do), never an empty page read as the end.
+test('history, projects, folders: a failed reply rejects; an ok reply without the flag resolves', async () => {
+  const f = fakePort();
+  const c = createClient(f.port, { sessions() {}, agents() {} });
+  const filter = { mode: 'all' as const, agent: null, project: null, folder: null };
+  const history = c.history(filter, null, 50);
+  f.deliver({ v: 1, type: 'history', id: 1, rows: [], next: null, failed: true });
+  await assert.rejects(history, /unavailable/);
+  const projects = c.projects(null, 50);
+  f.deliver({ v: 1, type: 'projects', id: 2, projects: [], next: null, failed: true });
+  await assert.rejects(projects, /unavailable/);
+  const folders = c.folders(3, null, 50);
+  f.deliver({ v: 1, type: 'folders', id: 3, folders: [], next: null, failed: true });
+  await assert.rejects(folders, /unavailable/);
+  const ok = c.history(filter, null, 50);
+  f.deliver({ v: 1, type: 'history', id: 4, rows: [], next: null });
+  assert.deepEqual(await ok, { rows: [], next: null });
+});
+
 // XAIBO-PROD-531 (P5-T18 part 3b-2): one session's history row; failed rejects (the caller keeps its record and offers
 // Retry), null resolves (gone); design security review L2: a row for another session than the one asked for rejects.
 test('historyRow: its own row or null; failed rejects; a row for another session rejects', async () => {

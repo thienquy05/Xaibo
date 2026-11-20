@@ -341,9 +341,9 @@ export type PortMessage =
   | { v: 1; type: 'retention'; id: number; setting: RetentionSetting | null; lastRunAt: number | null }
   | { v: 1; type: 'setRetention'; id: number; result: (typeof SAVE_RESULTS)[number] }
   | { v: 1; type: 'storage'; id: number; report: StorageReport | null; failed?: true }
-  | { v: 1; type: 'history'; id: number; rows: HistoryRow[]; next: HistoryKey | null }
-  | { v: 1; type: 'projects'; id: number; projects: Named[]; next: number | null }
-  | { v: 1; type: 'folders'; id: number; folders: Named[]; next: number | null }
+  | { v: 1; type: 'history'; id: number; rows: HistoryRow[]; next: HistoryKey | null; failed?: true }
+  | { v: 1; type: 'projects'; id: number; projects: Named[]; next: number | null; failed?: true }
+  | { v: 1; type: 'folders'; id: number; folders: Named[]; next: number | null; failed?: true }
   | { v: 1; type: 'overlay'; id: number; result: OverlayResult }
   | { v: 1; type: 'mapGroups'; id: number; groups: MapNode[]; next: MapGroup | null; failed?: true }
   | { v: 1; type: 'cost'; id: number; cost: CostDetail | null }
@@ -786,14 +786,18 @@ export function parsePortRequest(x: unknown): PortRequest | null {
 export function parsePortMessage(x: unknown): PortMessage | null {
   const m = envelope(x);
   if (!m) return null;
-  if (m.type === 'history') {
-    const rows = all(m.rows, MAX_ITEMS, parseHistoryRow), next = parseHistoryKey(m.next);
-    return count(m.id) && rows && next !== undefined ? { v: 1, type: 'history', id: m.id, rows, next } : null;
+  // review L1: failed only where it is defined; a failed page carries nothing
+  const failedOf = (empty: boolean) => (m.failed === undefined ? {} : m.failed === true && empty ? { failed: true as const } : null);
+  if (m.type === 'history') { // Gate 5 G5b2-5: failed = the store could not answer (the renderer keeps its rows, Retry)
+    const rows = all(m.rows, MAX_ITEMS, parseHistoryRow), next = parseHistoryKey(m.next), failed = failedOf(rows !== null && rows.length === 0 && next === null);
+    return count(m.id) && rows && next !== undefined && failed ? { v: 1, type: 'history', id: m.id, rows, next, ...failed } : null;
   }
   if (m.type === 'projects' || m.type === 'folders') {
     const list = all(m[m.type], MAX_ITEMS, parseNamed);
     if (!count(m.id) || !list || !idOrNull(m.next)) return null;
-    return m.type === 'projects' ? { v: 1, type: 'projects', id: m.id, projects: list, next: m.next } : { v: 1, type: 'folders', id: m.id, folders: list, next: m.next };
+    const failed = failedOf(list.length === 0 && m.next === null);
+    if (!failed) return null;
+    return m.type === 'projects' ? { v: 1, type: 'projects', id: m.id, projects: list, next: m.next, ...failed } : { v: 1, type: 'folders', id: m.id, folders: list, next: m.next, ...failed };
   }
   if (m.type === 'mapGroups') {
     const groups = all(m.groups, MAX_ITEMS, parseMapNode), next = groupOrNull(m.next);
@@ -844,8 +848,6 @@ export function parsePortMessage(x: unknown): PortMessage | null {
     return count(m.id) && rows && next !== undefined ? { v: 1, type: 'page', id: m.id, rows, next } : null;
   }
   if (m.type === 'clearUsage') return count(m.id) && oneOf(CLEAR_USAGE_RESULTS, m.result) ? { v: 1, type: 'clearUsage', id: m.id, result: m.result } : null;
-  // review L1: failed only where it is defined; a failed page carries nothing
-  const failedOf = (empty: boolean) => (m.failed === undefined ? {} : m.failed === true && empty ? { failed: true as const } : null);
   if (m.type === 'search') {
     const hits = all(m.hits, MAX_ITEMS, parseSearchHit), next = parseSearchKey(m.next), failed = failedOf(hits !== null && hits.length === 0 && next === null);
     return count(m.id) && hits && next !== undefined && failed ? { v: 1, type: 'search', id: m.id, hits, next, ...failed } : null;

@@ -91,13 +91,15 @@ const SECTIONS = ['conversation', 'timeline', 'tools', 'subagents', 'files', 'co
 type Section = (typeof SECTIONS)[number];
 const SECTION_TEXT: Record<Section, string> = { conversation: 'Conversation', timeline: 'Timeline', tools: 'Tools', subagents: 'Subagents', files: 'Files', context: 'Context', cost: 'Cost' };
 
-export function OpenSession({ row, changed, api, lastKnown, listShown, onShowList, onBack, onReturn, returnTo = 'Dashboard', history = null, onHistory }: {
+export function OpenSession({ row, changed, api, lastKnown, listShown, onShowList, onBack, onReturn, returnTo = 'Dashboard', history = null, onHistory, onTrashed }: {
   row: SessionRow; changed: number; api: WorkspaceApi; lastKnown: boolean; listShown: boolean; onShowList: () => void; onBack: () => void;
   /** XAIBO-PROD-437 (design §6.3 Return to source): set when the session was opened from the Dashboard or (XAIBO-PROD-539)
    *  the Agent Map, which `returnTo` names. */
   onReturn?: () => void; returnTo?: 'Dashboard' | 'Agent Map';
   /** XAIBO-PROD-533: a history row refreshed elsewhere (the list), and the way to share one refreshed here. */
   history?: Shared | null; onHistory?: (id: number, r: HistoryRow | null) => void;
+  /** Gate 5 G5d-3: a header Move to Trash that succeeded; the Session list shows its Undo notice. */
+  onTrashed?: (id: number) => void;
 }) {
   const id = row.id;
   // XAIBO-PROD-424: the session's change generation (deltas naming it, resyncs); a lastActivity bucket missed records
@@ -127,6 +129,9 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
   const [histRetry, setHistRetry] = useState(0);
   const [keepNote, setKeepNote] = useState<string | null>(null);
   const [keepBusy, setKeepBusy] = useState(false);
+  // Gate 5 review L (G5d-3): a header Trash note shown while the list was hidden goes once the list (with its Undo notice) is
+  const shownBefore = useRef(listShown);
+  useEffect(() => { if (listShown && !shownBefore.current) setKeepNote((n) => (n === NOTICE ? null : n)); shownBefore.current = listShown; }, [listShown]);
   useEffect(() => {
     let on = true;
     api.historyRow(id).then((r) => { if (on) setHist({ row: r, failed: false }); }, () => { if (on) setHist((h) => ({ row: h?.row ?? null, failed: true })); });
@@ -160,6 +165,7 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
     const res = await api.overlay(op).catch(() => null);
     if (!res) setKeepNote('The result is unavailable.'); // a lost reply never means success
     else if (!res.ok) setKeepNote(errorText(res.error));
+    else if (kind === 'trash' && onTrashed) { onTrashed(r.id); setKeepNote(listShown ? null : NOTICE); } // the list's Undo notice says it
     else setKeepNote(kind === 'restore' ? 'Restored from Trash.' : kind === 'trash' ? NOTICE : doneText(kind, on));
     await reread();
     setKeepBusy(false);

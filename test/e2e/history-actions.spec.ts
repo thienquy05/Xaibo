@@ -274,6 +274,12 @@ test('Move to project or folder from the Session list and the open-session heade
   await expect(page.getByRole('region', { name: 'In Trash' })).toBeVisible();
   await expect(headMore).toHaveCount(0);
   await expect(page.locator('#open-session-title')).toBeFocused(); // re-review L4: the removed More button hands focus to the title
+  // Gate 5 G5d-3: the header's Move to Trash takes the list's Undo notice; Undo focuses the reopened session's title
+  const undo = page.locator('.x-undo');
+  await expect(undo).toContainText('Moved to Trash.');
+  await undo.getByRole('button', { name: /^Undo/ }).click();
+  await expect(page.getByRole('region', { name: 'In Trash' })).toHaveCount(0);
+  await expect(page.locator('#open-session-title')).toBeFocused();
 });
 
 // XAIBO-PROD-536 (P5-T18 part 3b-7; design §6.4 Suppressed, §5.4 Re-import; D-P5-08): a purged session is listed in

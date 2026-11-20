@@ -143,7 +143,7 @@ export function listHistory(db: DatabaseSync, f: HistoryFilter, cursor: HistoryK
     where.push(`(${P} < ? OR (${P} = ? AND ${after}))`);
     args.push(p, p, ...(cursor.lastActivity === null ? [cursor.id] : [cursor.lastActivity, cursor.lastActivity, cursor.id]));
   }
-  const sql = `${ROW.replace(/^SELECT /, `SELECT ${cols}`)}${joins}${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY ${P} DESC, s.last_activity DESC, s.id LIMIT ?`;
+  const sql = `${ROW(db).replace(/^SELECT /, `SELECT ${cols}`)}${joins}${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY ${P} DESC, s.last_activity DESC, s.id LIMIT ?`;
   const rows = historyOf(db, kinds, models, live)(db.prepare(sql).all(...args, n) as unknown as HistoryRaw[]);
   const last = rows.at(-1);
   return { rows, next: rows.length === n && last ? { pinned: last.pinned, lastActivity: last.lastActivity, id: last.id } : null };
@@ -171,7 +171,7 @@ export function historyRows(db: DatabaseSync, ids: number[], kinds: SessionKind[
   if (!ids.length) return new Map();
   const overlay = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'overlays'").get() !== undefined;
   const { cols, joins } = historySql(overlay);
-  const sql = `${ROW.replace(/^SELECT /, `SELECT ${cols}`)}${joins} WHERE s.id IN (${ids.map(() => '?').join(', ')}) AND ${notPurging(db)}`;
+  const sql = `${ROW(db).replace(/^SELECT /, `SELECT ${cols}`)}${joins} WHERE s.id IN (${ids.map(() => '?').join(', ')}) AND ${notPurging(db)}`;
   return new Map(historyOf(db, kinds, models, live)(db.prepare(sql).all(...ids) as unknown as HistoryRaw[]).map((r) => [r.id, r]));
 }
 

@@ -311,11 +311,12 @@ test('Agent Map: wide fan-out with connectors and stacked rows, light and dark',
       await page.getByRole('navigation', { name: 'Areas' }).getByRole('link', { name: 'Agent Map' }).click();
       const tree = page.getByRole('tree', { name: 'Repositories, worktrees and sessions' });
       const repo = tree.getByRole('treeitem', { name: /^example-app · Sessions 3$/ });
+      // G5d-2 (design §5.3): area navigation keeps the map's expansion, so expand only what is still collapsed
       await repo.focus({ timeout: 20_000 });
-      await page.keyboard.press('ArrowRight');
+      if (await repo.getAttribute('aria-expanded') !== 'true') await page.keyboard.press('ArrowRight');
       const wt = tree.getByRole('treeitem', { name: /^example-app · 2 sessions/ });
       await wt.focus();
-      await page.keyboard.press('ArrowRight');
+      if (await wt.getAttribute('aria-expanded') !== 'true') await page.keyboard.press('ArrowRight');
       await expect(tree.getByRole('treeitem', { level: 3 })).toHaveCount(2);
       await page.keyboard.press('Enter'); // selects the main checkout: Details shows its evidence and counts
       await expect(page.getByRole('region', { name: 'Details' }).getByRole('heading', { level: 3 })).toHaveText('example-app');
@@ -323,7 +324,7 @@ test('Agent Map: wide fan-out with connectors and stacked rows, light and dark',
       await page.mouse.move(0, 0);
       // a connector to a row partly below the pane is antialiased where the pane clips it: that one pixel varies run to run
       await shoot(page, `agent-map-${size[0]}x${size[1]}`, [], 4);
-      await openSessions(page); // the nav link starts the map afresh at the next size
+      await openSessions(page); // the nav link returns to the kept map at the next size (G5d-2)
     }
   } finally {
     rmSync(root, { recursive: true, force: true });

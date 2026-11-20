@@ -254,15 +254,23 @@ test('Return to Agent Map: the source leaf, or its former group after Move to Tr
   await page.getByRole('menu', { name: 'More actions' }).getByRole('menuitem', { name: 'Move to Trash' }).click();
   await expect(page.getByRole('region', { name: 'In Trash' })).toBeVisible();
   await head.getByRole('button', { name: 'Return to Agent Map' }).click();
-  await expect(wt).toBeFocused({ timeout: 10_000 });
+  // Gate 5 G5d-1: the restored map fetches its resident pages again, so the counts leave the trashed session out
+  const wt1 = item(page, /^example-app · 1 session ·/);
+  await expect(wt1).toBeFocused({ timeout: 10_000 });
   await expect(page.locator('.x-map-notice')).toHaveText('That session is in Trash; showing its former group.');
   await expect(limiter).toHaveCount(0);
   await expect(item(page, /token budget · Claude Code/)).toBeVisible();
+  await expect(item(page, /^example-app · Sessions 1$/)).toBeVisible();
 
-  // entering through the nav link starts the map afresh (collapsed, no notice)
+  // Gate 5 G5d-2: entering through the nav link keeps the map as left (expanded, no notice)
   await openSessions(page);
   await openMap(page);
-  const fresh = item(page, /^example-app · Sessions 1$/); // fresh counts: the trashed session is not counted
-  await expect(fresh).toHaveAttribute('aria-expanded', 'false', { timeout: 10_000 });
+  await expect(wt1).toHaveAttribute('aria-expanded', 'true', { timeout: 10_000 });
+  await expect(item(page, /^example-app · Sessions 1$/)).toBeVisible();
   await expect(page.locator('.x-map-notice')).toHaveCount(0);
+
+  // Gate 5 G5d-1: session activity refreshes a shown map's counts and leaves
+  xaibo.touchStore(() => claude(xaibo.home, 3, main, 'Add the retry policy'));
+  await expect(item(page, /^example-app · Sessions 2$/)).toBeVisible({ timeout: 20_000 });
+  await expect(item(page, /retry policy · Claude Code/)).toBeVisible();
 });

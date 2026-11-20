@@ -29,7 +29,16 @@ export const DISPLAY_MAX = 4096;
 
 export interface SessionKey { agent: string; profileId: string; nativeSessionId: string }
 
-export const ROW = `SELECT s.id, s.agent, s.profile_id, s.native_session_id, s.entrypoint, s.originator, s.current_model, s.current_effort, s.cwd, coalesce(s.title, s.ai_title) AS title, s.last_activity, s.drift, s.quarantined_count, s.native_available, s.native_archived,
+const titles = new WeakMap<DatabaseSync, string>();
+/** Gate 5 G5b2-1 (EC-45): a store left read-only before migration 016 has no ai_title column; checked once per
+ *  connection (a connection never migrates after its first read). */
+function titleOf(db: DatabaseSync): string {
+  let t = titles.get(db);
+  if (t === undefined) titles.set(db, t = db.prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'ai_title'").get() ? 'coalesce(s.title, s.ai_title)' : 's.title');
+  return t;
+}
+/** The session row query for this connection's schema. */
+export const ROW = (db: DatabaseSync) => `SELECT s.id, s.agent, s.profile_id, s.native_session_id, s.entrypoint, s.originator, s.current_model, s.current_effort, s.cwd, ${titleOf(db)} AS title, s.last_activity, s.drift, s.quarantined_count, s.native_available, s.native_archived,
   EXISTS (SELECT 1 FROM source_files f WHERE f.session_id = s.id AND f.status = 'compressed_not_imported') AS compressed,
   (SELECT c.percentage FROM context_snapshots c WHERE c.session_id = s.id ORDER BY c.generation DESC, c.id DESC LIMIT 1) AS context_pct,
   (SELECT CASE WHEN COUNT(u.uncached_input) + COUNT(u.cache_read) + COUNT(u.cache_write) + COUNT(u.output) = 0 THEN NULL
@@ -56,13 +65,18 @@ const display = (s: string | null): string | null => (s === null ? null : cut(s,
 // record the transcript classifier calls a prompt among the first PROMPT_SCAN visible user records, whitespace collapsed,
 // cut to EXCERPT_MAX. ponytail: computed per untitled row on each list read (an index walk plus a few small parses);
 // store it on the session if list reads slow down.
+// Gate 5 G5b2-3: a record over EXCERPT_RECORD_MAX bytes is skipped in the query, never loaded or parsed, so one row costs
+// at most PROMPT_SCAN bounded parses. ponytail: a session whose only prompts are that large shows no excerpt; store a
+// bounded prompt prefix at ingest if that matters.
 export const EXCERPT_MAX = 120;
 const PROMPT_SCAN = 8;
+const EXCERPT_RECORD_MAX = 128 * 1024;
 const excerptStatements = new WeakMap<DatabaseSync, StatementSync>(); // prepared once per connection (review L1)
 function excerptOf(db: DatabaseSync, agent: string, session: number): string | null {
   try {
     const q = excerptStatements.get(db) ?? excerptStatements.set(db, db.prepare(`SELECT e.kind, e.role, e.content, e.raw FROM events e
-      WHERE ${VISIBLE} AND (e.role = 'user' OR e.kind = 'user') ORDER BY e.source_seq, e.id LIMIT ${PROMPT_SCAN}`)).get(db)!;
+      WHERE ${VISIBLE} AND (e.role = 'user' OR e.kind = 'user')
+        AND coalesce(octet_length(e.content), 0) <= ${EXCERPT_RECORD_MAX} AND coalesce(octet_length(e.raw), 0) <= ${EXCERPT_RECORD_MAX} ORDER BY e.source_seq, e.id LIMIT ${PROMPT_SCAN}`)).get(db)!;
     for (const row of q.iterate(session) as Iterable<Pick<TrRow, 'kind' | 'role' | 'content' | 'raw'>>) {
       const it = classifyItem(stored(agent, row));
       if (it?.kind !== 'prompt' || !it.text) continue;
@@ -108,10 +122,10 @@ export function listSessions(db: DatabaseSync, cursor: Cursor | null, limit: num
   const n = Math.min(Number.isSafeInteger(limit) && limit > 0 ? limit : PAGE_DEFAULT, PAGE_MAX);
   const t = shown(db);
   let raw: Raw[];
-  if (!cursor) raw = db.prepare(`${ROW} WHERE ${t} ${ORDER}`).all(n) as unknown as Raw[];
-  else if (cursor.lastActivity === null) raw = db.prepare(`${ROW} WHERE s.last_activity IS NULL AND s.id > ? AND ${t} ${ORDER}`).all(cursor.id, n) as unknown as Raw[];
+  if (!cursor) raw = db.prepare(`${ROW(db)} WHERE ${t} ${ORDER}`).all(n) as unknown as Raw[];
+  else if (cursor.lastActivity === null) raw = db.prepare(`${ROW(db)} WHERE s.last_activity IS NULL AND s.id > ? AND ${t} ${ORDER}`).all(cursor.id, n) as unknown as Raw[];
   else {
-    raw = db.prepare(`${ROW} WHERE (s.last_activity < ? OR s.last_activity IS NULL OR (s.last_activity = ? AND s.id > ?)) AND ${t} ${ORDER}`)
+    raw = db.prepare(`${ROW(db)} WHERE (s.last_activity < ? OR s.last_activity IS NULL OR (s.last_activity = ? AND s.id > ?)) AND ${t} ${ORDER}`)
       .all(cursor.lastActivity, cursor.lastActivity, cursor.id, n) as unknown as Raw[];
   }
   const rows = raw.map(toRow(db, kinds, models, live));
@@ -120,7 +134,7 @@ export function listSessions(db: DatabaseSync, cursor: Cursor | null, limit: num
 }
 
 export function sessionsByKey(db: DatabaseSync, keys: SessionKey[], kinds: SessionKind[] = [], models: ModelEntry[] = [], live?: LiveOf): SessionRow[] {
-  const one = db.prepare(`${ROW} WHERE s.agent = ? AND s.profile_id = ? AND s.native_session_id = ? AND ${shown(db)}`);
+  const one = db.prepare(`${ROW(db)} WHERE s.agent = ? AND s.profile_id = ? AND s.native_session_id = ? AND ${shown(db)}`);
   return keys.flatMap((k) => (one.all(k.agent, k.profileId, k.nativeSessionId) as unknown as Raw[]).map(toRow(db, kinds, models, live)));
 }
 
@@ -140,7 +154,7 @@ export function answerLiveSet(db: DatabaseSync, req: PortRequest & { type: 'live
   let more = false;
   try {
     const build = toRow(db, kinds, models, live);
-    const one = db.prepare(`${ROW} WHERE s.id = ?`);
+    const one = db.prepare(`${ROW(db)} WHERE s.id = ?`);
     // Review M1: membership from the bare key columns; the per-session subqueries run for members only.
     for (const k of db.prepare(`SELECT s.id, s.agent, s.profile_id, s.native_session_id FROM sessions s WHERE s.last_activity >= ? AND ${shown(db)} ORDER BY s.last_activity DESC, s.id`)
       .iterate(now - LIVE_WINDOW_MS) as Iterable<Pick<Raw, 'id' | 'agent' | 'profile_id' | 'native_session_id'>>) {
@@ -281,7 +295,7 @@ const stored = (agent: string, r: Pick<TrRow, 'kind' | 'role' | 'content' | 'raw
 export function answerSession(db: DatabaseSync, req: PortRequest & { type: 'session' }, kinds: SessionKind[] = [], models: ModelEntry[] = [], live?: LiveOf,
   managedDir?: string): PortMessage & { type: 'session' } {
   try {
-    const r = db.prepare(`${ROW} WHERE s.id = ? AND ${notPurging(db)}`).get(req.session) as Raw | undefined;
+    const r = db.prepare(`${ROW(db)} WHERE s.id = ? AND ${notPurging(db)}`).get(req.session) as Raw | undefined;
     if (!r) return { v: IPC_VERSION, type: 'session', id: req.id, detail: null };
     const row = toRow(db, kinds, models, live)(r);
     const coverage: CoverageCode[] = [];

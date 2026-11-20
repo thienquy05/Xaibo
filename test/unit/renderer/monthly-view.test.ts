@@ -110,3 +110,15 @@ test('visual regression: the ledger classes never reuse the Session timeline cla
   const ledgerRules = css.match(/^\.x-ledger[^{]*\{/gm) ?? [];
   assert.deepEqual(ledgerRules, ['.x-ledger-row {'], 'only the timeline rule uses the x-ledger prefix');
 });
+
+// Gate 5 G5c-2 (design §6.1.1): a month whose token total has gaps (requests with missing counts) is a known subtotal,
+// never a complete total; gaps with a known subtotal of 0 prove no zero, so the month is unavailable (no zero marker).
+test('G5c-2 tokens with gaps: "known subtotal"; a 0 subtotal with gaps is unavailable, never an evidenced zero', () => {
+  const gappy = (total: number, gaps: number) => ({ ...tokens(total), gaps });
+  assert.equal(metricValue(m('2026-01', { tokens: gappy(1000, 2) }), 'tokens').text, '1k known subtotal');
+  assert.equal(metricValue(m('2026-01', { tokens: gappy(1000, 0) }), 'tokens').text, '1k', 'no gaps: a complete total');
+  assert.equal(metricValue(m('2026-01', { tokens: gappy(0, 3) }), 'tokens').kind, 'unavailable');
+  const b = bars([m('2026-01', { tokens: gappy(0, 3) }), m('2026-02')], 'tokens');
+  assert.deepEqual([b[0]!.height, b[0]!.zero], [null, false], 'no bar and no evidenced-zero marker');
+  assert.equal(metricValue(m('2026-01', { tokens: gappy(0, 0) }), 'tokens').text, '0', 'no gaps: an evidenced zero stays 0');
+});

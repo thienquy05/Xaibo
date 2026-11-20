@@ -20,7 +20,7 @@ import { show, visible } from '../text.ts';
 import { compactStatus, type SessionChanges } from '../workspace/view.ts';
 import { canLoadMore, capped, COVERAGE, emphasis, failureNote, filterOf, freshList, groupLabel, initialQuery, isPlain, listTexts, mergeLive, mergeRows, MODES, modeKey,
   lastKnownRows, refill, rowLines, startLoad, type BrowseRow, type ListState, type LiveState, type Query } from './browse.ts';
-import { doneText, errorText, goneUndo, menuClosed, menuItems, NOTICE, opOf, place, trashed, undoLabel, undone, type Shared, type Toggle, type Undo } from './actions.ts';
+import { doneText, errorText, goneUndo, menuClosed, menuItems, NOTICE, opOf, place, trashed, undoFocus, undoLabel, undone, type Shared, type Toggle, type Undo } from './actions.ts';
 import { MoveDialog, type MoveApi, type MoveOutcome, type MoveTarget } from './MoveDialog.tsx';
 import { moveFocus } from './move.ts';
 import { SuppressedList, type Gone, type SuppressedApi } from './SuppressedList.tsx';
@@ -145,13 +145,15 @@ type List = ListState<HistoryKey | SearchKey>;
 type Page = { rows: HistoryRow[]; next: HistoryKey | SearchKey | null; snippets: (readonly [number, string])[] };
 const fresh = (): List => freshList();
 
-export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, onOpen, hide, history = null, onHistory, onOpenSuppressed, suppressedOpen = null, suppressedGone = null }: {
+export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, onOpen, hide, history = null, onHistory, headerTrash = null, onOpenSuppressed, suppressedOpen = null, suppressedGone = null }: {
   api: BrowseApi; agents: AgentStatus[]; live: LiveRows; changes: SessionChanges; lastKnown: boolean;
   openId: number | null; onOpen: (r: HistoryRow) => void;
   /** The Hide session list button, shown while a session is open. */
   hide: (() => void) | null;
   /** XAIBO-PROD-533: a history row refreshed elsewhere (the open session), and the way to share one refreshed here. */
   history?: Shared | null; onHistory?: (id: number, r: HistoryRow | null) => void;
+  /** Gate 5 G5d-3: a Move to Trash from the open session's header (each new n), shown in this list's Undo notice. */
+  headerTrash?: { id: number; n: number } | null;
   /** XAIBO-PROD-536: open a suppressed record's metadata pane; the one open; a record that left (Re-import). */
   onOpenSuppressed?: (r: SuppressedRow | null) => void; suppressedOpen?: string | null; suppressedGone?: Gone | null;
 }) {
@@ -247,10 +249,24 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
     try { row = await api.historyRow(u.id); } catch { /* restored; the row could not be read */ }
     const placed = row ? share(u.id, row) : false;
     setUndo((cur) => undone(cur, u.id, { status: 'restored', note: row ? null : 'The list could not be refreshed.' }));
-    // design §5.4: Undo focuses the restored record; outside the current list, the list heading and Open restored session
-    setRestored(placed ? null : row);
-    if (placed) focusRow.current = row; else heading.current?.focus();
+    // design §5.4: Undo focuses the restored record; outside the current list, the list heading and Open restored session;
+    // Gate 5 G5d-3: the open session's title when it is the restored one
+    const to = undoFocus(u.id, openNow.current, placed);
+    setRestored(to === 'heading' ? row : null);
+    if (to === 'title') requestAnimationFrame(() => document.getElementById('open-session-title')?.focus());
+    else if (to === 'record') focusRow.current = row; else heading.current?.focus();
   };
+  const openNow = useRef(openId);
+  openNow.current = openId;
+  // Gate 5 G5d-3: the header's Move to Trash takes this list's Undo notice (replacing an earlier one), as a row's does
+  const seenTrash = useRef(headerTrash?.n);
+  useEffect(() => {
+    if (!headerTrash || seenTrash.current === headerTrash.n) return;
+    seenTrash.current = headerTrash.n;
+    setNote(null);
+    setRestored(null);
+    setUndo((u) => trashed(u, headerTrash.id));
+  }, [headerTrash]);
   // XAIBO-PROD-534: Trash rows. Restore is immediate (the record leaves Trash; the list hands focus to its neighbour);
   // Purge asks first; a purged record leaves the list and, if open, its conversation (shared as gone)
   const [purgeTarget, setPurgeTarget] = useState<PurgeTarget>(null);

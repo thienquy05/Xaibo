@@ -103,6 +103,14 @@ type SaveOutcome = (typeof SAVE_RESULTS)[number];
 const SETTLE_MS = 4000;
 /** P5-T09: the first retention run waits this long after the backfill, off readiness and behind start-up work. */
 const RETENTION_DELAY_MS = 10 * 60_000;
+/** Gate 5 (perf probes): XAIBO_RETENTION_DELAY_MS overrides that wait, only under XAIBO_PERF_TRACE=1 (test only) and only
+ *  as a positive integer of milliseconds up to 2^31 - 1; anything else keeps the default. */
+export function retentionDelayFromEnv(env: Record<string, string | undefined>): number | undefined {
+  const v = env.XAIBO_RETENTION_DELAY_MS;
+  if (env.XAIBO_PERF_TRACE !== '1' || v === undefined || !/^[1-9]\d*$/.test(v)) return undefined;
+  const n = Number(v);
+  return n <= 2_147_483_647 ? n : undefined; // review L: setTimeout clamps a larger delay to 1 ms
+}
 
 // P4-T10c2 parse lag: commit time minus a file's last write (its mtime at sync), for files written within LIVE_LAG_MS;
 // older files are history import and a future mtime is clock skew, so neither is lag. ponytail: mtime has the file

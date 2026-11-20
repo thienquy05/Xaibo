@@ -23,8 +23,11 @@ export function metricValue(m: LedgerMonth, metric: Metric): MetricValue {
     return { kind: 'value', value: m.cost.usd, text, exact: text };
   }
   const v = metric === 'tokens' ? m.tokens?.total ?? null : metric === 'sessions' ? m.sessions : m.turns;
-  if (v === null) return { kind: 'unavailable', text: 'Unavailable' };
-  return { kind: 'value', value: v, text: abbreviate(v), exact: `${v.toLocaleString('en-US')} ${UNIT[metric]}` };
+  // Gate 5 G5c-2: requests with missing counts make the total a known subtotal; a 0 subtotal with gaps proves no zero
+  const gaps = metric === 'tokens' && (m.tokens?.gaps ?? 0) > 0;
+  if (v === null || (gaps && v === 0)) return { kind: 'unavailable', text: 'Unavailable' };
+  const sub = gaps ? ' known subtotal' : '';
+  return { kind: 'value', value: v, text: `${abbreviate(v)}${sub}`, exact: `${v.toLocaleString('en-US')} ${UNIT[metric]}${sub}` };
 }
 
 export const PLOT = 160; // bar plot height inside the 220 px chart (numbers above, months below)

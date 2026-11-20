@@ -10,7 +10,7 @@ import { accept, IPC_VERSION, parsePortRequest, parseServiceCommand } from '../s
 import type { Banner, PortMessage, RetentionSetting, ServiceEvent, StorageReport } from '../shared/ipc.ts';
 import { appendQuiet, createLogger, loadInstallSecret, type Logger } from '../shared/log.ts';
 import { answer, answerCost, answerFiles, answerLiveSet, answerMarkers, answerSession, answerSlice, answerSubagents, answerTools, answerTranscript, answerUsage, answerUsageHistory, coalesce, createHub, sessionsByKey, type LiveOf } from './api.ts';
-import { boot, type Service } from './boot.ts';
+import { boot, retentionDelayFromEnv, type Service } from './boot.ts';
 import { applyOverlay, listFolders, listHistory, listProjects, resyncAfter } from './history/overlay.ts';
 import { mapGroups } from './history/map.ts';
 import type { Batch } from './store/writer.ts';
@@ -128,20 +128,21 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
         if (result === 'cleared') ledger?.invalidate();
         port.postMessage({ v: IPC_VERSION, type: 'clearUsage', id: req.id, result } satisfies PortMessage);
       }); break;
-      // XAIBO-PROD-504 (P5-T01): history overlay; a store that cannot answer gives an empty page or the store error
+      // XAIBO-PROD-504 (P5-T01): history overlay; Gate 5 G5b2-5: a store that cannot answer says failed (the renderer keeps
+      // its rows and offers Retry), never an empty page
       case 'history': {
-        let page: Omit<Extract<PortMessage, { type: 'history' }>, 'v' | 'type' | 'id'> = { rows: [], next: null };
-        try { if (db.isOpen) page = listHistory(db, req.filter, req.cursor, req.limit, s.kinds(), s.models(), live); } catch { /* empty page */ }
+        let page: Omit<Extract<PortMessage, { type: 'history' }>, 'v' | 'type' | 'id'> = { rows: [], next: null, failed: true };
+        try { if (db.isOpen) page = listHistory(db, req.filter, req.cursor, req.limit, s.kinds(), s.models(), live); } catch { /* failed */ }
         port.postMessage({ v: IPC_VERSION, type: 'history', id: req.id, ...page } satisfies PortMessage); break;
       }
       case 'projects': {
-        let page: { projects: { id: number; name: string }[]; next: number | null } = { projects: [], next: null };
-        try { if (db.isOpen) page = listProjects(db, req.cursor, req.limit); } catch { /* empty page */ }
+        let page: Omit<Extract<PortMessage, { type: 'projects' }>, 'v' | 'type' | 'id'> = { projects: [], next: null, failed: true };
+        try { if (db.isOpen) page = listProjects(db, req.cursor, req.limit); } catch { /* failed */ }
         port.postMessage({ v: IPC_VERSION, type: 'projects', id: req.id, ...page } satisfies PortMessage); break;
       }
       case 'folders': {
-        let page: { folders: { id: number; name: string }[]; next: number | null } = { folders: [], next: null };
-        try { if (db.isOpen) page = listFolders(db, req.project, req.cursor, req.limit); } catch { /* empty page */ }
+        let page: Omit<Extract<PortMessage, { type: 'folders' }>, 'v' | 'type' | 'id'> = { folders: [], next: null, failed: true };
+        try { if (db.isOpen) page = listFolders(db, req.project, req.cursor, req.limit); } catch { /* failed */ }
         port.postMessage({ v: IPC_VERSION, type: 'folders', id: req.id, ...page } satisfies PortMessage); break;
       }
       case 'mapGroups': { // P5-T01c: a store that cannot answer says failed (the renderer offers Retry), never an empty page
@@ -196,7 +197,7 @@ async function main(dataDir: string, log: Logger) {
   ledger = new MonthlyCache({ file: path.join(dataDir, 'xaibo.db'), secret, home: homedir(), log: (e, f) => log.log(e, f) });
   meter = new StorageMeter(dataDir);
   svc = await boot({
-    dataDir, home: homedir(), shell: process.env.SHELL, log,
+    dataDir, home: homedir(), shell: process.env.SHELL, log, retentionDelayMs: retentionDelayFromEnv(process.env),
     onCommit: committed,
     onAgents: (agents) => broadcast({ v: IPC_VERSION, type: 'agents', agents }),
     onNotify: (n) => parent.postMessage({ v: IPC_VERSION, type: 'notify', ...n } satisfies ServiceEvent), // P3-T11

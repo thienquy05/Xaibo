@@ -98,6 +98,16 @@ export function pageArrived<T, C>(l: Level<T, C>, dir: Dir, from: C | null, item
   return { pages, before: l.before.slice(0, -1), next: after, loading: null, failed: null };
 }
 export const pageFailed = <T, C>(l: Level<T, C>, dir: Dir): Level<T, C> => ({ ...l, loading: null, failed: dir });
+/** Gate 5 G5d-1: a resident page fetched again from its own cursor (activity, Return) replaces that page's items in place;
+ *  the last page also takes the new next. A page no longer resident leaves the level unchanged; paging state is the
+ *  user's and stays. ponytail: a refreshed middle page whose tail moved can overlap or skip the next page's start (rows()
+ *  drops overlaps); Load more or collapsing the branch corrects it. */
+export function pageRefreshed<T, C>(l: Level<T, C>, from: C | null, items: T[], next: C | null): Level<T, C> {
+  const key = JSON.stringify(from), i = l.pages.findIndex((p) => JSON.stringify(p.from) === key);
+  if (i < 0) return l;
+  const pages = l.pages.map((p, j) => (j === i ? { items, from: p.from } : p));
+  return { ...l, pages, next: i === pages.length - 1 ? next : l.next };
+}
 
 // --- expansion: at most PATHS leafward paths (an expanded node with no expanded child ends one) ---
 export interface Expansion { expanded: string[]; visit: Record<string, number>; tick: number }
@@ -301,6 +311,20 @@ export function returnTarget(leaf: string, parent: string | null, group: MapGrou
 export function resumeLevel<T, C>(l: Level<T, C>): Level<T, C> {
   if (!l.loading) return l;
   return l.loading === 'first' && l.pages.length === 0 ? { ...l, loading: null, failed: 'first' } : { ...l, loading: null };
+}
+
+/** Gate 5 review M (G5d-1): a refresh run starts only once the previous one settled (null = skip), with a new generation;
+ *  a reply applies only while its run is the latest. */
+export interface RefreshGate { gen: number; pending: boolean }
+export const startRefresh = (g: RefreshGate): RefreshGate | null => (g.pending ? null : { gen: g.gen + 1, pending: true });
+export const replyApplies = (g: RefreshGate, gen: number) => g.gen === gen;
+
+/** Gate 5 G5d-1: a focused or selected row a refresh removed hands over to its nearest ancestor still shown (as Return's
+ *  dropSession and collapse do); null = nothing on its path is shown. */
+export function refocus(before: Row[], after: Row[], key: string): string | null {
+  const parent = new Map(before.map((r) => [r.key, r.parent])), shown = new Set(after.map((r) => r.key));
+  for (let k: string | null = key, n = 0; k !== null && n < DEPTH; k = parent.get(k) ?? null, n++) if (shown.has(k)) return k;
+  return null;
 }
 
 /** The cached pages of `parent` without session `id`. */

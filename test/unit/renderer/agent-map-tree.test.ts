@@ -414,3 +414,64 @@ test('review M1 (part 2b): a restored level whose request never answers this map
   assert.deepEqual(resumeLevel({ ...l, loading: 'more' }), l, 'Load more is offered again, the pages kept');
   assert.equal(resumeLevel(l), l, 'an idle level is unchanged');
 });
+
+// Gate 5 G5d-1: a shown map refreshes its resident pages on activity and after Return: each page is fetched again from
+// its own cursor and replaces that page's items in place; expansion, selection and the other pages stay.
+test('G5d-1 pageRefreshed: a resident page re-fetched from its cursor replaces its items in place; nothing else changes', async () => {
+  const tree = await import('../../../src/renderer/agent-map/tree.ts') as Record<string, unknown>;
+  assert.equal(typeof tree.pageRefreshed, 'function', 'tree.pageRefreshed exists');
+  const pageRefreshed = tree.pageRefreshed as <T, C>(l: Level<T, C>, from: C | null, items: T[], next: C | null) => Level<T, C>;
+  const a = repo('/w/a/.git'), b = repo('/w/b/.git'), c = repo('/w/c/.git');
+  let l = pageArrived(emptyLevel() as Level<MapNode, MapGroup>, 'first', null, [node(a)], a);
+  l = pageArrived(l, 'more', a, [node(b)], b);
+  const counted = pageRefreshed(l, null, [node(a, { sessions: 9, live: 2 })], a);
+  assert.deepEqual(counted.pages.map((p) => p.items.map((n) => n.sessions)), [[9], [3]], 'the first page has the fresh counts; the second is kept');
+  assert.equal(counted.pages[1], l.pages[1], 'the other page is the same object');
+  assert.equal(counted.next, b, 'a page before the last keeps the level cursor');
+  // the last page found from a structurally equal cursor; its new next replaces the level's
+  const last = pageRefreshed(l, repo('/w/a/.git'), [node(b), node(c)], null);
+  assert.deepEqual(last.pages[1]!.items.map((n) => n.group), [b, c]);
+  assert.equal(last.next, null);
+  // a page dropped meanwhile (eviction, another load): unchanged
+  assert.equal(pageRefreshed(l, c, [node(c)], null), l);
+  // loading and failure state belong to the user's paging, not to the refresh
+  const busy = { ...l, loading: 'more' as const };
+  assert.equal(pageRefreshed(busy, null, [node(a)], a).loading, 'more');
+});
+
+// Gate 5 G5d-1: a focused (or selected) row that a refresh removed hands over to its nearest surviving ancestor, as
+// Return's dropSession and collapse do; a surviving row keeps it.
+test('G5d-1 refocus: the key itself when still shown, else its nearest ancestor still shown, else null', async () => {
+  const tree = await import('../../../src/renderer/agent-map/tree.ts') as Record<string, unknown>;
+  assert.equal(typeof tree.refocus, 'function', 'tree.refocus exists');
+  const refocus = tree.refocus as (before: ReturnType<typeof rows>, after: ReturnType<typeof rows>, key: string) => string | null;
+  const r = repo('/w/a/.git'), w = wt('/w/a/.git', '/w/a');
+  const roots = pageArrived(emptyLevel() as Level<MapNode, MapGroup>, 'first', null, [node(r)], null);
+  const leafLevel = (ids: number[]) => pageArrived(emptyLevel() as Level<HistoryRow, never>, 'first', null, ids.map(session), null);
+  const kids = (ids: number[], withWt = true) => ({ [keyOf(r)]: pageArrived(emptyLevel() as Level<MapNode, never>, 'first', null, withWt ? [node(w)] : [], null), [keyOf(w)]: leafLevel(ids) }) as Kids;
+  const open = [keyOf(r), keyOf(w)];
+  const before = rows(roots, kids([3, 4]), open);
+  assert.equal(refocus(before, rows(roots, kids([3, 4]), open), sessionKey(4)), sessionKey(4), 'still shown');
+  assert.equal(refocus(before, rows(roots, kids([3]), open), sessionKey(4)), keyOf(w), 'the leaf left its group: its worktree');
+  assert.equal(refocus(before, rows(roots, kids([], false), open), sessionKey(4)), keyOf(r), 'the worktree left too: the repository');
+  assert.equal(refocus(before, rows(emptyLevel() as Level<MapNode, MapGroup>, {}, []), sessionKey(4)), null, 'nothing survives');
+});
+
+// Gate 5 review M (G5d-1): a refresh run starts only when the previous one has settled, and each run has a generation, so
+// a reply from an older run never overwrites a newer one.
+test('G5d-1 refresh gate: no new run while one is pending; only the current run\'s replies apply', async () => {
+  const tree = await import('../../../src/renderer/agent-map/tree.ts') as Record<string, unknown>;
+  assert.equal(typeof tree.startRefresh, 'function', 'tree.startRefresh exists');
+  assert.equal(typeof tree.replyApplies, 'function', 'tree.replyApplies exists');
+  type Gate = { gen: number; pending: boolean };
+  const startRefresh = tree.startRefresh as (g: Gate) => Gate | null;
+  const replyApplies = tree.replyApplies as (g: Gate, gen: number) => boolean;
+  const g1 = startRefresh({ gen: 0, pending: false });
+  assert.deepEqual(g1, { gen: 1, pending: true });
+  assert.equal(startRefresh(g1!), null, 'a run still pending: skip');
+  const g2 = startRefresh({ ...g1!, pending: false })!;
+  assert.equal(g2.gen, 2);
+  assert.equal(replyApplies(g2, 1), false, 'an older run\'s reply is dropped');
+  assert.equal(replyApplies(g2, 2), true);
+  assert.equal(replyApplies({ ...g2, pending: false }, 2), true, 'a run\'s replies apply until a newer run starts');
+});

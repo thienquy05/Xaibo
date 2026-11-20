@@ -224,7 +224,7 @@ function App() {
   const go = (to: Area) => (e: MouseEvent) => {
     e.preventDefault();
     clearReturn();
-    if (to === 'map') { mapSaved.current = null; setMapReturn(null); } // the nav link starts the map afresh
+    if (to === 'map') setMapReturn(null); // Gate 5 G5d-2: the nav link keeps the map as left (refreshed on entry), no Return target
     setArea(to);
     requestAnimationFrame(() => document.getElementById(HEADING[to])?.focus());
   };
@@ -282,7 +282,7 @@ function App() {
       <main id="main" className="x-main" tabIndex={-1}>
         {area === 'settings' ? <Settings api={settingsApi} readOnly={!!health?.readOnly} />
           : area === 'map' ? <AgentMap api={browseApi} agents={agents ?? []} lastKnown={lastKnown} tick={tick} onOpen={openFromMap}
-            saved={mapReturn !== null ? mapSaved.current : null} restoreId={mapReturn} onSave={(m) => { mapSaved.current = m; }} />
+            saved={mapSaved.current} restoreId={mapReturn} onSave={(m) => { mapSaved.current = m; }} />
           : area === 'dashboard'
           ? <Dashboard live={liveSet} liveFailed={liveFailed} liveRetry={liveRetry} onRetryLive={retryLive} lastKnown={lastKnown} agents={agents} banners={banners} api={api} tick={tick}
             onSetPath={(agent) => window.xaibo?.setAgentPath(agent)} onOpen={openSession} view={dashView} onView={setDashView} focusId={focusId} />

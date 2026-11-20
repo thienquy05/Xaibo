@@ -70,7 +70,7 @@ test('Session list browsing: modes, search, agent filter, folder group', async (
   await expect(pane.getByText('Search relevance')).toBeVisible();
   await expect(rows(page)).toHaveCount(1);
   await expect(rows(page).first().locator('[data-field="snippet"] mark')).toHaveText(['limiter']);
-  await expect(pane.getByText('Search covers retained indexed content; incomplete sources may have gaps.')).toBeVisible();
+  await expect(pane.getByText('Search covers retained indexed content; incomplete sources may have gaps. Only the first 64 KiB of each item is searchable.')).toBeVisible();
   await shot(page, 'history-search-light');
   await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' });
   await shot(page, 'history-search-dark');

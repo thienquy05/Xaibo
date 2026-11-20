@@ -186,3 +186,31 @@ test('goneUndo: gone ends a ready or failed Undo for that session only; never an
   assert.equal(goneUndo(null, 4), null);
   assert.match(GONE_UNDO, /no longer available/);
 });
+
+// Gate 5 G5c-1: a repository or cwd group's membership is its place, which a history row does not carry; an absent row
+// (Undo) is inserted only where membership is known (no group, or a Project override group); otherwise the list says
+// Open restored session. A row already shown is replaced as before.
+test('G5c-1 place: an absent row is never inserted into a repository or cwd group view; a shown row is still replaced', () => {
+  const rows = [hrow(5), hrow(3)];
+  const repoGroup = { ...initialQuery, group: { project: null, at: { repo: '/w/atlas/.git', worktree: '/w/atlas' } } };
+  const cwdGroup = { ...initialQuery, group: { project: null, at: { cwd: '/w/notes' } } };
+  assert.deepEqual(place(rows, 4, hrow(4), repoGroup, false), { rows, placed: false }, 'a repository group: membership unknown');
+  assert.deepEqual(place(rows, 4, hrow(4), cwdGroup, false), { rows, placed: false }, 'a cwd group: membership unknown');
+  assert.deepEqual(place(rows, 3, hrow(3, { keep: true }), repoGroup, false), { rows: [hrow(5), hrow(3, { keep: true })], placed: true }, 'a shown row is replaced');
+  const projectGroup = { ...initialQuery, group: { project: 7, at: null } };
+  assert.equal(place(rows, 4, hrow(4, { project: { id: 7, name: 'Atlas' } }), projectGroup, false).placed, true, 'a Project override group: membership is the project');
+});
+
+// Gate 5 G5d-3 (design §5.4): after Undo the focus goes to the open session's title when the restored session is open,
+// else the restored record in the list, else the list heading (with Open restored session).
+test('G5d-3 undoFocus: the open session\'s title, else the placed record, else the list heading', async () => {
+  const actions = await import('../../../src/renderer/history/actions.ts') as Record<string, unknown>;
+  assert.equal(typeof actions.undoFocus, 'function', 'actions.undoFocus exists');
+  const undoFocus = actions.undoFocus as (id: number, openId: number | null, placed: boolean) => string;
+  assert.equal(undoFocus(4, 4, true), 'title', 'the restored session is open: its title, even when the list shows it');
+  assert.equal(undoFocus(4, 4, false), 'title');
+  assert.equal(undoFocus(4, 9, true), 'record');
+  assert.equal(undoFocus(4, null, true), 'record');
+  assert.equal(undoFocus(4, null, false), 'heading');
+});
+

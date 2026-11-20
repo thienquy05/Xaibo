@@ -47,6 +47,9 @@ export function Workspace({ list, changes, browse, agents, live, lastKnown, api,
   // ponytail: one shared value; two shares before a render keep the last (the other side's next refresh corrects it)
   const [history, setHistory] = useState<Shared | null>(null);
   const shareHistory = useCallback((id: number, r: HistoryRow | null) => setHistory((h) => ({ id, row: r, n: (h?.n ?? 0) + 1 })), []);
+  // Gate 5 G5d-3: the open session's header Move to Trash goes through the list's Undo notice
+  const [headerTrash, setHeaderTrash] = useState<{ id: number; n: number } | null>(null);
+  const onTrashed = useCallback((id: number) => setHeaderTrash((t) => ({ id, n: (t?.n ?? 0) + 1 })), []);
   // XAIBO-PROD-534 (design §5.4): a gone (purged) open session closes; focus goes to the list's results heading unless
   // the purge came from the list, which places focus itself
   useEffect(() => {
@@ -100,11 +103,11 @@ export function Workspace({ list, changes, browse, agents, live, lastKnown, api,
             stays mounted while hidden so its mode, search and filters survive */}
         <div hidden={!showList} className="x-list-slot">
           <SessionBrowser api={browse} agents={agents} live={live} changes={changes} lastKnown={lastKnown} openId={row?.id ?? null}
-            onOpen={(r) => { setSupp(null); setOpened(r); onListOpen(); }} hide={row ? () => setShowList(false) : null} history={history} onHistory={shareHistory}
+            onOpen={(r) => { setSupp(null); setOpened(r); onListOpen(); }} hide={row ? () => setShowList(false) : null} history={history} onHistory={shareHistory} headerTrash={headerTrash}
             onOpenSuppressed={(r) => { if (r) { setOpened(null); onListOpen(); } setSupp(r); }} suppressedOpen={supp?.key ?? null} suppressedGone={suppGone} />
         </div>
         {row ? <OpenSession key={row.id} row={row} changed={gen} api={api} lastKnown={lastKnown} listShown={showList} onShowList={() => setShowList(true)} onBack={back}
-          onReturn={row.id === returnFor ? onReturn : undefined} returnTo={returnTo} history={history} onHistory={shareHistory} />
+          onReturn={row.id === returnFor ? onReturn : undefined} returnTo={returnTo} history={history} onHistory={shareHistory} onTrashed={onTrashed} />
           : supp ? <SuppressedPane key={supp.key} row={supp} inflight={reimporting.current.has(supp.key)} send={sendReimport} outcome={outcome} onBack={back} onGone={goneSupp} />
             : <section className="x-pane x-choose" aria-label="Open session"><p>Choose a session to read its conversation</p></section>}
       </div>

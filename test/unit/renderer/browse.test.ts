@@ -235,7 +235,8 @@ test('re-review N3: while a first page or resync loads (updates held), updates o
 
 test('fixed texts (design §6.4)', () => {
   assert.equal(NO_MATCH, 'No matches. Change filters or clear search.');
-  assert.equal(COVERAGE, 'Search covers retained indexed content; incomplete sources may have gaps.');
+  // Gate 5 G5c-3 (PRD §5.7): the note also states the per-item index bound (the service's SEARCH_ITEM_LIMIT)
+  assert.equal(COVERAGE, 'Search covers retained indexed content; incomplete sources may have gaps. Only the first 64 KiB of each item is searchable.');
 });
 
 test('listTexts (XAIBO-PROD-536): Suppressed has its own title and empty text; search and filters never apply there', () => {

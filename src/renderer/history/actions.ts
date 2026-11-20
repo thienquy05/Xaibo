@@ -51,7 +51,8 @@ export function matches(q: Query, r: HistoryRow): boolean {
 
 /** The refreshed row `row` (null = gone) for session `id`. A present row is replaced (in the service order unless
  *  searching); a row that belongs here but is not shown (Undo) is inserted only where its place is known: not in search
- *  results (rank unknown) and not past the loaded window while `more` pages remain. placed = the row is in the list. */
+ *  results (rank unknown), not past the loaded window while `more` pages remain, and (Gate 5 G5c-1) not into a repository
+ *  or cwd group, whose membership a history row does not carry. placed = the row is in the list. */
 export function place(rows: BrowseRow[], id: number, row: HistoryRow | null, q: Query, more: boolean): { rows: BrowseRow[]; placed: boolean } {
   const rest = rows.filter((r) => r.id !== id);
   if (!row || !matches(q, row)) return { rows: rest, placed: false };
@@ -63,7 +64,7 @@ export function place(rows: BrowseRow[], id: number, row: HistoryRow | null, q: 
     const replaced = rows.map((r) => (r.id === id ? row : r));
     return { rows: searching ? replaced : replaced.sort(order), placed: true };
   }
-  if (searching || past) return { rows, placed: false };
+  if (searching || past || (q.group && q.group.at !== null)) return { rows, placed: false };
   return { rows: [...rows, row].sort(order), placed: true };
 }
 
@@ -91,6 +92,10 @@ export const goneUndo = (u: Undo | null, id: number): Undo | null =>
 /** review M1: an Undo reply for session `id` changes the notice only while it is still that session's. */
 export const undone = (cur: Undo | null, id: number, patch: Pick<Undo, 'status' | 'note'>): Undo | null => (cur?.id === id ? { ...cur, ...patch } : cur);
 export const undoLabel = (u: Undo) => (u.stacked ? 'Undo latest Trash' : 'Undo');
+/** Gate 5 G5d-3 (design §5.4): where focus goes after Undo: the open session's title when it is the restored one, else
+ *  the restored record in the list, else the list heading (with Open restored session). */
+export const undoFocus = (id: number, openId: number | null, placed: boolean): 'title' | 'record' | 'heading' =>
+  (id === openId ? 'title' : placed ? 'record' : 'heading');
 
 const day = (ms: number) => formatTime(ms).slice(0, 10);
 /** Retention never purges an active session (EC-22; service retention/policy.isActive). */

@@ -124,17 +124,21 @@ export function createClient(port: PortLike, push: Pushes) {
       if (m.failed) throw new Error('markers unavailable');
       return { markers: m.markers, next: m.next };
     },
-    /** XAIBO-PROD-504 (P5-T01): the history list (pinned first), project and folder pages, and overlay actions. */
+    /** XAIBO-PROD-504 (P5-T01): the history list (pinned first), project and folder pages, and overlay actions. Gate 5
+     *  G5b2-5: a page the store could not answer throws (the caller keeps what it shows and offers Retry). */
     async history(filter: HistoryFilter, cursor: HistoryKey | null, limit: number): Promise<{ rows: HistoryRow[]; next: HistoryKey | null }> {
       const m = await ask({ type: 'history', filter, cursor, limit }, 'history');
+      if (m.failed) throw new Error('history unavailable');
       return { rows: m.rows, next: m.next };
     },
     async projects(cursor: number | null, limit: number): Promise<{ projects: Named[]; next: number | null }> {
       const m = await ask({ type: 'projects', cursor, limit }, 'projects');
+      if (m.failed) throw new Error('projects unavailable');
       return { projects: m.projects, next: m.next };
     },
     async folders(project: number, cursor: number | null, limit: number): Promise<{ folders: Named[]; next: number | null }> {
       const m = await ask({ type: 'folders', project, cursor, limit }, 'folders');
+      if (m.failed) throw new Error('folders unavailable');
       return { folders: m.folders, next: m.next };
     },
     /** XAIBO-PROD-510 (P5-T01c): a page of map groups under parent (null = roots); throws when the store could not answer. */
