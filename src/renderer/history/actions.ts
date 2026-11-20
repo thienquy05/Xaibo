@@ -3,7 +3,8 @@
 // refreshed row is placed back in the service order, or removed when gone or outside the current list, never at a
 // guessed position; focus falls back to the following record, then the previous (VirtualList's neighbour handover),
 // then the results heading.
-import type { HistoryRow, OVERLAY_ERRORS, OverlayOp } from '../../shared/ipc.ts';
+import type { HistoryRow, LiveStatus, OVERLAY_ERRORS, OverlayOp } from '../../shared/ipc.ts';
+import { formatTime } from '../model.ts';
 import { order, type BrowseRow, type Query } from './browse.ts';
 
 export type ActionKind = 'pin' | 'archive' | 'keep' | 'trash';
@@ -78,3 +79,26 @@ export const trashed = (prev: Undo | null, id: number): Undo => ({ id, stacked: 
 /** review M1: an Undo reply for session `id` changes the notice only while it is still that session's. */
 export const undone = (cur: Undo | null, id: number, patch: Pick<Undo, 'status' | 'note'>): Undo | null => (cur?.id === id ? { ...cur, ...patch } : cur);
 export const undoLabel = (u: Undo) => (u.stacked ? 'Undo latest Trash' : 'Undo');
+
+const day = (ms: number) => formatTime(ms).slice(0, 10);
+/** Retention never purges an active session (EC-22; service retention/policy.isActive). */
+const ACTIVE: readonly LiveStatus['lifecycle'][] = ['busy', 'waiting-for-permission', 'needs-input'];
+/** XAIBO-PROD-533 (design §6.3): the open session's retention line from its fresh history row (undefined = not read
+ *  yet) and its current live state. Not read, failed or gone never shows a default (design security review L3). */
+export function retentionLine(h: { row: HistoryRow | null; failed: boolean } | undefined, live: LiveStatus | null): string | null {
+  if (!h) return null;
+  const r = h.row;
+  if (h.failed || !r) return 'Retention unavailable';
+  if (r.trashedAt !== null) return r.trashPurgeAt !== null ? `In Trash · Auto-empty ${day(r.trashPurgeAt)}` : 'In Trash';
+  if (r.keep) return 'Kept';
+  if (r.purgeAt === null) return 'No purge scheduled';
+  return live && ACTIVE.includes(live.lifecycle) ? 'Active; retention paused' : `Purge scheduled ${day(r.purgeAt)}`;
+}
+
+/** XAIBO-PROD-533: a history row shared between the list and the open session; row null = the session is gone. */
+export interface Shared { id: number; row: HistoryRow | null; n: number }
+/** The open session's state from a shared row: its own session only (review #1: a gone row applies as gone), and never
+ *  a row that changes nothing: its own share coming back, or gone onto gone (`held`: its state; E2E-found and
+ *  re-review: either would clear its outcome note). After a failed read any shared row applies. */
+export const sharedRow = (s: Shared, id: number, held?: { row: HistoryRow | null; failed: boolean }): { row: HistoryRow | null; failed: false } | null =>
+  (s.id === id && !(held && !held.failed && s.row === held.row) ? { row: s.row, failed: false } : null);

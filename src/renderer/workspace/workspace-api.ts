@@ -2,7 +2,7 @@
 // restart brings a new one). Every argument is forwarded as given, so slice's optional tool call selector reaches IPC.
 import type { Client } from '../client.ts';
 
-const METHODS = ['session', 'transcript', 'slice', 'tools', 'subagents', 'files', 'markers', 'cost'] as const;
+const METHODS = ['session', 'transcript', 'slice', 'tools', 'subagents', 'files', 'markers', 'cost', 'historyRow', 'overlay'] as const; // XAIBO-PROD-533: Keep and retention
 export type WorkspaceApi = Pick<Client, (typeof METHODS)[number]>;
 
 export function workspaceApiOf(get: () => Client | null): WorkspaceApi {

@@ -451,6 +451,10 @@ summary:hover { background: var(--x-tint); }
 .x-undo { position: fixed; right: var(--x-space-4); bottom: var(--x-space-4); z-index: var(--x-z-toast); width: min(360px, calc(100vw - 32px)); display: grid; gap: var(--x-space-2);
   padding: var(--x-space-3) var(--x-space-4); color: var(--x-ink); background: var(--x-surface); border: var(--x-border); border-radius: var(--x-radius-panel); }
 .x-undo p { margin: 0; }
+/* XAIBO-PROD-533 (design §6.3): the open session's retention line and Keep toggle below its chips */
+.x-retention { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: var(--x-space-1) var(--x-space-2); color: var(--x-muted); font-size: var(--x-text-small); }
+.x-retention .x-action-note { padding: 0; }
+.x-keep[aria-pressed="true"] { color: var(--x-accent); background: var(--x-selected); }
 .x-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--x-line); }
 .x-dot-ok { background: var(--x-success); }
 .x-dot-busy { background: var(--x-accent); }

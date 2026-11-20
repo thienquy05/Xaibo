@@ -118,4 +118,23 @@ test('Session list row actions: menu keys, Pin, Keep, Archive, Move to Trash and
   await expect(page.locator('.x-list-pane .x-srow').filter({ hasText: 'meeting notes' })).toBeFocused();
   await page.getByRole('button', { name: 'Dismiss' }).click();
   await expect(page.locator('.x-undo').filter({ hasText: 'Restored from Trash.' })).toHaveCount(0);
+
+  // XAIBO-PROD-533: the open session's retention line and Keep toggle; a change in either place reaches the other
+  await page.locator('.x-list-pane .x-srow').filter({ hasText: 'rate limiter' }).click();
+  const head = page.locator('.x-open-head');
+  const retention = head.locator('[data-field="retention"]');
+  const keep = head.getByRole('button', { name: 'Keep' });
+  await expect(retention).toHaveText('Kept');
+  await expect(keep).toHaveAttribute('aria-pressed', 'true');
+  await shot(page, 'history-actions-open-keep');
+  await keep.click();
+  await expect(head.locator('.x-action-note')).toHaveText('Keep removed.');
+  await expect(keep).toHaveAttribute('aria-pressed', 'false');
+  await expect(retention).toHaveText(/^Purge scheduled \d{4}-\d{2}-\d{2}$/);
+  await expect(records(page).filter({ hasText: 'rate limiter' }).locator('[data-field="history"]')).not.toContainText('Keep');
+  await more(page, 'rate limiter').click();
+  await expect(menu.getByRole('menuitemcheckbox', { name: 'Keep' })).toHaveAttribute('aria-checked', 'false');
+  await menu.getByRole('menuitemcheckbox', { name: 'Keep' }).click();
+  await expect(retention).toHaveText('Kept');
+  await expect(keep).toHaveAttribute('aria-pressed', 'true');
 });

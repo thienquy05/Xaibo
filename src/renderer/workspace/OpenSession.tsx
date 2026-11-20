@@ -3,7 +3,8 @@
 // A live session opens on its latest page, anything else at its first turn; later activity is appended at the end
 // without moving the reading position.
 import { useEffect, useMemo, useReducer, useRef, useState, type KeyboardEvent } from 'react';
-import type { CostDetail, FileItem, ModelMarker, SessionDetail, SessionRow, SubagentItem, TCursor, ToolItem, TranscriptItem } from '../../shared/ipc.ts';
+import type { CostDetail, FileItem, HistoryRow, ModelMarker, SessionDetail, SessionRow, SubagentItem, TCursor, ToolItem, TranscriptItem } from '../../shared/ipc.ts';
+import { doneText, errorText, opOf, retentionLine, sharedRow, type Shared } from '../history/actions.ts';
 import type { Client } from '../client.ts';
 import { contextText, costText, formatTime, markers as rowMarkers, originText } from '../model.ts';
 import { RetryNotice } from '../components/RetryNotice.tsx';
@@ -85,10 +86,12 @@ const SECTIONS = ['conversation', 'timeline', 'tools', 'subagents', 'files', 'co
 type Section = (typeof SECTIONS)[number];
 const SECTION_TEXT: Record<Section, string> = { conversation: 'Conversation', timeline: 'Timeline', tools: 'Tools', subagents: 'Subagents', files: 'Files', context: 'Context', cost: 'Cost' };
 
-export function OpenSession({ row, changed, api, lastKnown, listShown, onShowList, onBack, onReturn }: {
+export function OpenSession({ row, changed, api, lastKnown, listShown, onShowList, onBack, onReturn, history = null, onHistory }: {
   row: SessionRow; changed: number; api: WorkspaceApi; lastKnown: boolean; listShown: boolean; onShowList: () => void; onBack: () => void;
   /** XAIBO-PROD-437 (design §6.3 Return to source): set when the session was opened from the Dashboard. */
   onReturn?: () => void;
+  /** XAIBO-PROD-533: a history row refreshed elsewhere (the list), and the way to share one refreshed here. */
+  history?: Shared | null; onHistory?: (id: number, r: HistoryRow | null) => void;
 }) {
   const id = row.id;
   // XAIBO-PROD-424: the session's change generation (deltas naming it, resyncs); a lastActivity bucket missed records
@@ -112,6 +115,44 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
       () => { if (on) { setDetailFailed(true); detailRtDo({ type: 'fail', at: Date.now() }); } });
     return () => { on = false; };
   }, [api, id, activity, detailRetry]);
+  // XAIBO-PROD-533 (design §6.3): retention line and Keep from the session's fresh history row (on open, activity, Retry,
+  // and when the list refreshed it); unknown says unavailable (design security review L3)
+  const [hist, setHist] = useState<{ row: HistoryRow | null; failed: boolean } | undefined>(undefined);
+  const [histRetry, setHistRetry] = useState(0);
+  const [keepNote, setKeepNote] = useState<string | null>(null);
+  const [keepBusy, setKeepBusy] = useState(false);
+  useEffect(() => {
+    let on = true;
+    api.historyRow(id).then((r) => { if (on) setHist({ row: r, failed: false }); }, () => { if (on) setHist((h) => ({ row: h?.row ?? null, failed: true })); });
+    return () => { on = false; };
+  }, [api, id, activity, histRetry]);
+  const histNow = useRef(hist);
+  histNow.current = hist;
+  const seenHistory = useRef(history?.n);
+  useEffect(() => {
+    if (!history || seenHistory.current === history.n) return;
+    seenHistory.current = history.n;
+    const s = sharedRow(history, id, histNow.current);
+    if (s) { setHist(s); setKeepNote(null); } // review #2: an earlier Keep outcome no longer describes the row
+  }, [history, id]);
+  const toggleKeep = async (r: HistoryRow) => {
+    if (keepBusy) return;
+    setKeepBusy(true);
+    setKeepNote(null);
+    const op = opOf('keep', r);
+    const res = await api.overlay(op).catch(() => null);
+    if (!res) setKeepNote('The result is unavailable.'); // a lost reply never means success
+    else if (!res.ok) setKeepNote(errorText(res.error));
+    else if ('on' in op) setKeepNote(doneText('keep', op.on));
+    try {
+      const fresh = await api.historyRow(id);
+      setHist({ row: fresh, failed: false });
+      onHistory?.(id, fresh);
+    } catch { setHist((h) => ({ row: h?.row ?? null, failed: true })); }
+    setKeepBusy(false);
+  };
+  const retention = retentionLine(hist, row.live);
+  const keepRow = hist && !hist.failed && hist.row && hist.row.trashedAt === null ? hist.row : null;
   // P4-T07b: the cost breakdown is fetched only while the Cost tab is shown, and again on activity or Retry.
   const [cost, setCost] = useState<CostDetail | null | undefined>(undefined);
   const [costFailed, setCostFailed] = useState(false);
@@ -237,6 +278,17 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
           <span className="x-chip">{visible(row.model)}</span>
           <span className="x-chip">{visible(row.agent)}</span>
         </div>
+        {retention !== null ? ( // design §6.3: retention, then the Keep toggle (aria-pressed; §5.4 polite outcome)
+          <div className="x-retention">
+            <span data-field="retention">{retention}</span>
+            {keepRow ? (
+              <button type="button" className="x-btn x-btn-quiet x-keep" aria-pressed={keepRow.keep} aria-disabled={keepBusy || undefined}
+                onClick={() => void toggleKeep(keepRow)}>{keepRow.keep ? <Icon id="check" /> : null}Keep</button>
+            ) : null}
+            {hist?.failed ? <button type="button" className="x-btn x-btn-quiet" onClick={() => setHistRetry((n) => n + 1)}>Retry</button> : null}
+            <span className="x-action-note" aria-live="polite">{keepNote}</span>
+          </div>
+        ) : null}
       </div>
       <div className="x-tabs" role="group" aria-label="Session section" inert={drawer}>
         {SECTIONS.map((s, i) => {

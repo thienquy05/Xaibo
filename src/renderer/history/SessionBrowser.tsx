@@ -18,7 +18,7 @@ import { show, visible } from '../text.ts';
 import { compactStatus, type SessionChanges } from '../workspace/view.ts';
 import { canLoadMore, capped, COVERAGE, emphasis, failureNote, filterOf, freshList, groupLabel, initialQuery, isPlain, listTexts, mergeLive, mergeRows, MODES, modeKey,
   refill, rowLines, startLoad, type BrowseRow, type ListState, type LiveState, type Query } from './browse.ts';
-import { doneText, errorText, menuClosed, menuItems, NOTICE, opOf, place, trashed, undoLabel, undone, type ActionKind, type Undo } from './actions.ts';
+import { doneText, errorText, menuClosed, menuItems, NOTICE, opOf, place, trashed, undoLabel, undone, type ActionKind, type Shared, type Undo } from './actions.ts';
 
 export interface BrowseApi {
   history(filter: HistoryFilter, cursor: HistoryKey | null, limit: number): Promise<{ rows: HistoryRow[]; next: HistoryKey | null }>;
@@ -128,11 +128,13 @@ type List = ListState<HistoryKey | SearchKey>;
 type Page = { rows: HistoryRow[]; next: HistoryKey | SearchKey | null; snippets: (readonly [number, string])[] };
 const fresh = (): List => freshList();
 
-export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, onOpen, hide }: {
+export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, onOpen, hide, history = null, onHistory }: {
   api: BrowseApi; agents: AgentStatus[]; live: LiveRows; changes: SessionChanges; lastKnown: boolean;
   openId: number | null; onOpen: (r: HistoryRow) => void;
   /** The Hide session list button, shown while a session is open. */
   hide: (() => void) | null;
+  /** XAIBO-PROD-533: a history row refreshed elsewhere (the open session), and the way to share one refreshed here. */
+  history?: Shared | null; onHistory?: (id: number, r: HistoryRow | null) => void;
 }) {
   const [q, setQ] = useState<Query>(initialQuery);
   const [list, setList] = useState<List>(fresh);
@@ -170,26 +172,36 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
     if (el) el.focus(); else { setRestored(row); heading.current?.focus(); }
   }, [list]);
   /** The refreshed row (null = gone) into the list; true when the row is in it. Live shows the live set: nothing to place. */
-  const applyRow = (id: number, row: HistoryRow | null): boolean => {
+  const applyRow = (id: number, row: HistoryRow | null, fallback = true): boolean => {
     if (query.current.mode === 'live') return false;
     const p = place(current.current.rows, id, row, query.current, current.current.next !== null);
     current.current = { ...current.current, rows: p.rows };
     setList((x) => ({ ...x, rows: place(x.rows, id, row, query.current, x.next !== null).rows }));
-    if (!p.rows.length) requestAnimationFrame(() => heading.current?.focus()); // design §5.4: the list heading when nothing is left
+    if (fallback && !p.rows.length) requestAnimationFrame(() => heading.current?.focus()); // design §5.4: the list heading when nothing is left
     return p.placed;
   };
-  const openMenu = (r: BrowseRow) => {
+  /** A refreshed row into the list and to the open session (XAIBO-PROD-533). */
+  const share = (id: number, row: HistoryRow | null): boolean => { onHistory?.(id, row); return applyRow(id, row); }; // review #1: gone is shared too
+  // a row refreshed in the open session updates its record here (only one shown: never an insertion from elsewhere)
+  const seenHistory = useRef(history?.n);
+  useEffect(() => {
+    if (!history || seenHistory.current === history.n) return;
+    seenHistory.current = history.n;
+    if (current.current.rows.some((r) => r.id === history.id)) applyRow(history.id, history.row, false);
+  }, [history]);
+  // by session id: Retry works in Live too, whose rows are not the paged list's (3b-3 re-review)
+  const openMenu = (id: number) => {
     const g = ++menuGen.current;
-    setMenu({ id: r.id, row: null, status: 'loading' });
-    api.historyRow(r.id).then((row) => {
+    setMenu({ id, row: null, status: 'loading' });
+    api.historyRow(id).then((row) => {
       if (g !== menuGen.current) return;
       const closed = menuClosed(row); // review M3: gone, or in Trash since the list was read
-      if (closed) { document.getElementById(MENU)?.hidePopover(); setMenu(null); applyRow(r.id, row); setNote(closed); return; }
-      setMenu({ id: r.id, row, status: 'ready' });
-      applyRow(r.id, row);
-    }, () => { if (g === menuGen.current) setMenu({ id: r.id, row: null, status: 'failed' }); });
+      if (closed) { document.getElementById(MENU)?.hidePopover(); setMenu(null); share(id, row); setNote(closed); return; }
+      setMenu({ id, row, status: 'ready' });
+      share(id, row);
+    }, () => { if (g === menuGen.current) setMenu({ id, row: null, status: 'failed' }); });
   };
-  const refresh = (id: number) => api.historyRow(id).then((row) => applyRow(id, row), () => {
+  const refresh = (id: number) => api.historyRow(id).then((row) => share(id, row), () => {
     setNote((n) => `${n ?? ''} The list could not be refreshed.`.trim());
     return false;
   });
@@ -211,7 +223,7 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
     if (!r || !r.ok) { setUndo((cur) => undone(cur, u.id, { status: 'failed', note: r && !r.ok ? errorText(r.error) : 'The result is unavailable.' })); return; }
     let row: HistoryRow | null = null;
     try { row = await api.historyRow(u.id); } catch { /* restored; the row could not be read */ }
-    const placed = row ? applyRow(u.id, row) : false;
+    const placed = row ? share(u.id, row) : false;
     setUndo((cur) => undone(cur, u.id, { status: 'restored', note: row ? null : 'The list could not be refreshed.' }));
     // design §5.4: Undo focuses the restored record; outside the current list, the list heading and Open restored session
     setRestored(placed ? null : row);
@@ -219,7 +231,7 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
   };
   const menuRow = menu?.status === 'ready' ? menu.row : null;
   const entries: MenuEntry[] = menu?.status === 'failed'
-    ? [{ key: 'retry', label: 'Retry', checked: null, keepOpen: true, onSelect: () => { const r = current.current.rows.find((x) => x.id === menu.id); if (r) openMenu(r); } }]
+    ? [{ key: 'retry', label: 'Retry', checked: null, keepOpen: true, onSelect: () => openMenu(menu.id) }]
     : menuRow ? menuItems(menuRow).map((i) => ({ key: i.kind, label: i.label, checked: i.checked, onSelect: () => void run(i.kind, menuRow) })) : [];
 
   const fetchPage = (query: Query, f: HistoryFilter, cursor: HistoryKey | SearchKey | null, limit: number): Promise<Page> => query.search
@@ -359,7 +371,7 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
           <VirtualList key={JSON.stringify(q)} items={rows} getKey={keyOf} label="Sessions" itemLabel={recordLabel} estimateSize={t.searching ? 112 : 76}
             hasMore={!isLive && list.next !== null} loading={!isLive && (list.status === 'more' || list.status === 'loading')} onLoadMore={() => load(q, 'more')}
             render={(r) => <Row row={r} open={r.id === openId} lastKnown={lastKnown} search={q.search} snippet={t.searching ? list.snippets.get(r.id) : undefined} onOpen={onOpen}
-              onMore={r.trashedAt != null ? null : openMenu} />} />
+              onMore={r.trashedAt != null ? null : (x) => openMenu(x.id)} />} />
         )}
         {!isLive && list.status === 'failed' && list.rows.length > 0 ? ( // re-review N2: Retry repeats what failed
           <p className="x-empty-note">{failureNote(list)} <button type="button" className="x-btn x-btn-quiet" onClick={() => load(q, list.failed === 'more' ? 'more' : 'resync')}>Retry</button></p>

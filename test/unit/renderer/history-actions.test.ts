@@ -111,3 +111,47 @@ test('Undo notice: one at a time; a second Trash updates it to Undo latest Trash
   assert.equal(undoLabel(second), 'Undo latest Trash');
   assert.equal(trashed({ ...first, status: 'restored' }, 9).stacked, false);
 });
+
+// XAIBO-PROD-533 (P5-T18 part 3b-4; design §6.3): the open session's retention line from its fresh history row and its
+// current live state; unknown (not read, failed, gone) never shows a default (design security review L3).
+test('retentionLine: Trash, Kept, Active; retention paused, Purge scheduled, No purge scheduled, Unavailable', async () => {
+  const { retentionLine } = await import('../../../src/renderer/history/actions.ts');
+  const { formatTime } = await import('../../../src/renderer/model.ts');
+  const day = (ms: number) => formatTime(ms).slice(0, 10);
+  const ok = (row: HistoryRow | null) => ({ row, failed: false });
+  const busy = { lifecycle: 'busy' } as unknown as NonNullable<HistoryRow['live']>;
+  const idle = { lifecycle: 'idle' } as unknown as NonNullable<HistoryRow['live']>;
+  assert.equal(retentionLine(undefined, null), null, 'not read yet');
+  assert.equal(retentionLine({ row: null, failed: true }, null), 'Retention unavailable');
+  assert.equal(retentionLine(ok(null), null), 'Retention unavailable', 'gone');
+  assert.equal(retentionLine(ok(hrow(1, { trashedAt: at(2), trashPurgeAt: at(32) })), null), `In Trash · Auto-empty ${day(at(32))}`);
+  assert.equal(retentionLine(ok(hrow(1, { keep: true })), busy), 'Kept');
+  assert.equal(retentionLine(ok(hrow(1, { purgeAt: at(40) })), busy), 'Active; retention paused');
+  assert.equal(retentionLine(ok(hrow(1, { purgeAt: at(40) })), idle), `Purge scheduled ${day(at(40))}`);
+  assert.equal(retentionLine(ok(hrow(1)), null), 'No purge scheduled', 'Never, unreadable setting or no time');
+});
+
+// XAIBO-PROD-533 review #1: a row shared from the list applies to the open session only when it is that session's; a
+// gone row (null) is shared too, so the header says Retention unavailable instead of a stale date
+test('sharedRow: this session only; null (gone) applies as gone', async () => {
+  const { sharedRow, retentionLine } = await import('../../../src/renderer/history/actions.ts');
+  assert.deepEqual(sharedRow({ id: 3, row: hrow(3, { keep: true }), n: 1 }, 3), { row: hrow(3, { keep: true }), failed: false });
+  assert.equal(sharedRow({ id: 4, row: hrow(4), n: 2 }, 3), null);
+  const gone = sharedRow({ id: 3, row: null, n: 3 }, 3);
+  assert.deepEqual(gone, { row: null, failed: false });
+  assert.equal(retentionLine(gone!, null), 'Retention unavailable');
+});
+
+// E2E-found: the open session's own share comes back through Workspace; it is not an outside change (its Keep outcome
+// stays), so a shared row that is the very row the header holds is ignored
+test('sharedRow: the header\'s own share (the same row object) is not applied again', async () => {
+  const { sharedRow } = await import('../../../src/renderer/history/actions.ts');
+  const mine = hrow(3, { keep: true });
+  assert.equal(sharedRow({ id: 3, row: mine, n: 4 }, 3, { row: mine, failed: false }), null);
+  assert.deepEqual(sharedRow({ id: 3, row: hrow(3, { keep: true }), n: 5 }, 3, { row: mine, failed: false }), { row: hrow(3, { keep: true }), failed: false }, 'an equal row from the list');
+  // re-review: a gone row coming back to a header that already shows gone changes nothing (its note stays); after a
+  // failed read it applies (gone replaces unavailable-by-failure)
+  assert.equal(sharedRow({ id: 3, row: null, n: 6 }, 3, { row: null, failed: false }), null);
+  assert.deepEqual(sharedRow({ id: 3, row: null, n: 7 }, 3, { row: null, failed: true }), { row: null, failed: false });
+  assert.deepEqual(sharedRow({ id: 3, row: null, n: 8 }, 3, { row: mine, failed: false }), { row: null, failed: false });
+});
