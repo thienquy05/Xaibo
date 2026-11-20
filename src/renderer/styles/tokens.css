@@ -698,7 +698,23 @@ html, .x-shell.x-fixed { scroll-padding-top: var(--x-frame-pad, 8px); } /* clear
 @media (min-width: 1200px) { .x-map { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); align-items: start; } }
 .x-map-tree .x-vlist { min-height: 18rem; }
 .x-map-note { margin: 0; padding: var(--x-space-4); }
-.x-map-node { display: flex; align-items: flex-start; gap: var(--x-space-1); min-width: 0; cursor: pointer; }
+.x-map-node { display: flex; align-items: flex-start; min-width: 0; cursor: pointer; }
+.x-map-cell { flex: 1; display: flex; align-items: flex-start; gap: var(--x-space-1); min-width: 0; }
+.x-map-notice { margin: 0; }
+/* XAIBO-PROD-539 (DD2-04): at >=1200 px rows fan out by level into three columns (root leading, worktree central, session
+   leaves trailing), the chevron after its box so connectors meet clear edges; decorative links in the 40 px gaps */
+.x-map-host { position: relative; }
+.x-map-links { position: absolute; pointer-events: none; overflow: hidden; }
+.x-map-links path { fill: none; stroke: var(--x-line); stroke-width: 1.5; stroke-linecap: round; }
+@media (min-width: 1200px) {
+  .x-map-node { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); column-gap: 40px; }
+  .x-map-node.x-map-l2, .x-map-node.x-map-l3 { padding-inline-start: 0; }
+  .x-map-l1 > .x-map-cell { grid-column: 1; }
+  .x-map-l2 > .x-map-cell { grid-column: 2; }
+  .x-map-l3 > .x-map-cell { grid-column: 3; }
+  .x-map-cell > .x-map-chev { order: 2; }
+  .x-map-cell > .x-map-chev:empty { display: none; }
+}
 .x-map-l2 { padding-inline-start: 16px; }
 .x-map-l3 { padding-inline-start: 32px; }
 @media (max-width: 799px) { .x-map-l2 { padding-inline-start: 12px; } .x-map-l3 { padding-inline-start: 24px; } }

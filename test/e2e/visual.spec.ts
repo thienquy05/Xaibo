@@ -4,12 +4,13 @@
 // unavailable and estimate states at 960×640. Synthetic data only; animations off, 1× (scale: css), system fonts,
 // darwin-only baselines in visual.spec.ts-snapshots/. Times that follow the real clock are masked.
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { ElectronApplication, Locator, Page } from '@playwright/test';
 import { claudeProfile, deliver } from '../helpers/hook-socket.ts';
 import { expect, openSessions, servicePid, test, type Xaibo } from './fixtures.ts';
+import { claude as mapClaude, codex, repoLayout } from './map-fixture.ts';
 
 test.skip(process.platform !== 'darwin', 'baselines are darwin-only (Q-4.1)');
 
@@ -171,12 +172,12 @@ const hideClockText = (page: Page) => page.evaluate(() => {
   new MutationObserver(mark).observe(document.body, { subtree: true, childList: true, characterData: true });
 });
 
-async function shoot(page: Page, name: string, mask: Locator[] = []) {
+async function shoot(page: Page, name: string, mask: Locator[] = [], maxDiffPixels = 0) {
   // Chromium draws focus-visible on a clicked button only sometimes; focus rings are covered by a11y-workspace.spec
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   for (const theme of THEMES) {
     await page.emulateMedia({ colorScheme: theme });
-    await expect(page).toHaveScreenshot(`${name}-${theme}.png`, { animations: 'disabled', caret: 'hide', scale: 'css', mask });
+    await expect(page).toHaveScreenshot(`${name}-${theme}.png`, { animations: 'disabled', caret: 'hide', scale: 'css', mask, maxDiffPixels });
   }
 }
 
@@ -286,4 +287,45 @@ test('States 960×640, live without statusLine then collection lost: stale conte
   await page.mouse.move(0, 0);
   await shoot(page, 'state-lost-session');
   await expect(page.getByRole('status')).toContainText('Collection: Restarting'); // still inside the gap
+});
+
+// XAIBO-PROD-539 (P5-T18a part 2b; design §6.5.1, DD2-04, look D-P5-13): the Agent Map at 1280×800 (fan-out by level with
+// decorative connectors, Details right) and 960×640 (indented rows, Details below), light and dark. The git layout lives
+// at a fixed synthetic path (removed before and after) so the shots never carry a machine path.
+test('Agent Map: wide fan-out with connectors and stacked rows, light and dark', async ({ xaibo }) => {
+  test.setTimeout(150_000);
+  const root = '/tmp/xaibo-fixture-visual';
+  rmSync(root, { recursive: true, force: true });
+  try {
+    const { main, docs } = repoLayout(root);
+    xaibo.touchStore(() => {
+      mapClaude(xaibo.home, 1, main, 'Add a rate limiter');
+      mapClaude(xaibo.home, 2, docs, 'Write the docs pass');
+      codex(xaibo.home, main);
+    });
+    const { page, app } = await start(xaibo, { live: false });
+    await openSessions(page);
+    await expect(page.getByRole('list', { name: 'Sessions' })).toHaveAttribute('data-count', '4', { timeout: 30_000 }); // and the shared fixture's
+    for (const size of [[1280, 800], [960, 640]] as const) {
+      await resize(app, page, size);
+      await page.getByRole('navigation', { name: 'Areas' }).getByRole('link', { name: 'Agent Map' }).click();
+      const tree = page.getByRole('tree', { name: 'Repositories, worktrees and sessions' });
+      const repo = tree.getByRole('treeitem', { name: /^example-app · Sessions 3$/ });
+      await repo.focus({ timeout: 20_000 });
+      await page.keyboard.press('ArrowRight');
+      const wt = tree.getByRole('treeitem', { name: /^example-app · 2 sessions/ });
+      await wt.focus();
+      await page.keyboard.press('ArrowRight');
+      await expect(tree.getByRole('treeitem', { level: 3 })).toHaveCount(2);
+      await page.keyboard.press('Enter'); // selects the main checkout: Details shows its evidence and counts
+      await expect(page.getByRole('region', { name: 'Details' }).getByRole('heading', { level: 3 })).toHaveText('example-app');
+      if (size[0] >= 1200) await expect(page.locator('svg.x-map-links path')).toHaveCount(4);
+      await page.mouse.move(0, 0);
+      // a connector to a row partly below the pane is antialiased where the pane clips it: that one pixel varies run to run
+      await shoot(page, `agent-map-${size[0]}x${size[1]}`, [], 4);
+      await openSessions(page); // the nav link starts the map afresh at the next size
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

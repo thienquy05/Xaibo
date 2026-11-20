@@ -91,10 +91,11 @@ const SECTIONS = ['conversation', 'timeline', 'tools', 'subagents', 'files', 'co
 type Section = (typeof SECTIONS)[number];
 const SECTION_TEXT: Record<Section, string> = { conversation: 'Conversation', timeline: 'Timeline', tools: 'Tools', subagents: 'Subagents', files: 'Files', context: 'Context', cost: 'Cost' };
 
-export function OpenSession({ row, changed, api, lastKnown, listShown, onShowList, onBack, onReturn, history = null, onHistory }: {
+export function OpenSession({ row, changed, api, lastKnown, listShown, onShowList, onBack, onReturn, returnTo = 'Dashboard', history = null, onHistory }: {
   row: SessionRow; changed: number; api: WorkspaceApi; lastKnown: boolean; listShown: boolean; onShowList: () => void; onBack: () => void;
-  /** XAIBO-PROD-437 (design §6.3 Return to source): set when the session was opened from the Dashboard. */
-  onReturn?: () => void;
+  /** XAIBO-PROD-437 (design §6.3 Return to source): set when the session was opened from the Dashboard or (XAIBO-PROD-539)
+   *  the Agent Map, which `returnTo` names. */
+  onReturn?: () => void; returnTo?: 'Dashboard' | 'Agent Map';
   /** XAIBO-PROD-533: a history row refreshed elsewhere (the list), and the way to share one refreshed here. */
   history?: Shared | null; onHistory?: (id: number, r: HistoryRow | null) => void;
 }) {
@@ -288,7 +289,7 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
         <div className="x-open-title">
           <button type="button" className="x-btn x-btn-quiet x-icon-btn x-narrow-only" aria-label="Back to session list" onClick={onBack}><Icon id="back" /></button>
           {!listShown ? <button type="button" className="x-btn x-btn-quiet x-icon-btn x-wide-only" aria-label="Show session list" onClick={onShowList}><Icon id="session" /></button> : null}
-          {onReturn ? <button type="button" className="x-btn x-btn-quiet x-return" onClick={onReturn}><Icon id="dashboard" />Return to Dashboard</button> : null}
+          {onReturn ? <button type="button" className="x-btn x-btn-quiet x-return" onClick={onReturn}><Icon id={returnTo === 'Dashboard' ? 'dashboard' : 'branch'} />Return to {returnTo}</button> : null}
           <h2 id="open-session-title" ref={titleRef} tabIndex={-1}><Title row={row} /></h2>
         </div>
         <div className="x-actions">

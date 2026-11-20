@@ -275,3 +275,37 @@ export function loadedText(dir: Dir, noun: string, n: number): string {
   const word = n === 1 ? noun.slice(0, -1) : noun;
   return dir === 'more' ? `${n} more ${word} loaded` : dir === 'prev' ? `${n} earlier ${word} loaded` : `${n} ${word} loaded`;
 }
+
+// --- XAIBO-PROD-539 (P5-T18a part 2b): connectors and Return to Agent Map ---
+const r1 = Math.round; // review (part 2b): whole pixels, so a sub-pixel layout difference never changes the drawing
+/** A decorative connector (design §6.5.1, DD2-04): a cubic from the source's right-edge centre to the target's left-edge
+ *  centre with horizontal tangents, so it stays between the two x positions (the column gap) and never crosses a box. */
+export function connectorPath(a: { x: number; y: number }, b: { x: number; y: number }): string {
+  const [ax, ay, bx, by] = [r1(a.x), r1(a.y), r1(b.x), r1(b.y)], mx = r1((ax + bx) / 2);
+  return `M ${ax} ${ay} C ${mx} ${ay} ${mx} ${by} ${bx} ${by}`;
+}
+
+/** Return to Agent Map (design §6.5.1): the source leaf when the session is still in its group; else its former parent,
+ *  the leaf dropped from the cached pages and a notice why. A failed check keeps the leaf (nothing is known). */
+export function returnTarget(leaf: string, parent: string | null, group: MapGroup | null, check: HistoryRow | null | 'failed'): { focus: string; drop: boolean; notice: string | null } {
+  if (check === 'failed' || parent === null || group === null) return { focus: leaf, drop: false, notice: null };
+  const away = (notice: string) => ({ focus: parent, drop: true, notice });
+  if (check === null) return away('That session was deleted; showing its former group.');
+  if (check.trashedAt !== null) return away('That session is in Trash; showing its former group.');
+  if ((check.project?.id ?? null) !== group.project) return away('That session moved to another project; showing its former group.');
+  return { focus: leaf, drop: false, notice: null };
+}
+
+/** review M1 (part 2b): a level restored for Return whose request was answered to the map that was left: idle again; a
+ *  first page still in flight becomes a Retry (else the branch would show expanded with nothing and no way on). */
+export function resumeLevel<T, C>(l: Level<T, C>): Level<T, C> {
+  if (!l.loading) return l;
+  return l.loading === 'first' && l.pages.length === 0 ? { ...l, loading: null, failed: 'first' } : { ...l, loading: null };
+}
+
+/** The cached pages of `parent` without session `id`. */
+export function dropSession(kids: Kids, parent: string, id: number): Kids {
+  const l = kids[parent];
+  if (!l) return kids;
+  return { ...kids, [parent]: { ...l, pages: l.pages.map((p) => ({ ...p, items: p.items.filter((it) => 'group' in it || it.id !== id) })) } };
+}

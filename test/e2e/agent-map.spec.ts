@@ -5,43 +5,11 @@
 // (arrows, Home/End, typeahead, Space, Enter), focus to the surviving ancestor on collapse, Load more groups, the
 // fifth expanded path evicting the least recent with an announcement, Enter on a leaf opening Session, and the narrow
 // layout. Failed-page Retry and the refusal are covered at U level (tree.ts); connectors and Return come in part 2b.
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import type { Page } from '@playwright/test';
-import { expect, openSessions, REPO, shot, test } from './fixtures.ts';
-
-const sid = (i: number) => `00000000-0000-4000-8000-00000000ac${String(i).padStart(2, '0')}`;
-function claude(home: string, i: number, cwd: string, prompt: string) {
-  const dir = path.join(home, '.claude', 'projects', cwd.replaceAll('/', '-'));
-  mkdirSync(dir, { recursive: true });
-  const line = { parentUuid: null, type: 'user', uuid: `00000000-0000-4000-8000-00000000ce${String(i).padStart(2, '0')}`, timestamp: `2026-11-1${i % 10}T10:00:00.000Z`,
-    cwd, sessionId: sid(i), entrypoint: 'cli', message: { role: 'user', content: prompt } };
-  writeFileSync(path.join(dir, `${sid(i)}.jsonl`), `${JSON.stringify(line)}\n`);
-}
-/** The synthetic Codex simple-turn rollout with its cwd moved to `cwd`. */
-function codex(home: string, cwd: string) {
-  const dir = path.join(home, '.codex', 'sessions', '2026', '01', '01');
-  mkdirSync(dir, { recursive: true });
-  const fixture = path.join(REPO, 'test', 'fixtures', 'synthetic', 'codex', '0.160.0', 'simple-turn');
-  const name = readdirSync(fixture).find((f) => f.startsWith('rollout-'))!;
-  writeFileSync(path.join(dir, name), readFileSync(path.join(fixture, name), 'utf8').replaceAll('/tmp/xaibo-fixture/alpha', cwd));
-}
-function gitDir(dir: string) {
-  mkdirSync(path.join(dir, 'objects'), { recursive: true });
-  mkdirSync(path.join(dir, 'refs'), { recursive: true });
-  writeFileSync(path.join(dir, 'HEAD'), 'ref: refs/heads/main\n');
-}
-/** example-app (main checkout) with a linked worktree example-app-docs, as git lays them out; no git command runs. */
-function repoLayout(root: string) {
-  const main = path.join(root, 'example-app'), docs = path.join(root, 'example-app-docs'), admin = path.join(main, '.git', 'worktrees', 'docs');
-  gitDir(path.join(main, '.git'));
-  mkdirSync(admin, { recursive: true });
-  mkdirSync(docs, { recursive: true });
-  writeFileSync(path.join(admin, 'commondir'), '../..\n');
-  writeFileSync(path.join(admin, 'gitdir'), `${path.join(docs, '.git')}\n`);
-  writeFileSync(path.join(docs, '.git'), `gitdir: ${admin}\n`);
-  return { main, docs };
-}
+import { expect, openSessions, shot, test } from './fixtures.ts';
+import { claude, codex, repoLayout } from './map-fixture.ts';
 
 const tree = (page: Page) => page.getByRole('tree', { name: 'Repositories, worktrees and sessions' });
 const item = (page: Page, name: string | RegExp) => tree(page).getByRole('treeitem', { name });
@@ -122,6 +90,14 @@ test('Agent Map: shared worktree, Project override counted once, cwd fallback, k
   await expect(limiter).toHaveAttribute('aria-level', '3');
   await expect(tree(page).getByRole('treeitem', { name: /· Codex ·/ })).toHaveCount(1);
   await expect(tree(page).getByRole('treeitem', { name: /token budget/ })).toHaveCount(0);
+  // XAIBO-PROD-539: wide rows fan out by level with decorative connectors (aria-hidden, pointer-inert) between mounted rows
+  const svg = page.locator('svg.x-map-links');
+  await expect(svg).toHaveAttribute('aria-hidden', 'true');
+  await expect(svg.locator('path')).toHaveCount(4); // repo → 2 worktrees, main checkout → 2 sessions
+  expect(await svg.evaluate((el) => getComputedStyle(el).pointerEvents)).toBe('none');
+  const col = async (l: RegExp) => (await item(page, l).locator('.x-map-box').boundingBox())!.x;
+  expect(await col(/^example-app · Sessions 3$/)).toBeLessThan(await col(/^example-app · 2 sessions/));
+  expect(await col(/^example-app · 2 sessions/)).toBeLessThan(await col(/Add a rate limiter · Claude Code/));
 
   // Left from a leaf goes to its parent; a collapse with focus inside hands focus to the surviving node
   await page.keyboard.press('ArrowRight');
@@ -171,6 +147,7 @@ test('Agent Map: shared worktree, Project override counted once, cwd fallback, k
   expect(d.y).toBeGreaterThanOrEqual(t.y + t.height);
   expect(await mainWt.locator('.x-map-node').evaluate((el) => getComputedStyle(el).paddingInlineStart)).toBe('12px');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  await expect(page.locator('svg.x-map-links')).toHaveCount(0); // no connectors below 1200 px
   await shot(page, 'agent-map-narrow');
   expect(errors, 'console errors').toEqual([]);
 });
@@ -230,5 +207,62 @@ test('Agent Map: Load more groups keeps the bound; a fifth expanded path evicts 
   await page.keyboard.press('Home'); // the first folder may be outside the mounted window
   expect((await focused.getAttribute('aria-label'))!.split(' · ')[0]).toBe(names[0]);
   await expect(focused).toHaveAttribute('aria-expanded', 'false');
-  await expect(tree(page).locator('[aria-expanded="true"]')).toHaveCount(4);
+});
+
+// XAIBO-PROD-539 (P5-T18a part 2b; design §6.5.1, §6.3 Return to source): a leaf opened in Session offers Return to Agent
+// Map, which restores the map as left (expanded path) with the source leaf focused and selected (Open in Session); a
+// session moved to Trash meanwhile leaves its former group focused with a notice and the leaf gone.
+test('Return to Agent Map: the source leaf, or its former group after Move to Trash', async ({ xaibo }) => {
+  test.setTimeout(150_000);
+  const work = path.join(xaibo.home, 'work');
+  const { main } = repoLayout(work);
+  xaibo.touchStore(() => {
+    claude(xaibo.home, 1, main, 'Add a rate limiter');
+    claude(xaibo.home, 2, main, 'Tune the token budget');
+  });
+  const run = await xaibo.launch();
+  const page = await xaibo.window(run);
+  await run.app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(1280, 800));
+  await openSessions(page);
+  await expect(page.getByRole('list', { name: 'Sessions' })).toHaveAttribute('data-count', '3', { timeout: 30_000 });
+  await openMap(page);
+  const repo = item(page, /^example-app · Sessions 2$/);
+  await expect(repo).toBeVisible({ timeout: 20_000 });
+  await repo.focus();
+  await page.keyboard.press('ArrowRight');
+  const wt = item(page, /^example-app · 2 sessions/);
+  await wt.focus();
+  await page.keyboard.press('ArrowRight');
+  const limiter = item(page, /Add a rate limiter · Claude Code/);
+  await limiter.focus();
+  await page.keyboard.press('Enter');
+  const head = page.locator('.x-open-head');
+  const back = head.getByRole('button', { name: 'Return to Agent Map' });
+  await expect(back).toBeVisible({ timeout: 10_000 });
+
+  // Return: the map as left, the leaf focused and selected, Open in Session in Details
+  await back.click();
+  await expect(limiter).toBeFocused({ timeout: 10_000 });
+  await expect(limiter).toHaveAttribute('aria-selected', 'true');
+  await expect(wt).toHaveAttribute('aria-expanded', 'true');
+  const details = page.getByRole('region', { name: 'Details' });
+  await expect(details.getByRole('button', { name: 'Open in Session' })).toBeVisible();
+
+  // Open in Session, Move to Trash there, Return: the former group with a notice; the leaf is gone
+  await details.getByRole('button', { name: 'Open in Session' }).click();
+  await head.getByRole('button', { name: 'More actions for this session' }).click();
+  await page.getByRole('menu', { name: 'More actions' }).getByRole('menuitem', { name: 'Move to Trash' }).click();
+  await expect(page.getByRole('region', { name: 'In Trash' })).toBeVisible();
+  await head.getByRole('button', { name: 'Return to Agent Map' }).click();
+  await expect(wt).toBeFocused({ timeout: 10_000 });
+  await expect(page.locator('.x-map-notice')).toHaveText('That session is in Trash; showing its former group.');
+  await expect(limiter).toHaveCount(0);
+  await expect(item(page, /token budget · Claude Code/)).toBeVisible();
+
+  // entering through the nav link starts the map afresh (collapsed, no notice)
+  await openSessions(page);
+  await openMap(page);
+  const fresh = item(page, /^example-app · Sessions 1$/); // fresh counts: the trashed session is not counted
+  await expect(fresh).toHaveAttribute('aria-expanded', 'false', { timeout: 10_000 });
+  await expect(page.locator('.x-map-notice')).toHaveCount(0);
 });

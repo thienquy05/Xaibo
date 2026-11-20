@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { HistoryRow, MapGroup, MapNode } from '../../../src/shared/ipc.ts';
 import { BRANCH_PAGE, collapse, cursorFor, emptyLevel, expand, keyOf, kindOf, LEAF_PAGE, nodeText, pageArrived, pageFailed, pageSize, repoName, ROOT_PAGE,
-  rows, sessionKey, touch, treeKey, groupDetail, sessionDetail, rowLabel, typeLabel, loadedText, evictedText, REFUSED, nounOf, pagingAnchor, setPositions, type Expansion, type Kids, type Level } from '../../../src/renderer/agent-map/tree.ts';
+  rows, sessionKey, touch, treeKey, groupDetail, sessionDetail, rowLabel, typeLabel, loadedText, evictedText, REFUSED, nounOf, pagingAnchor, setPositions, connectorPath, returnTarget, dropSession, resumeLevel, type Expansion, type Kids, type Level } from '../../../src/renderer/agent-map/tree.ts';
 
 const repo = (r: string): MapGroup => ({ project: null, at: { repo: r, worktree: null } });
 const wt = (r: string, w: string, project: number | null = null): MapGroup => ({ project, at: { repo: r, worktree: w } });
@@ -374,4 +374,43 @@ test('review L5: set position per level, exact only when nothing is paged out be
   assert.deepEqual(pos.get('end:'), { pos: 3, size: -1 });
   const later = { ...roots, before: [null] };
   assert.deepEqual(setPositions(rows(later, {}, [])).get(keyOf(repo('/w/b/.git'))), { pos: undefined, size: -1 }, 'pages before it were dropped: no exact position');
+});
+
+// --- XAIBO-PROD-539 (P5-T18a part 2b): connectors, Return to Agent Map ---
+test('connectorPath: a cubic from the source right-edge centre to the target left-edge centre, inside the gap, horizontal tangents', () => {
+  assert.equal(connectorPath({ x: 100, y: 20 }, { x: 160, y: 140 }), 'M 100 20 C 130 20 130 140 160 140');
+  const d = connectorPath({ x: 10.4, y: 5.6 }, { x: 40.2, y: 5.6 });
+  assert.equal(d, 'M 10 6 C 25 6 25 6 40 6', 'whole pixels, so a sub-pixel layout difference never changes the drawing');
+  const xs = connectorPath({ x: 300, y: 0 }, { x: 348, y: 900 }).split(' ').filter((_, i) => [1, 4, 6, 8].includes(i)).map(Number);
+  assert.ok(xs.every((x) => x >= 300 && x <= 348), 'never left of the source or right of the target: no box is crossed');
+});
+
+test('returnTarget: the leaf when it is still here; its parent with a notice when deleted, in Trash or moved; the leaf when the check failed', () => {
+  const leaf = sessionKey(4), parent = keyOf(wt('/w/a/.git', '/w/a')), g = wt('/w/a/.git', '/w/a');
+  assert.deepEqual(returnTarget(leaf, parent, g, session(4)), { focus: leaf, drop: false, notice: null });
+  assert.deepEqual(returnTarget(leaf, parent, g, 'failed'), { focus: leaf, drop: false, notice: null });
+  assert.deepEqual(returnTarget(leaf, parent, g, null), { focus: parent, drop: true, notice: 'That session was deleted; showing its former group.' });
+  assert.deepEqual(returnTarget(leaf, parent, g, { ...session(4), trashedAt: 9 }), { focus: parent, drop: true, notice: 'That session is in Trash; showing its former group.' });
+  assert.deepEqual(returnTarget(leaf, parent, g, { ...session(4), project: { id: 7, name: 'Atlas' } }),
+    { focus: parent, drop: true, notice: 'That session moved to another project; showing its former group.' });
+  const pg = wt('/w/a/.git', '/w/a', 7);
+  assert.deepEqual(returnTarget(leaf, keyOf(pg), pg, { ...session(4), project: { id: 7, name: 'Atlas' } }).drop, false, 'still under its override');
+  assert.deepEqual(returnTarget(leaf, keyOf(pg), pg, session(4)).notice, 'That session moved to another project; showing its former group.');
+});
+
+test('dropSession: removes one session from its parent\'s resident pages only', () => {
+  const p = keyOf(wt('/w/a/.git', '/w/a')), other = keyOf(cwd('/tmp/n'));
+  const kids = { [p]: pageArrived(emptyLevel() as Level<HistoryRow, never>, 'first', null, [session(3), session(4)], null), [other]: pageArrived(emptyLevel() as Level<HistoryRow, never>, 'first', null, [session(4)], null) } as Kids;
+  const out = dropSession(kids, p, 4);
+  assert.deepEqual(out[p]!.pages[0]!.items.map((r) => (r as HistoryRow).id), [3]);
+  assert.equal(out[other], kids[other], 'other levels unchanged');
+  assert.equal(dropSession(kids, 'missing', 4), kids);
+});
+
+test('review M1 (part 2b): a restored level whose request never answers this map is idle; a first page in flight becomes Retry', () => {
+  const firstInFlight = { ...emptyLevel(), loading: 'first' as const };
+  assert.deepEqual(resumeLevel(firstInFlight), { ...emptyLevel(), loading: null, failed: 'first' });
+  const l = pageArrived(emptyLevel() as Level<MapNode, MapGroup>, 'first', null, [node(repo('/w/a/.git'))], repo('/w/a/.git'));
+  assert.deepEqual(resumeLevel({ ...l, loading: 'more' }), l, 'Load more is offered again, the pages kept');
+  assert.equal(resumeLevel(l), l, 'an idle level is unchanged');
 });

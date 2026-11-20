@@ -18,7 +18,7 @@ import { retryIdle, retryStep } from './retry.ts';
 import { firstUsablePage, LONG_FRAME, watchLongFrames } from './perf-marks.ts';
 import { Settings, type SettingsApi } from './settings/Settings.tsx';
 import type { BrowseApi } from './history/SessionBrowser.tsx';
-import { AgentMap } from './agent-map/AgentMap.tsx';
+import { AgentMap, type MapSnapshot } from './agent-map/AgentMap.tsx';
 import { Workspace } from './workspace/Workspace.tsx';
 import type { SessionChanges } from './workspace/view.ts';
 import type { WorkspaceApi } from './workspace/OpenSession.tsx';
@@ -178,6 +178,10 @@ function App() {
   const [dashView, setDashView] = useState<View>('live');
   const origin = useRef<{ id: number; view: View; order: number[] } | null>(null);
   const [returnFor, setReturnFor] = useState<number | null>(null);
+  // XAIBO-PROD-539: a session opened from an Agent Map leaf returns there, to the map as it was left
+  const [returnTo, setReturnTo] = useState<'Dashboard' | 'Agent Map'>('Dashboard');
+  const mapSaved = useRef<MapSnapshot | null>(null);
+  const [mapReturn, setMapReturn] = useState<number | null>(null);
   const [focusId, setFocusId] = useState<number | null>(null);
   const liveRows = useRef(liveSet.rows);
   liveRows.current = liveSet.rows;
@@ -185,6 +189,7 @@ function App() {
   const openSession = (row: SessionRow) => {
     origin.current = { id: row.id, view: dashView, order: openOrder(dashView, liveRows.current) };
     setReturnFor(row.id);
+    setReturnTo('Dashboard');
     setRequest(row);
     setArea('session');
   };
@@ -213,11 +218,13 @@ function App() {
   };
   // review L3: leaving through the Areas links or opening from the Session list ends the Dashboard's Return
   const clearReturn = useCallback(() => { origin.current = null; setReturnFor(null); setFocusId(null); }, []);
-  // XAIBO-PROD-538: a session leaf opens in Session (design §6.5.1); Return to Agent Map arrives in part 2b
-  const openFromMap = (row: SessionRow) => { clearReturn(); setRequest(row); setArea('session'); };
+  // XAIBO-PROD-538/539: a session leaf opens in Session (design §6.5.1) with Return to Agent Map
+  const openFromMap = (row: SessionRow) => { clearReturn(); setReturnFor(row.id); setReturnTo('Agent Map'); setRequest(row); setArea('session'); };
+  const returnToMap = () => { const id = returnFor; clearReturn(); setMapReturn(id); setArea('map'); };
   const go = (to: Area) => (e: MouseEvent) => {
     e.preventDefault();
     clearReturn();
+    if (to === 'map') { mapSaved.current = null; setMapReturn(null); } // the nav link starts the map afresh
     setArea(to);
     requestAnimationFrame(() => document.getElementById(HEADING[to])?.focus());
   };
@@ -274,12 +281,13 @@ function App() {
       <div className="x-health"><HealthStatus health={health} banners={banners} /></div>
       <main id="main" className="x-main" tabIndex={-1}>
         {area === 'settings' ? <Settings api={settingsApi} readOnly={!!health?.readOnly} />
-          : area === 'map' ? <AgentMap api={browseApi} agents={agents ?? []} lastKnown={lastKnown} tick={tick} onOpen={openFromMap} />
+          : area === 'map' ? <AgentMap api={browseApi} agents={agents ?? []} lastKnown={lastKnown} tick={tick} onOpen={openFromMap}
+            saved={mapReturn !== null ? mapSaved.current : null} restoreId={mapReturn} onSave={(m) => { mapSaved.current = m; }} />
           : area === 'dashboard'
           ? <Dashboard live={liveSet} liveFailed={liveFailed} liveRetry={liveRetry} onRetryLive={retryLive} lastKnown={lastKnown} agents={agents} banners={banners} api={api} tick={tick}
             onSetPath={(agent) => window.xaibo?.setAgentPath(agent)} onOpen={openSession} view={dashView} onView={setDashView} focusId={focusId} />
           : <Workspace list={list} changes={changes} browse={browseApi} agents={agents ?? []} live={{ rows: liveSet.rows, loaded: liveSet.loaded, failed: liveFailed, more: liveSet.more }} lastKnown={lastKnown !== null} api={workspaceApi} request={request} onRequestDone={clearRequest}
-            returnFor={returnFor} onReturn={returnToDashboard} onListOpen={clearReturn} />}
+            returnFor={returnFor} onReturn={returnTo === 'Agent Map' ? returnToMap : returnToDashboard} returnTo={returnTo} onListOpen={clearReturn} />}
       </main>
     </div>
   );

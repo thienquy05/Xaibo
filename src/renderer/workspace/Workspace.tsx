@@ -14,7 +14,7 @@ import { openChange, type SessionChanges } from './view.ts';
 
 // XAIBO-PROD-529 (P5-T18 part 3a): the list pane is the history browser (history/SessionBrowser.tsx); `list` (the live
 // session feed) still keeps the open session's row current.
-export function Workspace({ list, changes, browse, agents, live, lastKnown, api, request, onRequestDone, returnFor, onReturn, onListOpen }: {
+export function Workspace({ list, changes, browse, agents, live, lastKnown, api, request, onRequestDone, returnFor, onReturn, returnTo, onListOpen }: {
   list: ListState; changes: SessionChanges; browse: BrowseApi; agents: AgentStatus[]; live: LiveRows; lastKnown: boolean; api: WorkspaceApi;
   /** A session to open, e.g. from a Dashboard record; it may be outside the loaded list. */
   request: SessionRow | null;
@@ -22,6 +22,8 @@ export function Workspace({ list, changes, browse, agents, live, lastKnown, api,
   onRequestDone: () => void;
   /** XAIBO-PROD-437: the session opened from the Dashboard, whose header offers Return to Dashboard. */
   returnFor: number | null; onReturn: () => void;
+  /** XAIBO-PROD-539: where Return goes (the Agent Map for a session opened from a tree leaf). */
+  returnTo?: 'Dashboard' | 'Agent Map';
   /** review L3: a session chosen from this list is not one the Dashboard opened. */
   onListOpen: () => void;
 }) {
@@ -102,7 +104,7 @@ export function Workspace({ list, changes, browse, agents, live, lastKnown, api,
             onOpenSuppressed={(r) => { if (r) { setOpened(null); onListOpen(); } setSupp(r); }} suppressedOpen={supp?.key ?? null} suppressedGone={suppGone} />
         </div>
         {row ? <OpenSession key={row.id} row={row} changed={gen} api={api} lastKnown={lastKnown} listShown={showList} onShowList={() => setShowList(true)} onBack={back}
-          onReturn={row.id === returnFor ? onReturn : undefined} history={history} onHistory={shareHistory} />
+          onReturn={row.id === returnFor ? onReturn : undefined} returnTo={returnTo} history={history} onHistory={shareHistory} />
           : supp ? <SuppressedPane key={supp.key} row={supp} inflight={reimporting.current.has(supp.key)} send={sendReimport} outcome={outcome} onBack={back} onGone={goneSupp} />
             : <section className="x-pane x-choose" aria-label="Open session"><p>Choose a session to read its conversation</p></section>}
       </div>
