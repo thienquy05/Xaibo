@@ -5,13 +5,15 @@
 // session's workspace open; the service is killed at mid-run and restarts. Every event is joined to its paint after the
 // run (t2-analysis.ts). Checks: M1 p95 <= 250 ms and M2 p95 <= 1 s outside the restart window, writer queue age
 // p95 <= 1 s, drain <= 5 s after load, every record and hook stored exactly once. IDs and timings only leave this process.
+// G5-N1: session retention is set to Never through Settings at the start (the corpus is dated early 2026; a run 10 min
+// after a backfill would purge it mid-run); retention runs that still happen are reported and none may purge a session.
 import { createHash, randomUUID } from 'node:crypto';
 import { appendFileSync, constants, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statfsSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { claudeProfile } from '../helpers/hook-socket.ts';
-import { agyRoot, close, environment, launch, serviceLog, sidOf, sleep, stats, tornLogLines, until, type Launched } from './app.ts';
+import { agyRoot, close, environment, launch, retentionNever, retentionRuns, serviceLog, sidOf, sleep, stats, tornLogLines, until, type Launched } from './app.ts';
 import { emit, installHelpers, now } from './emitter.ts';
 import { analyze, loadQualifies, type Emitted, type TraceLine, type Window } from './t2-analysis.ts';
 import { footprintMiB, psTree } from './m16.ts';
@@ -129,6 +131,7 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
       launched.app.evaluate(() => (globalThis as unknown as { xaiboPerfRenderer?: string[] }).xaiboPerfRenderer ?? []),
       sleep(5000).then(() => ['main-unreachable']),
     ]).catch(() => ['main-unreachable']);
+    await retentionNever(launched);
     const profile = await until(() => claudeProfile(dataDir), 30_000);
     await until(() => existsSync(path.join(dataDir, 'run', 'token')), 30_000);
     const shim = installHelpers(dataDir);
@@ -336,6 +339,7 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
     const hooksAccounted = () => stored.hooks.rows + stored.hooks.diskFullGaps >= stored.hooks.sent;
     for (const end = Date.now() + 30_000; (stored.records.ids < stored.records.sent || !hooksAccounted()) && Date.now() < end;) { await sleep(1000); stored = storedOnce(); }
     const u = usage ? await usageResult() : null;
+    const retention = retentionRuns(dataDir, launched.created).map(({ atS, sessions: n, trash, quota }) => ({ atS, sessions: n, trash, quota }));
 
     const w = restart as { from: bigint; to: bigint } | null;
     const checks = {
@@ -353,6 +357,7 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
       // G4f-2: a qualifying run is the full profile at its traffic; a shortened --seconds run is a wiring run and fails
       fullProfile: p.seconds === PROFILES[tier].seconds,
       loadRate: loadQualifies(emitted.length, p),
+      corpusKept: retention.every((x) => x.sessions === 0 && x.trash === 0),
       ...(u ? u.checks : {}),
     };
     const sorted = [...sizes].sort((a, b) => a - b);
@@ -367,6 +372,7 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
       killAtMs: w ? Math.round(Number(w.from - (emitted[0]?.t0 ?? w.from)) / 1e6) + IN_FLIGHT_MS : null, drainMs: r.drainMs, ingestLagMs: r.ingestLagMs, writerQueueAgeMs: r.queueAgeMs, deltaResyncs: r.deltaResyncs,
       restart: w ? { windowMs: Number(w.to - w.from) / 1e6 } : null,
       stored, backfill: { corpus: summary.case, doneMs: backfillDone ? Date.parse(backfillDone.t) - launched.created : null }, workspaceOpen,
+      retentionRan: retention.length > 0, retentionRuns: retention,
       notes: 'M1/M2 checks use events emitted outside the restart window (kill to restarted-ready + 5 s); restart-window samples are reported apart. '
         + 'A miss (never painted, or a hook spooled at the deadline) is timed as Infinity, which JSON prints as null. Queue age is checked as ingest lag '
         + '(emit -> commit, steady events): file syncs flush the writer right after they enqueue, so the writer\'s own 5 s queue-age peaks stay ~0. Drain counts steady events. '

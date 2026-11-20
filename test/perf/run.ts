@@ -17,7 +17,8 @@
 //   npm run perf -- --tier TP --usage [--no-disk-full] [--seconds 600] [--seed 1]   (P4-T12b, EC-100: statusLine tee, Codex token_count, live
 //     cost, disk-full fault, M4/M5/M7/M16 figures; mounts a disk image: run outside the command sandbox)
 //   npm run perf -- --tier TP --only quota [--seed 1]   (P5-T11, EC-99: quota-history paging, row counts and bytes, quota expiry; tp corpus)
-//   npm run perf -- --tier TP --only m13 [--runs 20] [--seed 1]   (P5-T20: M13 selection and search, cold and warm, UI path; tp corpus)
+//   npm run perf -- --tier TP --only m13 [--runs 20] [--seed 1]   (P5-T20: M13 selection, rare and common search, cold and warm, UI path,
+//     then during the app's first retention run: ~11 min more; tp corpus)
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';

@@ -109,6 +109,41 @@ export function query<T>(dataDir: string, sql: string, ...params: (string | numb
 
 export const fileBytes = (f: string) => (existsSync(f) ? statSync(f).size : 0);
 
+/** G5-N1: Settings > Session retention > Never > Save (as test/e2e/settings-retention.spec.ts), then back to the Session
+ *  area. The app's own retention run (10 min after each backfill, real clock) would otherwise purge a corpus dated early
+ *  2026 mid-measurement (t1mix: 1,000 sessions in ~533 s); with Never it only expires quota history older than 45 days. */
+export async function retentionNever(l: Launched): Promise<void> {
+  const areas = l.page.getByRole('navigation', { name: 'Areas' });
+  await areas.getByRole('link', { name: 'Settings' }).click();
+  const section = l.page.getByRole('region', { name: 'Session retention' });
+  await section.getByRole('radio', { name: 'Never' }).check({ timeout: 60_000 }); // enabled once the stored setting is read
+  await section.getByRole('button', { name: 'Save' }).click();
+  await section.getByText('Saved.').waitFor({ timeout: 60_000 });
+  await areas.getByRole('link', { name: 'Session', exact: true }).click();
+}
+
+/** The app's own retention runs logged since `since` (ms): when each ended (at, ms; atS after `since`) and what it purged or
+ *  expired (retention_run is logged at the end of a run). */
+export const retentionRuns = (dataDir: string, since: number) => serviceLog(dataDir)
+  .filter((e) => e.event === 'retention_run' && Date.parse(e.t) >= since)
+  .map((e) => {
+    const x = e as { t: string; sessions?: number; trash?: number; quota?: number };
+    const at = Date.parse(x.t);
+    return { at, atS: Math.round((at - since) / 1000), sessions: x.sessions ?? 0, trash: x.trash ?? 0, quota: x.quota ?? 0 };
+  });
+
+/** G5e-1: PRD §6.6 TP is a ~1,500-session corpus with a ~2.6 GiB DB; a smaller import measures a smaller history. */
+export const TP_MIN = { sessions: 1450, dbBytes: 2.4 * 2 ** 30 };
+export function tpWorkload(dataDir: string): { sessions: number; dbBytes: number } {
+  const sessions = Number(query<number>(dataDir, 'SELECT count(*) FROM sessions'));
+  const dbBytes = fileBytes(path.join(dataDir, 'xaibo.db')) + fileBytes(path.join(dataDir, 'xaibo.db-wal'));
+  if (sessions < TP_MIN.sessions || dbBytes < TP_MIN.dbBytes) {
+    throw new Error(`TP workload too small: ${sessions} sessions and ${(dbBytes / 2 ** 30).toFixed(2)} GiB DB+WAL imported; PRD §6.6 TP needs `
+      + `>= ${TP_MIN.sessions} sessions and >= ~2.4 GiB. Regenerate: node scripts/gen-perf-corpus.ts --case tp`);
+  }
+  return { sessions, dbBytes };
+}
+
 export { stats } from './stats.ts'; // P4-T11: in its own module, so the pure t2 analysis loads without Playwright
 
 export async function environment(app: ElectronApplication) {

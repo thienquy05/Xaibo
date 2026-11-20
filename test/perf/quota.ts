@@ -1,5 +1,6 @@
-// P5-T11 (EC-99, PRD §6.6 TP): quota history at the personal profile. The packaged app imports the tp corpus (t1mix plus
-// 2 Codex quota streams x 45 days, scripts/gen-perf-corpus.ts --case tp); after backfill_done, with the app still running,
+// P5-T11 (EC-99, PRD §6.6 TP): quota history at the personal profile. The packaged app imports the tp corpus (1,455 sessions
+// plus 2 Codex quota streams x 45 days, scripts/gen-perf-corpus.ts --case tp); the import must reach the TP workload
+// (>= 1,450 sessions, >= ~2.4 GiB DB, G5e-1) or the probe stops with that message; after backfill_done, with the app still running,
 // every day of both streams is paged the way the Observed history panel asks (one UTC day, 50 records a page) on the
 // service's query (answerUsageHistory) over a read-only connection: first page and every page timed. Reported: row counts,
 // table and index bytes (dbstat), DB/WAL bytes, the query plans. Then, app closed, one retention run on the imported store
@@ -15,7 +16,7 @@ import { runRetention, QUOTA_EXPIRED, QUOTA_STREAM } from '../../src/service/ret
 import { setRetention } from '../../src/service/retention/policy.ts';
 import { openStore } from '../../src/service/store/db.ts';
 import { Writer } from '../../src/service/store/writer.ts';
-import { agyRoot, close, environment, fileBytes, launch, query, serviceLog, stats, waitForEvent } from './app.ts';
+import { agyRoot, close, environment, fileBytes, launch, query, serviceLog, stats, tpWorkload, waitForEvent } from './app.ts';
 
 const DAY = 86_400_000;
 const PAGE = 50; // src/renderer/model.ts PAGE
@@ -30,6 +31,7 @@ export async function quotaProbe(corpus: string) {
   const l = await launch(path.join(home, '.claude'), { codex: path.join(home, '.codex'), agy: agyRoot(home), dataDir: path.join(dataRoot, 'data') });
   let env: Awaited<ReturnType<typeof environment>> | undefined;
   let importMs: number | null = null;
+  let workload: ReturnType<typeof tpWorkload> | undefined;
   let appRetentionRan = false; // the app's own run (10 min after boot, real clock) would purge the corpus mid-measurement
   const pages: number[] = [], firstPages: number[] = [];
   let rows: Record<string, number> = {}, bytes: Record<string, number> = {}, plans: Record<string, string> = {};
@@ -39,6 +41,7 @@ export async function quotaProbe(corpus: string) {
     const done = await waitForEvent(l.dataDir, 'backfill_done', 30 * 60_000);
     if (done === null) throw new Error('no backfill_done within 30 min');
     importMs = done - l.created;
+    workload = tpWorkload(l.dataDir); // G5e-1: throws (app closed below) when the import is smaller than TP
     const db = new DatabaseSync(path.join(l.dataDir, 'xaibo.db'), { readOnly: true });
     try {
       const count = (sql: string) => Number(Object.values(db.prepare(sql).get() ?? {})[0]);
@@ -100,7 +103,7 @@ export async function quotaProbe(corpus: string) {
 
   const first = stats(firstPages), all = stats(pages);
   return {
-    tier: 'TP', metric: 'quota-history', importMs, appRetentionRan, streams, rows, bytes, plans,
+    tier: 'TP', metric: 'quota-history', importMs, workload, appRetentionRan, streams, rows, bytes, plans,
     firstPageMs: first, allPagesMs: all, targetFirstPageP95Ms: FIRST_PAGE_TARGET_MS,
     expiry: { ...expiry, ms: Math.round(expiryMs), transactions: tx.length, longestTransactionMs: Math.round(Math.max(0, ...tx)), accountRowsBefore: before, accountRowsLeft: left },
     pass: !appRetentionRan && first.p95 <= FIRST_PAGE_TARGET_MS && streams.length === 2 && before > 0 && expiry.quota === before && left === 0 && streams.every((s) => s.rows >= summary.quota.days * 1440),

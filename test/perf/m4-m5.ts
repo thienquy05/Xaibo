@@ -3,11 +3,14 @@
 // idle after one record each. Three phases of `seconds` each, sampled as M4 (P3-T16b): window open on the Dashboard's
 // Live sessions view (M5), window open with one session's workspace in the Session area (M5), window closed (M4).
 // Checks: M5 phases footprint <= 450 MB, M4 footprint <= 250 MB with mean CPU <= 1%, 5 minutes each. Aggregates only.
+// G5-N1: the phases outlast the app's first retention run (10 min after the backfill) and the corpus is dated early 2026,
+// so session retention is set to Never through Settings first; the runs that still happen (quota only) are reported and
+// none may purge a session.
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, constants, cpSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { agyRoot, close, environment, launch, sleep, waitForEvent, type Launched } from './app.ts';
+import { agyRoot, close, environment, launch, retentionNever, retentionRuns, sleep, waitForEvent, type Launched } from './app.ts';
 import { M4_CPU, M4_MB, mib, sampleTree, TREE_NOTES } from './m16.ts';
 import { claudeLine, codexLine, CWD, PROFILES, seedSessions } from './t2.ts';
 
@@ -23,6 +26,7 @@ export async function m4m5Probe(corpus: string, seconds: number) {
     l = await launch(path.join(home, '.claude'), { codex: path.join(home, '.codex'), agy: agyRoot(home) });
     const { app, page, dataDir } = l;
     const env = await environment(app);
+    await retentionNever(l);
     if (await waitForEvent(dataDir, 'backfill_done', 30 * 60_000) === null) throw new Error('import never finished');
     // one live record each after the import (a backfill never loads the status engine, D-P3-09), then idle
     for (const s of sessions) appendFileSync(s.file, s.agent === 'codex' ? codexLine(400) : claudeLine(s.sid, randomUUID(), 400, 1));
@@ -47,16 +51,18 @@ export async function m4m5Probe(corpus: string, seconds: number) {
     await sleep(10_000); // the close settles
     const closed = await sampleTree(app, seconds);
 
+    const retention = retentionRuns(dataDir, l.created).map(({ atS, sessions: s, trash, quota }) => ({ atS, sessions: s, trash, quota }));
     const under = (fp: { max: number } | null, mb: number) => fp !== null && fp.max <= mib(mb);
     const checks = {
       fiveMinutes: seconds >= 300, liveSessions: live >= sessions.length, workspaceOpen, windowHidden: !visible,
       m5Overview: under(overview.footprintMiB, M5_MB), m5Workspace: under(workspace.footprintMiB, M5_MB),
       m4Footprint: under(closed.footprintMiB, M4_MB), m4Cpu: closed.cpuPercent.mean <= M4_CPU,
+      corpusKept: retention.every((r) => r.sessions === 0 && r.trash === 0),
     };
     const quit = await close(l);
     l = undefined;
     return { metric: 'm4-m5', seconds, targets: { m5FootprintMB: M5_MB, m4FootprintMB: M4_MB, m4CpuPercentMean: M4_CPU }, liveRows: live,
-      overview, workspace, closed, notes: TREE_NOTES, checks, pass: Object.values(checks).every(Boolean), quitTimedOut: quit.timedOut, env };
+      overview, workspace, closed, retentionRan: retention.length > 0, retentionRuns: retention, notes: TREE_NOTES, checks, pass: Object.values(checks).every(Boolean), quitTimedOut: quit.timedOut, env };
   } finally {
     if (l) await close(l);
     rmSync(root, { recursive: true, force: true });
