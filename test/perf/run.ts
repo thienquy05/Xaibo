@@ -17,6 +17,7 @@
 //   npm run perf -- --tier TP --usage [--no-disk-full] [--seconds 600] [--seed 1]   (P4-T12b, EC-100: statusLine tee, Codex token_count, live
 //     cost, disk-full fault, M4/M5/M7/M16 figures; mounts a disk image: run outside the command sandbox)
 //   npm run perf -- --tier TP --only quota [--seed 1]   (P5-T11, EC-99: quota-history paging, row counts and bytes, quota expiry; tp corpus)
+//   npm run perf -- --tier TP --only m13 [--runs 20] [--seed 1]   (P5-T20: M13 selection and search, cold and warm, UI path; tp corpus)
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
@@ -29,6 +30,7 @@ import { m4m5Probe } from './m4-m5.ts';
 import { coldStartProbe, importProbe, liveProbe, notifyProbe } from './t0.ts';
 import { liveLoad } from './t2.ts';
 import { quotaProbe } from './quota.ts';
+import { m13Probe } from './m13.ts';
 import { teeWait } from './tee-wait.ts';
 
 const { values } = parseArgs({ allowNegative: true, options: {
@@ -57,8 +59,9 @@ else if (values.tier === 'T0' && values.only === 'cold') result = { seed: Number
 else if (values.tier === 'T0' && values.only === 'm4') result = { tier: 'T0', seed: Number(values.seed), ...await m4Probe(corpus('t1'), Number(values.seconds ?? '300')) };
 else if (values.tier === 'M5') result = { tier: 'M5', seed: Number(values.seed), ...await m4m5Probe(corpus('t1mix'), Number(values.seconds ?? '300')) };
 else if (values.tier === 'TP' && values.only === 'quota') result = { seed: Number(values.seed), ...await quotaProbe(corpus('tp')) };
+else if (values.tier === 'TP' && values.only === 'm13') result = { seed: Number(values.seed), ...await m13Probe(corpus('tp'), Number(values.runs)) };
 else if (values.tier === 'TP' || values.tier === 'T2') result = await liveLoad(values.tier, corpus('t1mix'), Number(values.seed), values.seconds ? Number(values.seconds) : undefined, values.usage, values['disk-full']);
-else throw new Error('usage: --tier T1 --metric m3-first-list|m3-full [--runs n] | --tier T0 --only notify|live|tee|m16|m4|cold [--runs n] | --tier TP --only quota | --tier TP|T2 [--usage] [--seconds n] | --tier M5 [--seconds n] | --case ec15');
+else throw new Error('usage: --tier T1 --metric m3-first-list|m3-full [--runs n] | --tier T0 --only notify|live|tee|m16|m4|cold [--runs n] | --tier TP --only quota|m13 [--runs n] | --tier TP|T2 [--usage] [--seconds n] | --tier M5 [--seconds n] | --case ec15');
 
 const out = path.join(REPO, '.cache', 'perf');
 mkdirSync(out, { recursive: true });
