@@ -11,12 +11,14 @@ import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { applyOverlay } from '../../src/service/history/overlay.ts';
 import { purgeSession } from '../../src/service/history/purge.ts';
+import * as purge from '../../src/service/history/purge.ts';
 import { runRetention } from '../../src/service/retention/job.ts';
 import { DAY } from '../../src/service/retention/policy.ts';
 import { openStore } from '../../src/service/store/db.ts';
 import { Writer } from '../../src/service/store/writer.ts';
 import { monthStatus } from '../../src/service/usage/availability.ts';
 import { applyClear, clearKeys, clearUsageHistory, keysInWorker } from '../../src/service/usage/clear.ts';
+import * as clear from '../../src/service/usage/clear.ts';
 import { priceUsage } from '../../src/service/usage/cost.ts';
 import { liveMonthly } from '../../src/service/usage/monthly.ts';
 import { loadPrices } from '../../src/service/usage/prices.ts';
@@ -104,7 +106,7 @@ test('Trash then restore, purge and Keep across retention runs leave the totals 
   assert.deepEqual(liveMonthly(h.db, SECRET), before, 'Trash');
   applyOverlay(h.db, { kind: 'trash', session: x, on: false }, { readOnly: false, now: NOW });
   assert.deepEqual(liveMonthly(h.db, SECRET), before, 'restore');
-  assert.equal(purgeSession(h.writer, y, { ...files, now: NOW, reason: 'manual' }).purged, true);
+  assert.equal((await purgeSession(h.writer, y, { ...files, now: NOW, reason: 'manual' })).purged, true);
   assert.deepEqual(liveMonthly(h.db, SECRET), before, 'purge settles first');
   assert.equal((await retention(NOW))!.sessions, 1, 'the old session is purged; the kept one is not');
   assert.deepEqual(liveMonthly(h.db, SECRET), before, 'retention');
@@ -219,4 +221,67 @@ test('IPC: clearUsage request and reply parse strictly', () => {
   }
   assert.equal(parsePortMessage({ v: 1, type: 'clearUsage', id: 3, result: 'done' }), null);
   assert.equal(parsePortMessage({ v: 1, type: 'clearUsage', id: 3 }), null);
+});
+
+// Gate 5 U2 (XAIBO-PROD-542; FR-52)
+test('G5b1-1: a quota reading reclassified after a clear (an older reading backfilled before it) keeps its cleared key', async () => {
+  const h = await store();
+  const sc = scope(h.db, 'kind-scope', true);
+  const r = sample(h.db, sc, { percent: 80, at: NOV });
+  h.writer.transact((db) => clearUsageHistory(db, SECRET, NOW));
+  // backfill: an older reading of the same stream with another reset; the writer reclassifies the newer one (setKind)
+  sample(h.db, sc, { percent: 10, at: NOV - 3600_000 });
+  h.db.prepare("UPDATE usage_history SET kind = 'transition' WHERE id = ?").run(r);
+  assert.deepEqual(liveMonthly(h.db, SECRET).quota.map((q) => [q.month, q.peakPercent, q.observations]), [['2026-11', 10, 1]], 'the cleared peak does not reappear');
+});
+
+test('G5b1-2: a cleared hook-only session keeps its session-month cleared when its first turn lands in that month', async () => {
+  const h = await store();
+  const s = session(h.db, { sid: 's0-clear', last: NOV, started: NOV }); // hook-only: no turn or request yet
+  h.writer.transact((db) => clearUsageHistory(db, SECRET, NOW));
+  turn(h.db, s, 's0-clear-t1', NOV + 3600_000, 'claude-x');
+  const m = liveMonthly(h.db, SECRET);
+  assert.deepEqual(m.sessions, [], 'the cleared session-month stays cleared');
+  assert.deepEqual(m.usage.map((u) => [u.month, u.sessions, u.turns]), [['2026-11', 0, 1]], 'its later turn counts, its per-model session count does not');
+});
+
+test('G5b1-2: an empty session settled by a purge and resumed in the same month is counted once', async () => {
+  const h = await store();
+  const e = session(h.db, { sid: 's0-settled', last: NOV, started: NOV });
+  h.writer.transact((db) => { settle(db, { sessions: [e], quota: [] }, SECRET, NOW); removeSessions(db, [e]); });
+  const again = session(h.db, { sid: 's0-settled', last: NOV + DAY, started: NOV });
+  turn(h.db, again, 's0-settled-t1', NOV + DAY, 'claude-x');
+  assert.deepEqual(liveMonthly(h.db, SECRET).sessions.map((r) => [r.month, r.sessions]), [['2026-11', 1]], 'counted once');
+});
+
+test('G5b1-3: Clear takes rowid watermarks when the request arrives; records committed after it, before the worker reads, stay eligible', async () => {
+  const h = await store();
+  const a = used(h.db, 'wm-a', NOV);
+  assert.equal(typeof clear.clearWatermarks, 'function', 'clearWatermarks exported');
+  const w = clear.clearWatermarks(h.db); // on the service thread, when the request arrives
+  used(h.db, 'wm-b', NOV, { tokens: 7 }); // committed after the request, before the worker's snapshot
+  request(h.db, a, { identity: 'wm-a:2', ts: NOV, model: 'claude-x', input: 3, output: 0 }); // a later request of an observed session
+  const marks = await keysInWorker({ file: h.file, secret: SECRET, watermarks: w });
+  assert.deepEqual(marks, clear.clearKeys(h.db, SECRET, w), 'the worker and the synchronous scan agree');
+  h.writer.transact((db) => applyClear(db, marks, NOW));
+  const m = liveMonthly(h.db, SECRET);
+  assert.deepEqual(m.usage.map((u) => [u.month, u.sessions, u.turns, u.requests, u.uncachedInput]), [['2026-11', 1, 1, 2, 10]], 'only what came after the request');
+  assert.deepEqual(m.sessions.map((r) => [r.month, r.sessions]), [['2026-11', 1]]);
+});
+
+test('G5b1-3 (review L): a purge of the newest rows while a clear runs cannot hand their rowids to a later record', async () => {
+  const h = await store();
+  used(h.db, 'reuse-a', NOV);
+  const top = used(h.db, 'reuse-top', NOV); // holds the highest usage, turn and session rowids
+  assert.equal(typeof purge.holdDeletes, 'function', 'holdDeletes exported');
+  const release = purge.holdDeletes(h.writer); // taken with the watermarks, released once the clear is applied
+  const w = clear.clearWatermarks(h.db);
+  const p = purgeSession(h.writer, top, { dataDir: h.dir, backupDir: h.backupDir, secret: SECRET, now: NOW, reason: 'manual', vacuum: false });
+  await new Promise((resolve) => setTimeout(resolve, 50)); // time enough for an unheld purge to delete every row
+  used(h.db, 'reuse-new', DEC); // stored after the request: must not reuse a watermarked rowid
+  const marks = await keysInWorker({ file: h.file, secret: SECRET, watermarks: w });
+  h.writer.transact((db) => applyClear(db, marks, NOW));
+  release();
+  assert.equal((await p).purged, true);
+  assert.deepEqual(liveMonthly(h.db, SECRET).usage.map((u) => [u.month, u.requests]), [['2026-12', 1]], 'the later record counts');
 });

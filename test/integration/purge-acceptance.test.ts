@@ -9,10 +9,12 @@ process.env.TZ = 'UTC';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { backup, type DatabaseSync } from 'node:sqlite';
 import { purgeSession, resumePurges } from '../../src/service/history/purge.ts';
+import * as purge from '../../src/service/history/purge.ts';
+import { openChunks } from '../../src/service/adapters/generic/chunks.ts';
 import { loadMigrations, openStore } from '../../src/service/store/db.ts';
 import { Writer, type Batch } from '../../src/service/store/writer.ts';
 import { createReportIntake } from '../../src/service/receivers/report.ts';
@@ -62,6 +64,9 @@ async function seeded(requests = 2) {
   // a hook delivery of A (its envelope is stored raw)
   await h.intake.deliver(envelope({ session_id: A, event: 'UserPromptSubmit', payload: { hook_event_name: 'UserPromptSubmit', session_id: A, prompt: CANARY } }));
 
+  // G5a-4: an interrupted assembly of A under a registration that is no longer registered (revoked) and never delivered
+  openChunks(join(dir, 'content-chunks')).put({ registration: '00000000-0000-4000-8000-0000000f07ff', producer: 'fixture-producer', session: A, item: 'orphan', revision: 1 },
+    0, false, `orphan ${CANARY}`);
   // report content: a complete chunked item (stored in report_content) and an interrupted assembly (chunk files on disk)
   const { registration: reg } = addRegistration(dir, { agent: 'claude', profileKey: 'p1' });
   const reports = createReportIntake({ db, writer, dataDir: dir });
@@ -118,7 +123,7 @@ test('purge acceptance: canary and session gone from rows, FTS, chunks, spool an
   const monthly = liveMonthly(db, SECRET);
 
   // a minute later: the spool files are past the quiet window (their ctime is the fixture's write time)
-  const r = purgeSession(h.writer, h.a, { dataDir: dir, backupDir: h.backups, secret: SECRET, now: Date.now() + 60_000, reason: 'manual' });
+  const r = await purgeSession(h.writer, h.a, { dataDir: dir, backupDir: h.backups, secret: SECRET, now: Date.now() + 60_000, reason: 'manual' });
   assert.equal(r.purged, true);
   assert.equal(r.filesPending, false);
   assert.equal(r.backupsDeleted, 1, 'Q-5.1: the backup holding the session is deleted and reported');
@@ -205,16 +210,16 @@ test('spool files changed within the quiet window (mtime or ctime: a replay rena
   const h = await seeded();
   const { db, dir, CANARY, KEEP } = h;
   // the fixture just wrote (and re-timed) the spool files: their ctime is now, as after a replay renamed them
-  const r = purgeSession(h.writer, h.a, { dataDir: dir, backupDir: h.backups, secret: SECRET, now: Date.now(), reason: 'manual' });
+  const r = await purgeSession(h.writer, h.a, { dataDir: dir, backupDir: h.backups, secret: SECRET, now: Date.now(), reason: 'manual' });
   assert.deepEqual([r.purged, r.filesPending, r.spoolFiles], [true, true, 0]);
   assert.ok(files(h.spool).some((f) => readFileSync(f).includes(CANARY)), 'not rewritten while a forwarder may still append');
   assert.equal(n(db, 'SELECT count(*) AS n FROM suppressions WHERE pending IS NOT NULL'), 1);
 
-  assert.equal(resumePurges(h.writer, { dataDir: dir, backupDir: h.backups, now: Date.now() + 60_000 }), 1);
+  assert.equal(await resumePurges(h.writer, { dataDir: dir, backupDir: h.backups, now: Date.now() + 60_000 }), 1);
   for (const f of ['content-chunks', 'spool', 'backups'].flatMap((d) => files(join(dir, d)))) assert.ok(!readFileSync(f).includes(CANARY), f);
   assert.equal(files(h.spool).map((f) => readFileSync(f, 'utf8')).join('').split('\n').filter((l) => l.includes(KEEP)).length, 2);
   assert.equal(n(db, 'SELECT count(*) AS n FROM suppressions WHERE pending IS NOT NULL'), 0);
-  assert.equal(resumePurges(h.writer, { dataDir: dir, backupDir: h.backups, now: Date.now() + 60_000 }), 0);
+  assert.equal(await resumePurges(h.writer, { dataDir: dir, backupDir: h.backups, now: Date.now() + 60_000 }), 0);
 });
 
 test('a purge that fails on SQLITE_FULL keeps the error, writes no marker and removes no file; the writer reports disk full', async () => {
@@ -223,7 +228,7 @@ test('a purge that fails on SQLITE_FULL keeps the error, writes no marker and re
   const before = ['content-chunks', 'spool', 'backups'].flatMap((d) => files(join(dir, d))).map((f) => [f, sum(f)]);
   db.exec('PRAGMA incremental_vacuum');
   db.exec(`PRAGMA max_page_count = ${n(db, 'SELECT page_count AS n FROM pragma_page_count')}`);
-  assert.throws(() => purgeSession(h.writer, h.a, { dataDir: dir, backupDir: h.backups, secret: SECRET, now: Date.now(), reason: 'manual' }),
+  await assert.rejects(async () => purgeSession(h.writer, h.a, { dataDir: dir, backupDir: h.backups, secret: SECRET, now: Date.now(), reason: 'manual' }),
     (e: { errcode?: number }) => ((e.errcode ?? 0) & 0xff) === 13);
   db.exec('PRAGMA max_page_count = 1073741823');
   assert.equal(h.writer.diskFull, true);
@@ -232,4 +237,50 @@ test('a purge that fails on SQLITE_FULL keeps the error, writes no marker and re
   assert.equal(n(db, 'SELECT count(*) AS n FROM settled_contributions'), 0);
   assert.equal(n(db, 'SELECT count(*) AS n FROM event_fts WHERE event_fts MATCH ?', `"${CANARY}"`), 2);
   assert.deepEqual(['content-chunks', 'spool', 'backups'].flatMap((d) => files(join(dir, d))).map((f) => [f, sum(f)]), before);
+});
+
+// Gate 5 U1 (XAIBO-PROD-542)
+const files_ = (h: Awaited<ReturnType<typeof seeded>>, now: number) => ({ dataDir: h.dir, backupDir: h.backups, now });
+const nextDay = (t: number) => Date.UTC(new Date(t).getUTCFullYear(), new Date(t).getUTCMonth(), new Date(t).getUTCDate() + 1);
+
+test('G5a-2: a purge whose session is in today\'s spool file owes that file; it is rewritten after UTC midnight', async () => {
+  const h = await seeded();
+  const now = Date.now() + 60_000;
+  const today = join(h.spool, `${new Date(now).toISOString().slice(0, 10)}.jsonl`);
+  writeFileSync(today, `${h.hook(A, h.CANARY)}\n${h.hook(B, h.KEEP)}\n`, { mode: 0o600 });
+  const r = await purgeSession(h.writer, h.a, { ...files_(h, now), secret: SECRET, reason: 'manual' });
+  assert.deepEqual([r.purged, r.filesPending], [true, true], 'the forwarder\'s file still holds the session: work owed');
+  assert.equal(n(h.db, 'SELECT count(*) AS n FROM suppressions WHERE pending IS NOT NULL'), 1);
+  assert.equal(await resumePurges(h.writer, files_(h, nextDay(now) + 60_000)), 1, 'closed after midnight: rewritten');
+  assert.ok(!readFileSync(today).includes(h.CANARY));
+  assert.ok(readFileSync(today).includes(h.KEEP), 'the other session\'s line stays');
+});
+
+test('G5a-2: the owed rewrite of today\'s spool file is scheduled shortly after the next UTC midnight plus the quiet window', () => {
+  assert.equal(typeof purge.spoolResumeDelay, 'function', 'spoolResumeDelay exported');
+  const now = Date.UTC(2026, 10, 20, 23, 59);
+  const at = now + purge.spoolResumeDelay(now);
+  assert.ok(at >= Date.UTC(2026, 10, 21) + 5_000 && at <= Date.UTC(2026, 10, 21) + 60_000, String(at - Date.UTC(2026, 10, 21)));
+});
+
+test('G5a-3: a backup dir or spool file that cannot be read now keeps the work owed; once readable, resume finishes it', async () => {
+  const h = await seeded();
+  chmodSync(h.backups, 0);
+  chmodSync(join(h.spool, '2025-12-31.jsonl'), 0);
+  let r;
+  try { r = await purgeSession(h.writer, h.a, { ...files_(h, Date.now() + 60_000), secret: SECRET, reason: 'manual' }); }
+  finally { chmodSync(h.backups, 0o700); chmodSync(join(h.spool, '2025-12-31.jsonl'), 0o600); }
+  assert.deepEqual([r.purged, r.filesPending], [true, true], 'EACCES is transient, never done');
+  assert.equal(await resumePurges(h.writer, files_(h, Date.now() + 60_000)), 1);
+  for (const f of ['spool', 'backups'].flatMap((d) => files(join(h.dir, d)))) assert.ok(!readFileSync(f).includes(h.CANARY), f);
+});
+
+test('G5a-3: a missing backup dir is done; an oversized own spool file holding the session is rewritten or removed, never owed forever', async () => {
+  const h = await seeded();
+  const big = join(h.spool, '2025-12-29.jsonl');
+  writeFileSync(big, `${h.hook(A, h.CANARY)}\n${JSON.stringify({ pad: 'p'.repeat(64 << 20) })}\n`, { mode: 0o600 }); // past the 64 MiB read bound
+  utimesSync(big, new Date(T0), new Date(T0));
+  const r = await purgeSession(h.writer, h.a, { ...files_(h, Date.now() + 60_000), secret: SECRET, reason: 'manual', backupDir: join(h.dir, 'no-backups') });
+  assert.deepEqual([r.purged, r.filesPending], [true, false]);
+  for (const f of files(h.spool)) assert.ok(!readFileSync(f).includes(h.CANARY), f);
 });

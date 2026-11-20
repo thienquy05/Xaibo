@@ -11,7 +11,7 @@ import type { Banner, PortMessage, RetentionSetting, ServiceEvent, StorageReport
 import { appendQuiet, createLogger, loadInstallSecret, type Logger } from '../shared/log.ts';
 import { answer, answerCost, answerFiles, answerLiveSet, answerMarkers, answerSession, answerSlice, answerSubagents, answerTools, answerTranscript, answerUsage, answerUsageHistory, coalesce, createHub, sessionsByKey, type LiveOf } from './api.ts';
 import { boot, type Service } from './boot.ts';
-import { applyOverlay, listFolders, listHistory, listProjects } from './history/overlay.ts';
+import { applyOverlay, listFolders, listHistory, listProjects, resyncAfter } from './history/overlay.ts';
 import { mapGroups } from './history/map.ts';
 import type { Batch } from './store/writer.ts';
 import { traceableIds } from './trace-ids.ts';
@@ -63,6 +63,9 @@ const changed = coalesce((keys) => {
   hub.sessions({ v: IPC_VERSION, type: 'sessions', rows, delta });
 }, DELTA_MS, setTimeout, DELTA_KEYS_MAX);
 
+/** Sessions left or came back (purge, retention, Trash/restore): the ledger recomputes and open windows resync. */
+const removed = () => { ledger?.invalidate(); if (hub.anyLive()) hub.sessions({ v: IPC_VERSION, type: 'resync' }); };
+
 let banners: Banner[] = [];
 const coverage = () => {
   const now = svc?.coverage() ?? [];
@@ -96,11 +99,8 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
         try { if (db.isOpen) page = answerSearch(db, req, s.kinds(), s.models(), live); } catch { /* failed */ }
         port.postMessage({ v: IPC_VERSION, type: 'search', id: req.id, ...page } satisfies PortMessage); break;
       }
-      case 'purge': {
-        const result = s.purge(req.session);
-        if (result === 'purged') { ledger?.invalidate(); if (hub.anyLive()) hub.sessions({ v: IPC_VERSION, type: 'resync' }); } // design review M6
-        port.postMessage({ v: IPC_VERSION, type: 'purge', id: req.id, result } satisfies PortMessage); break;
-      }
+      // design review M6: the ledger and open windows refresh once the session is hidden (boot's onRemoved, phase a)
+      case 'purge': void s.purge(req.session).then((result) => port.postMessage({ v: IPC_VERSION, type: 'purge', id: req.id, result } satisfies PortMessage)); break;
       case 'suppressed': {
         let page: Omit<Extract<PortMessage, { type: 'suppressed' }>, 'v' | 'type' | 'id'> = { rows: [], next: null, failed: true };
         try { if (db.isOpen) page = suppressedPage(db, secret!, homedir(), req.cursor, req.limit); } catch { /* failed */ }
@@ -149,8 +149,12 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
         try { if (db.isOpen) page = mapGroups(db, req.parent, req.cursor, req.limit, live); } catch { /* failed */ }
         port.postMessage({ v: IPC_VERSION, type: 'mapGroups', id: req.id, ...page } satisfies PortMessage); break;
       }
-      case 'overlay': port.postMessage({ v: IPC_VERSION, type: 'overlay', id: req.id,
-        result: applyOverlay(db, req.op, { readOnly: s.store.readOnly || !db.isOpen, now: Date.now() }) } satisfies PortMessage); break;
+      case 'overlay': {
+        const result = applyOverlay(db, req.op, { readOnly: s.store.readOnly || !db.isOpen, now: Date.now() });
+        port.postMessage({ v: IPC_VERSION, type: 'overlay', id: req.id, result } satisfies PortMessage);
+        if (resyncAfter(req.op, result)) removed(); // G5b2-4: other windows list it (or not) too
+        break;
+      }
       default: port.postMessage(db.isOpen ? answer(db, req, s.kinds(), s.models(), live) : { v: IPC_VERSION, type: 'page', id: req.id, rows: [], next: null });
     }
   });
@@ -198,6 +202,7 @@ async function main(dataDir: string, log: Logger) {
     onNotify: (n) => parent.postMessage({ v: IPC_VERSION, type: 'notify', ...n } satisfies ServiceEvent), // P3-T11
     onTick: (keys) => { for (const k of keys) changed(k); }, // P3-T16e: a settle at its deadline, not the next tick
     onPriced: () => { ledger?.invalidate(); if (hub.anyLive()) hub.sessions({ v: IPC_VERSION, type: 'resync' }); }, // XAIBO-PROD-445: one per sliced job
+    onRemoved: removed, // XAIBO-PROD-542 G5b2-2: a retention run or manual purge removed sessions, Trash or usage history
   });
   resolveBooted(svc);
   setInterval(() => { for (const k of svc?.ticking() ?? []) changed(k); }, TICK_MS);

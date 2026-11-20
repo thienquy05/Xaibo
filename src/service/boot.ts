@@ -22,7 +22,7 @@ import { priceUsage } from './usage/cost.ts';
 import { loadPrices, type Prices } from './usage/prices.ts';
 import { errorCode } from '../shared/crash.ts';
 import { approvedLabel } from './history/overlay.ts';
-import { resumePurges } from './history/purge.ts';
+import { holdDeletes, resumePurges, spoolResumeDelay } from './history/purge.ts';
 import { retentionScheduler, runRetention, type RetentionResult } from './retention/job.ts';
 import { isActive } from './retention/policy.ts';
 import { loadInstallSecret } from '../shared/log.ts';
@@ -30,7 +30,7 @@ import { openStore, type Store } from './store/db.ts';
 import { startHooks, type Hooks } from './receivers/intake.ts';
 import { Writer, type Batch } from './store/writer.ts';
 import { loadScopeSalt } from './usage/snapshots.ts';
-import { applyClear, keysInWorker } from './usage/clear.ts';
+import { applyClear, clearWatermarks, keysInWorker } from './usage/clear.ts';
 import { PurgeLimit, purgeManual, reimportKey, rerunner, saveRetention } from './history/tools.ts';
 
 export interface BootOptions {
@@ -46,6 +46,9 @@ export interface BootOptions {
   /** XAIBO-PROD-445: a pricing job that ran in more than one slice, or had a rerun queued, finished: commits it overlapped
    *  went out before their usage was priced, so open rows need one re-read. */
   onPriced?: () => void;
+  /** XAIBO-PROD-542 G5b2-2: sessions, Trash or usage history were removed (a retention run, or a manual purge's session
+   *  hidden): open windows resync and the monthly ledger recomputes. */
+  onRemoved?: () => void;
   /** P5-T09: wait after the backfill before the first retention run (default 10 min); then daily. */
   retentionDelayMs?: number;
 }
@@ -86,7 +89,7 @@ export interface Service {
   clearUsage(): Promise<ClearUsageResult>;
   /** XAIBO-PROD-527 (P5-T18 part 1): a confirmed manual purge (capped per minute), Re-import by opaque key (sets Keep,
    *  then reconciles), and the retention setting saved through the writer. */
-  purge(session: number): PurgeResult;
+  purge(session: number): Promise<PurgeResult>;
   reimport(key: string): ReimportOutcome;
   saveRetention(value: RetentionSetting): SaveOutcome;
   stop(): void;
@@ -297,11 +300,10 @@ export async function boot(o: BootOptions): Promise<Service> {
       },
     });
     if (stopped) { void hooks.close(); return; }
-    // P5-T07 (review H3): file work a purge committed but did not finish (a crash, a busy backup) is redone, off readiness
-    try {
-      const resumed = resumePurges(writer, { dataDir: o.dataDir, backupDir: path.join(o.dataDir, 'backups'), now: (o.now ?? Date.now)() });
-      if (resumed) o.log?.log('purge_resumed', { count: resumed });
-    } catch (e) { o.log?.log('purge_resume_failed', { error: errorCode(e) }); }
+    // P5-T07 (review H3): row and file work a purge committed but did not finish (a crash, a stop, a busy backup) is
+    // redone off readiness (review M: ingest never waits for its row batches); G5a-2: again shortly after each UTC
+    // midnight (today's spool file a purge still owes)
+    void resume();
     const Adapters: Record<string, typeof ClaudeAdapter | typeof CodexAdapter | typeof AgyAdapter> = { claude: ClaudeAdapter, codex: CodexAdapter, agy: AgyAdapter };
     // P3-T15: the account-marker salt (created on first boot; review L1); null = no marker, Codex scopes stay unverified
     const salt = loadScopeSalt(o.dataDir, o.log);
@@ -336,13 +338,26 @@ export async function boot(o: BootOptions): Promise<Service> {
       try { await a.backfill(); } catch (e) { o.log?.log('reimport_sync_failed', { error: errorCode(e) }); }
     }
   });
-  const files = () => ({ dataDir: o.dataDir, backupDir: path.join(o.dataDir, 'backups'), secret: loadInstallSecret(o.dataDir), now: clock() });
+  const purgeLog = (event: string, fields?: Record<string, string | number>) => o.log?.log(event, fields);
+  // review M: a purge stops between batches once the service stops (the store closes right after); resume finishes it
+  const files = () => ({ dataDir: o.dataDir, backupDir: path.join(o.dataDir, 'backups'), secret: loadInstallSecret(o.dataDir), now: clock(), chunks: hooks?.chunks(),
+    stopped: () => stopped, log: purgeLog });
+  let nightly: NodeJS.Timeout | undefined;
+  const resume = async () => {
+    try {
+      const resumed = await resumePurges(writer, { dataDir: o.dataDir, backupDir: path.join(o.dataDir, 'backups'), now: clock(), chunks: hooks?.chunks(),
+        stopped: () => stopped, log: purgeLog });
+      if (resumed) o.log?.log('purge_resumed', { count: resumed });
+    } catch (e) { o.log?.log('purge_resume_failed', { error: errorCode(e) }); }
+    if (!stopped) nightly = setTimeout(() => { void resume(); }, spoolResumeDelay(clock())).unref();
+  };
   const retention = (): Promise<RetentionResult | null> => {
     if (readOnly || stopped || !db.isOpen) return Promise.resolve(null);
     // diff review M1: everything, the secret's read included, inside the chain: a failure is a logged rejection
     retentionRun ??= Promise.resolve().then(() => runRetention(writer, db, { dataDir: o.dataDir, backupDir: path.join(o.dataDir, 'backups'),
       secret: loadInstallSecret(o.dataDir), now: clock(), active: (agent, profile, sid) => isActive(engine?.status(agent, profile, sid)?.lifecycle ?? null),
-      stopped: () => stopped, ...(o.log ? { log: (event: string, fields?: Record<string, string | number>) => o.log!.log(event, fields) } : {}) }))
+      stopped: () => stopped, chunks: hooks?.chunks(), ...(o.log ? { log: (event: string, fields?: Record<string, string | number>) => o.log!.log(event, fields) } : {}) }))
+      .then((r) => { if (r.sessions || r.trash || r.quota) o.onRemoved?.(); return r; }) // G5b2-2
       .catch((e: unknown) => { o.log?.log('retention_failed', { error: errorCode(e) }); return null; })
       .finally(() => { retentionRun = null; });
     return retentionRun;
@@ -392,20 +407,28 @@ export async function boot(o: BootOptions): Promise<Service> {
     clearUsage: () => clearing ??= (async (): Promise<ClearUsageResult> => {
       if (readOnly) return 'read-only';
       if (stopped || !db.isOpen) return 'failed';
+      // XAIBO-PROD-542 G5b1-3: what was stored when the request arrived; row deletions wait until the clear is applied,
+      // so nothing stored meanwhile takes a watermarked rowid
+      const release = holdDeletes(writer);
       try { // the scan in a worker, then one writer transaction; review L5: the event only, no count
-        const marks = await keysInWorker({ file: path.join(o.dataDir, 'xaibo.db'), secret: loadInstallSecret(o.dataDir) });
+        const watermarks = clearWatermarks(db);
+        const marks = await keysInWorker({ file: path.join(o.dataDir, 'xaibo.db'), secret: loadInstallSecret(o.dataDir), watermarks });
         if (stopped || !db.isOpen) return 'failed';
         writer.transact((t) => applyClear(t, marks, clock()));
         o.log?.log('usage_cleared', {});
         return 'cleared';
       }
       catch (e) { o.log?.log('clear_usage_failed', { error: errorCode(e) }); return 'failed'; }
+      finally { release(); }
     })().finally(() => { clearing = null; }),
     // XAIBO-PROD-527: fixed codes and result enums only in the log (design review L6)
     // review L3: anything that throws (the secret's read included) still answers failed
-    purge: (session) => {
+    purge: async (session) => {
       let result: PurgeResult = 'failed';
-      try { result = readOnly ? 'read-only' : stopped || !db.isOpen ? 'failed' : purgeManual(writer, session, { ...files(), limit: purgeLimit }); } catch (e) { o.log?.log('purge_failed', { error: errorCode(e) }); }
+      try {
+        result = readOnly ? 'read-only' : stopped || !db.isOpen ? 'failed'
+          : await purgeManual(writer, session, { ...files(), limit: purgeLimit, hidden: () => o.onRemoved?.() }); // design review M6: resync once hidden
+      } catch (e) { o.log?.log('purge_failed', { error: errorCode(e) }); }
       o.log?.log('purge_manual', { result });
       return result;
     },
@@ -427,6 +450,7 @@ export async function boot(o: BootOptions): Promise<Service> {
       stopped = true;
       if (due) clearTimeout(due.timer);
       scheduler.stop();
+      clearTimeout(nightly);
       void hooks?.close();
       for (const a of adapters) a.stop();
       engine?.close();

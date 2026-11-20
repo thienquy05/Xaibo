@@ -4,9 +4,13 @@
 // whatever the setting or Keep. Every deletion is settled into the monthly totals in its own transaction first. Each
 // purge re-checks eligibility inside its transaction; the run yields to the event loop between transactions so live
 // commits go first, stops on a full disk or service stop, and refuses to run on a clock behind its last run.
+// XAIBO-PROD-542: purges run in bounded batches (purge.ts) and stop with the run; today's spool file is read once per run
+// (G5a-2); abandoned and orphaned content-chunk items are reaped through the live chunk store (G5a-4).
 import { statSync } from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
-import { purgeSession, resumePurges, vacuum } from '../history/purge.ts';
+import type { ChunkStore } from '../adapters/generic/chunks.ts';
+import { deletesAllowed, purgeSession, resumePurges, spoolToday, vacuum } from '../history/purge.ts';
+import { readRegistrations } from '../receivers/registrations.ts';
 import { TRASH_MS } from '../history/trash.ts';
 import { LIVE_WINDOW_MS } from '../status/feed.ts';
 import type { Writer } from '../store/writer.ts';
@@ -21,6 +25,8 @@ export interface RetentionOptions {
   batch?: number;
   stopped?: () => boolean;
   log?: (event: string, fields?: Record<string, string | number>) => void;
+  /** The report intake's live chunk store (purge and the reaper remove items through it); absent = no reaping. */
+  chunks?: ChunkStore | undefined;
 }
 export interface RetentionResult { sessions: number; trash: number; quota: number; skipped: null | 'clock-behind' | 'invalid-setting' }
 
@@ -40,15 +46,19 @@ export async function runRetention(writer: Writer, db: DatabaseSync, o: Retentio
   // review H3: a clock behind the last run (set back after running ahead) purges nothing until it catches up. ponytail: a
   // clock already ahead at the first run after boot is not detected here; the daily timer compares wall and monotonic time.
   if (o.now < lastRun) { o.log?.('retention_skipped', { reason: 'clock-behind' }); return { ...r, skipped: 'clock-behind' }; }
-  const files = { dataDir: o.dataDir, backupDir: o.backupDir, now: o.now };
-  resumePurges(writer, files); // review M3: owed file work keeps a marker blocking, so it is finished first
   const halt = () => writer.diskFull || !!o.stopped?.() || !db.isOpen;
+  const files = { dataDir: o.dataDir, backupDir: o.backupDir, now: o.now, chunks: o.chunks, today: spoolToday(o.dataDir, o.now), stopped: halt, ...(o.log ? { log: o.log } : {}) };
+  await resumePurges(writer, files); // review M3: owed row and file work keeps a marker blocking, so it is finished first
+  try { // G5a-4: the registry is read after the items are listed; an unreadable one reaps nothing
+    const reaped = o.chunks?.reap(o.now, () => { const regs = readRegistrations(o.dataDir); return regs && new Set(regs.map((x) => x.id)); }) ?? 0;
+    if (reaped) o.log?.('chunks_reaped', { count: reaped });
+  } catch (e) { o.log?.('chunks_reap_failed', { error: e instanceof Error ? e.name : 'unknown' }); }
   const n = o.batch ?? 100;
   let backups = 0;
   const live = (row: Row) => o.active(row.agent, row.profile, row.native) && row.last !== null && row.last >= o.now - LIVE_WINDOW_MS; // review L1
-  const purge = (row: Row, reason: 'retention' | 'manual', guard: (db: DatabaseSync, id: number) => boolean) => {
+  const purge = async (row: Row, reason: 'retention' | 'manual', guard: (db: DatabaseSync, id: number) => boolean) => {
     try {
-      const p = purgeSession(writer, row.id, { ...files, secret: o.secret, reason, guard, vacuum: false });
+      const p = await purgeSession(writer, row.id, { ...files, secret: o.secret, reason, guard, vacuum: false });
       backups += p.backupsDeleted;
       return p.purged;
     } catch (e) { // review L4: one bad session never blocks the rest; a full disk stops the run (halt)
@@ -88,7 +98,7 @@ export async function runRetention(writer: Writer, db: DatabaseSync, o: Retentio
         if (halt()) return finish();
         at = row.k; id = row.id;
         if (live(row) || changed(row.id)) continue;
-        if (purge(row, 'retention', guard)) r.sessions++;
+        if (await purge(row, 'retention', guard)) r.sessions++;
         await tick();
       }
     }
@@ -110,7 +120,7 @@ export async function runRetention(writer: Writer, db: DatabaseSync, o: Retentio
       if (halt()) return finish();
       tAt = row.k; tId = row.id;
       if (live(row) || (row.last !== null && o.now - row.last < RECENT_MS)) continue;
-      if (purge(row, 'manual', (_db, sid) => stillTrashed.get(sid, trashCut, o.now - RECENT_MS) !== undefined)) r.trash++;
+      if (await purge(row, 'manual', (_db, sid) => stillTrashed.get(sid, trashCut, o.now - RECENT_MS) !== undefined)) r.trash++;
       await tick();
     }
   }
@@ -125,6 +135,7 @@ export async function runRetention(writer: Writer, db: DatabaseSync, o: Retentio
   for (const { id: scope } of db.prepare('SELECT id FROM usage_scopes WHERE session_id IS NULL ORDER BY id').all() as { id: number }[]) {
     for (let l = (streamAfter.get(scope, '') as { l: string | null }).l; l !== null; l = (streamAfter.get(scope, l) as { l: string | null }).l) {
       for (;;) {
+        await deletesAllowed(writer); // G5b1-3: never while Clear usage history runs
         if (halt()) return finish();
         const ids = (expired.all(scope, l, quotaCut) as { id: number }[]).map((x) => x.id);
         if (!ids.length) break;
@@ -149,8 +160,8 @@ export async function runRetention(writer: Writer, db: DatabaseSync, o: Retentio
   writer.transact((tdb) => tdb.prepare('INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value').run(LAST_RUN, String(o.now)));
   return finish();
 
-  function finish(): RetentionResult {
-    if (r.sessions || r.trash) vacuum(writer); // review M2: once per run
+  async function finish(): Promise<RetentionResult> {
+    if (r.sessions || r.trash) await vacuum(writer); // review M2: once per run (bounded steps, yields between)
     if (backups) o.log?.('retention_backups_deleted', { count: backups }); // Q-5.1 notice
     o.log?.('retention_run', { sessions: r.sessions, trash: r.trash, quota: r.quota });
     return r;

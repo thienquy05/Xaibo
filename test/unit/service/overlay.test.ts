@@ -8,7 +8,8 @@ import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { openStore } from '../../../src/service/store/db.ts';
 import { applyOverlay, approvedLabel, FOLDERS_MAX, LABEL_MAX, listFolders, listHistory, listProjects, PROJECTS_MAX } from '../../../src/service/history/overlay.ts';
-import type { HistoryFilter, HistoryKey, OverlayOp } from '../../../src/shared/ipc.ts';
+import * as overlay from '../../../src/service/history/overlay.ts';
+import type { HistoryFilter, HistoryKey, OverlayOp, OverlayResult } from '../../../src/shared/ipc.ts';
 
 const T = 1_700_000_000_000;
 const sid = (i: number) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`;
@@ -157,4 +158,15 @@ test('approved label: the project name only, cut to LABEL_MAX for notifications'
   const label = approvedLabel(db, 'claude', 'p1', sid(1))!;
   assert.equal(label.length, LABEL_MAX);
   assert.ok(label.endsWith('…'));
+});
+
+// Gate 5 U1 G5b2-4 (XAIBO-PROD-542): Trash and restore change what every window lists, so a successful one resyncs them
+test('G5b2-4: a successful Trash or restore asks for a renderer resync; other operations and failures do not', () => {
+  const o = overlay as unknown as { resyncAfter?: (op: OverlayOp, r: OverlayResult) => boolean };
+  assert.equal(typeof o.resyncAfter, 'function', 'resyncAfter exported');
+  const ok: OverlayResult = { ok: true };
+  assert.equal(o.resyncAfter!({ kind: 'trash', session: 1, on: true }, ok), true);
+  assert.equal(o.resyncAfter!({ kind: 'trash', session: 1, on: false }, ok), true);
+  assert.equal(o.resyncAfter!({ kind: 'trash', session: 1, on: true }, { ok: false, error: 'not-found' }), false);
+  assert.equal(o.resyncAfter!({ kind: 'pin', session: 1, on: true }, ok), false);
 });

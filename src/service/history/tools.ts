@@ -3,8 +3,8 @@
 // (purged) sessions are listed newest first and addressed only by an opaque domain-separated HMAC key, so no profile id
 // or native session id reaches the renderer; manual purge is capped per minute (D-P5-07: the in-app confirmation can be
 // skipped by a compromised renderer; this cap and no batch form bound the damage); a successful Re-import sets Keep so
-// retention does not purge the returning session again (D-P5-08). Purge and Re-import are synchronous on the service
-// thread, so they never overlap; moving either to a worker needs a per-identity lock (design review L7).
+// retention does not purge the returning session again (D-P5-08). XAIBO-PROD-542: a purge deletes its rows in batches
+// across event-loop turns; purge.ts runs one driver per identity, and Re-import answers pending while it runs.
 import { createHmac } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { MAX_ITEMS, PURGE_RESULTS, REIMPORT_RESULTS, SAVE_RESULTS, parseRetentionSetting, type HistoryFilter, type HistoryRow, type RetentionSetting, type SearchHit, type SearchKey,
@@ -19,12 +19,13 @@ import type { ModelEntry } from '../usage/models.ts';
 import { historyRows } from './overlay.ts';
 import { purgeSession } from './purge.ts';
 import { reimport } from './reimport.ts';
-import type { Identity } from './suppression.ts';
+import { notPurging, type Identity } from './suppression.ts';
+import type { ChunkStore } from '../adapters/generic/chunks.ts';
 
 type Purge = (typeof PURGE_RESULTS)[number];
 type Reimport = (typeof REIMPORT_RESULTS)[number];
 type Save = (typeof SAVE_RESULTS)[number];
-interface Files { dataDir: string; backupDir: string; secret: Buffer; now: number }
+interface Files { dataDir: string; backupDir: string; secret: Buffer; now: number; chunks?: ChunkStore | undefined }
 
 /** One search page; hits whose session is gone by the time its row is read are dropped (design review L4). */
 export function answerSearch(db: DatabaseSync, q: { query: string; filter: HistoryFilter; cursor: SearchKey | null; limit: number },
@@ -101,12 +102,14 @@ export class PurgeLimit {
   }
 }
 
-/** A purge the owner confirmed (reason manual, P5-T07 engine through the writer). An unknown session is not counted. */
-export function purgeManual(writer: Writer, session: number, o: Files & { limit: PurgeLimit }): Purge {
+/** A purge the owner confirmed (reason manual, P5-T07 engine through the writer). An unknown session is not counted.
+ *  `hidden`: called once the session is hidden (phase a), before its rows are deleted in batches. */
+export async function purgeManual(writer: Writer, session: number, o: Files & { limit: PurgeLimit; hidden?: () => void }): Promise<Purge> {
   try {
-    if (!writer.transact((db) => db.prepare('SELECT 1 FROM sessions WHERE id = ?').get(session) !== undefined)) return 'not-found';
+    if (!writer.transact((db) => db.prepare(`SELECT 1 FROM sessions s WHERE id = ? AND ${notPurging(db)}`).get(session) !== undefined)) return 'not-found';
     if (!o.limit.take()) return 'busy';
-    return purgeSession(writer, session, { dataDir: o.dataDir, backupDir: o.backupDir, now: o.now, secret: o.secret, reason: 'manual' }).purged ? 'purged' : 'not-found';
+    return (await purgeSession(writer, session, { dataDir: o.dataDir, backupDir: o.backupDir, now: o.now, secret: o.secret, reason: 'manual', chunks: o.chunks,
+      ...(o.hidden ? { hidden: o.hidden } : {}) })).purged ? 'purged' : 'not-found';
   } catch (e) { return isDiskFull(e) ? 'disk-full' : 'failed'; }
 }
 
@@ -115,7 +118,7 @@ export function reimportKey(writer: Writer, db: DatabaseSync, key: string, o: Fi
   try {
     const who = findSuppressed(db, o.secret, key);
     if (!who) return 'not-found';
-    return reimport(writer, who, { dataDir: o.dataDir, backupDir: o.backupDir, now: o.now, keep: true }); // Keep in the same transaction (review M1)
+    return reimport(writer, who, { dataDir: o.dataDir, backupDir: o.backupDir, now: o.now, chunks: o.chunks, keep: true }); // Keep in the same transaction (review M1)
   } catch (e) { return isDiskFull(e) ? 'disk-full' : 'failed'; }
 }
 

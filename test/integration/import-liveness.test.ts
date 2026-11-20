@@ -39,7 +39,7 @@ function bigTranscript(projectDir: string, sid: string, lines: number, pad = 0) 
 
 class Recording extends Writer {
   readonly batches: { rows: number; bytes: number; content: number }[] = [];
-  override enqueue(batch: Batch, live: boolean): Promise<void> {
+  override enqueue(batch: Batch, live: boolean): Promise<Batch> {
     if (batch.file) this.batches.push({ rows: batch.events.length, bytes: batch.events.reduce((n, e) => n + (e.raw?.length ?? 0) + (e.content?.length ?? 0), 0),
       content: batch.events.reduce((n, e) => n + (e.content?.length ?? 0), 0) });
     return super.enqueue(batch, live);

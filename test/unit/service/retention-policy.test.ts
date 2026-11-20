@@ -124,13 +124,14 @@ test('EC-22: fake lifecycle table, only the old, idle-like, unkept rows are elig
 // re-imported and the cleared marker is the "re-imported" notice); a manual purge keeps blocking until Re-import (its
 // uncleared manual marker is the "suppressed, Re-import" notice). Owed file work blocks both.
 test('EC-22: auto-purged session continued natively is re-imported; manual purge stays suppressed', () => {
-  const m = (reason: SuppressionReason, extra: Partial<Marker> = {}): Marker => ({ reason, at: NOW, pending: null, cleared_at: null, files: '[]', ...extra });
+  const m = (reason: SuppressionReason, extra: Partial<Marker> = {}): Marker => ({ reason, at: NOW, pending: null, cleared_at: null, files: '[]', purge_phase: null, ...extra });
   assert.equal(blocks(m('retention'), true), false, 'retention + new activity: re-import');
   assert.equal(blocks(m('retention'), false), true, 'retention, no new activity: stays out');
   assert.equal(blocks(m('manual'), true), true, 'manual + new activity: stays suppressed');
   assert.equal(blocks(m('manual'), false), true);
   assert.equal(blocks(m('retention', { pending: '["r1"]' }), true), true, 'owed file work blocks');
   assert.equal(blocks(m('manual', { cleared_at: NOW + 1 }), false), false, 'after Re-import');
+  assert.equal(blocks(m('retention', { purge_phase: 'rows' }), true), true, 'XAIBO-PROD-542: a purge still deleting rows blocks whatever the activity');
   assert.equal(blocks(undefined, false), false, 'never purged');
   // intake: a delivery from before the purge never comes back, even for a retention marker
   assert.equal(refuses(m('retention'), NOW), true);

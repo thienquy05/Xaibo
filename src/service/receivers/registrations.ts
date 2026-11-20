@@ -73,6 +73,10 @@ function load(dataDir: string): { regs: Registration[] | null; stamp: string } {
   } finally { closeSync(f.fd); }
 }
 
+/** XAIBO-PROD-542 G5a-4: the stored registrations; [] when the file is absent, null when it cannot be read as ours (never
+ *  taken for "none registered"). */
+export const readRegistrations = (dataDir: string): Registration[] | null => load(dataDir).regs;
+
 function save(dataDir: string, regs: Registration[]) {
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   atomicWrite(path.join(dataDir, FILE), JSON.stringify(regs), 0o600);

@@ -86,7 +86,7 @@ test('EC-21: after a manual purge, rescan, spool replay, a late hook, a backup r
   writeFileSync(join(spool, 'overflow.log'), `${JSON.stringify({ ts: T0, agent: 'claude', session_id: S, event: 'Stop' })}\n`, { mode: 0o600 });
 
   // review: the purge lies in the past, so every live attempt below is timed after it and only the manual rule refuses it
-  const r = purgeSession(h.writer, h.sid, { dataDir, backupDir: join(dataDir, 'backups'), secret: SECRET, now: Date.now() - 60_000, reason: 'manual' });
+  const r = await purgeSession(h.writer, h.sid, { dataDir, backupDir: join(dataDir, 'backups'), secret: SECRET, now: Date.now() - 60_000, reason: 'manual' });
   assert.equal(r.purged, true);
   assert.deepEqual(traces(db, dataDir), NONE);
 
@@ -129,7 +129,7 @@ test('EC-22: a retention purge stays through old records and replayed hooks; a n
   const h = await imported();
   const { db, dataDir } = h;
   const at = Date.now() - 60_000;
-  purgeSession(h.writer, h.sid, { dataDir, backupDir: join(dataDir, 'backups'), secret: SECRET, now: at, reason: 'retention' });
+  await purgeSession(h.writer, h.sid, { dataDir, backupDir: join(dataDir, 'backups'), secret: SECRET, now: at, reason: 'retention' });
   await h.rescan();
   assert.deepEqual(traces(db, dataDir), NONE, 'old records are not new activity');
   assert.deepEqual(await h.intake.deliver(envelope({ session_id: S, received_ts: T0, payload: { hook_event_name: 'Stop', session_id: S } })),
@@ -142,10 +142,11 @@ test('EC-22: a retention purge stays through old records and replayed hooks; a n
   assert.deepEqual(traces(db, dataDir), NONE, 'a future time in an unchanged file');
 
   appendFileSync(h.transcript, continued(Date.now()));
-  await h.adapter.backfill(); // the new record clears the marker and resets the checkpoint
+  // the new record clears the marker and resets the checkpoint; the adapter reads the file again from the start at once
+  // (review M (code): no later write or scan needed)
+  await h.adapter.backfill();
   assert.equal(count(db, 'SELECT count(*) FROM suppressions WHERE cleared_at IS NOT NULL'), 1);
   assert.equal(count(db, 'SELECT count(*) FROM sessions WHERE native_session_id = ?', S), 1);
-  await h.adapter.backfill(); // the native file read again from the start
   assert.equal(count(db, 'SELECT count(*) FROM events'), h.events + 2);
   assert.equal(january(liveMonthly(db, SECRET)), january(h.monthly), 'settled January is not counted twice (FR-52)');
 });
@@ -154,7 +155,7 @@ test('EC-22: a live hook received after a retention purge clears it; one receive
   const h = await imported();
   const { db, dataDir } = h;
   const at = Date.now() - 10_000; // intake caps a hook's time at its commit, so the purge lies in the past here
-  purgeSession(h.writer, h.sid, { dataDir, backupDir: join(dataDir, 'backups'), secret: SECRET, now: at, reason: 'retention' });
+  await purgeSession(h.writer, h.sid, { dataDir, backupDir: join(dataDir, 'backups'), secret: SECRET, now: at, reason: 'retention' });
   // review: a statusLine snapshot carries no time of its own, so it is no new activity; the writer drops it and it is not
   // remembered as stored, so the same snapshot is stored once the marker clears
   const tee = () => h.intake.deliver(envelope({ event: 'statusline', cwd: null, session_id: S, payload: { session_id: S, model: { id: 'claude-x' } } }));
@@ -178,7 +179,7 @@ test('EC-22: a live hook received after a retention purge clears it; one receive
 test('review M4: report history re-sent after a retention purge stays refused (frame time); a live frame clears it', async () => {
   const h = await imported();
   const at = Date.now() - 60_000;
-  purgeSession(h.writer, h.sid, { dataDir: h.dataDir, backupDir: join(h.dataDir, 'backups'), secret: SECRET, now: at, reason: 'retention' });
+  await purgeSession(h.writer, h.sid, { dataDir: h.dataDir, backupDir: join(h.dataDir, 'backups'), secret: SECRET, now: at, reason: 'retention' });
   const frame = (id: string, ts: string) => h.reports.deliver(h.reg, { v: 1, delivery_id: id, session_id: S, producer_id: 'fixture-producer', producer_seq: 1,
     event: 'turn.start', source_ts: ts, payload: {} });
   assert.deepEqual(await frame('resent', '2026-01-01T00:00:00.000Z'), { status: 'accepted', code: 'suppressed' }, 'fresh delivery id, old event');
@@ -197,7 +198,7 @@ test('review M1/L2: Re-import finishes owed file work first; it refuses when the
   const spool = join(h.dataDir, 'spool');
   mkdirSync(spool, { mode: 0o700 });
   writeFileSync(join(spool, '2025-12-31.jsonl'), `${JSON.stringify(envelope({ session_id: S, payload: { hook_event_name: 'Stop', session_id: S } }))}\n`, { mode: 0o600 });
-  const r = purgeSession(h.writer, h.sid, { dataDir: h.dataDir, backupDir: join(h.dataDir, 'backups'), secret: SECRET, now: Date.now(), reason: 'manual' });
+  const r = await purgeSession(h.writer, h.sid, { dataDir: h.dataDir, backupDir: join(h.dataDir, 'backups'), secret: SECRET, now: Date.now(), reason: 'manual' });
   assert.equal(r.filesPending, true, 'the spool file was written just now');
   assert.equal(reimport(h.writer, WHO, h.opts(Date.now())), 'pending', 'still inside the quiet window');
   assert.equal(count(h.db, 'SELECT count(*) FROM suppressions WHERE cleared_at IS NULL'), 1);
@@ -205,7 +206,7 @@ test('review M1/L2: Re-import finishes owed file work first; it refuses when the
   assert.equal(files(spool).length, 0, 'the owed spool rewrite ran before the marker cleared');
 
   const g = await imported();
-  purgeSession(g.writer, g.sid, { dataDir: g.dataDir, backupDir: join(g.dataDir, 'backups'), secret: SECRET, now: Date.now(), reason: 'manual' });
+  await purgeSession(g.writer, g.sid, { dataDir: g.dataDir, backupDir: join(g.dataDir, 'backups'), secret: SECRET, now: Date.now(), reason: 'manual' });
   unlinkSync(g.transcript);
   assert.equal(reimport(g.writer, WHO, g.opts(Date.now())), 'native-gone');
   assert.equal(count(g.db, 'SELECT count(*) FROM suppressions WHERE cleared_at IS NULL'), 1, 'still suppressed');
@@ -214,7 +215,7 @@ test('review M1/L2: Re-import finishes owed file work first; it refuses when the
 test('review H2/M2: a reset checkpoint survives an ingest that started before it; a new file of the session joins the marker', async () => {
   const h = await imported();
   const { db } = h;
-  purgeSession(h.writer, h.sid, { dataDir: h.dataDir, backupDir: join(h.dataDir, 'backups'), secret: SECRET, now: Date.now(), reason: 'manual' });
+  await purgeSession(h.writer, h.sid, { dataDir: h.dataDir, backupDir: join(h.dataDir, 'backups'), secret: SECRET, now: Date.now(), reason: 'manual' });
   const row = () => db.prepare('SELECT id, path, offset, size, epoch FROM source_files WHERE instr(path, ?) > 0').get(`${S}.jsonl`) as
     { id: number; path: string; offset: number; size: number; epoch: number }; // stored as its real path
   const before = row();
@@ -233,5 +234,11 @@ test('review H2/M2: a reset checkpoint survives an ingest that started before it
   // a batch of an ingest that read the checkpoint before the reset cannot move it past the reset
   h.writer.commitLive({ profileId: 'p1', agent: 'claude', file: { path: before.path, ...cp, offset: before.offset, size: before.size, epoch: before.epoch },
     sessions: [], events: [] });
+  assert.deepEqual([row().offset, row().size, row().epoch], [0, -1, before.epoch + 1]);
+  // G5f-1: nor does it commit its records: the re-read from the start brings them (a hook batch, with no file, keeps its own)
+  h.writer.commitLive({ profileId: 'p1', agent: 'claude', file: { path: before.path, ...cp, offset: before.offset, size: before.size, epoch: before.epoch },
+    fileSession: S, sessions: [{ nativeSessionId: S }],
+    events: [{ nativeSessionId: S, source: 'transcript', confidence: 'confirmed', nativeId: 'stale-1', kind: 'user', sourceSeq: 1, sourceTs: Date.now(), receivedTs: Date.now() }] });
+  assert.equal(count(db, "SELECT count(*) FROM events WHERE native_id = 'stale-1'"), 0, 'a batch the epoch guard refuses commits no events');
   assert.deepEqual([row().offset, row().size, row().epoch], [0, -1, before.epoch + 1]);
 });

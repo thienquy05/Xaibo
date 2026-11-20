@@ -10,24 +10,28 @@ import type { DatabaseSync } from 'node:sqlite';
 
 export type SuppressionReason = 'manual' | 'retention';
 export interface Identity { agent: string; profile: string; native: string }
-export interface Marker { reason: SuppressionReason; at: number; pending: string | null; cleared_at: number | null; files: string | null }
+/** purge_phase (XAIBO-PROD-542 G5-N1): set while the purge still deletes the session's rows. */
+export interface Marker { reason: SuppressionReason; at: number; pending: string | null; cleared_at: number | null; files: string | null; purge_phase: string | null }
 
 /** Parameters: agent, profile id, native session id. */
-export const MARKER = 'SELECT reason, at, pending, cleared_at, files FROM suppressions WHERE agent = ? AND profile_id = ? AND native_session_id = ?';
+export const MARKER = 'SELECT reason, at, pending, cleared_at, files, purge_phase FROM suppressions WHERE agent = ? AND profile_id = ? AND native_session_id = ?';
 
-/** Writer side: true while the marker keeps the session out of a batch with (or without) new native activity. */
+/** Writer side: true while the marker keeps the session out of a batch with (or without) new native activity; always
+ *  while its purge is still deleting rows. */
 export const blocks = (m: Marker | undefined, newActivity: boolean): boolean =>
-  !!m && m.cleared_at === null && (m.reason === 'manual' || m.pending !== null || !newActivity);
+  !!m && (!!m.purge_phase || (m.cleared_at === null && (m.reason === 'manual' || m.pending !== null || !newActivity)));
 
 /** Intake side: true when a delivery timed `ts` (null = no readable time) must be refused. */
 export const refuses = (m: Marker | undefined, ts: number | null): boolean =>
   !!m && (ts === null || !Number.isFinite(ts) || ts <= m.at || blocks(m, true));
 
-/** Writes the marker inside the purge transaction: `pending` = registration ids whose files are still owed, `files` =
- *  source_files ids that held the session's records. A purge after an earlier clear suppresses again. */
+/** Writes the marker in the purge's first transaction (phase a): `pending` = registration ids whose files are still owed,
+ *  `files` = source_files ids that held the session's records, purge phase 'rows' until its rows are gone. A purge after
+ *  an earlier clear suppresses again. */
 export function suppress(db: DatabaseSync, s: Identity, reason: SuppressionReason, at: number, pending: string[], files: number[]): void {
-  db.prepare(`INSERT INTO suppressions (agent, profile_id, native_session_id, reason, at, pending, files) VALUES (?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT DO UPDATE SET reason = excluded.reason, at = excluded.at, pending = excluded.pending, files = excluded.files, cleared_at = NULL`)
+  db.prepare(`INSERT INTO suppressions (agent, profile_id, native_session_id, reason, at, pending, files, purge_phase) VALUES (?, ?, ?, ?, ?, ?, ?, 'rows')
+    ON CONFLICT DO UPDATE SET reason = excluded.reason, at = excluded.at, pending = excluded.pending, files = excluded.files, cleared_at = NULL,
+      purge_phase = 'rows'`)
     .run(s.agent, s.profile, s.native, reason, at, JSON.stringify(pending), JSON.stringify(files));
 }
 
@@ -45,4 +49,14 @@ export function clear(db: DatabaseSync, s: Identity, at: number): void {
 export function noteFile(db: DatabaseSync, s: Identity, fileId: number): void {
   db.prepare(`UPDATE suppressions SET files = (SELECT json_group_array(v) FROM (SELECT value AS v FROM json_each(coalesce(files, '[]')) UNION SELECT ?))
     WHERE agent = ? AND profile_id = ? AND native_session_id = ?`).run(fileId, s.agent, s.profile, s.native);
+}
+
+/** XAIBO-PROD-542 G5-N1: SQL true unless the session (alias `s`) is being purged; one predicate for every reader. A store
+ *  without the column (a read-only older schema) has no purge in progress. */
+const purgeCol = new WeakMap<DatabaseSync, boolean>();
+export function notPurging(db: DatabaseSync): string {
+  let has = purgeCol.get(db);
+  if (has === undefined) purgeCol.set(db, has = db.prepare("SELECT 1 FROM pragma_table_info('suppressions') WHERE name = 'purge_phase'").get() !== undefined);
+  return has ? `NOT EXISTS (SELECT 1 FROM suppressions px WHERE px.agent = s.agent AND px.profile_id = s.profile_id
+    AND px.native_session_id = s.native_session_id AND px.purge_phase IS NOT NULL)` : '1';
 }

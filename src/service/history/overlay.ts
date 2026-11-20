@@ -12,6 +12,7 @@ import { groupWhere } from './map.ts';
 import { trashPurgeAt } from './trash.ts';
 import { retentionOf, sessionPurgeAt } from '../retention/policy.ts';
 import type { ModelEntry } from '../usage/models.ts';
+import { notPurging } from './suppression.ts';
 
 // ponytail: fixed caps bound what a renderer can create; make them settings if an owner ever needs more.
 export const PROJECTS_MAX = 1000, FOLDERS_MAX = 1000;
@@ -29,6 +30,9 @@ const fail = (error: Extract<OverlayResult, { ok: false }>['error']): OverlayRes
 const clamp = (limit: number) => Math.min(Number.isSafeInteger(limit) && limit > 0 ? limit : PAGE_DEFAULT, PAGE_MAX);
 interface Key { agent: string; profile_id: string; native_session_id: string; cwd: string | null }
 
+/** XAIBO-PROD-542 G5b2-4: a Trash or restore that succeeded changes what every window lists: they resync. */
+export const resyncAfter = (op: OverlayOp, r: OverlayResult): boolean => r.ok && op.kind === 'trash';
+
 export function applyOverlay(db: DatabaseSync, op: OverlayOp, o: { readOnly: boolean; now: number }): OverlayResult {
   if (o.readOnly) return fail('read-only');
   try { return run(db, op, o.now); } catch (e) { return fail(isDiskFull(e) ? 'disk-full' : 'store'); }
@@ -37,7 +41,8 @@ export function applyOverlay(db: DatabaseSync, op: OverlayOp, o: { readOnly: boo
 function run(db: DatabaseSync, op: OverlayOp, now: number): OverlayResult {
   if (op.kind === 'newProject') return project(db, op.name, now);
   if (op.kind === 'newFolder') return folder(db, op.project, op.name);
-  const k = db.prepare('SELECT agent, profile_id, native_session_id, cwd FROM sessions WHERE id = ?').get(op.session) as Key | undefined;
+  // XAIBO-PROD-542 G5-N1: a session being purged is gone for every operation
+  const k = db.prepare(`SELECT agent, profile_id, native_session_id, cwd FROM sessions s WHERE id = ? AND ${notPurging(db)}`).get(op.session) as Key | undefined;
   if (!k) return fail('not-found');
   const set = (assign: string, ...args: (number | null)[]) => {
     db.prepare('INSERT INTO overlays (agent, profile_id, native_session_id) VALUES (?, ?, ?) ON CONFLICT DO NOTHING').run(k.agent, k.profile_id, k.native_session_id);
@@ -131,7 +136,7 @@ export function listHistory(db: DatabaseSync, f: HistoryFilter, cursor: HistoryK
   const P = overlay ? 'coalesce(o.pinned, 0)' : '0';
   const { cols, joins } = historySql(overlay, P);
   const s = scopeWhere(f, overlay);
-  const where = s.where, args: (string | number | null)[] = s.args;
+  const where = [...s.where, notPurging(db)], args: (string | number | null)[] = s.args; // XAIBO-PROD-542 G5-N1
   if (cursor) {
     const p = cursor.pinned ? 1 : 0;
     const after = cursor.lastActivity === null ? '(s.last_activity IS NULL AND s.id > ?)' : '(s.last_activity < ? OR s.last_activity IS NULL OR (s.last_activity = ? AND s.id > ?))';
@@ -166,7 +171,7 @@ export function historyRows(db: DatabaseSync, ids: number[], kinds: SessionKind[
   if (!ids.length) return new Map();
   const overlay = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'overlays'").get() !== undefined;
   const { cols, joins } = historySql(overlay);
-  const sql = `${ROW.replace(/^SELECT /, `SELECT ${cols}`)}${joins} WHERE s.id IN (${ids.map(() => '?').join(', ')})`;
+  const sql = `${ROW.replace(/^SELECT /, `SELECT ${cols}`)}${joins} WHERE s.id IN (${ids.map(() => '?').join(', ')}) AND ${notPurging(db)}`;
   return new Map(historyOf(db, kinds, models, live)(db.prepare(sql).all(...ids) as unknown as HistoryRaw[]).map((r) => [r.id, r]));
 }
 

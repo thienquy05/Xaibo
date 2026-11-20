@@ -10,6 +10,7 @@ import { agyUsage, claudeUsage, codexRateLimits, codexStep, codexUsage, tokenRec
 import { contextStep, type ContextObs, type Snapshot } from '../usage/context.ts';
 import { codexReadings, historyStep, scopeKey, sourceTime, type Reading, type Stored } from '../usage/snapshots.ts';
 import { LAST_RUN_KEY, QUOTA_MS } from '../retention/policy.ts';
+import { utcOffset } from '../usage/monthly.ts';
 
 export const SCHEMA_VERSION = 1;
 // The FTS row of an event is its ftsPrefix; deletes (revisions, purge) must pass that same text, so changing this bound
@@ -81,6 +82,9 @@ export interface Batch {
   report?: ReportDelivery;
   /** P3-T13b2: the profile a custom agent's registration creates with this batch (never replaces an existing one). */
   profile?: { id: string; agent: string; root: string; origin: 'registration' };
+  /** Set by commitBatch only (XAIBO-PROD-542 G5f-1): the file's records were not committed (its checkpoint was reset, or
+   *  an earlier reset refused it); the ingester reads the file again from its stored checkpoint. */
+  reread?: true;
 }
 export interface ReportDelivery {
   registrationId: string; deliveryId: string; agent: string; profileKey: string; nativeSessionId: string; event: string;
@@ -179,8 +183,9 @@ function prepare(db: DatabaseSync) {
     cwd: db.prepare(`INSERT INTO cwd_history (session_id, schema_version, source, cwd, cwd_key, first_seen) VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT (session_id, cwd) DO UPDATE SET
         first_seen = min(coalesce(cwd_history.first_seen, excluded.first_seen), coalesce(excluded.first_seen, cwd_history.first_seen))`),
-    turn: db.prepare(`INSERT INTO turns (session_id, schema_version, source, native_turn_id, started_at, ended_at, outcome) VALUES (?, ?, ?, ?, ?, ?, ?)
+    turn: db.prepare(`INSERT INTO turns (session_id, schema_version, source, native_turn_id, started_at, ended_at, outcome, utc_offset) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (session_id, native_turn_id) DO UPDATE SET -- P4-T08 review L5: the earliest start of any source
+        utc_offset = coalesce(turns.utc_offset, excluded.utc_offset),
         started_at = min(coalesce(turns.started_at, excluded.started_at), coalesce(excluded.started_at, turns.started_at)),
         ended_at = coalesce(turns.ended_at, excluded.ended_at), outcome = coalesce(turns.outcome, excluded.outcome)`),
     // P4-T08: ?1 = effort exposed. Unexposed effort keeps the same model's recorded effort; another model gets none.
@@ -210,8 +215,9 @@ function prepare(db: DatabaseSync) {
     setContext: db.prepare(`UPDATE context_snapshots SET source = ?, model_id = ?, used_tokens = ?, window_tokens = ?, window_basis = ?,
         percentage = ?, source_locator = ?, as_of = ?, observed_at = ? WHERE id = ?`),
     putUsage: db.prepare(`INSERT INTO usage (session_id, schema_version, source, identity, scope, segment, event_id, model_id, uncached_input,
-        cache_read, cache_write, cache_write_classes, output, raw, completeness, source_ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        cache_read, cache_write, cache_write_classes, output, raw, completeness, source_ts, utc_offset) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (session_id, source, scope, identity) DO UPDATE SET segment = excluded.segment, event_id = excluded.event_id,
+        utc_offset = coalesce(usage.utc_offset, excluded.utc_offset),
         model_id = coalesce(excluded.model_id, usage.model_id), uncached_input = excluded.uncached_input, cache_read = excluded.cache_read,
         cache_write = excluded.cache_write, cache_write_classes = excluded.cache_write_classes, output = excluded.output, raw = excluded.raw,
         completeness = excluded.completeness, source_ts = excluded.source_ts`),
@@ -235,8 +241,9 @@ function prepare(db: DatabaseSync) {
     prevHistory: db.prepare(`SELECT used_percent, window_minutes, resets_at, plan, credits, as_of, first_observed_at, measured_at FROM usage_history
       WHERE usage_scope_id = ? AND limit_id = ? AND measured_at <= ? ORDER BY measured_at DESC, id DESC LIMIT 1`),
     putHistory: db.prepare(`INSERT INTO usage_history (schema_version, usage_scope_id, limit_id, kind, minute, used_percent, window_minutes, resets_at,
-        plan, credits, as_of, first_observed_at, observed_at, measured_at, source, source_locator) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        plan, credits, as_of, first_observed_at, observed_at, measured_at, source, source_locator, utc_offset) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (usage_scope_id, limit_id, kind, minute) DO UPDATE SET used_percent = excluded.used_percent, window_minutes = excluded.window_minutes,
+        utc_offset = coalesce(usage_history.utc_offset, excluded.utc_offset),
         resets_at = excluded.resets_at, plan = excluded.plan, credits = excluded.credits, as_of = excluded.as_of,
         first_observed_at = excluded.first_observed_at, observed_at = excluded.observed_at, measured_at = excluded.measured_at,
         source = excluded.source, source_locator = excluded.source_locator
@@ -253,6 +260,8 @@ function prepare(db: DatabaseSync) {
       ON CONFLICT (session_id, covered_scope) DO UPDATE SET amount_usd = excluded.amount_usd`),
     marker: db.prepare(MARKER),
     fileId: db.prepare('SELECT id FROM source_files WHERE path = ?'),
+    // as suppression.clear() resets a marker's files (XAIBO-PROD-542 G5f-1: the clearing batch's own file)
+    resetFile: db.prepare("UPDATE source_files SET offset = 0, size = -1, mtime = NULL, head_hash = '', epoch = epoch + 1 WHERE id = ? AND NOT (offset = 0 AND size = -1)"),
   };
 }
 
@@ -309,7 +318,7 @@ function history(st: ReturnType<typeof prepare>, batch: Batch, sid: number | big
     const step = historyStep(prev, r, e.receivedTs);
     if (step.action === 'skip' || step.measuredAt <= expiredUpTo) continue;
     st.putHistory.run(SCHEMA_VERSION, scope, r.stream, step.action, step.minute, r.usedPercent, r.windowMinutes, r.resetsAt, r.plan, r.credits,
-      sourceTime(r, e.receivedTs), step.firstObservedAt, e.receivedTs, step.measuredAt, e.source, e.nativeId);
+      sourceTime(r, e.receivedTs), step.firstObservedAt, e.receivedTs, step.measuredAt, e.source, e.nativeId, utcOffset(step.measuredAt));
     // Review M1: a backfilled older reading can change what the next row follows; reclassify it against its predecessor.
     type K = { window_minutes: number | null; resets_at: number | null; plan: string | null };
     const next = st.nextHistory.get(scope, r.stream, step.measuredAt) as (K & { id: number; kind: string; measured_at: number }) | undefined;
@@ -345,7 +354,7 @@ function usage(st: ReturnType<typeof prepare>, batch: Batch, sid: number | bigin
     const rawText = JSON.stringify(raw);
     st.putUsage.run(sid, SCHEMA_VERSION, e.source, identity, scope, segment, eventId, model ?? null, n?.uncachedInput ?? null, n?.cacheRead ?? null,
       n?.cacheWrite ?? null, n?.cacheWriteClasses ? JSON.stringify(n.cacheWriteClasses) : null, n?.output ?? null, rawText,
-      JSON.stringify(gap ?? n!.completeness), e.sourceTs ?? null);
+      JSON.stringify(gap ?? n!.completeness), e.sourceTs ?? null, utcOffset(e.sourceTs ?? e.receivedTs));
     // G2-2/G2-16: any change to the priced evidence (raw usage, including price qualifiers, or the model) re-prices it.
     if (before && (before.raw !== rawText || (model !== undefined && before.model_id !== model))) st.markDirty.run(sid, `usage:${e.source}:${identity}`);
   };
@@ -451,8 +460,9 @@ export function commitBatch(db: DatabaseSync, input: Batch): Batch {
     };
 
     const f = batch.file;
-    const file = f ? (st.upsertFile.get(batch.profileId, batch.fileSession ? sessionId(batch.fileSession) : null, f.path, f.kind, f.dev, f.ino,
-      f.size, f.mtime, f.offset, f.headHash, f.status, f.epoch ?? null, f.epoch ?? null) ?? st.fileId.get(f.path)) as { id: number } : { id: null };
+    const upserted = f ? st.upsertFile.get(batch.profileId, batch.fileSession ? sessionId(batch.fileSession) : null, f.path, f.kind, f.dev, f.ino,
+      f.size, f.mtime, f.offset, f.headHash, f.status, f.epoch ?? null, f.epoch ?? null) as { id: number } | undefined : undefined;
+    const file = f ? (upserted ?? st.fileId.get(f.path)) as { id: number } : { id: null };
     // P5-T08: re-import bookkeeping after this batch's own checkpoint. A file that held records of a session kept out joins
     // its marker (review M2); a retention marker cleared by new activity resets its files for a whole re-import.
     const who = (native: string) => ({ agent: batch.agent, profile: batch.profileId, native });
@@ -460,6 +470,15 @@ export function commitBatch(db: DatabaseSync, input: Batch): Batch {
       for (const id of gone) if (input.fileSession === id || input.events.some((e) => e.nativeSessionId === id)) noteFile(db, who(id), file.id);
     }
     for (const id of clear) clearMarker(db, who(id), Math.max(...batch.events.filter((e) => e.nativeSessionId === id).map((e) => e.receivedTs)));
+    // XAIBO-PROD-542 G5f-1: a file batch that clears a marker commits only the session rows, the clear and the reset of its
+    // own file too (the re-read from the start brings its records, account marker included); a file batch read at an
+    // epoch a reset has since replaced (the guard refused its checkpoint) commits no records either. Hook and report
+    // batches (no file) keep theirs.
+    if (f && file.id !== null && (clear.size || (f.epoch !== undefined && !upserted))) {
+      if (clear.size) st.resetFile.run(file.id);
+      db.exec('COMMIT');
+      return { ...batch, events: [], ...(batch.quarantine ? { quarantine: [] } : {}), ...(batch.subagents ? { subagents: [] } : {}), reread: true };
+    }
 
     const added = new Map<number | bigint, [number, number, number]>();
     const bump = (id: number | bigint, i: 0 | 1 | 2) => { const c = added.get(id) ?? [0, 0, 0]; c[i]++; added.set(id, c); };
@@ -486,7 +505,8 @@ export function commitBatch(db: DatabaseSync, input: Batch): Batch {
       if (e.content) st.insertFts.run(row.id, ftsPrefix(e.content));
       if (e.turn) {
         const ts = e.sourceTs ?? null;
-        st.turn.run(sid, SCHEMA_VERSION, e.source, e.turn.id, e.turn.edge === 'start' ? ts : null, e.turn.edge === 'end' ? ts : null, e.turn.outcome ?? null);
+        st.turn.run(sid, SCHEMA_VERSION, e.source, e.turn.id, e.turn.edge === 'start' ? ts : null, e.turn.edge === 'end' ? ts : null, e.turn.outcome ?? null,
+          utcOffset(ts ?? e.receivedTs)); // G5b1-4: the offset its month is bucketed with
       }
       for (const c of e.toolCalls ?? []) {
         const o: ToolCallObservation = { source: e.source, callId: c.callId, ...(c.tool !== undefined ? { tool: c.tool } : {}) };
@@ -532,7 +552,7 @@ export function commitBatch(db: DatabaseSync, input: Batch): Batch {
 }
 
 
-interface Pending { batch: Batch; resolve: () => void; reject: (e: unknown) => void }
+interface Pending { batch: Batch; resolve: (committed: Batch) => void; reject: (e: unknown) => void }
 export interface WriterOptions {
   maxRows?: number; maxBytes?: number; maxDelayMs?: number;
   setTimer?: (fn: () => void, ms: number) => void;
@@ -624,7 +644,8 @@ export class Writer {
     return r;
   }
 
-  enqueue(batch: Batch, live: boolean): Promise<void> {
+  /** Resolves with what was committed (G5f-1: `reread` when the ingester must read the file again). */
+  enqueue(batch: Batch, live: boolean): Promise<Batch> {
     return new Promise((resolve, reject) => {
       (live ? this.#live : this.#backfill).push({ batch, resolve, reject });
       this.#since ??= this.#o.now();
@@ -647,8 +668,7 @@ export class Writer {
     this.#bytes = 0;
     for (const j of jobs) {
       try {
-        this.#commit(j.batch);
-        j.resolve();
+        j.resolve(this.#commit(j.batch));
       } catch (e) {
         j.reject(e);
       }

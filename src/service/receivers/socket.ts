@@ -39,7 +39,7 @@ export interface SocketOptions {
   maxConnections?: number;
   log?: Logger;
   /** P3-T13b: report producers authenticated by their own registration. */
-  reports?: { registry: Registry; intake: ReportIntake };
+  reports?: { registry: Registry; intake: Pick<ReportIntake, 'deliver' | 'rejected'> };
 }
 export interface SocketServer { path: string; tokenFile: string; close(): Promise<void> }
 

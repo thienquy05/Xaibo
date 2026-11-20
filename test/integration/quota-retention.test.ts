@@ -65,7 +65,7 @@ async function quotaStore() {
   };
   const overlay = (id: string, o: { keep?: boolean; trashedAt?: number }) => db.prepare(`INSERT INTO overlays (agent, profile_id, native_session_id, keep, trashed_at)
     VALUES ('codex', 'c1', ?, ?, ?)`).run(id, o.keep ? 1 : 0, o.trashedAt ?? null);
-  const retain = () => job.runRetention(writer, db, { dataDir, backupDir: join(dataDir, 'backups'), secret: SECRET, now: NOW, active: () => false });
+  const retain = (now = NOW) => job.runRetention(writer, db, { dataDir, backupDir: join(dataDir, 'backups'), secret: SECRET, now, active: () => false });
   return { db, write, ingest, overlay, retain };
 }
 
@@ -104,12 +104,16 @@ test('EC-99: a purged session continued natively is read again from the start; i
   // the agent continues the session after the purge: new native activity clears the retention marker and the whole
   // rollout is read again from the start (P5-T08), including the readings retention expired
   s.write(sid(3), rollout(sid(3), 'acct-1', [...old, { day: 46, min: 60, used: 50 }]), at(46, 60));
-  await s.ingest();
-  await s.ingest();
+  await s.ingest(); // review M (code): one ingest; the reset the clearing batch reports is synced again by the adapter
   assert.deepEqual(sessions(s.db), [sid(3), sid(4)], 're-imported');
-  // ponytail: the reading in the batch that clears the marker lands in a per-session scope (that batch has no session_meta,
-  // so no account marker yet); P5-T08 follow-up, outside EC-99. Compared here without the scope.
-  assert.deepEqual(history(s.db).map((h) => [h.used, h.day]), [[40, 44], [50, 46]], 'expired readings stay gone');
+  // G5f-1: the batch that clears the marker commits no events (only the session row, the marker clear and the reset), so
+  // the re-read from the start stores the new reading under the account marker its session_meta names
+  assert.deepEqual(history(s.db), [{ native: null, used: 40, day: 44 }, { native: null, used: 50, day: 46 }], 'expired readings stay gone; the new one is account level');
+  // Keep protects the session, not account history: a run at ~day 100 expires the re-imported reading too
+  s.overlay(sid(3), { keep: true });
+  await s.retain(T0 + 100 * DAY);
+  assert.deepEqual(history(s.db), [], 'account readings expire 45 days after measurement whatever Keep');
+  assert.ok(sessions(s.db).includes(sid(3)), 'the kept session stays');
 });
 
 test('EC-99: session-linked history and snapshots follow Keep, Trash auto-empty and retention purge', async () => {

@@ -3,11 +3,15 @@
 // duplicates are idempotent; out-of-order arrival completes once; a quota hit labels the item incomplete and frees its
 // bytes; pending bytes are recomputed from disk when the store reopens.
 import { test } from 'node:test';
+import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
-import { lstatSync, mkdtempSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdtempSync, readdirSync, realpathSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { openChunks, type ChunkKey } from '../../src/service/adapters/generic/chunks.ts';
+import * as chunks from '../../src/service/adapters/generic/chunks.ts';
+import { addRegistration } from '../../src/service/receivers/registrations.ts';
+import * as registry from '../../src/service/receivers/registrations.ts';
 
 const REG = '00000000-0000-4000-8000-0000000c0001';
 const key = (o: Partial<ChunkKey> = {}): ChunkKey => ({ registration: REG, producer: 'prod-1', session: 's-1', item: 'item-1', revision: 1, ...o });
@@ -140,4 +144,54 @@ test('a chunk index past the bound is refused', () => {
   const s = openChunks(fresh());
   assert.throws(() => s.put(key(), 70_000, false, 'x'));
   assert.throws(() => s.put(key(), -1, false, 'x'));
+});
+
+// Gate 5 U1 G5a-4 (XAIBO-PROD-542): the age reaper owed since Phase 3
+test('G5a-4: the reaper frees items of unregistered registrations and abandoned pending items through the live store', () => {
+  const root = fresh();
+  const dataDir = dirname(root);
+  const live = addRegistration(dataDir, { agent: 'claude', profileKey: 'p1' }).registration.id;
+  const gone = '00000000-0000-4000-8000-0000000c0009'; // revoked: no longer in the registry
+  const s = openChunks(root, { perRegistration: 1 << 20, global: 1 << 20, items: 2 });
+  s.put(key({ registration: live, item: 'fresh' }), 0, false, 'a');
+  s.put(key({ registration: live, item: 'stale' }), 0, false, 'b');
+  s.put(key({ registration: gone, item: 'orphan' }), 0, false, 'c');
+  assert.equal(typeof chunks.CHUNK_ABANDON_MS, 'number', 'CHUNK_ABANDON_MS exported');
+  const k = key({ registration: live, item: 'stale' });
+  const stale = join(root, live, createHash('sha256').update(JSON.stringify([k.registration, k.producer, k.session, k.item, k.revision])).digest('hex'));
+  const old = new Date(Date.now() - chunks.CHUNK_ABANDON_MS - 60_000);
+  for (const f of readdirSync(stale)) utimesSync(join(stale, f), old, old); // its newest chunk is older than the abandon age
+  assert.equal(s.put(key({ registration: live, item: 'third' }), 0, false, 'd').state, 'incomplete', 'fixture: the item cap is reached');
+  const reap = (s as unknown as { reap(now: number, registered: () => Set<string> | null): number }).reap;
+  assert.equal(typeof reap, 'function', 'ChunkStore.reap');
+  assert.equal(reap.call(s, Date.now(), () => null), 0, 'an unreadable registry reaps nothing');
+  assert.equal(s.items().length, 3);
+  assert.equal(reap.call(s, Date.now(), () => new Set([live])), 2, 'the orphan and the abandoned item');
+  assert.deepEqual(s.items().map((k) => k.item), ['fresh']);
+  assert.equal(s.put(key({ registration: live, item: 'third' }), 0, false, 'd').state, 'pending', 'their quota is freed in the live store');
+  assert.ok(!existsSync(stale), 'removed from disk');
+});
+
+test('G5a-4: the registry read tells an unreadable file (null) from an absent one (none registered)', () => {
+  const dataDir = realpathSync(mkdtempSync(join(tmpdir(), 'xc-')));
+  assert.equal(typeof registry.readRegistrations, 'function', 'readRegistrations exported');
+  assert.deepEqual(registry.readRegistrations(dataDir), [], 'absent');
+  const id = addRegistration(dataDir, { agent: 'claude', profileKey: 'p1' }).registration.id;
+  assert.deepEqual(registry.readRegistrations(dataDir)?.map((r) => r.id), [id]);
+  writeFileSync(join(dataDir, 'registrations.json'), 'not json', { mode: 0o600 });
+  assert.equal(registry.readRegistrations(dataDir), null, 'unreadable: never treated as none registered');
+});
+
+test('G5a-4 (review M): an item whose dir cannot be read now is kept this run, not taken for abandoned', () => {
+  const root = fresh();
+  const reg = '00000000-0000-4000-8000-0000000c000a';
+  const s = openChunks(root);
+  const k = key({ registration: reg, item: 'busy' });
+  s.put(k, 0, false, 'live');
+  const dir = join(root, reg, createHash('sha256').update(JSON.stringify([k.registration, k.producer, k.session, k.item, k.revision])).digest('hex'));
+  chmodSync(dir, 0);
+  try { assert.equal(s.reap(Date.now(), () => new Set([reg])), 0, 'EACCES is not age'); }
+  finally { chmodSync(dir, 0o700); }
+  assert.deepEqual(s.items().map((x) => x.item), ['busy']);
+  assert.ok(existsSync(join(dir, '0.c')));
 });

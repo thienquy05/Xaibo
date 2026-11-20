@@ -18,6 +18,7 @@ import { MARKER, refuses, type Marker } from '../history/suppression.ts';
 import type { Batch, EventRow, Writer } from '../store/writer.ts';
 import { openRegistry } from './registrations.ts';
 import { createReportIntake, type ReportIntake } from './report.ts';
+import type { ChunkStore } from '../adapters/generic/chunks.ts';
 import { SocketError, startSocketServer, type IntakeResult, type SocketOptions, type SocketServer } from './socket.ts';
 import { replaySpool, type ReplayResult } from './spool-replay.ts';
 
@@ -189,7 +190,9 @@ export interface HooksOptions extends IntakeOptions {
   socketRetryMs?: number;
 }
 /** socket: the listening server, null while none listens (a failed listen is retried). */
-export interface Hooks { intake: Intake; readonly socket: SocketServer | null; replay: Promise<ReplayResult>; close(): Promise<void> }
+export interface Hooks { intake: Intake; readonly socket: SocketServer | null; replay: Promise<ReplayResult>; close(): Promise<void>;
+  /** XAIBO-PROD-542 G5a-4: the report intake's live chunk store; undefined while it cannot open. */
+  chunks(): ChunkStore | undefined }
 
 // ponytail: a fixed retry interval while the socket cannot listen (a full disk cannot create it); back off if a long
 // outage ever shows the retries costing anything.
@@ -258,5 +261,6 @@ export async function startHooks(o: HooksOptions): Promise<Hooks> {
   };
   await listen();
   const replay = runReplay();
-  return { intake, get socket() { return socket; }, replay, close: async () => { stopped = true; clearTimeout(retry); await socket?.close(); } };
+  return { intake, get socket() { return socket; }, replay, close: async () => { stopped = true; clearTimeout(retry); await socket?.close(); },
+    chunks: () => open()?.chunks };
 }

@@ -11,7 +11,7 @@ import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { Envelope } from '../../shared/hook-protocol.ts';
 import { parseReport } from '../../shared/report/schema.ts';
-import { openChunks, type ChunkKey, type ChunkLimits } from '../adapters/generic/chunks.ts';
+import { openChunks, type ChunkKey, type ChunkLimits, type ChunkStore } from '../adapters/generic/chunks.ts';
 import { isDiskFull } from '../store/db.ts';
 import { MARKER, refuses, type Marker } from '../history/suppression.ts';
 import type { Batch, ReportDelivery, Writer } from '../store/writer.ts';
@@ -34,6 +34,8 @@ export interface ReportIntake {
   deliver(reg: Registration, frame: unknown, receivedTs?: number): Promise<IntakeResult>;
   /** Counts a frame refused before intake (framing, size) as coverage for its registration. */
   rejected(reg: Registration, code: string): void;
+  /** XAIBO-PROD-542 G5a-4: the live chunk store (purge and the reaper remove items through it, freeing their quota). */
+  chunks: ChunkStore;
 }
 
 /** XAIBO-PROD-442/453: the producer's newest stored model-bearing sequence number for one session (partial index
@@ -139,5 +141,5 @@ export function createReportIntake(o: ReportIntakeOptions): ReportIntake {
     return { status: 'accepted', code: (content?.state ?? settled) === 'incomplete' ? 'incomplete' : 'ok' };
   };
 
-  return { deliver, rejected };
+  return { deliver, rejected, chunks };
 }

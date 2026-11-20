@@ -8,6 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { openChunks } from '../../src/service/adapters/generic/chunks.ts';
 import type { DatabaseSync } from 'node:sqlite';
 import { runRetention } from '../../src/service/retention/job.ts';
 import { DAY, setRetention } from '../../src/service/retention/policy.ts';
@@ -133,4 +134,17 @@ test('batches continue past skipped sessions; owed purge file work is finished f
   assert.equal(r.sessions, 7);
   assert.deepEqual(left(h.db), ['in-trash', 'kept', 'more-4', 'recent', 'resumed', 'trash-recent']);
   assert.equal((h.db.prepare("SELECT pending FROM suppressions WHERE native_session_id = 'earlier'").get() as { pending: string | null }).pending, null);
+});
+
+test('G5a-4: a run reaps chunk items of unregistered registrations through the live store; an unreadable registry reaps nothing', async () => {
+  const h = await seeded();
+  const chunks = openChunks(join(h.dir, 'content-chunks'));
+  chunks.put({ registration: '00000000-0000-4000-8000-0000000c0b01', producer: 'p', session: 's', item: 'orphan', revision: 1 }, 0, false, 'x');
+  writeFileSync(join(h.dir, 'registrations.json'), 'not json', { mode: 0o600 });
+  const run = (now: number) => runRetention(h.writer, h.db, { dataDir: h.dir, backupDir: join(h.dir, 'backups'), secret: SECRET, now, active: () => false, chunks });
+  await run(NOW);
+  assert.equal(chunks.items().length, 1, 'an unreadable registry is never "none registered"');
+  writeFileSync(join(h.dir, 'registrations.json'), '[]', { mode: 0o600 });
+  await run(NOW + 1);
+  assert.equal(chunks.items().length, 0, 'none registered: the orphan goes');
 });

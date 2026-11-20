@@ -6,13 +6,24 @@
 // session estimates are opaque and never prorated. The live view = frozen totals + retained contributions not yet settled.
 import { createHmac } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
+import { notPurging } from '../history/suppression.ts';
 
 export interface Bucket { month: string; offset: number }
-/** Local calendar month at `ts` in the process time zone, and that instant's UTC offset in minutes. */
-export function monthOf(ts: number): Bucket {
+/** The UTC offset (minutes) at `ts` in the process time zone. */
+export const utcOffset = (ts: number) => -new Date(ts).getTimezoneOffset();
+/** Local calendar month at `ts` and its UTC offset in minutes: with `offset` (XAIBO-PROD-542 G5b1-4: the one stored when
+ *  the record was first observed) at that offset, else in the process time zone. */
+export function monthOf(ts: number, offset?: number | null): Bucket {
+  if (typeof offset === 'number') {
+    const d = new Date(ts + offset * 60_000);
+    return { month: `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`, offset };
+  }
   const d = new Date(ts);
   return { month: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`, offset: -d.getTimezoneOffset() };
 }
+/** XAIBO-PROD-542 G5b1-3: Clear usage history counts only rows stored up to these rowids (taken when the request came). */
+export interface Watermarks { usage: number; turns: number; sessions: number; history: number }
+const ALL_ROWS: Watermarks = { usage: Number.MAX_SAFE_INTEGER, turns: Number.MAX_SAFE_INTEGER, sessions: Number.MAX_SAFE_INTEGER, history: Number.MAX_SAFE_INTEGER };
 
 export interface MonthUsage {
   month: string; agent: string; profileKey: string; modelId: string; sessions: number; turns: number; requests: number;
@@ -43,7 +54,7 @@ export const scopeKey = (secret: Buffer, key: string) => mac(secret, 'xaibo-usag
 interface SessionRow { id: number; agent: string; profile_id: string; native_session_id: string; last_activity: number | null; started_at: number | null }
 interface UsageRow {
   source: string; identity: string; model_id: string | null; uncached_input: number | null; cache_read: number | null; cache_write: number | null; output: number | null;
-  ts: number | null; estimate: number | null; amount_usd: number | null; coverage: string | null; price_revision_id: number | null;
+  ts: number | null; utc_offset: number | null; estimate: number | null; amount_usd: number | null; coverage: string | null; price_revision_id: number | null;
 }
 const COVERAGES: Coverage[] = ['full', 'partial', 'none'];
 /** Review L5/L6: an estimate's coverage; malformed or missing JSON never throws (a deletion must not be blocked by it)
@@ -57,24 +68,26 @@ function estimateOf(u: UsageRow): { coverage: Coverage; model: string | null } {
   return { coverage, model: typeof est.model === 'string' ? est.model : null };
 }
 
-/** The contributions of retained sessions: `ids`, or every session when null. */
-export function* sessionContributions(db: DatabaseSync, secret: Buffer, ids: number[] | null): Generator<Contribution> {
+/** The contributions of retained sessions: `ids`, or every session not being purged when null (its contributions were
+ *  settled when its purge began). `upTo`: only rows stored up to these rowids (Clear usage history). */
+export function* sessionContributions(db: DatabaseSync, secret: Buffer, ids: number[] | null, upTo: Watermarks = ALL_ROWS): Generator<Contribution> {
   const one = db.prepare('SELECT id, agent, profile_id, native_session_id, last_activity, started_at FROM sessions WHERE id = ?');
   const rows = ids === null
-    ? db.prepare('SELECT id, agent, profile_id, native_session_id, last_activity, started_at FROM sessions ORDER BY id').iterate() as Iterable<SessionRow>
+    ? db.prepare(`SELECT id, agent, profile_id, native_session_id, last_activity, started_at FROM sessions s WHERE id <= ? AND ${notPurging(db)} ORDER BY id`)
+      .iterate(upTo.sessions) as Iterable<SessionRow>
     : ids.map((id) => one.get(id) as SessionRow | undefined).filter((r): r is SessionRow => r !== undefined);
   const usage = db.prepare(`SELECT u.source, u.identity, u.model_id, u.uncached_input, u.cache_read, u.cache_write, u.output,
-      coalesce(u.source_ts, ev.source_ts, ev.received_ts) AS ts, e.id AS estimate, e.amount_usd, e.coverage, e.price_revision_id
+      coalesce(u.source_ts, ev.source_ts, ev.received_ts) AS ts, u.utc_offset, e.id AS estimate, e.amount_usd, e.coverage, e.price_revision_id
     FROM usage u LEFT JOIN events ev ON ev.id = u.event_id
     LEFT JOIN cost_estimates e ON e.session_id = u.session_id AND e.covered_scope = 'usage:' || u.source || ':' || u.identity
-    WHERE u.session_id = ? AND u.scope = 'message'`);
-  const turns = db.prepare('SELECT native_turn_id, coalesce(started_at, ended_at) AS ts, model_id FROM turns WHERE session_id = ?');
+    WHERE u.session_id = ? AND u.scope = 'message' AND u.id <= ?`);
+  const turns = db.prepare('SELECT native_turn_id, coalesce(started_at, ended_at) AS ts, model_id, utc_offset FROM turns WHERE session_id = ? AND id <= ?');
   const settledAt = db.prepare('SELECT month, utc_offset FROM settled_contributions WHERE key = ?');
   // Review M1: a settled record keeps the month it was settled in, so a later time-zone change cannot move it (or its
-  // session-month keys) into another month and count it twice.
-  const bucket = (key: string, ts: number): Bucket => {
+  // session-month keys) into another month and count it twice; an unsettled one takes its stored offset (G5b1-4).
+  const bucket = (key: string, ts: number, offset: number | null = null): Bucket => {
     const r = settledAt.get(key) as { month: string; utc_offset: number } | undefined;
-    return r ? { month: r.month, offset: r.utc_offset } : monthOf(ts);
+    return r ? { month: r.month, offset: r.utc_offset } : monthOf(ts, offset);
   };
   // ponytail: two queries per session over all retained history; run in a worker (P5-T17 wiring) if months view slows down
   for (const s of rows) {
@@ -87,32 +100,36 @@ export function* sessionContributions(db: DatabaseSync, secret: Buffer, ids: num
       if (!m) months.set(at.month, { at, ts, models: new Set([model]) });
       else { m.models.add(model); if (ts < m.ts) { m.ts = ts; m.at = at; } } // the bucket's offset: its earliest event
     };
-    for (const u of usage.all(s.id) as unknown as UsageRow[]) {
+    for (const u of usage.all(s.id, upTo.usage) as unknown as UsageRow[]) {
       const ts = u.ts ?? fallback;
       if (ts === null) continue; // neither the record nor its session has any time: no month to count it in
       const est = estimateOf(u);
       const model = est.model ?? u.model_id ?? '';
-      const key = keyOf(secret, 'u', [...id, u.source, u.identity]), at = bucket(key, ts);
+      const key = keyOf(secret, 'u', [...id, u.source, u.identity]), at = bucket(key, ts, u.utc_offset);
       seen(at, ts, model);
       yield { kind: 'u', key, at, ...who, model, tokens: [u.uncached_input, u.cache_read, u.cache_write, u.output], usd: u.amount_usd, coverage: est.coverage,
         rev: u.amount_usd === null ? null : u.price_revision_id };
     }
-    for (const t of turns.all(s.id) as { native_turn_id: string; ts: number | null; model_id: string | null }[]) {
+    for (const t of turns.all(s.id, upTo.turns) as { native_turn_id: string; ts: number | null; model_id: string | null; utc_offset: number | null }[]) {
       const ts = t.ts ?? fallback;
       if (ts === null) continue;
-      const key = keyOf(secret, 't', [...id, t.native_turn_id]), at = bucket(key, ts);
+      const key = keyOf(secret, 't', [...id, t.native_turn_id]), at = bucket(key, ts, t.utc_offset);
       seen(at, ts, t.model_id ?? '');
       yield { kind: 't', key, at, ...who, model: t.model_id ?? '' };
     }
+    // a session with no turn or request: a month-free key, so a settled one keeps its month across a time-zone change
+    const s0 = keyOf(secret, 's0', id);
     if (months.size === 0 && fallback !== null) {
-      // a session with no turn or request: a month-free key, so a settled one keeps its month across a time-zone change
-      const key = keyOf(secret, 's0', id), at = bucket(key, fallback);
-      yield { kind: 's', key, at, ...who };
-      yield { kind: 'm', key: keyOf(secret, 'm', [...id, at.month, '']), at, ...who, model: '', session: key };
+      const at = bucket(s0, fallback);
+      yield { kind: 's', key: s0, at, ...who };
+      yield { kind: 'm', key: keyOf(secret, 'm', [...id, at.month, '']), at, ...who, model: '', session: s0 };
       continue;
     }
+    // XAIBO-PROD-542 G5b1-2: an s0 key settled or cleared while the session had no record stays that month's session key
+    // (its first turn later in the same month neither counts the session again nor brings a cleared one back)
+    const s0At = settledAt.get(s0) as { month: string } | undefined;
     for (const [month, m] of months) {
-      const sessionKey = keyOf(secret, 's', [...id, month]);
+      const sessionKey = s0At?.month === month ? s0 : keyOf(secret, 's', [...id, month]);
       yield { kind: 's', key: sessionKey, at: m.at, ...who };
       // review L3: "model unavailable" only when the month has no known model.
       // ponytail: the model is part of the key, so a kept settled session whose model id later resolves (alias, '' to a
@@ -123,16 +140,17 @@ export function* sessionContributions(db: DatabaseSync, secret: Buffer, ids: num
   }
 }
 
-/** Quota readings with a measured percent: usage_history rows `ids`, or all when null. */
-export function* quotaContributions(db: DatabaseSync, secret: Buffer, ids: number[] | null): Generator<Contribution> {
-  const sql = `SELECT h.limit_id, h.kind, h.used_percent, h.window_minutes, h.measured_at, sc.scope_key, sc.verified, sc.agent
+/** Quota readings with a measured percent: usage_history rows `ids`, or all (up to rowid `upTo`) when null. */
+export function* quotaContributions(db: DatabaseSync, secret: Buffer, ids: number[] | null, upTo = Number.MAX_SAFE_INTEGER): Generator<Contribution> {
+  const sql = `SELECT h.limit_id, h.used_percent, h.window_minutes, h.measured_at, h.utc_offset, sc.scope_key, sc.verified, sc.agent
     FROM usage_history h JOIN usage_scopes sc ON sc.id = h.usage_scope_id WHERE h.used_percent IS NOT NULL`;
-  type Q = { limit_id: string; kind: string; used_percent: number; window_minutes: number | null; measured_at: number; scope_key: string; verified: number; agent: string };
+  type Q = { limit_id: string; used_percent: number; window_minutes: number | null; measured_at: number; utc_offset: number | null; scope_key: string; verified: number; agent: string };
   const one = db.prepare(`${sql} AND h.id = ?`);
-  const rows = ids === null ? db.prepare(sql).iterate() as Iterable<Q> : ids.map((id) => one.get(id) as Q | undefined).filter((r): r is Q => r !== undefined);
+  const rows = ids === null ? db.prepare(`${sql} AND h.id <= ?`).iterate(upTo) as Iterable<Q> : ids.map((id) => one.get(id) as Q | undefined).filter((r): r is Q => r !== undefined);
   for (const q of rows) {
     const window = q.window_minutes ?? -1;
-    yield { kind: 'q', key: keyOf(secret, 'q', [q.scope_key, q.limit_id, window, q.kind, q.measured_at]), at: monthOf(q.measured_at), agent: q.agent,
+    // XAIBO-PROD-542 G5b1-1: no `kind` in the key; a backfilled older reading can reclassify a sample as a transition
+    yield { kind: 'q', key: keyOf(secret, 'q', [q.scope_key, q.limit_id, window, q.measured_at]), at: monthOf(q.measured_at, q.utc_offset), agent: q.agent,
       scopeKey: scopeKey(secret, q.scope_key), limitId: q.limit_id, window, verified: q.verified === 1, percent: q.used_percent };
   }
 }

@@ -81,7 +81,7 @@ test('the meter falls after purge plus incremental_vacuum; refreshes share one w
   setTimeout(() => { tickDuring = !done; }, 0);
   const before = await a;
   assert.ok(isMainThread && tickDuring, 'the main thread keeps running while the worker measures');
-  for (const s of d.sessions) purgeSession(d.writer, s, { dataDir: d.dir, backupDir: join(d.dir, 'backups'), secret: SECRET, now: T, reason: 'manual' });
+  for (const s of d.sessions) await purgeSession(d.writer, s, { dataDir: d.dir, backupDir: join(d.dir, 'backups'), secret: SECRET, now: T, reason: 'manual' });
   const after = await m.refresh();
   assert.ok(after.database!.categories.content < before.database!.categories.content / 4, 'content falls');
   assert.ok(after.database!.bytes < before.database!.bytes / 2, 'database bytes fall (incremental_vacuum gave the pages back)');

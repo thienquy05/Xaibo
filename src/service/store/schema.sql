@@ -304,7 +304,7 @@ CREATE TABLE suppressions (
   native_session_id TEXT NOT NULL,
   reason TEXT NOT NULL CHECK (reason IN ('manual', 'retention')),
   at INTEGER NOT NULL,
-  pending TEXT, files TEXT, cleared_at INTEGER,
+  pending TEXT, files TEXT, cleared_at INTEGER, purge_phase TEXT,
   PRIMARY KEY (agent, profile_id, native_session_id)
 ) WITHOUT ROWID;
 CREATE INDEX suppressions_pending ON suppressions (agent) WHERE pending IS NOT NULL;
@@ -332,7 +332,7 @@ CREATE TABLE turns (
   ended_at INTEGER,
   outcome TEXT,
   model_id TEXT,
-  effort TEXT,
+  effort TEXT, utc_offset INTEGER,
   UNIQUE (session_id, native_turn_id)
 );
 CREATE INDEX turns_started ON turns (session_id, started_at);
@@ -353,7 +353,7 @@ CREATE TABLE usage (
   output INTEGER,
   raw TEXT,
   completeness TEXT,
-  source_ts INTEGER,
+  source_ts INTEGER, utc_offset INTEGER,
   UNIQUE (session_id, source, scope, identity)
 );
 CREATE TABLE usage_history (
@@ -374,7 +374,7 @@ CREATE TABLE usage_history (
   measured_at INTEGER NOT NULL,
   source TEXT NOT NULL,
   source_locator TEXT NOT NULL
-);
+, utc_offset INTEGER);
 CREATE UNIQUE INDEX usage_history_minute ON usage_history (usage_scope_id, limit_id, kind, minute);
 CREATE INDEX usage_history_stream ON usage_history (usage_scope_id, limit_id, measured_at);
 CREATE TABLE usage_scopes (

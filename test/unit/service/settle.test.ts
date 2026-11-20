@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import type { DatabaseSync } from 'node:sqlite';
 import { liveMonthly } from '../../../src/service/usage/monthly.ts';
 import { settle } from '../../../src/service/usage/settle.ts';
+import { Writer } from '../../../src/service/store/writer.ts';
 import { dump, monthlyStore, removeSessions, reportedCost, request, scope, sample, SECRET, session, turn, tx } from '../../helpers/monthly.ts';
 
 const NOV = Date.UTC(2026, 10, 10, 12), DEC = Date.UTC(2026, 11, 2, 12);
@@ -178,4 +179,30 @@ test('privacy: monthly tables hold opaque keys only, no ids, paths, titles or lo
   tx(db, () => settle(db, { sessions: [s], quota: [q] }, SECRET, NOV));
   const out = dump(db);
   for (const bad of ['CANARY', 'p1', 'p2', '/tmp/']) assert.ok(!out.includes(bad), bad);
+});
+
+// Gate 5 U2 G5b1-4 (XAIBO-PROD-542; FR-52): a record's month is bucketed with the UTC offset stored when it was first
+// observed, so a later time-zone change (a restart elsewhere) moves nothing, live or settled
+test('G5b1-4: Oct 31 23:30 observed in Los Angeles stays October after a restart in UTC, through settlement', async () => {
+  const db = await monthlyStore();
+  const ts = Date.UTC(2026, 10, 1, 6, 30); // 2026-10-31 23:30 PDT (UTC-7)
+  process.env.TZ = 'America/Los_Angeles';
+  try {
+    new Writer(db).commitLive({ profileId: 'p1', agent: 'claude', sessions: [{ nativeSessionId: 'tz-a', startedAt: ts, lastActivity: ts }],
+      events: [{ nativeSessionId: 'tz-a', source: 'transcript', confidence: 'confirmed', nativeId: 'tz-e1', kind: 'assistant', sourceSeq: 1, sourceTs: ts, receivedTs: ts,
+        turn: { id: 'tz-t1', edge: 'start' }, model: { id: 'claude-x', turn: 'tz-t1' }, usage: { kind: 'claude', messageId: 'tz-m1', model: 'claude-x', raw: { input_tokens: 10, output_tokens: 5 } },
+        quota: [{ stream: 'five_hour', usedPercent: 40, windowMinutes: 300, resetsAt: null, plan: null, credits: null, asOf: ts }] }] });
+  } finally { process.env.TZ = 'UTC'; } // the restart in UTC
+  const live = liveMonthly(db, SECRET);
+  assert.deepEqual(live.usage.map((u) => [u.month, u.turns, u.requests]), [['2026-10', 1, 1]], 'usage and turn stay in October');
+  assert.deepEqual(live.sessions.map((r) => r.month), ['2026-10'], 'the session-month too');
+  assert.deepEqual(live.quota.map((q) => q.month), ['2026-10'], 'and the quota reading');
+  const id = (db.prepare("SELECT id FROM sessions WHERE native_session_id = 'tz-a'").get() as { id: number }).id;
+  const quota = (db.prepare('SELECT id FROM usage_history').all() as { id: number }[]).map((r) => r.id);
+  tx(db, () => {
+    settle(db, { sessions: [id], quota }, SECRET, ts);
+    for (const t of ['usage', 'turns', 'usage_history', 'usage_scopes', 'events', 'sessions']) db.prepare(`DELETE FROM ${t}`).run();
+  });
+  assert.deepEqual(liveMonthly(db, SECRET), live, 'settled into the same months');
+  assert.deepEqual((db.prepare('SELECT DISTINCT utc_offset AS o FROM settled_contributions').all() as { o: number }[]).map((r) => r.o), [-420]);
 });

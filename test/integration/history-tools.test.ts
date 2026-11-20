@@ -115,7 +115,7 @@ test('retention: the stored setting and last run; save validates through the sha
 test('suppressed: opaque domain-separated keys, profile labels, newest first, paged by {at, key}; cleared ones left out; no ids', async () => {
   const s = await store();
   const ids = ['sup-1', 'sup-2', 'sup-3', 'sup-4'].map((sid) => s.add(sid));
-  ids.forEach((id, i) => assert.equal(purgeSession(s.writer, id, { ...s.files(NOW + i * 1000), reason: i === 3 ? 'retention' : 'manual' }).purged, true));
+  for (const [i, id] of ids.entries()) assert.equal((await purgeSession(s.writer, id, { ...s.files(NOW + i * 1000), reason: i === 3 ? 'retention' : 'manual' })).purged, true);
   clear(s.db, { agent: 'claude', profile: 'p1', native: 'sup-2' }, NOW + 10_000); // re-imported: no longer listed
   s.db.prepare("INSERT INTO suppressions (agent, profile_id, native_session_id, reason, at) VALUES ('claude', 'gone-profile', 'sup-gone', 'manual', ?)").run(NOW - 1000);
   const first = suppressedPage(s.db, SECRET, HOME, null, 2);
@@ -141,19 +141,19 @@ test('manual purge: purged and not-found; at most 10 per minute, then busy; the 
   let t = NOW;
   const limit = new PurgeLimit(() => t);
   const ids = Array.from({ length: 12 }, (_, i) => s.add(`cap-${i}`));
-  assert.equal(purgeManual(s.writer, 999_999, { ...s.files(), limit }), 'not-found');
-  for (let i = 0; i < 10; i++) assert.equal(purgeManual(s.writer, ids[i]!, { ...s.files(), limit }), 'purged', `purge ${i}`);
-  assert.equal(purgeManual(s.writer, ids[10]!, { ...s.files(), limit }), 'busy');
+  assert.equal(await purgeManual(s.writer, 999_999, { ...s.files(), limit }), 'not-found');
+  for (let i = 0; i < 10; i++) assert.equal(await purgeManual(s.writer, ids[i]!, { ...s.files(), limit }), 'purged', `purge ${i}`);
+  assert.equal(await purgeManual(s.writer, ids[10]!, { ...s.files(), limit }), 'busy');
   assert.ok(s.db.prepare("SELECT 1 FROM sessions WHERE native_session_id = 'cap-10'").get(), 'nothing purged when busy');
   t += 60_001;
-  assert.equal(purgeManual(s.writer, ids[10]!, { ...s.files(t), limit }), 'purged');
+  assert.equal(await purgeManual(s.writer, ids[10]!, { ...s.files(t), limit }), 'purged');
   assert.equal((s.db.prepare("SELECT reason FROM suppressions WHERE native_session_id = 'cap-0'").get() as { reason: string }).reason, 'manual');
 });
 
 test('Re-import by key clears the marker and sets Keep for the returning session (D-P5-08); an unknown key is not-found', async () => {
   const s = await store();
   const id = s.add('ri-a', NOW - 200 * DAY);
-  purgeSession(s.writer, id, { ...s.files(), reason: 'retention' });
+  await purgeSession(s.writer, id, { ...s.files(), reason: 'retention' });
   const key = suppressionKey(SECRET, { agent: 'claude', profile: 'p1', native: 'ri-a' });
   assert.equal(reimportKey(s.writer, s.db, 'f'.repeat(64), s.files()), 'not-found');
   assert.equal(reimportKey(s.writer, s.db, key, s.files()), 'ok');

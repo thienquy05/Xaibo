@@ -7,6 +7,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { REPO_REASONS, type MapGroup, type MapNode } from '../../shared/ipc.ts';
 import type { LiveOf } from '../api.ts';
 import { LIVE_WINDOW_MS } from '../status/feed.ts';
+import { notPurging } from './suppression.ts';
 
 /** Design §6.5.1 page caps: 10 root groups, 20 children per branch page (leaves page through listHistory, cap 100). */
 export const MAP_ROOTS = 10, MAP_CHILDREN = 20;
@@ -40,9 +41,9 @@ function segments(db: DatabaseSync, parent: MapGroup | null): Seg[] {
   const keys = (sql: string, args: (string | number)[], n: number) => db.prepare(sql).all(...args, n) as Record<string, string | number>[];
   // the sessions of one project, or of automatic grouping, as the FROM + WHERE prefix of a keyset query
   const from = (project: number | null, op = '=') => project === null
-    ? { sql: `FROM sessions s ${OVERLAY} WHERE o.trashed_at IS NULL AND o.project_id IS NULL`, args: [] as (string | number)[] }
+    ? { sql: `FROM sessions s ${OVERLAY} WHERE o.trashed_at IS NULL AND o.project_id IS NULL AND ${notPurging(db)}`, args: [] as (string | number)[] }
     : { sql: `FROM overlays o JOIN sessions s ON s.agent = o.agent AND s.profile_id = o.profile_id AND s.native_session_id = o.native_session_id
-        WHERE o.trashed_at IS NULL AND o.project_id ${op} ?`, args: [project] };
+        WHERE o.trashed_at IS NULL AND o.project_id ${op} ? AND ${notPurging(db)}`, args: [project] };
   const cwds = (project: number | null): Seg[] => {
     const f = from(project);
     return [{
@@ -104,7 +105,7 @@ function segments(db: DatabaseSync, parent: MapGroup | null): Seg[] {
 
 function node(db: DatabaseSync, g: MapGroup, live: LiveOf | undefined, now: number): MapNode {
   const { where, args } = groupWhere(g);
-  const w = where.join(' AND ');
+  const w = [...where, notPurging(db)].join(' AND '); // XAIBO-PROD-542: a purging session counts nowhere
   const a = db.prepare(`SELECT count(*) AS n, group_concat(DISTINCT s.agent) AS agents, group_concat(DISTINCT coalesce(s.repo_reason, '-')) AS reasons
     FROM sessions s ${OVERLAY} WHERE ${w}`).get(...args) as { n: number; agents: string | null; reasons: string | null };
   const recorded = new Set((a.reasons ?? '').split(','));

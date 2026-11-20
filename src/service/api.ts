@@ -17,6 +17,7 @@ import type { SessionKind } from './catalog/validate.ts';
 import { sessionKind } from './resume.ts';
 import { LIVE_WINDOW_MS } from './status/feed.ts'; // D-P3-09 feed eligibility
 import { sessionCost } from './usage/cost.ts';
+import { notPurging } from './history/suppression.ts';
 import { displayName, modelLabel, type ModelEntry, type ModelList } from './usage/models.ts';
 
 export const PAGE_DEFAULT = 50;
@@ -98,8 +99,9 @@ export const toRow = (db: DatabaseSync, kinds: SessionKind[], models: ModelEntry
 /** P5-T03 (FR-11, design §6.1/§6.4): trashed sessions leave All sessions, the live set and deltas. A store without the
  *  overlay tables (a read-only older schema) has no Trash. */
 function shown(db: DatabaseSync): string {
-  return db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'overlays'").get() === undefined ? '1'
-    : 'NOT EXISTS (SELECT 1 FROM overlays o WHERE o.agent = s.agent AND o.profile_id = s.profile_id AND o.native_session_id = s.native_session_id AND o.trashed_at IS NOT NULL)';
+  return (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'overlays'").get() === undefined ? '1'
+    : 'NOT EXISTS (SELECT 1 FROM overlays o WHERE o.agent = s.agent AND o.profile_id = s.profile_id AND o.native_session_id = s.native_session_id AND o.trashed_at IS NOT NULL)')
+    + ` AND ${notPurging(db)}`; // XAIBO-PROD-542 G5-N1: a session being purged is hidden
 }
 
 export function listSessions(db: DatabaseSync, cursor: Cursor | null, limit: number, kinds: SessionKind[] = [], models: ModelEntry[] = [], live?: LiveOf): Page {
@@ -175,13 +177,15 @@ type Latest = { scope: number; agent: string; verified: number; limit_id: string
  *  scope and stream (raw: state is derived at render time against the local clock), else one no-observation row.
  *  ponytail: streams found by a scan of the history index, as usageStatusList; capped at MAX_SCOPES rows. */
 export function usageScopes(db: DatabaseSync, home: string): UsageScope[] {
-  const latest = db.prepare(`SELECT s.id AS scope, s.agent, s.verified, s.profile_id, h.limit_id, h.used_percent, h.window_minutes, h.resets_at, h.plan, h.credits,
+  // XAIBO-PROD-542: a purging session's own (unverified) scope leaves Usage with it
+  const latest = db.prepare(`SELECT sc.id AS scope, sc.agent, sc.verified, sc.profile_id, h.limit_id, h.used_percent, h.window_minutes, h.resets_at, h.plan, h.credits,
       h.as_of, h.first_observed_at, h.measured_at
     FROM (SELECT DISTINCT usage_scope_id, limit_id FROM usage_history) k
     JOIN usage_history h ON h.id = (SELECT id FROM usage_history x WHERE x.usage_scope_id = k.usage_scope_id AND x.limit_id = k.limit_id
       ORDER BY x.measured_at DESC, x.id DESC LIMIT 1)
-    JOIN usage_scopes s ON s.id = h.usage_scope_id
-    ORDER BY s.id, h.limit_id`).all() as Latest[];
+    JOIN usage_scopes sc ON sc.id = h.usage_scope_id
+    WHERE sc.session_id IS NULL OR EXISTS (SELECT 1 FROM sessions s WHERE s.id = sc.session_id AND ${notPurging(db)})
+    ORDER BY sc.id, h.limit_id`).all() as Latest[];
   const blank = { scope: null, verified: null, stream: null, windowMinutes: null, usedPercent: null, resetsAt: null, plan: null, credits: null, asOf: null, firstObservedAt: null, measuredAt: null };
   const out: UsageScope[] = [];
   for (const p of db.prepare('SELECT id, agent, root, origin FROM profiles ORDER BY agent, id').all() as { id: string; agent: string; root: string; origin: string }[]) {
@@ -277,7 +281,7 @@ const stored = (agent: string, r: Pick<TrRow, 'kind' | 'role' | 'content' | 'raw
 export function answerSession(db: DatabaseSync, req: PortRequest & { type: 'session' }, kinds: SessionKind[] = [], models: ModelEntry[] = [], live?: LiveOf,
   managedDir?: string): PortMessage & { type: 'session' } {
   try {
-    const r = db.prepare(`${ROW} WHERE s.id = ?`).get(req.session) as Raw | undefined;
+    const r = db.prepare(`${ROW} WHERE s.id = ? AND ${notPurging(db)}`).get(req.session) as Raw | undefined;
     if (!r) return { v: IPC_VERSION, type: 'session', id: req.id, detail: null };
     const row = toRow(db, kinds, models, live)(r);
     const coverage: CoverageCode[] = [];
@@ -304,7 +308,7 @@ export function answerSession(db: DatabaseSync, req: PortRequest & { type: 'sess
 export function answerTranscript(db: DatabaseSync, req: PortRequest & { type: 'transcript' }): PortMessage & { type: 'transcript' } {
   const empty = (): PortMessage & { type: 'transcript' } => ({ v: IPC_VERSION, type: 'transcript', id: req.id, items: [], prev: null, next: null });
   try {
-    const s = db.prepare('SELECT agent FROM sessions WHERE id = ?').get(req.session) as { agent: string } | undefined;
+    const s = db.prepare(`SELECT agent FROM sessions s WHERE id = ? AND ${notPurging(db)}`).get(req.session) as { agent: string } | undefined;
     if (!s) return empty();
     const n = Math.min(req.limit, TRANSCRIPT_MAX);
     const at = req.at;
@@ -385,7 +389,9 @@ export function answerSlice(db: DatabaseSync, req: PortRequest & { type: 'slice'
   const empty = (): PortMessage & { type: 'slice' } => ({ v: IPC_VERSION, type: 'slice', id: req.id, text: '', next: null });
   try {
     // One visibility check that also tells a large head apart; octet_length reads no raw text (review L5).
-    const head = db.prepare(`SELECT coalesce(octet_length(e.raw), 0) = 0 AS bare, e.ingest_id AS ingest FROM events e WHERE e.id = ? AND ${VISIBLE}`)
+    // XAIBO-PROD-542 (review M): checked before the cache, so a purging session is never served from it
+    const head = db.prepare(`SELECT coalesce(octet_length(e.raw), 0) = 0 AS bare, e.ingest_id AS ingest FROM events e WHERE e.id = ? AND ${VISIBLE}
+      AND EXISTS (SELECT 1 FROM sessions s WHERE s.id = e.session_id AND ${notPurging(db)})`)
       .get(req.event, req.session) as { bare: number; ingest: string | null } | undefined;
     if (!head) return empty();
     const large = largeKey(head.bare === 1, head.ingest);
@@ -420,7 +426,7 @@ const SAFE = 9007199254740991; // node:sqlite throws on integers past 2^53; such
 const safeTs = (col: string) => `CASE WHEN ${col} BETWEEN -${SAFE} AND ${SAFE} THEN ${col} END`; // re-review: abs() raises on -2^63
 type Sess = { agent: string; profile_id: string; native_session_id: string; last_activity: number | null };
 const sessionOf = (db: DatabaseSync, id: number) =>
-  db.prepare(`SELECT agent, profile_id, native_session_id, ${safeTs('last_activity')} AS last_activity FROM sessions WHERE id = ?`).get(id) as Sess | undefined;
+  db.prepare(`SELECT agent, profile_id, native_session_id, ${safeTs('last_activity')} AS last_activity FROM sessions s WHERE id = ? AND ${notPurging(db)}`).get(id) as Sess | undefined;
 /** Review M4: a pending state (approval requested, subagent running) is current only while the session is live: tracked,
  *  not ended and active within the live window (as the live set). Otherwise its outcome is unknown. */
 const isLive = (s: Sess, live: LiveOf | undefined, now: number) => {
@@ -580,6 +586,7 @@ export function answerMarkers(db: DatabaseSync, req: PortRequest & { type: 'mark
   // XAIBO-PROD-454: a store error is a failure the renderer shows with Retry, never a successful empty page
   const failed = (): PortMessage & { type: 'markers' } => ({ v: IPC_VERSION, type: 'markers', id: req.id, markers: [], next: null, failed: true });
   try {
+    if (!sessionOf(db, req.session)) return { v: IPC_VERSION, type: 'markers', id: req.id, markers: [], next: null }; // none, or being purged
     const n = Math.min(req.limit, MAX_ITEMS);
     const TIMED = `session_id = ? AND typeof(started_at) = 'integer' AND started_at BETWEEN -${SAFE} AND ${SAFE} AND model_id IS NOT NULL`;
     // Review L5: the bare range term lets turns_started seek to the cursor instead of walking from the session's start.
@@ -674,7 +681,7 @@ const finiteUsd = (x: unknown): number | null => (typeof x === 'number' && Numbe
 export function answerCost(db: DatabaseSync, req: PortRequest & { type: 'cost' }, models: ModelEntry[] = []): PortMessage & { type: 'cost' } {
   const reply = (cost: CostDetail | null): PortMessage & { type: 'cost' } => ({ v: IPC_VERSION, type: 'cost', id: req.id, cost });
   let s: { agent: string } | undefined;
-  try { s = db.prepare('SELECT agent FROM sessions WHERE id = ?').get(req.session) as { agent: string } | undefined; } catch { return reply(null); }
+  try { s = db.prepare(`SELECT agent FROM sessions s WHERE id = ? AND ${notPurging(db)}`).get(req.session) as { agent: string } | undefined; } catch { return reply(null); }
   if (!s) return reply(null); // null means only "no such session"
   // Review M2: an unreadable estimate row (malformed JSON, an integer node:sqlite cannot read, overflow) degrades the
   // reply to what was read plus 'breakdown-unavailable'; it never nulls a known session.
