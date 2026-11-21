@@ -44,3 +44,21 @@ test('EVENT_BATCH: sizes rows by stored bytes (content and raw), never loading a
   // measured on Electron's SQLite 3.53: CAST(.. AS BLOB), <> '' and IS NOT NULL load the whole value; octet_length does not
   assert.doesNotMatch(sql, /CAST\(content AS BLOB\)|content <> ''|content IS NOT NULL/, 'no full-value loads');
 });
+
+test('G5Su-1: loops released together by the Clear gate take turns: the second transaction waits out the first one\'s pause', async () => {
+  const p = await import('../../../src/service/history/purge.ts') as Record<string, unknown>;
+  const holdDeletes = p.holdDeletes as (w: object) => () => void;
+  const turn = p.turn as (w: object, f: () => void) => Promise<void>;
+  const paced = p.paced as (w: object, ms: number) => void;
+  const w = {}, starts: number[] = [];
+  const release = holdDeletes(w);
+  // f is the caller's stop check and timed transaction: it runs in the continuation that last saw the gate open and no
+  // pause owed, so the next released loop sees this one's pause (on the old shape the gap was ~0 ms)
+  const loop = () => turn(w, () => { starts.push(performance.now()); paced(w, 20); });
+  const both = Promise.all([loop(), loop()]);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  release();
+  await both;
+  assert.equal(starts.length, 2, 'turn runs the caller\'s transaction');
+  assert.ok(starts[1]! - starts[0]! >= 40, `second transaction waited the 60 ms pause (gap ${(starts[1]! - starts[0]!).toFixed(1)} ms)`);
+});

@@ -318,3 +318,20 @@ test('G5a-3: a spool dir that cannot be examined now keeps the work owed; only a
   h.db.prepare("INSERT INTO suppressions (agent, profile_id, native_session_id, reason, at, pending) VALUES ('claude', 'p1', ?, 'manual', 1, '[]')").run(B);
   assert.equal(purge.finishPending(h.writer, { ...who, native: B }, { ...opts, dataDir: join(h.dir, 'no-data') }), true, 'no spool dir at all: done');
 });
+
+test('G5Su-3: a file check that fails after the rows are gone answers purged with the files owed, never not-found', async () => {
+  const h = await seeded();
+  const { db, dir } = h;
+  // the store fails from the first transaction after the sweep (owed()'s read); peeked on the raw handle, so the peek is
+  // neither counted nor thrown, and before begin() there is no marker yet
+  const swept = () => (db.prepare('SELECT purge_phase AS p FROM suppressions WHERE native_session_id = ?').get(A) as { p: string | null } | undefined)?.p === null;
+  assert.equal(n(db, 'SELECT count(*) AS n FROM suppressions WHERE native_session_id = ?', A), 0, 'no marker before the purge (D180-3)');
+  const w = new Proxy(h.writer, { get(t, k) {
+    if (k === 'transact') return <T>(f: (d: DatabaseSync) => T): T => { if (swept()) throw new Error('store closed'); return t.transact(f); };
+    const v = Reflect.get(t, k, t) as unknown;
+    return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(t) : v;
+  } });
+  const r = await purgeSession(w, h.a, { dataDir: dir, backupDir: h.backups, secret: SECRET, now: Date.now(), reason: 'manual', vacuum: false });
+  assert.deepEqual([r.purged, r.filesPending, r.rowsPending], [true, true, false]);
+  assert.equal(n(db, 'SELECT count(*) AS n FROM sessions WHERE id = ?', h.a), 0, 'the rows are gone');
+});

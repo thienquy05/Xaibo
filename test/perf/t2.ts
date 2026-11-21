@@ -332,6 +332,9 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
     if (failed) throw failed.reason; // every loop has stopped: cleanup below never races a writer
     // The end of load is the last emit, not the end of a slow restart (review M5).
     const loadEnd = emitted.reduce((m, e) => (e.t0 > m ? e.t0 : m), 0n);
+    // run 179 / G5Su-2: --retention qualifies on purges finished during the load, so they are counted here, before the drain
+    // waits: retention markers whose rows are gone (a fresh data dir per probe)
+    const purgedDone = withRetention ? Number((reader.prepare("SELECT count(*) AS n FROM suppressions WHERE reason = 'retention' AND purge_phase IS NULL").get() as { n: number }).n) : 0;
     const backfillDone = imported();
 
     // Drain: wait until every event is painted (or 30 s), then judge drain from the trace.
@@ -373,8 +376,7 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
       // the rows owed), so the run qualifies only when no purge is left in its rows phase
       const purgePending = Number((reader.prepare('SELECT count(*) AS n FROM suppressions WHERE purge_phase IS NOT NULL').get() as { n: number }).n);
       // run 179: a paced first retention run on t1mix outlasts the load (retention_run is logged at its end), so the run
-      // qualifies on purges finished inside it: retention markers whose rows are gone (a fresh data dir per probe)
-      const purgedDone = Number((reader.prepare("SELECT count(*) AS n FROM suppressions WHERE reason = 'retention' AND purge_phase IS NULL").get() as { n: number }).n);
+      // qualifies on purges finished inside the load (purgedDone, counted at load end above)
       // and none failed and was finished later by a resume before this read (round 4 review L5)
       const rowsFailed = serviceLog(dataDir).filter((e) => e.event === 'purge_rows_failed' && Date.parse(e.t) >= launched.created).length;
       return { windows: windows.map((w) => ({ fromS: (w.from - start) / 1000, toS: w.to === null ? null : (w.to - start) / 1000, sessions: w.sessions })),

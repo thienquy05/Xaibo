@@ -138,20 +138,26 @@ export async function runRetention(writer: Writer, db: DatabaseSync, o: Retentio
   for (const { id: scope } of db.prepare('SELECT id FROM usage_scopes WHERE session_id IS NULL ORDER BY id').all() as { id: number }[]) {
     for (let l = (streamAfter.get(scope, '') as { l: string | null }).l; l !== null; l = (streamAfter.get(scope, l) as { l: string | null }).l) {
       for (;;) {
-        await turn(writer); // run 179: paced with the purges; G5b1-3: never while Clear usage history runs
-        if (halt()) return finish();
-        const ids = (expired.all(scope, l, quotaCut) as { id: number }[]).map((x) => x.id);
+        // run 179: paced with the purges; G5b1-3: never while Clear usage history runs; G5Su-1: read and delete inside turn
+        const step = await turn(writer, () => {
+          if (halt()) return null;
+          const ids = (expired.all(scope, l, quotaCut) as { id: number }[]).map((x) => x.id);
+          return { ids, gone: ids.length ? Number(timed(writer, () => writer.transact((tdb) => {
+            settle(tdb, { sessions: [], quota: ids }, o.secret, o.now); // FR-52: before the rows go
+            return tdb.prepare('DELETE FROM usage_history WHERE id IN (SELECT value FROM json_each(?))').run(JSON.stringify(ids)).changes;
+          }))) : 0 };
+        });
+        if (!step) return finish();
+        const { ids, gone } = step;
         if (!ids.length) break;
-        const gone = Number(timed(writer, () => writer.transact((tdb) => {
-          settle(tdb, { sessions: [], quota: ids }, o.secret, o.now); // FR-52: before the rows go
-          return tdb.prepare('DELETE FROM usage_history WHERE id IN (SELECT value FROM json_each(?))').run(JSON.stringify(ids)).changes;
-        })));
         r.quota += gone;
         if (!gone || ids.length < QUOTA_BATCH) break; // diff review L3: never the same rows again
       }
     }
   }
   for (;;) {
+    // ponytail (R180-3): pace only, no Clear gate: Clear's watermarks cover usage, turns, sessions and usage_history, not
+    // usage_snapshots (clear.ts clearWatermarks); gate it too if snapshots ever join them
     await pace(writer);
     if (halt()) return finish();
     const gone = Number(timed(writer, () => writer.transact((tdb) => tdb.prepare(`DELETE FROM usage_snapshots WHERE id IN (SELECT id FROM usage_snapshots

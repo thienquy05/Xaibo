@@ -99,10 +99,11 @@ export async function pace(writer: object): Promise<void> {
   await tick();
   for (let d = paceWait(writer); d > 0; d = paceWait(writer)) await new Promise((resolve) => setTimeout(resolve, d)); // ref'd: <= 250 ms
 }
-/** pace, then the Clear gate, re-checked: loops released together by the gate take turns (pacing review L4). Nothing is
- *  awaited after it before the caller's stop check and transaction. */
-export async function turn(writer: Writer): Promise<void> {
-  for (;;) { await pace(writer); await deletesAllowed(writer); if (!paceWait(writer)) return; }
+/** pace, then the Clear gate, re-checked, then `f` (the caller's stop check and timed transaction) in the same continuation
+ *  (Gate 5 G5Su-1): the gate wakes every waiting loop in one microtask drain, so a check that returned before the caller's
+ *  transaction let the next released loop pass too; with `f` inside, it sees this loop's pause and takes its turn. */
+export async function turn<T>(writer: Writer, f: () => T): Promise<T> {
+  for (;;) { await pace(writer); await deletesAllowed(writer); if (!paceWait(writer)) return f(); }
 }
 /** A purge transaction, timed for the writer's pause. */
 export function timed<T>(writer: Writer, f: () => T): T {
@@ -125,7 +126,7 @@ export async function purgeSession(writer: Writer, sessionId: number, o: PurgeOp
   let files: Omit<PurgeResult, 'purged' | 'rowsPending'>;
   try { files = owed(writer, who, o); } catch { files = { ...NONE, filesPending: true }; }
   if (o.vacuum !== false) await vacuum(writer, o.stopped);
-  return { purged: true, ...files, rowsPending: false };
+  return { ...files, purged: true, rowsPending: false }; // G5Su-3: last, so a fallback built from NONE cannot reset them
 }
 
 /** Phase (a). Null when there is no such session or it is no longer eligible. */
@@ -241,36 +242,37 @@ async function rowPhases(writer: Writer, who: Identity, o: FileOptions): Promise
   let regs = '[]';
   try {
     for (;;) { // the settlement, before any deletion
-      await turn(writer);
-      if (o.stopped?.() || writer.diskFull) return false;
-      if (!o.secret) { // cannot settle without the install secret: a purge still settling stays owed
-        const phase = writer.transact((db) => (db.prepare('SELECT purge_phase AS p FROM suppressions WHERE agent = ? AND profile_id = ? AND native_session_id = ?')
-          .get(...key) as { p: string | null } | undefined)?.p ?? null);
-        if (phase === 'settle') return false;
-        break;
-      }
-      const secret = o.secret, now = o.now;
-      const settled = timed(writer, () => writer.transact((db) => settleStep(db, who, lim, secret, now)));
-      if (settled) break;
+      const settled = await turn(writer, () => {
+        if (o.stopped?.() || writer.diskFull) return 'stop';
+        if (!o.secret) { // cannot settle without the install secret: a purge still settling stays owed
+          const phase = writer.transact((db) => (db.prepare('SELECT purge_phase AS p FROM suppressions WHERE agent = ? AND profile_id = ? AND native_session_id = ?')
+            .get(...key) as { p: string | null } | undefined)?.p ?? null);
+          return phase === 'settle' ? 'stop' : 'done';
+        }
+        const secret = o.secret, now = o.now;
+        return timed(writer, () => writer.transact((db) => settleStep(db, who, lim, secret, now))) ? 'done' : 'more';
+      });
+      if (settled === 'stop') return false;
+      if (settled === 'done') break;
     }
     for (const step of steps(who)) {
       for (;;) {
-        await turn(writer); // live commits go first
-        if (o.stopped?.() || writer.diskFull) return false;
-        const n = timed(writer, () => writer.transact((db) => {
+        const n = await turn(writer, () => (o.stopped?.() || writer.diskFull ? -1 : timed(writer, () => writer.transact((db) => { // live commits go first
           regs = (db.prepare('SELECT pending FROM suppressions WHERE agent = ? AND profile_id = ? AND native_session_id = ?').get(...key) as { pending: string | null } | undefined)?.pending ?? '[]';
           const s = db.prepare(SESSION_OF).get(...key) as { id: number } | undefined;
           return s ? step(db, s.id, regs, lim) : 0;
-        }));
+        }))));
+        if (n < 0) return false;
         // review L: a row-bounded step that deleted fewer than its bound is done; the byte-bounded event step is done
         // only when nothing was left
         if (n === 0 || (step !== eventBatch && n < lim.rows)) break;
       }
     }
-    await turn(writer);
-    if (o.stopped?.()) return false;
-    timed(writer, () => writer.transact((db) => sweep(db, who, regs))); // (c)
-    return true;
+    return await turn(writer, () => {
+      if (o.stopped?.()) return false;
+      timed(writer, () => writer.transact((db) => sweep(db, who, regs))); // (c)
+      return true;
+    });
   } catch (e) { // a full disk or a failing store: the phase stays for resume, never counted as done
     if (!o.stopped?.()) o.log?.('purge_rows_failed', { error: errorCode(e) });
     return false;
