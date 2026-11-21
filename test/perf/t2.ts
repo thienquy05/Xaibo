@@ -372,10 +372,13 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
       // Gate 5 round 3 G5St-1: a purge whose row work failed still counts in retention_run (purgeSession returns purged with
       // the rows owed), so the run qualifies only when no purge is left in its rows phase
       const purgePending = Number((reader.prepare('SELECT count(*) AS n FROM suppressions WHERE purge_phase IS NOT NULL').get() as { n: number }).n);
+      // run 179: a paced first retention run on t1mix outlasts the load (retention_run is logged at its end), so the run
+      // qualifies on purges finished inside it: retention markers whose rows are gone (a fresh data dir per probe)
+      const purgedDone = Number((reader.prepare("SELECT count(*) AS n FROM suppressions WHERE reason = 'retention' AND purge_phase IS NULL").get() as { n: number }).n);
       // and none failed and was finished later by a resume before this read (round 4 review L5)
       const rowsFailed = serviceLog(dataDir).filter((e) => e.event === 'purge_rows_failed' && Date.parse(e.t) >= launched.created).length;
       return { windows: windows.map((w) => ({ fromS: (w.from - start) / 1000, toS: w.to === null ? null : (w.to - start) / 1000, sessions: w.sessions })),
-        purgePending, rowsFailed, m1: x.m1.steady, m2: x.m2.steady, unpainted: x.unpainted.steady };
+        purgePending, purgedDone, rowsFailed, m1: x.m1.steady, m2: x.m2.steady, unpainted: x.unpainted.steady };
     })() : null;
 
     const w = restart as { from: bigint; to: bigint } | null;
@@ -396,7 +399,8 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
       loadRate: loadQualifies(emitted.length, p),
       ...(during ? {
         // the run purged the t1mix sessions while the load ran, and the live events emitted meanwhile met the budgets
-        retentionPurged: windows.some((x) => x.sessions > 0) && during.purgePending === 0 && during.rowsFailed === 0,
+        // purges finished during the load, none failed, and at most the one in progress (retention purges one at a time)
+        retentionPurged: during.purgedDone > 0 && during.purgePending <= 1 && during.rowsFailed === 0,
         retentionM1: during.m1.n >= RETENTION_MIN.m1 && during.m1.p95 <= B.m1,
         retentionM2: during.m2.n >= RETENTION_MIN.m2 && during.m2.p95 <= B.m2,
       } : { corpusKept: retention.every((x) => x.sessions === 0 && x.trash === 0) }),
