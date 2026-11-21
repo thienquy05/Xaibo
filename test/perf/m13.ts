@@ -22,7 +22,9 @@ import { agyRoot, close, environment, fileBytes, firstPage, launch, retentionNev
 
 const SELECT_TARGET_MS = 300;
 const SEARCH_TARGET_MS = 500;
-const ROWS = 'ul[aria-label="Sessions"] button:has([data-field="folder"])';
+// Gate 5 round 3: never the row already open (aria-current): clicking it paints nothing new, so the sample timed out as a
+// miss when a search result list put the open session at the clicked index
+const ROWS = 'ul[aria-label="Sessions"] button:not([aria-current]):has([data-field="folder"])';
 const QUOTA_CWD = '/tmp/xaibo-fixture/quota'; // scripts/gen-perf-corpus.ts --case tp
 const SYL = ['ka', 'lo', 'mi', 'ne', 'su', 'ta', 'ri', 'po', 've', 'zu', 'qa', 'jo', 'fi', 'de', 'bu', 'xo']; // the generator's syllables
 const RETENTION_DELAY_MS = 10 * 60_000; // src/service/boot.ts: the first retention run after each backfill
@@ -194,7 +196,7 @@ export async function m13Probe(corpus: string, runs: number) {
       await search(l, words[runs]!);
       await search(l, common[runs]!);
       for (let i = 0; i < runs; i++) {
-        push(warm.select, await select(l, i + 1)); // never the row already open (k wraps; consecutive k differ)
+        push(warm.select, await select(l, i + 1)); // never the row already open (ROWS leaves it out)
         pushSearch(warm.search, await search(l, words[runs + 1 + i]!));
         pushSearch(warm.common, await search(l, common[runs + 1 + i]!), true);
       }

@@ -10,6 +10,11 @@ import { classifyItem } from '../transcript.ts';
 
 export const EXCERPT_MAX = 120;
 const PROMPT_SCAN = 8;
+// Gate 5 round 3 G5Ss1-3 (decision 3002): the writer recomputes a no-prompt session on every batch with a user record, so
+// the scan reads at most the session's first WINDOW current records per source. ponytail: a first prompt past that window
+// (a long injected or tool preamble, or subagent and chunk records at low source_seq, which the window counts too: the
+// index has no subagent column) shows no excerpt; persist a "searched up to" marker if such sessions turn up.
+const WINDOW = 64;
 const EXCERPT_RECORD_MAX = 128 * 1024;
 /** A session's visible main-transcript records (parameter: session id). */
 export const VISIBLE = `e.session_id = ? AND e.source IN ('transcript', 'rollout') AND e.subagent_native_id IS NULL AND e.revision_status = 'current' AND e.injected = 0
@@ -24,7 +29,12 @@ const statements = new WeakMap<DatabaseSync, StatementSync>(); // prepared once 
 export function computeExcerpt(db: DatabaseSync, agent: string, session: number | bigint): string | null | undefined {
   try {
     let q = statements.get(db);
-    if (!q) statements.set(db, q = db.prepare(`SELECT e.kind, e.role, e.content, e.raw FROM events e WHERE ${VISIBLE} AND (e.role = 'user' OR e.kind = 'user')
+    // the window: the first WINDOW current records per source (events_current_seq, ids only), then the filters; CROSS JOIN
+    // keeps the window as the outer loop (otherwise the planner walks every record of the session)
+    const first = (src: string) => `SELECT * FROM (SELECT id FROM events WHERE session_id = ?1 AND source = '${src}' AND revision_status = 'current'
+      ORDER BY source_seq, id LIMIT ${WINDOW})`;
+    if (!q) statements.set(db, q = db.prepare(`SELECT e.kind, e.role, e.content, e.raw FROM (${first('transcript')} UNION ALL ${first('rollout')}) w
+      CROSS JOIN events e ON e.id = w.id WHERE ${VISIBLE.replaceAll('e.session_id = ?', 'e.session_id = ?1')} AND (e.role = 'user' OR e.kind = 'user')
       AND coalesce(octet_length(e.content), 0) <= ${EXCERPT_RECORD_MAX} AND coalesce(octet_length(e.raw), 0) <= ${EXCERPT_RECORD_MAX} ORDER BY e.source_seq, e.id LIMIT ${PROMPT_SCAN}`));
     for (const row of q.iterate(session) as Iterable<{ kind: string; role: string | null; content: string | null; raw: string | null }>) {
       const it = classifyItem({ agent, kind: row.kind, role: row.role, injected: false, content: row.content, raw: row.raw });

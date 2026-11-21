@@ -5,11 +5,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, closeSync, existsSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, symlinkSync, writeFileSync, writeSync } from 'node:fs';
+import fs, { appendFileSync, closeSync, existsSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, symlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Envelope } from '../../src/shared/hook-protocol.ts';
 import { startHooks } from '../../src/service/receivers/intake.ts';
-import { replaySpool } from '../../src/service/receivers/spool-replay.ts';
+import { readOwn, replaySpool } from '../../src/service/receivers/spool-replay.ts';
+import { syncBuiltinESMExports } from 'node:module';
+import { tmpdir } from 'node:os';
+import { mkdtempSync } from 'node:fs';
 import { count } from '../helpers/claude-profile.ts';
 import { envelope, hookStore, SESSION, T0 } from '../helpers/hook-store.ts';
 
@@ -265,4 +268,24 @@ test('R6: service stop during the cleanup grace keeps the files', async () => {
   await svc.close();
   await svc.replay;
   assert.equal(jsonl(h.dir).length, 1, 'nothing removed after stop');
+});
+
+// Gate 5 round 3 G5Rr1-3 (design review 3002): readOwn revalidates after reading: a file that grew (or was renamed away)
+// between the read's fstat and the end of the read answers null (cannot be read now), never the stale bytes.
+test('G5Rr1-3: readOwn answers null for a file that grows during the read, the bytes otherwise', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'xreadown-'));
+  const file = join(dir, 'f.jsonl');
+  writeFileSync(file, 'first\n', { mode: 0o600 });
+  assert.equal(readOwn(file, 1 << 20)?.buf.toString(), 'first\n', 'fixture: an unchanged file reads');
+  const read = fs.readSync;
+  let grown = false;
+  fs.readSync = ((fd: number, ...rest: unknown[]) => {
+    if (!grown) { grown = true; appendFileSync(file, 'appended\n'); }
+    return (read as (...a: unknown[]) => number)(fd, ...rest);
+  }) as typeof fs.readSync;
+  syncBuiltinESMExports();
+  let got: ReturnType<typeof readOwn>;
+  try { got = readOwn(file, 1 << 20); } finally { fs.readSync = read; syncBuiltinESMExports(); }
+  assert.ok(grown, 'fixture: the file grew during the read');
+  assert.equal(got, null, 'a stale read is "cannot read now"');
 });

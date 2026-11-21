@@ -634,7 +634,7 @@ function parseHistoryRow(x: unknown): HistoryRow | null {
 const KEY = /^[0-9a-f]{64}$/;
 const keyOk = (x: unknown): x is string => typeof x === 'string' && KEY.test(x);
 const parseSearchKey = (x: unknown): SearchKey | null | undefined => (x === null ? null
-  : exactKeys(x, ['rank', 'session', 'event']) && finite(x.rank) && positive(x.session) && positive(x.event) ? { rank: x.rank, session: x.session, event: x.event } : undefined);
+  : exactKeys(x, ['rank', 'session', 'event']) && finite(x.rank) && count(x.session) && positive(x.event) ? { rank: x.rank, session: x.session, event: x.event } : undefined);
 const parseSuppressedCursor = (x: unknown): SuppressedCursor | null | undefined => (x === null ? null
   : exactKeys(x, ['at', 'key']) && finite(x.at) && keyOk(x.key) ? { at: x.at, key: x.key } : undefined);
 export function parseRetentionSetting(x: unknown): RetentionSetting | null {

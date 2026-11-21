@@ -81,6 +81,9 @@ export function readOwn(file: string, max: number): { buf: Buffer; ino: number; 
     const buf = Buffer.alloc(st.size);
     let n = 0;
     while (n < st.size) { const r = readSync(fd, buf, n, st.size - n, n); if (r === 0) break; n += r; }
+    // Gate 5 round 3 G5Rr1-3: an append or a rename (replay take()) during the read makes the bytes stale: null, owed
+    const after = lstat(file);
+    if (!after || after.ino !== st.ino || after.size !== st.size || after.mtimeMs !== st.mtimeMs) return null;
     return { buf: buf.subarray(0, n), ino: st.ino, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs };
   } finally {
     closeSync(fd);

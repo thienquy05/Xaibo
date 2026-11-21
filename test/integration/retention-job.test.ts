@@ -6,7 +6,8 @@
 process.env.TZ = 'UTC';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import fs, { appendFileSync, fstatSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import { openChunks } from '../../src/service/adapters/generic/chunks.ts';
 import type { DatabaseSync } from 'node:sqlite';
@@ -172,4 +173,38 @@ test('G5Rr1-3: a record of the session appended to today\'s spool file during th
   assert.ok(written && r.sessions >= 1, 'fixture: the record was appended while the run purged the session');
   assert.notEqual((h.db.prepare("SELECT pending FROM suppressions WHERE native_session_id = 'old'").get() as { pending: string | null }).pending, null,
     'today\'s file holds a record of the session: its file work stays owed');
+});
+
+// Gate 5 round 3 G5Rr1-3 (Codex, partly): a record the forwarder appends to today's spool file while the purge reads it
+// (after the read sized its buffer) is not in the bytes read; the read is revalidated (ino, size, mtime) before the work
+// may clear, so the purge's file work stays owed instead of clearing on a stale read.
+test('G5Rr1-3: an append to today\'s spool file during the purge\'s read of it keeps the file work owed', async () => {
+  const h = await seeded();
+  const spool = join(h.dir, 'spool');
+  mkdirSync(spool, { mode: 0o700 });
+  const today = join(spool, `${new Date(NOW).toISOString().slice(0, 10)}.jsonl`);
+  writeFileSync(today, `${JSON.stringify(envelope({ session_id: 'other', payload: { hook_event_name: 'Stop', session_id: 'other' } }))}\n`, { mode: 0o600 });
+  const ino = lstatSync(today).ino;
+  const marker = () => h.db.prepare("SELECT 1 FROM suppressions WHERE native_session_id = 'old'").get() !== undefined;
+  let appended = false;
+  const read = fs.readSync;
+  // the forwarder appends between the read's fstat (its buffer size) and its read of the bytes, during the purge of 'old'
+  fs.readSync = ((fd: number, ...rest: unknown[]) => {
+    if (!appended && marker() && fstatSync(fd).ino === ino) {
+      appended = true;
+      appendFileSync(today, `${JSON.stringify(envelope({ session_id: 'old', payload: { hook_event_name: 'Stop', session_id: 'old' } }))}\n`);
+    }
+    return (read as (...a: unknown[]) => number)(fd, ...rest);
+  }) as typeof fs.readSync;
+  syncBuiltinESMExports();
+  let r: Awaited<ReturnType<typeof h.run>>;
+  try { r = await h.run(); } finally { fs.readSync = read; syncBuiltinESMExports(); }
+  assert.ok(appended && r.sessions >= 1, 'fixture: the record was appended during the purge\'s read of today\'s file');
+  const pending = () => (h.db.prepare("SELECT pending FROM suppressions WHERE native_session_id = 'old'").get() as { pending: string | null }).pending;
+  assert.notEqual(pending(), null, 'the read was stale: the file work stays owed');
+  // after the UTC day rolls over the file is closed (the forwarder writes a new one) and quiet: the next run's resume
+  // rewrites it without the session's record and the work clears
+  await h.run({ now: Date.now() + 10_000 });
+  assert.equal(pending(), null, 'closed and quiet: the file work cleared');
+  assert.ok(!readFileSync(today, 'utf8').includes('"old"'), 'the session\'s record is gone from the spool file');
 });

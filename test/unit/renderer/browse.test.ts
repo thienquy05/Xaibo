@@ -273,3 +273,24 @@ test('round 2 review: incompleteAfter: a new query or reload takes its own cappe
   assert.equal(f(false, 'more', true), true);
   assert.equal(f(false, 'more', false), false);
 });
+
+// Gate 5 round 3 G5Ss1-2 (design review 3002): a search page can come back empty yet capped with a `next` (every match it
+// read was hidden); the list then offers Load more instead of the "no matches" note, which shows only once nothing is left.
+test('G5Ss1-2: an empty capped search page with a next offers Load more, not the empty note', async () => {
+  const b = await import('../../../src/renderer/history/browse.ts') as Record<string, unknown>;
+  assert.equal(typeof b.emptyShown, 'function', 'emptyShown exported');
+  const emptyShown = b.emptyShown as (rows: number, next: unknown) => boolean;
+  assert.equal(emptyShown(0, { rank: -1, session: 0, event: 7 }), false, 'more to load: Load more, no empty note');
+  assert.equal(emptyShown(0, null), true, 'nothing left: the empty note');
+  assert.equal(emptyShown(3, null), false);
+});
+
+// Gate 5 round 3 review L3: a capped final page (next null) has no Load more, so its note must not promise one
+test('round 3 L3: the incomplete note names Load more only when there is more to load', async () => {
+  const b = await import('../../../src/renderer/history/browse.ts') as Record<string, unknown>;
+  assert.equal(typeof b.incompleteNote, 'function', 'incompleteNote exported');
+  const note = b.incompleteNote as (next: unknown) => string;
+  assert.match(note({ rank: -1, session: 0, event: 7 }), /Load more continues it/);
+  assert.doesNotMatch(note(null), /Load more/);
+  assert.match(note(null), /incomplete/);
+});

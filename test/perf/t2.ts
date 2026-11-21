@@ -32,8 +32,12 @@ const HOOK_SHARE = 0.25; // of a Claude session's events (S12 OQ-A9 mix: 75% fil
 const RESTART_SETTLE_MS = 5000; // after the restarted service is ready: spool replay and rescan
 const IN_FLIGHT_MS = 1000; // before the kill: events still between emit and paint ack
 const B = { m1: 250, m2: 1000, queueAge: 1000, drain: 5000, m16: 100, m5MB: 450 };
-// P4-T12b (--usage): the disk fills at a quarter of the run (the kill stays at half) and stays full this long.
+// P4-T12b (--usage): the disk fills FAULT_AT_MS into the load (the kill stays at half) and stays full this long.
 const FULL_HOLD_MS = 20_000;
+// Gate 5 round 3: early, while the t1mix backfill still runs (~145-175 s after launch at TP), so the store must grow while
+// full. At the old quarter mark the backfill could be done, and the live stream alone fit the store's free pages and WAL
+// for the whole hold: no write failed and no banner was due (a 6bf1b7e run). The check requires both conditions.
+const FAULT_AT_MS = 60_000;
 const VOLUME_GIB = 4; // the data dir's sparse image: room for the t1mix import and the live stream
 const TOKEN_EVERY = 5; // a Codex session's every 5th record is a token_count, every 50th of those malformed
 const RETENTION_START_MS = 1000; // --retention: the first run this long after the backfill
@@ -88,7 +92,7 @@ export function seedSessions(home: string, count: number, codexShare: number) {
  *  attribution run that tells the volume's write cost from the usage work). */
 export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, seconds?: number, usage = false, withDiskFull = true, withRetention = false) {
   const p = { ...PROFILES[tier], ...(seconds ? { seconds } : {}) };
-  // review M7: the fault (quarter mark, fill, 20 s hold, <= 15 s clear, 5 s settle) must end before the kill at half
+  // review M7: the fault (FAULT_AT_MS or the quarter mark, fill, 20 s hold, <= 15 s clear, 5 s settle) must end before the kill at half
   if (usage && withDiskFull && p.seconds < 240) throw new Error('--usage with the disk-full fault needs --seconds >= 240 (or --no-disk-full)');
   if (usage && withRetention) throw new Error('--retention runs on its own (without --usage)');
   const summary = JSON.parse(readFileSync(path.join(corpus, 'summary.json'), 'utf8')) as { case: string };
@@ -252,18 +256,20 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
         if (!bad) lastValidCost.set(s.sid, (JSON.parse(stdin) as { cost: { total_cost_usd: number } }).cost.total_cost_usd);
       }
     };
-    // Disk full at a quarter of the run: the volume filled to the byte, held, then freed. The window opens IN_FLIGHT_MS
+    // Disk full at FAULT_AT_MS (while the backfill runs): the volume filled to the byte, held, then freed. The window opens IN_FLIGHT_MS
     // before the fill (as the kill's) and closes RESTART_SETTLE_MS after the free.
     const banner = () => launched.page.getByText('Disk full: collection paused').first().isVisible().catch(() => false);
     let full: Window | null = null;
-    const diskFull = { fillMs: null as number | null, bannerShown: false, bannerCleared: null as boolean | null, workspaceReopened: null as boolean | null, reopenMs: null as number | null,
+    let fillAt = 0;
+    const diskFull = { fillMs: null as number | null, backfillRunning: null as boolean | null, storeFull: null as boolean | null, bannerShown: false, bannerCleared: null as boolean | null, workspaceReopened: null as boolean | null, reopenMs: null as number | null,
       skipped: !vol }; // review L11: --no-disk-full passes diskFullFaulted by skipping it
     const fillFile = vol ? path.join(vol.mount, 'fill.bin') : '';
     const fault = async () => {
-      await sleep((p.seconds * 1000) / 4);
+      await sleep(Math.min(FAULT_AT_MS, (p.seconds * 1000) / 4));
       if (stopped) return; // review M7: another step failed; do not fill the disk on the way to cleanup
       const from = now() - BigInt(IN_FLIGHT_MS * 1e6);
-      const t = Date.now();
+      const t = fillAt = Date.now();
+      diskFull.backfillRunning = imported() === undefined;
       if (!fillVolume(fillFile)) throw new Error('could not fill the data volume');
       diskFull.fillMs = Date.now() - t;
       // the Coverage banner renders on the Dashboard only (P4-T14 carry-over): shown there while full, then back to Session
@@ -273,6 +279,9 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
       unlinkSync(fillFile);
       for (const end = Date.now() + 15_000; Date.now() < end && await banner();) await sleep(250);
       diskFull.bannerCleared = !(await banner());
+      // the store itself hit the full disk, not only the banner: read after the free (round 3 review M2), since the
+      // full:true line is usually lost to ENOSPC; full:false is logged only on leaving a full state (boot.ts onDiskFull)
+      diskFull.storeFull = serviceLog(dataDir).some((e) => e.event === 'disk_full' && Date.parse(e.t) >= fillAt);
       // review H1: back in the Session area with the workspace open again before the window can close
       // G4f-4: the fault window ends at the clear plus settle, so a slow reopen is measured, not hidden; the reopen counts
       // only when the open session's section group shows, and it is a diskFullFaulted condition
@@ -474,7 +483,8 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
         // Claude quota from the tee goes to usage_history (source statusline); context per session
         claudeUsage: report.statuslineQuotaHistory > 0 && sessions.every((s, i) => s.agent !== 'claude' || report.perSession.contextSnapshots[i]! > 0),
         livePriced: usageRows > 0 && left === 0,
-        diskFullFaulted: !vol || (full !== null && diskFull.bannerShown && diskFull.bannerCleared === true && diskFull.workspaceReopened === true),
+        diskFullFaulted: !vol || (full !== null && diskFull.backfillRunning === true && diskFull.storeFull === true && diskFull.bannerShown && diskFull.bannerCleared === true
+          && diskFull.workspaceReopened === true),
         // the kill restarts the service once; a disk-full or malformed-snapshot crash would add starts
         noCrash: readies() === 2,
         m5UnderLoad: fp !== null && fp.max <= B.m5MB * 1e6 / 2 ** 20,

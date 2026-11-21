@@ -18,7 +18,7 @@ import { findingBadges, formatTime, PAGE, recordLabel } from '../model.ts';
 import { Icon } from '../status/StatusBadge.tsx';
 import { show, visible } from '../text.ts';
 import { compactStatus, type SessionChanges } from '../workspace/view.ts';
-import { canLoadMore, capped, COVERAGE, INCOMPLETE, incompleteAfter, emphasis, failureNote, filterOf, freshList, groupLabel, initialQuery, isPlain, listTexts, mergeLive, mergeRows, MODES, modeKey,
+import { canLoadMore, capped, COVERAGE, emptyShown, incompleteAfter, incompleteNote, emphasis, failureNote, filterOf, freshList, groupLabel, initialQuery, isPlain, listTexts, mergeLive, mergeRows, MODES, modeKey,
   lastKnownRows, refill, rowLines, startLoad, type BrowseRow, type ListState, type LiveState, type Query } from './browse.ts';
 import { doneText, errorText, goneUndo, menuClosed, menuItems, NOTICE, opOf, place, trashed, undoFocus, undoLabel, undone, type Shared, type Toggle, type Undo } from './actions.ts';
 import { MoveDialog, type MoveApi, type MoveOutcome, type MoveTarget } from './MoveDialog.tsx';
@@ -482,8 +482,8 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
         {/* re-review N4: a failed live set says so even while its last rows are shown */}
         {isLive && live.failed && rows.length > 0 ? <p className="x-empty-note">{t.empty}</p> : null}
         {!isLive && list.status === 'failed' && list.rows.length === 0 && !fallback ? (
-          <p className="x-empty-note">{failureNote(list)} <button type="button" className="x-btn x-btn-quiet" onClick={() => load(q, 'new')}>Retry</button></p>
-        ) : rows.length === 0 && (ready || isLive) ? <p className="x-empty-note">{t.empty}</p> : (
+          <p className="x-empty-note">{failureNote(list)} <button type="button" className="x-btn x-btn-quiet" onClick={() => load(q, list.failed === 'more' ? 'more' : 'new')}>Retry</button></p>
+        ) : emptyShown(rows.length, isLive ? null : list.next) && (ready || isLive) ? <p className="x-empty-note">{t.empty}</p> : (
           <VirtualList key={JSON.stringify(q)} items={rows} getKey={keyOf} label="Sessions" itemLabel={recordLabel} estimateSize={t.searching ? 112 : 76}
             hasMore={!isLive && list.next !== null} loading={!isLive && (list.status === 'more' || list.status === 'loading')} onLoadMore={() => load(q, 'more')}
             render={(r) => <Row row={r} open={r.id === openId} lastKnown={lastKnown} search={q.search} snippet={t.searching ? list.snippets.get(r.id) : undefined} onOpen={onOpen}
@@ -498,7 +498,7 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
         ) : null}
         </>}
       </div>
-      {t.searching ? <p className="x-list-foot">{incomplete ? `${INCOMPLETE} ` : ''}{COVERAGE}</p> : null}
+      {t.searching ? <p className="x-list-foot">{incomplete ? `${incompleteNote(list.next)} ` : ''}{COVERAGE}</p> : null}
       <MoveDialog target={moveTarget} api={api} onDone={(id, to) => void moved(id, to)} onClosed={() => setMoveTarget(null)} />
       <PurgeDialog target={purgeTarget} purge={(id) => api.purge(id)} onDone={purged} onClosed={() => setPurgeTarget(null)} />
       <Menu id={MENU} label="More actions" entries={entries} note={menu?.status === 'loading' ? <p className="x-hint">Loading actions…</p>

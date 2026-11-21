@@ -235,9 +235,10 @@ test('B: a common term matching 50,000 events in 1,000 sessions: the first page 
   }
 });
 
-// Gate 5 round 2 B (design security review): scope, suppression, Trash and mode filters apply inside the bounded scan,
-// before counting toward the cap and before any content is read: matches the filter drops never use up the cap.
-test('B: filtered-out matches (Trash, a purge under way) never use up the scan cap; modes still restrict', async () => {
+// Gate 5 round 3 G5Ss1-2 (Codex; replaces round 2's "filtered matches never count"): every ranked match read from the
+// index counts toward SEARCH_SCAN_MAX, hidden or not (Trash, a purge under way), so a term whose matches are mostly hidden
+// never scans the corpus; hidden sessions still never show, `capped` + `next` continue, and modes still restrict.
+test('G5Ss1-2: hidden matches (Trash, a purge under way) count toward the scan cap; paging still reaches the visible match; modes still restrict', async () => {
   const q = await import('../../../src/service/search/query.ts') as Record<string, unknown>;
   assert.equal(typeof q.SEARCH_SCAN_MAX, 'number', 'SEARCH_SCAN_MAX exported');
   const cap = q.SEARCH_SCAN_MAX as number;
@@ -252,9 +253,21 @@ test('B: filtered-out matches (Trash, a purge under way) never use up the scan c
   for (const s of trashed) assert.ok(applyOverlay(db, { kind: 'trash', session: s, on: true }, { readOnly: false, now: T }).ok);
   const visible = session();
   ev(visible, `ka ${'filler words that make this match rank worse '.repeat(40)}`);
-  const all = find(db, 'ka', {}, 50) as ReturnType<typeof searchSessions> & { capped?: boolean };
-  assert.deepEqual(all.hits.map((h) => h.session), [visible], 'the one visible match is found past the filtered ones');
-  assert.ok(!all.capped, 'not capped: the filtered matches were never counted');
+  type Page = ReturnType<typeof searchSessions> & { capped?: boolean };
+  const stats = q.searchStats as { examined: number };
+  const all = find(db, 'ka', {}, 50) as Page;
+  assert.equal(all.capped, true, 'capped: the hidden matches ahead used up the cap');
+  assert.ok(stats.examined <= cap, `examined ${stats.examined} (cap ${cap})`);
+  assert.notEqual(all.next, null, 'and it continues');
+  const seen = all.hits.map((h) => h.session);
+  const hiddenIds = new Set([...trashed, purging]);
+  for (let page = all, i = 0; page.next && i < 30; i++) {
+    assert.ok(!hiddenIds.has(page.next.session), `page ${i + 1} cursor names session ${page.next.session}: 0 or the last visible one, never a hidden id`);
+    page = searchSessions(db, 'ka', ALL, page.next, 50) as Page;
+    assert.ok(stats.examined <= cap, `page ${i + 2} examined ${stats.examined} (cap ${cap})`);
+    seen.push(...page.hits.map((h) => h.session));
+  }
+  assert.deepEqual(seen, [visible], 'the visible match is reached once; no hidden session ever shows');
   const trash = find(db, 'ka', { mode: 'trash' }, 50).hits.map((h) => h.session);
   assert.ok(trash.length > 0 && trash.every((x) => trashed.includes(x)), 'Trash mode: trashed sessions only');
   assert.ok(!trash.includes(visible) && !trash.includes(purging));
@@ -315,4 +328,61 @@ test('round 2 review: a huge equal-rank tie is read at most SEARCH_SCAN_MAX matc
   assert.ok(Math.max(...examined) <= cap, `matches examined per page: ${examined.join(',')} (cap ${cap})`);
   assert.equal(seen.length, new Set(seen).size, 'no session on two pages');
   assert.deepEqual([...seen].sort((a, b) => a - b), [...others, big].sort((a, b) => a - b), 'every session reached once');
+});
+
+// Gate 5 round 3 G5Ss1-2 (Codex): 50,000 matches of a term in hidden sessions (Trash, a purge under way) and a few visible
+// ones: the first page reads at most SEARCH_SCAN_MAX matches from the index (it never scans every hidden match to fill the
+// page) and says it may be incomplete; no hidden session ever shows on any page.
+test('G5Ss1-2: a term with 50,000 matches in hidden sessions: each page examines at most SEARCH_SCAN_MAX matches', async () => {
+  const q = await import('../../../src/service/search/query.ts') as Record<string, unknown>;
+  const cap = q.SEARCH_SCAN_MAX as number;
+  const stats = q.searchStats as { examined: number };
+  const { db, session, ev } = await store();
+  const visible = [session(), session(), session()];
+  for (const s of visible) ev(s, 'ka ka ka ka ka'); // ranked best: on the first page
+  db.exec('BEGIN');
+  const trashed: number[] = [];
+  for (let i = 0; i < 50; i++) { const s = session(); trashed.push(s); for (let k = 0; k < 500; k++) ev(s, `ka ${'filler words '.repeat(1 + (k % 5))}`); }
+  const purging = session();
+  for (let k = 0; k < 25_000; k++) ev(purging, `ka ${'filler words '.repeat(1 + (k % 5))}`);
+  db.prepare("INSERT INTO suppressions (agent, profile_id, native_session_id, reason, at, purge_phase) SELECT agent, profile_id, native_session_id, 'retention', 1, 'rows' FROM sessions WHERE id = ?").run(purging);
+  db.exec('COMMIT');
+  for (const s of trashed) assert.ok(applyOverlay(db, { kind: 'trash', session: s, on: true }, { readOnly: false, now: T }).ok);
+  type Page = ReturnType<typeof searchSessions> & { capped?: boolean };
+  const first = find(db, 'ka', {}, 50) as Page;
+  assert.ok(stats.examined <= cap, `first page examined ${stats.examined} (cap ${cap})`);
+  assert.deepEqual(first.hits.map((h) => h.session).sort((a, b) => a - b), visible, 'the visible sessions');
+  assert.equal(first.capped, true, 'a short page stopped by the cap says results may be incomplete');
+  const hidden = new Set([...trashed, purging]);
+  for (let page = first, i = 0; page.next && i < 30; i++) {
+    assert.ok(page.next.session === 0 || visible.includes(page.next.session), `page ${i + 1} cursor names session ${page.next.session}: 0 or the last visible one`);
+    page = searchSessions(db, 'ka', ALL, page.next, 50) as Page;
+    assert.ok(stats.examined <= cap, `page ${i + 2} examined ${stats.examined} (cap ${cap})`);
+    assert.ok(page.hits.every((h) => !hidden.has(h.session)), 'no hidden session on any page');
+  }
+});
+
+// Gate 5 round 3 G5Ss1-2 (design review 3002): skipped matches count too, so more hidden matches than the skip ceiling
+// ranked above a visible session end the paging `capped` (results may be incomplete), never a clean last page; every
+// earlier page that is capped, empty or not, carries a `next` (Load more stays offered).
+test('G5Ss1-2: more hidden matches than SEARCH_SKIP_MAX ranked above a visible session end capped, never a clean last page', async () => {
+  const q = await import('../../../src/service/search/query.ts') as Record<string, unknown>;
+  assert.equal(typeof q.SEARCH_SKIP_MAX, 'number', 'SEARCH_SKIP_MAX exported');
+  const skipMax = q.SEARCH_SKIP_MAX as number;
+  const { db, session, ev } = await store();
+  db.exec('BEGIN');
+  const purging = session();
+  for (let k = 0; k < skipMax + 2000; k++) ev(purging, 'ka ka ka');
+  db.prepare("INSERT INTO suppressions (agent, profile_id, native_session_id, reason, at, purge_phase) SELECT agent, profile_id, native_session_id, 'retention', 1, 'rows' FROM sessions WHERE id = ?").run(purging);
+  db.exec('COMMIT');
+  const visible = session();
+  ev(visible, `ka ${'filler words that make this match rank worse '.repeat(40)}`);
+  type Page = ReturnType<typeof searchSessions> & { capped?: boolean };
+  const pages: Page[] = [find(db, 'ka', {}, 50) as Page];
+  while (pages.at(-1)!.next && pages.length < 60) pages.push(searchSessions(db, 'ka', ALL, pages.at(-1)!.next, 50) as Page);
+  const last = pages.at(-1)!;
+  assert.equal(last.next, null, `fixture: paging ended (${pages.length} pages)`);
+  assert.equal(last.capped, true, 'the last page says results may be incomplete');
+  for (const [i, p] of pages.slice(0, -1).entries()) assert.ok(!p.capped || p.next !== null, `page ${i + 1}: capped with a next (Load more)`);
+  assert.ok(pages.flatMap((p) => p.hits).every((h) => h.session !== purging), 'the hidden session never shows');
 });

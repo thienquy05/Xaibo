@@ -20,6 +20,8 @@ export const NO_MATCH = 'No matches. Change filters or clear search.';
 export const COVERAGE = 'Search covers retained indexed content; incomplete sources may have gaps. Only the first 64 KiB of each item is searchable.';
 /** Gate 5 round 2 B: a search page the service's bounded scan cut short (Load more continues it). */
 export const INCOMPLETE = 'Results may be incomplete: the search stopped at its scan limit. Load more continues it.';
+/** Round 3 review L3: a capped last page (no next) has no Load more, so its note does not promise one. */
+export const incompleteNote = (next: unknown) => (next === null ? 'Results may be incomplete: the search stopped at its scan limit. Refine the search to narrow it.' : INCOMPLETE);
 
 /** The service filter; null for Live, which shows the live set, and for Suppressed, which pages suppression metadata. */
 export function filterOf(q: Query): HistoryFilter | null {
@@ -79,6 +81,9 @@ export function startLoad<K>(s: ListState<K>, kind: 'new' | 'resync' | 'more'): 
 }
 /** Re-review N2: Load more runs when the list is ready, and again after its own failure. */
 export const canLoadMore = <K>(s: ListState<K>) => s.next !== null && (s.status === 'ready' || (s.status === 'failed' && s.failed === 'more'));
+/** Gate 5 round 3 G5Ss1-2: the empty note only once nothing is left; an empty capped search page with a cursor offers
+ *  Load more instead. */
+export const emptyShown = (rows: number, next: unknown) => rows === 0 && next === null;
 export function failureNote<K>(s: ListState<K>): string | null {
   if (s.status !== 'failed') return null;
   return s.failed === 'more' ? 'More records could not be loaded.' : s.rows.length ? 'The list could not be refreshed.' : 'The list could not be loaded.';
