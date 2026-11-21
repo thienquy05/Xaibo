@@ -12,7 +12,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { answerCost, answerFiles, answerUsageHistory, answerLiveSet, answerMarkers, answerSession, answerSlice, answerSubagents, answerTools, answerTranscript, sessionsByKey, usageScopes } from '../../src/service/api.ts';
 import { mapGroups } from '../../src/service/history/map.ts';
 import { applyOverlay, listHistory } from '../../src/service/history/overlay.ts';
-import { purgeSession, resumePurges } from '../../src/service/history/purge.ts';
+import { paceWait, purgeSession, resumePurges } from '../../src/service/history/purge.ts';
 import * as purge from '../../src/service/history/purge.ts';
 import { openStore } from '../../src/service/store/db.ts';
 import { Writer } from '../../src/service/store/writer.ts';
@@ -29,8 +29,9 @@ import { request, sample, SECRET } from '../helpers/monthly.ts';
 
 const A = '00000000-0000-4000-8000-0000000f5421', B = '00000000-0000-4000-8000-0000000f5422';
 const WHO = { agent: 'claude', profile: 'p1', native: A };
-/** Test-only bounds: at most 5 rows and 3000 FTS bytes per batch transaction (each event's text is ~1 KB). */
-const LIMITS = { rows: 5, ftsBytes: 3000 };
+/** Test-only bounds: at most 5 rows and 3000 stored bytes per batch transaction (each event's text is ~1 KB); the stored
+ *  bytes bound the FTS bytes (run 179). */
+const LIMITS = { rows: 5, bytes: 3000 };
 const KEYED = ['events', 'tool_calls', 'usage', 'turns', 'cwd_history'];
 const ALL: HistoryFilter = { mode: 'all', agent: null, project: null, folder: null };
 const busy: LiveStatus = { lifecycle: 'busy', confidence: 'confirmed', health: 'connected', reason: null, outcome: null, findings: [], since: null };
@@ -86,9 +87,10 @@ test('G5-N1: a session larger than the batch bound is purged in bounded transact
   assert.equal(r.purged, true);
   for (const [i, t] of h.txs.entries()) {
     assert.ok(t.rows <= LIMITS.rows, `transaction ${i} deleted ${t.rows} rows (bound ${LIMITS.rows})`);
-    assert.ok(t.fts <= LIMITS.ftsBytes, `transaction ${i} deleted ${t.fts} FTS bytes (bound ${LIMITS.ftsBytes})`);
+    assert.ok(t.fts <= LIMITS.bytes, `transaction ${i} deleted ${t.fts} FTS bytes (bound ${LIMITS.bytes})`);
   }
   assert.ok(h.txs.filter((t) => t.rows > 0).length >= Math.ceil(total / LIMITS.rows), 'one batch per bound');
+  assert.ok(paceWait(h.writer, 0) > 0, 'run 179: purge transactions are timed for the writer\'s pace');
   // review L (code): a row-bounded step that deleted fewer rows than its bound is done, with no extra empty transaction;
   // 17 = phase (a), the sweep, the two file-work transactions, the twelve steps with nothing to delete, events' last check;
   // + 6 settle batches (round 2: 25 requests, turns and readings at 5 a batch, then the session and model keys)

@@ -9,7 +9,7 @@
 import { statSync } from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
 import type { ChunkStore } from '../adapters/generic/chunks.ts';
-import { deletesAllowed, purgeSession, resumePurges, todayCache, vacuum } from '../history/purge.ts';
+import { pace, purgeSession, resumePurges, timed, todayCache, turn, vacuum } from '../history/purge.ts';
 import { readRegistrations } from '../receivers/registrations.ts';
 import { TRASH_MS } from '../history/trash.ts';
 import { LIVE_WINDOW_MS } from '../status/feed.ts';
@@ -138,33 +138,32 @@ export async function runRetention(writer: Writer, db: DatabaseSync, o: Retentio
   for (const { id: scope } of db.prepare('SELECT id FROM usage_scopes WHERE session_id IS NULL ORDER BY id').all() as { id: number }[]) {
     for (let l = (streamAfter.get(scope, '') as { l: string | null }).l; l !== null; l = (streamAfter.get(scope, l) as { l: string | null }).l) {
       for (;;) {
-        await deletesAllowed(writer); // G5b1-3: never while Clear usage history runs
+        await turn(writer); // run 179: paced with the purges; G5b1-3: never while Clear usage history runs
         if (halt()) return finish();
         const ids = (expired.all(scope, l, quotaCut) as { id: number }[]).map((x) => x.id);
         if (!ids.length) break;
-        const gone = Number(writer.transact((tdb) => {
+        const gone = Number(timed(writer, () => writer.transact((tdb) => {
           settle(tdb, { sessions: [], quota: ids }, o.secret, o.now); // FR-52: before the rows go
           return tdb.prepare('DELETE FROM usage_history WHERE id IN (SELECT value FROM json_each(?))').run(JSON.stringify(ids)).changes;
-        }));
+        })));
         r.quota += gone;
         if (!gone || ids.length < QUOTA_BATCH) break; // diff review L3: never the same rows again
-        await tick();
       }
     }
   }
   for (;;) {
+    await pace(writer);
     if (halt()) return finish();
-    const gone = Number(writer.transact((tdb) => tdb.prepare(`DELETE FROM usage_snapshots WHERE id IN (SELECT id FROM usage_snapshots
-      WHERE session_id IS NULL AND coalesce(as_of, observed_at) <= ? LIMIT ${QUOTA_BATCH})`).run(quotaCut).changes));
+    const gone = Number(timed(writer, () => writer.transact((tdb) => tdb.prepare(`DELETE FROM usage_snapshots WHERE id IN (SELECT id FROM usage_snapshots
+      WHERE session_id IS NULL AND coalesce(as_of, observed_at) <= ? LIMIT ${QUOTA_BATCH})`).run(quotaCut).changes)));
     if (!gone) break;
     r.quota += gone;
-    await tick();
   }
   writer.transact((tdb) => tdb.prepare('INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value').run(LAST_RUN, String(o.now)));
   return finish();
 
   async function finish(): Promise<RetentionResult> {
-    if (r.sessions || r.trash) await vacuum(writer); // review M2: once per run (bounded steps, yields between)
+    if (r.sessions || r.trash) await vacuum(writer, halt); // review M2: once per run (bounded steps, paced); never after a stop
     if (backups) o.log?.('retention_backups_deleted', { count: backups }); // Q-5.1 notice
     o.log?.('retention_run', { sessions: r.sessions, trash: r.trash, quota: r.quota });
     return r;

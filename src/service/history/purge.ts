@@ -49,7 +49,9 @@ export interface FileOptions {
   /** G5Rr1-2: a retention marker was cleared by native activity seen while its purge ran: wake the adapters. */
   onReimport?: () => void;
 }
-export interface PurgeLimits { rows: number; ftsBytes: number }
+/** rows: per batch transaction (event batches at most EVENT_ROWS); bytes: stored bytes (content + raw) per event batch,
+ *  which also bounds its FTS bytes. */
+export interface PurgeLimits { rows: number; bytes: number }
 export interface TodayCache { key: string; ids: Set<string> | null }
 /** A fresh per-run cache of today's spool identities. */
 export const todayCache = (): TodayCache => ({ key: '', ids: null });
@@ -74,12 +76,39 @@ const CLOSED = /^(\d{4}-\d{2}-\d{2})(\.replay-[0-9a-f-]{36})?\.jsonl$/;
 const QUIET_MS = 5_000;
 const SPOOL_MAX = 64 << 20; // spool-replay's per-file bound
 const SQLITE_CORRUPT = 11, SQLITE_NOTADB = 26;
-// ponytail: fixed batch bounds (~1 MiB of FTS text per transaction keeps one well under the M1 budget on the T1 machine);
-// tune them from the TP retention probe if a batch still shows up in live latency.
-const LIMITS: PurgeLimits = { rows: 500, ftsBytes: 1 << 20 };
+// Gate 5 TP retention probe (run 179, design review 3029): 500 rows / 1 MiB of FTS text per event batch held the service
+// thread ~95% of a retention run (p95 1.3 s, max 4.2 s). Event batches are now bounded by stored bytes (deleting a row
+// walks its content and raw), and every purge transaction is paced per writer (pace/timed below). ponytail: fixed
+// bounds; a WAL checkpoint or FTS merge inside a commit is not bounded by them (measured by the probe).
+const LIMITS: PurgeLimits = { rows: 500, bytes: 64 << 10 };
+const EVENT_ROWS = 32; // tuned on the probe: 64 KiB / 32 rows with a 3x pause kept live M1 p95 at 232 ms during a purge
 const VACUUM_PAGES = 2048, VACUUM_STEPS = 100_000;
 const NONE: PurgeResult = { purged: false, chunkItems: 0, spoolFiles: 0, backupsDeleted: 0, filesPending: false, rowsPending: false };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
+// Purge pacing (run 179): after a purge or retention delete transaction of `ms`, the writer's purge work waits
+// min(3 × ms, 250 ms) (performance.now: a wall clock set back would stall every purge), so live intake keeps about 3/4 of the service thread; one busy-until per writer, so concurrent purge loops
+// (retention, manual purges, resumes, vacuum) share it instead of each taking their own turn.
+const PAUSE_MAX = 250;
+export const pauseMs = (ms: number) => (ms < 1 ? 0 : Math.min(3 * ms, PAUSE_MAX));
+const busyUntil = new WeakMap<object, number>();
+export function paced(writer: object, ms: number, now = performance.now()): void { busyUntil.set(writer, Math.max(busyUntil.get(writer) ?? 0, now + pauseMs(ms))); }
+export const paceWait = (writer: object, now = performance.now()) => Math.max(0, (busyUntil.get(writer) ?? 0) - now);
+/** Waits out the writer's purge pause (a setImmediate yield at least), re-checked so concurrent loops take turns. Call it
+ *  before deletesAllowed: nothing may be awaited between that gate and the transaction (G5b1-3). */
+export async function pace(writer: object): Promise<void> {
+  await tick();
+  for (let d = paceWait(writer); d > 0; d = paceWait(writer)) await new Promise((resolve) => setTimeout(resolve, d)); // ref'd: <= 250 ms
+}
+/** pace, then the Clear gate, re-checked: loops released together by the gate take turns (pacing review L4). Nothing is
+ *  awaited after it before the caller's stop check and transaction. */
+export async function turn(writer: Writer): Promise<void> {
+  for (;;) { await pace(writer); await deletesAllowed(writer); if (!paceWait(writer)) return; }
+}
+/** A purge transaction, timed for the writer's pause. */
+export function timed<T>(writer: Writer, f: () => T): T {
+  const t0 = performance.now();
+  try { return f(); } finally { paced(writer, performance.now() - t0); }
+}
 const uid = process.getuid?.();
 const own = (st: Stats) => uid === undefined || st.uid === uid;
 const errno = (e: unknown) => (e as NodeJS.ErrnoException | null)?.code;
@@ -95,7 +124,7 @@ export async function purgeSession(writer: Writer, sessionId: number, o: PurgeOp
   // round 4 review L2: the rows are gone; a failing file check (a closed store) leaves the files owed, not the rows
   let files: Omit<PurgeResult, 'purged' | 'rowsPending'>;
   try { files = owed(writer, who, o); } catch { files = { ...NONE, filesPending: true }; }
-  if (o.vacuum !== false) await vacuum(writer);
+  if (o.vacuum !== false) await vacuum(writer, o.stopped);
   return { purged: true, ...files, rowsPending: false };
 }
 
@@ -182,21 +211,23 @@ function steps(who: Identity): Step[] {
 }
 
 /** One batch of a session's events, in index order (review H: no sort, no scan of the rest). Parameters: session id, rows. */
-export const EVENT_BATCH = `SELECT id, revision_status = 'current' AND content IS NOT NULL AND content <> '' AS indexed,
-  min(length(CAST(content AS BLOB)), ${FTS_MAX_BYTES}) AS b FROM events WHERE session_id = ? LIMIT ?`;
-/** Events until `lim.rows` rows or `lim.ftsBytes` of indexed text (at least one row). FTS (external content) holds
+// run 179: octet_length reads a value's size without loading it; IS NOT NULL, <> '' and CAST(.. AS BLOB) load the whole
+// value (measured on the bundled SQLite 3.53), so every candidate row cost its full read
+export const EVENT_BATCH = `SELECT id, revision_status = 'current' AND coalesce(octet_length(content), 0) > 0 AS indexed,
+  coalesce(octet_length(content), 0) + coalesce(octet_length(raw), 0) AS b FROM events WHERE session_id = ? LIMIT ?`;
+/** Events until min(lim.rows, EVENT_ROWS) rows or `lim.bytes` stored (at least one row). FTS (external content) holds
  *  exactly the rows the writer indexed: current, non-empty, under its prefix; a 'delete' names those rows with that text
- *  (review M5). */
+ *  (review M5). FTS_MAX_BYTES caps what was indexed, so the stored bytes bound the FTS bytes too. */
 function eventBatch(db: DatabaseSync, id: number, _regs: string, lim: PurgeLimits): number {
-  const rows = db.prepare(EVENT_BATCH).all(id, lim.rows) as { id: number; indexed: number; b: number | null }[];
+  // iterated, stopping at the bound: revision_status is the row's last column, so each row read walks its overflow pages
+  const rows = db.prepare(EVENT_BATCH).iterate(id, Math.min(lim.rows, EVENT_ROWS)) as Iterable<{ id: number; indexed: number; b: number }>;
   const content = db.prepare('SELECT content FROM events WHERE id = ?');
   const unindex = db.prepare("INSERT INTO event_fts (event_fts, rowid, content) VALUES ('delete', ?, ?)");
   const ids: number[] = [];
   let bytes = 0;
   for (const r of rows) {
-    const b = r.indexed ? r.b ?? 0 : 0;
-    if (ids.length && bytes + b > lim.ftsBytes) break;
-    bytes += b;
+    if (ids.length && bytes + r.b > lim.bytes) break;
+    bytes += r.b;
     ids.push(r.id);
     if (r.indexed) unindex.run(r.id, ftsPrefix((content.get(r.id) as { content: string }).content));
   }
@@ -210,7 +241,7 @@ async function rowPhases(writer: Writer, who: Identity, o: FileOptions): Promise
   let regs = '[]';
   try {
     for (;;) { // the settlement, before any deletion
-      await deletesAllowed(writer);
+      await turn(writer);
       if (o.stopped?.() || writer.diskFull) return false;
       if (!o.secret) { // cannot settle without the install secret: a purge still settling stays owed
         const phase = writer.transact((db) => (db.prepare('SELECT purge_phase AS p FROM suppressions WHERE agent = ? AND profile_id = ? AND native_session_id = ?')
@@ -219,28 +250,26 @@ async function rowPhases(writer: Writer, who: Identity, o: FileOptions): Promise
         break;
       }
       const secret = o.secret, now = o.now;
-      const settled = writer.transact((db) => settleStep(db, who, lim, secret, now));
-      await tick(); // live commits go first
+      const settled = timed(writer, () => writer.transact((db) => settleStep(db, who, lim, secret, now)));
       if (settled) break;
     }
     for (const step of steps(who)) {
       for (;;) {
-        await deletesAllowed(writer);
+        await turn(writer); // live commits go first
         if (o.stopped?.() || writer.diskFull) return false;
-        const n = writer.transact((db) => {
+        const n = timed(writer, () => writer.transact((db) => {
           regs = (db.prepare('SELECT pending FROM suppressions WHERE agent = ? AND profile_id = ? AND native_session_id = ?').get(...key) as { pending: string | null } | undefined)?.pending ?? '[]';
           const s = db.prepare(SESSION_OF).get(...key) as { id: number } | undefined;
           return s ? step(db, s.id, regs, lim) : 0;
-        });
-        await tick(); // live commits go first
+        }));
         // review L: a row-bounded step that deleted fewer than its bound is done; the byte-bounded event step is done
         // only when nothing was left
         if (n === 0 || (step !== eventBatch && n < lim.rows)) break;
       }
     }
-    await deletesAllowed(writer);
+    await turn(writer);
     if (o.stopped?.()) return false;
-    writer.transact((db) => sweep(db, who, regs)); // (c)
+    timed(writer, () => writer.transact((db) => sweep(db, who, regs))); // (c)
     return true;
   } catch (e) { // a full disk or a failing store: the phase stays for resume, never counted as done
     if (!o.stopped?.()) o.log?.('purge_rows_failed', { error: errorCode(e) });
@@ -307,7 +336,7 @@ function settleStep(db: DatabaseSync, who: Identity, lim: PurgeLimits, secret: B
 function sweep(db: DatabaseSync, who: Identity, regs: string): void {
   const s = db.prepare(SESSION_OF).get(who.agent, who.profile, who.native) as { id: number } | undefined;
   if (s) {
-    const all: PurgeLimits = { rows: -1, ftsBytes: Number.MAX_SAFE_INTEGER }; // LIMIT -1: no limit
+    const all: PurgeLimits = { rows: -1, bytes: Number.MAX_SAFE_INTEGER }; // LIMIT -1: no limit (min(-1, EVENT_ROWS) stays -1)
     for (const step of steps(who)) step(db, s.id, regs, all);
     db.prepare('DELETE FROM usage_scopes WHERE session_id = ?').run(s.id);
   }
@@ -317,15 +346,16 @@ function sweep(db: DatabaseSync, who: Identity, regs: string): void {
 }
 
 /** Gives freed pages back, best effort, VACUUM_PAGES per writer transaction with a yield between, while any are freed. */
-export async function vacuum(writer: Writer): Promise<void> {
+export async function vacuum(writer: Writer, stopped?: () => boolean): Promise<void> {
   const free = (db: DatabaseSync) => Number((db.prepare('PRAGMA freelist_count').get() as { freelist_count: number }).freelist_count);
   for (let i = 0; i < VACUUM_STEPS; i++) {
+    await pace(writer);
+    if (stopped?.()) return; // design review 3029 L10: never on a store the stop is closing
     let more: boolean;
     try {
-      more = writer.transact((db) => { const before = free(db); db.exec(`PRAGMA incremental_vacuum(${VACUUM_PAGES})`); const after = free(db); return after > 0 && after < before; });
+      more = timed(writer, () => writer.transact((db) => { const before = free(db); db.exec(`PRAGMA incremental_vacuum(${VACUUM_PAGES})`); const after = free(db); return after > 0 && after < before; }));
     } catch { return; } // the pages stay free for reuse
     if (!more) return;
-    await tick();
   }
 }
 
