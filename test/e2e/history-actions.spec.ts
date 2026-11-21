@@ -280,6 +280,14 @@ test('Move to project or folder from the Session list and the open-session heade
   await undo.getByRole('button', { name: /^Undo/ }).click();
   await expect(page.getByRole('region', { name: 'In Trash' })).toHaveCount(0);
   await expect(page.locator('#open-session-title')).toBeFocused();
+  // Gate 5 second review M1: below 800 px the open session hides the list, so the header itself says Moved to Trash
+  await run.app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(700, 800));
+  await expect.poll(() => page.evaluate(() => innerWidth)).toBeLessThan(800);
+  await expect(page.locator('.x-list-slot')).toBeHidden(); // the layout the header note depends on
+  await headMore.click();
+  await menu.getByRole('menuitem', { name: 'Move to Trash' }).click();
+  await expect(page.getByRole('region', { name: 'In Trash' })).toBeVisible();
+  await expect(head.locator('.x-action-note')).toContainText('Moved to Trash.');
 });
 
 // XAIBO-PROD-536 (P5-T18 part 3b-7; design §6.4 Suppressed, §5.4 Re-import; D-P5-08): a purged session is listed in

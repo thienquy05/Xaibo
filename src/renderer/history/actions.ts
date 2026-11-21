@@ -82,6 +82,8 @@ export function errorText(e: (typeof OVERLAY_ERRORS)[number]): string {
 }
 
 export const NOTICE = 'Moved to Trash. Only the Xaibo copy is affected; native files are untouched.';
+/** Gate 5 second review M1: the header's Trash note; null when the visible list's Undo notice says it. */
+export const headerTrashNote = (listVisible: boolean) => (listVisible ? null : NOTICE);
 /** The Undo notice (design §5.1): one at a time; a Trash while one is shown updates it to undo the latest. */
 export interface Undo { id: number; stacked: boolean; status: 'ready' | 'undoing' | 'failed' | 'restored' | 'gone'; note: string | null }
 export const trashed = (prev: Undo | null, id: number): Undo => ({ id, stacked: prev !== null && prev.status !== 'restored' && prev.status !== 'gone', status: 'ready', note: null });

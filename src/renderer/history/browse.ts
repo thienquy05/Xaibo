@@ -21,7 +21,11 @@ export const COVERAGE = 'Search covers retained indexed content; incomplete sour
 /** Gate 5 round 2 B: a search page the service's bounded scan cut short (Load more continues it). */
 export const INCOMPLETE = 'Results may be incomplete: the search stopped at its scan limit. Load more continues it.';
 /** Round 3 review L3: a capped last page (no next) has no Load more, so its note does not promise one. */
-export const incompleteNote = (next: unknown) => (next === null ? 'Results may be incomplete: the search stopped at its scan limit. Refine the search to narrow it.' : INCOMPLETE);
+export const incompleteNote = (next: unknown) => (next === null ? 'Results may be incomplete. Refine the search to narrow it.' : INCOMPLETE); // review L4: paging may have finished the scan
+/** G5St-2: after a Load more, focus on the body (or nowhere) while the control focused at its start left the page: its list
+ *  unmounted, so the results heading takes it (not when the user put focus elsewhere or on the body themselves). */
+export const focusLost = (active: object | null, body: object | null, from: { isConnected: boolean } | null) =>
+  (active === null || active === body) && from !== null && !from.isConnected;
 
 /** The service filter; null for Live, which shows the live set, and for Suppressed, which pages suppression metadata. */
 export function filterOf(q: Query): HistoryFilter | null {

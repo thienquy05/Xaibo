@@ -214,3 +214,13 @@ test('G5d-3 undoFocus: the open session\'s title, else the placed record, else t
   assert.equal(undoFocus(4, null, false), 'heading');
 });
 
+
+// Gate 5 second review M1: below 800 px an open session hides the list (tokens.css), so the header keeps the Trash notice
+// unless the list, and its Undo notice, is actually visible
+test('Gate 5 review M1: the header keeps the Trash notice unless the list is visible', async () => {
+  const a = await import('../../../src/renderer/history/actions.ts') as Record<string, unknown>;
+  assert.equal(typeof a.headerTrashNote, 'function', 'headerTrashNote exported');
+  const note = a.headerTrashNote as (listVisible: boolean) => string | null;
+  assert.equal(note(true), null, 'the list\'s Undo notice says it');
+  assert.equal(note(false), NOTICE, 'hidden list: the header says it');
+});

@@ -294,3 +294,26 @@ test('round 3 L3: the incomplete note names Load more only when there is more to
   assert.doesNotMatch(note(null), /Load more/);
   assert.match(note(null), /incomplete/);
 });
+
+// Gate 5 second review L4: a capped page earlier in the paging does not mean the last page stopped at the scan limit
+test('Gate 5 review L4: the last-page incomplete note does not claim the scan stopped', async () => {
+  const b = await import('../../../src/renderer/history/browse.ts') as Record<string, unknown>;
+  const note = b.incompleteNote as (next: unknown) => string;
+  assert.doesNotMatch(note(null), /stopped|Load more/);
+  assert.match(note(null), /may be incomplete/);
+});
+
+// Gate 5 round 3 G5St-2 / second review L5: a Load more whose reply unmounts the list leaves focus on the body; the
+// results heading takes it (design §5.4)
+test('G5St-2: focus left on the body (or nowhere) after a Load more is lost; elsewhere it is kept', async () => {
+  const b = await import('../../../src/renderer/history/browse.ts') as Record<string, unknown>;
+  assert.equal(typeof b.focusLost, 'function', 'focusLost exported');
+  // review 4: only when the element focused at Load more left the page (a click on empty space also leaves the body)
+  const lost = b.focusLost as (active: object | null, body: object | null, from: { isConnected: boolean } | null) => boolean;
+  const body = {}, button = {}, gone = { isConnected: false }, kept = { isConnected: true };
+  assert.equal(lost(null, body, gone), true);
+  assert.equal(lost(body, body, gone), true);
+  assert.equal(lost(button, body, gone), false, 'focus moved on');
+  assert.equal(lost(body, body, kept), false, 'the Load more control is still there: the user put focus on the body');
+  assert.equal(lost(body, body, null), false, 'nothing was focused at Load more');
+});

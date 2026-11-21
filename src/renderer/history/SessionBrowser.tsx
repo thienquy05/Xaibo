@@ -18,7 +18,7 @@ import { findingBadges, formatTime, PAGE, recordLabel } from '../model.ts';
 import { Icon } from '../status/StatusBadge.tsx';
 import { show, visible } from '../text.ts';
 import { compactStatus, type SessionChanges } from '../workspace/view.ts';
-import { canLoadMore, capped, COVERAGE, emptyShown, incompleteAfter, incompleteNote, emphasis, failureNote, filterOf, freshList, groupLabel, initialQuery, isPlain, listTexts, mergeLive, mergeRows, MODES, modeKey,
+import { canLoadMore, capped, COVERAGE, emptyShown, focusLost, incompleteAfter, incompleteNote, emphasis, failureNote, filterOf, freshList, groupLabel, initialQuery, isPlain, listTexts, mergeLive, mergeRows, MODES, modeKey,
   lastKnownRows, refill, rowLines, startLoad, type BrowseRow, type ListState, type LiveState, type Query } from './browse.ts';
 import { doneText, errorText, goneUndo, menuClosed, menuItems, NOTICE, opOf, place, trashed, undoFocus, undoLabel, undone, type Shared, type Toggle, type Undo } from './actions.ts';
 import { MoveDialog, type MoveApi, type MoveOutcome, type MoveTarget } from './MoveDialog.tsx';
@@ -384,7 +384,21 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
       if (kind !== 'more') held.current = null;
       setList((x) => ({ ...x, status: 'failed', failed: kind }));
     });
+    // G5St-2: a Load more whose reply unmounts the list (an empty last page, a failure with no rows) leaves focus on the
+    // body; checked after that render commits (the effect below), not in a frame that may run before it (round 4 review M1)
+    if (kind === 'more') {
+      const from = document.activeElement;
+      const settle = () => { moreFocus.current = { g, from }; };
+      page.then(settle, settle);
+    }
   };
+  const moreFocus = useRef<{ g: number; from: Element | null } | null>(null);
+  useEffect(() => {
+    const m = moreFocus.current;
+    if (!m || list.status === 'more') return;
+    moreFocus.current = null;
+    if (m.g === gen.current && focusLost(document.activeElement, document.body, m.from)) heading.current?.focus();
+  }, [list]);
   // applying a mode, search or filter resets only this list's cursor (design §6.4); a service resync reloads it
   useEffect(() => { setMovedRow(null); load(q, 'new'); }, [q]); // review L3: View moved session belongs to the list it left
   const resyncs = useRef(changes.resync);

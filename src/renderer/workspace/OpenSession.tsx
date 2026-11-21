@@ -4,7 +4,7 @@
 // without moving the reading position.
 import { useEffect, useMemo, useReducer, useRef, useState, type KeyboardEvent } from 'react';
 import type { CostDetail, FileItem, HistoryRow, ModelMarker, SessionDetail, SessionRow, SubagentItem, TCursor, ToolItem, TranscriptItem } from '../../shared/ipc.ts';
-import { doneText, errorText, headerItems, NOTICE, opOf, retentionLine, sharedRow, type Shared, type Toggle } from '../history/actions.ts';
+import { doneText, errorText, headerItems, headerTrashNote, NOTICE, opOf, retentionLine, sharedRow, type Shared, type Toggle } from '../history/actions.ts';
 import { Menu, type MenuEntry } from '../components/Menu.tsx';
 import { MoveDialog, type MoveTarget } from '../history/MoveDialog.tsx';
 import { PurgeDialog, type PurgeTarget } from '../history/PurgeDialog.tsx';
@@ -165,7 +165,9 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
     const res = await api.overlay(op).catch(() => null);
     if (!res) setKeepNote('The result is unavailable.'); // a lost reply never means success
     else if (!res.ok) setKeepNote(errorText(res.error));
-    else if (kind === 'trash' && onTrashed) { onTrashed(r.id); setKeepNote(listShown ? null : NOTICE); } // the list's Undo notice says it
+    // below 800 px an open session hides the list slot (tokens.css), so the list being shown is not enough. ponytail: decided
+    // at the Trash; a resize across 800 px afterwards can show the notice twice or not at all; follow matchMedia if that matters
+    else if (kind === 'trash' && onTrashed) { onTrashed(r.id); setKeepNote(headerTrashNote(listShown && !!document.querySelector('.x-list-slot')?.checkVisibility())); }
     else setKeepNote(kind === 'restore' ? 'Restored from Trash.' : kind === 'trash' ? NOTICE : doneText(kind, on));
     await reread();
     setKeepBusy(false);
