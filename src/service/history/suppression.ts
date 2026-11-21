@@ -10,7 +10,8 @@ import type { DatabaseSync } from 'node:sqlite';
 
 export type SuppressionReason = 'manual' | 'retention';
 export interface Identity { agent: string; profile: string; native: string }
-/** purge_phase (XAIBO-PROD-542 G5-N1): set while the purge still deletes the session's rows. */
+/** purge_phase (XAIBO-PROD-542 G5-N1): 'settle' while the purge settles the session's contributions (Gate 5 round 2),
+ *  then 'rows' while it deletes the session's rows; NULL when they are gone. */
 export interface Marker { reason: SuppressionReason; at: number; pending: string | null; cleared_at: number | null; files: string | null; purge_phase: string | null }
 
 /** Parameters: agent, profile id, native session id. */
@@ -26,12 +27,13 @@ export const refuses = (m: Marker | undefined, ts: number | null): boolean =>
   !!m && (ts === null || !Number.isFinite(ts) || ts <= m.at || blocks(m, true));
 
 /** Writes the marker in the purge's first transaction (phase a): `pending` = registration ids whose files are still owed,
- *  `files` = source_files ids that held the session's records, purge phase 'rows' until its rows are gone. A purge after
- *  an earlier clear suppresses again. */
+ *  `files` = source_files ids that held the session's records, purge phase 'settle' (an empty settlement cursor) until its
+ *  contributions are settled, then 'rows' until its rows are gone. A purge after an earlier clear suppresses again. */
 export function suppress(db: DatabaseSync, s: Identity, reason: SuppressionReason, at: number, pending: string[], files: number[]): void {
-  db.prepare(`INSERT INTO suppressions (agent, profile_id, native_session_id, reason, at, pending, files, purge_phase) VALUES (?, ?, ?, ?, ?, ?, ?, 'rows')
+  db.prepare(`INSERT INTO suppressions (agent, profile_id, native_session_id, reason, at, pending, files, purge_phase, settle_cursor, fresh_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'settle', NULL, NULL)
     ON CONFLICT DO UPDATE SET reason = excluded.reason, at = excluded.at, pending = excluded.pending, files = excluded.files, cleared_at = NULL,
-      purge_phase = 'rows'`)
+      purge_phase = 'settle', settle_cursor = NULL, fresh_at = NULL`)
     .run(s.agent, s.profile, s.native, reason, at, JSON.stringify(pending), JSON.stringify(files));
 }
 
@@ -54,9 +56,13 @@ export function noteFile(db: DatabaseSync, s: Identity, fileId: number): void {
 /** XAIBO-PROD-542 G5-N1: SQL true unless the session (alias `s`) is being purged; one predicate for every reader. A store
  *  without the column (a read-only older schema) has no purge in progress. */
 const purgeCol = new WeakMap<DatabaseSync, boolean>();
-export function notPurging(db: DatabaseSync): string {
+const phaseClause = (db: DatabaseSync, phase: string) => {
   let has = purgeCol.get(db);
   if (has === undefined) purgeCol.set(db, has = db.prepare("SELECT 1 FROM pragma_table_info('suppressions') WHERE name = 'purge_phase'").get() !== undefined);
   return has ? `NOT EXISTS (SELECT 1 FROM suppressions px WHERE px.agent = s.agent AND px.profile_id = s.profile_id
-    AND px.native_session_id = s.native_session_id AND px.purge_phase IS NOT NULL)` : '1';
-}
+    AND px.native_session_id = s.native_session_id AND px.purge_phase ${phase})` : '1';
+};
+export const notPurging = (db: DatabaseSync): string => phaseClause(db, 'IS NOT NULL');
+/** Gate 5 round 2: the monthly side (live totals, Clear) leaves out only a session whose rows are being deleted; while
+ *  it settles, its unsettled contributions still count live, so totals never move mid-settlement. */
+export const notDeleting = (db: DatabaseSync): string => phaseClause(db, "= 'rows'");

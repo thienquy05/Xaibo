@@ -244,3 +244,32 @@ test('listTexts (XAIBO-PROD-536): Suppressed has its own title and empty text; s
   assert.deepEqual(listTexts({ ...initialQuery, mode: 'suppressed', search: 'x', agent: 'codex' }, ok),
     { title: 'Suppressed', empty: 'No suppressed sessions.', order: null, searching: false });
 });
+
+// Gate 5 round 2 security review (MEDIUM): a reload during a search refilled capped pages up to the old row count, so
+// one resync could run ~26 capped scans. The refill stops at the first capped page and keeps its cursor (Load more
+// continues); the page's capped flag is returned.
+test('round 2 review: refill stops at the first capped page and keeps its cursor', async () => {
+  const calls: (number | null)[] = [];
+  const fetch = async (cursor: number | null, limit: number) => {
+    calls.push(cursor);
+    const from = cursor ?? 0;
+    return { rows: Array.from({ length: from === 0 ? 3 : limit }, (_, i) => from + i), next: from + 50, capped: from === 0 };
+  };
+  const r = await refill(200, 50, fetch) as { rows: number[]; next: number | null; capped?: boolean };
+  assert.deepEqual(calls, [null], 'no further scan after a capped page');
+  assert.deepEqual([r.rows, r.next, r.capped], [[0, 1, 2], 50, true]);
+});
+
+// Gate 5 round 2 security review (LOW): the "results may be incomplete" state follows the reply that is applied: a new
+// query or a reload sets it from its own pages, Load more can only add to it.
+test('round 2 review: incompleteAfter: a new query or reload takes its own capped state; Load more keeps an earlier one', async () => {
+  const b = await import('../../../src/renderer/history/browse.ts') as Record<string, unknown>;
+  assert.equal(typeof b.incompleteAfter, 'function', 'incompleteAfter exported');
+  const f = b.incompleteAfter as (prev: boolean, kind: 'new' | 'resync' | 'more', capped: boolean) => boolean;
+  assert.equal(f(true, 'new', false), false);
+  assert.equal(f(true, 'resync', false), false, 'a reload resets it');
+  assert.equal(f(false, 'resync', true), true);
+  assert.equal(f(true, 'more', false), true, 'Load more keeps an earlier capped page');
+  assert.equal(f(false, 'more', true), true);
+  assert.equal(f(false, 'more', false), false);
+});

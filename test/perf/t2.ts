@@ -7,6 +7,9 @@
 // p95 <= 1 s, drain <= 5 s after load, every record and hook stored exactly once. IDs and timings only leave this process.
 // G5-N1: session retention is set to Never through Settings at the start (the corpus is dated early 2026; a run 10 min
 // after a backfill would purge it mid-run); retention runs that still happen are reported and none may purge a session.
+// G5g-1 (--retention, its own run): retention stays at the default 45 days and the first run starts RETENTION_START_MS
+// after the backfill (XAIBO_RETENTION_DELAY_MS, perf trace only), so it purges the t1mix sessions while the live load
+// runs; no service kill. M1/M2 of the events emitted while a run is under way are checked against the same budgets.
 import { createHash, randomUUID } from 'node:crypto';
 import { appendFileSync, constants, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statfsSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -33,6 +36,8 @@ const B = { m1: 250, m2: 1000, queueAge: 1000, drain: 5000, m16: 100, m5MB: 450 
 const FULL_HOLD_MS = 20_000;
 const VOLUME_GIB = 4; // the data dir's sparse image: room for the t1mix import and the live stream
 const TOKEN_EVERY = 5; // a Codex session's every 5th record is a token_count, every 50th of those malformed
+const RETENTION_START_MS = 1000; // --retention: the first run this long after the backfill
+const RETENTION_MIN = { m1: 20, m2: 100 }; // --retention: samples emitted during the run, at least
 const PROHIBITED = /(^|\s)(-p|--print|exec)(\s|$)|\/context|count_tokens/; // FR-44, as the P4-T12a runtime audit
 export const CWD = '/tmp/xaibo-fixture/perf-live';
 
@@ -81,10 +86,11 @@ export function seedSessions(home: string, count: number, codexShare: number) {
 
 /** usage: P4-T12b frames and checks; diskFull (with usage): the data dir on its own volume, filled once (off: the
  *  attribution run that tells the volume's write cost from the usage work). */
-export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, seconds?: number, usage = false, withDiskFull = true) {
+export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, seconds?: number, usage = false, withDiskFull = true, withRetention = false) {
   const p = { ...PROFILES[tier], ...(seconds ? { seconds } : {}) };
   // review M7: the fault (quarter mark, fill, 20 s hold, <= 15 s clear, 5 s settle) must end before the kill at half
   if (usage && withDiskFull && p.seconds < 240) throw new Error('--usage with the disk-full fault needs --seconds >= 240 (or --no-disk-full)');
+  if (usage && withRetention) throw new Error('--retention runs on its own (without --usage)');
   const summary = JSON.parse(readFileSync(path.join(corpus, 'summary.json'), 'utf8')) as { case: string };
   if (summary.case !== 't1mix') throw new Error('needs the mixed corpus: node scripts/gen-perf-corpus.ts --case t1mix');
   const rand = mulberry32(seed);
@@ -111,7 +117,8 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
     // --usage: the data dir on its own volume, so the disk-full fault fills the store's disk and nothing else
     let ownDataDir: string | undefined;
     if (usage && withDiskFull) { vol = volume(root, VOLUME_GIB); process.once('SIGINT', onSigint); ownDataDir = path.join(vol.mount, 'data'); mkdirSync(ownDataDir, { mode: 0o700 }); }
-    l = await launch(claude, { codex, agy: agyRoot(home), env: { XAIBO_PERF_TRACE: '1' }, ...(ownDataDir ? { dataDir: ownDataDir } : {}) });
+    l = await launch(claude, { codex, agy: agyRoot(home), env: { XAIBO_PERF_TRACE: '1', ...(withRetention ? { XAIBO_RETENTION_DELAY_MS: String(RETENTION_START_MS) } : {}) },
+      ...(ownDataDir ? { dataDir: ownDataDir } : {}) });
     const launched = l;
     const dataDir = launched.dataDir;
     // P4-T12b: renderer health, so a window that stops painting says why (main logs no renderer crash or hang)
@@ -131,7 +138,7 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
       launched.app.evaluate(() => (globalThis as unknown as { xaiboPerfRenderer?: string[] }).xaiboPerfRenderer ?? []),
       sleep(5000).then(() => ['main-unreachable']),
     ]).catch(() => ['main-unreachable']);
-    await retentionNever(launched);
+    if (!withRetention) await retentionNever(launched);
     const profile = await until(() => claudeProfile(dataDir), 30_000);
     await until(() => existsSync(path.join(dataDir, 'run', 'token')), 30_000);
     const shim = installHelpers(dataDir);
@@ -165,6 +172,8 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
     const fileIds: string[] = [];
     let hooksSent = 0;
     const start = Date.now();
+    const hrAtStart = now(); // wall clock (service log) to the hrtime of emits and trace lines
+    const hrOf = (wall: number) => hrAtStart + BigInt(Math.round((wall - start) * 1e6));
     const loadEndAt = start + p.seconds * 1000;
     const rateAt = (t: number) => (p.burstEverySec && ((t - start) / 1000) % p.burstEverySec < p.burstSec ? p.burstRate : p.rate);
     const pidOf = () => launched.app.evaluate(({ app: a }) => a.getAppMetrics().find((m) => m.name === 'xaibo-service')?.pid ?? null);
@@ -308,7 +317,7 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
       .then(() => launched.page.getByRole('group', { name: 'Session section' }).waitFor({ timeout: 10_000 })).then(() => true, () => false);
 
     const stopOnFail = (e: unknown) => { stopped = true; throw e; };
-    const settled = await Promise.allSettled([...sessions.map(run), kill().catch(stopOnFail),
+    const settled = await Promise.allSettled([...sessions.map(run), ...(withRetention ? [] : [kill().catch(stopOnFail)]),
       ...(usage ? [...sessions.filter((s) => s.agent === 'claude').map(frameLoop), memLoop()] : []), ...(vol ? [fault().catch(stopOnFail)] : [])]);
     const failed = settled.find((x) => x.status === 'rejected');
     if (failed) throw failed.reason; // every loop has stopped: cleanup below never races a writer
@@ -340,6 +349,20 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
     for (const end = Date.now() + 30_000; (stored.records.ids < stored.records.sent || !hooksAccounted()) && Date.now() < end;) { await sleep(1000); stored = storedOnce(); }
     const u = usage ? await usageResult() : null;
     const retention = retentionRuns(dataDir, launched.created).map(({ atS, sessions: n, trash, quota }) => ({ atS, sessions: n, trash, quota }));
+    // --retention: each run's window, from RETENTION_START_MS after its service's backfill_done to its retention_run (or the
+    // end of load while still running); M1/M2 of the events emitted inside one
+    const runs = retentionRuns(dataDir, launched.created);
+    const windows = serviceLog(dataDir).filter((e) => e.event === 'backfill_done' && Date.parse(e.t) >= launched.created).map((e) => {
+      const from = Date.parse(e.t) + RETENTION_START_MS;
+      const end = runs.find((x) => x.at >= from);
+      return { from, to: end?.at ?? null, sessions: end?.sessions ?? 0 };
+    });
+    const during = withRetention ? (() => {
+      const inRun = (e: Emitted) => windows.some((w) => e.t0 >= hrOf(w.from) && (w.to === null ? e.t0 <= loadEnd : e.t0 <= hrOf(w.to)));
+      const x = analyze({ emitted: emitted.filter(inRun), service: traceFile('perf-trace-service.jsonl'), main: traceFile('perf-trace-main.jsonl'), restart: null, loadEnd });
+      return { windows: windows.map((w) => ({ fromS: (w.from - start) / 1000, toS: w.to === null ? null : (w.to - start) / 1000, sessions: w.sessions })),
+        m1: x.m1.steady, m2: x.m2.steady, unpainted: x.unpainted.steady };
+    })() : null;
 
     const w = restart as { from: bigint; to: bigint } | null;
     const checks = {
@@ -350,14 +373,19 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
       recordsOnce: stored.records.rows === stored.records.sent && stored.records.ids === stored.records.sent,
       // without faults other than the kill every hook is stored once; with the disk-full fault, stored or a disk-full gap
       hooksOnce: usage ? stored.hooks.rows <= stored.hooks.sent && hooksAccounted() : stored.hooks.rows === stored.hooks.sent,
-      restarted: w !== null,
+      restarted: withRetention || w !== null, // --retention runs without the kill
       // review M1: the load ran while the T1 corpus was still importing, with one session's workspace open
       backfillDuringLoad: backfillDone !== undefined && Date.parse(backfillDone.t) > start,
       workspaceOpen,
       // G4f-2: a qualifying run is the full profile at its traffic; a shortened --seconds run is a wiring run and fails
       fullProfile: p.seconds === PROFILES[tier].seconds,
       loadRate: loadQualifies(emitted.length, p),
-      corpusKept: retention.every((x) => x.sessions === 0 && x.trash === 0),
+      ...(during ? {
+        // the run purged the t1mix sessions while the load ran, and the live events emitted meanwhile met the budgets
+        retentionPurged: windows.some((x) => x.sessions > 0),
+        retentionM1: during.m1.n >= RETENTION_MIN.m1 && during.m1.p95 <= B.m1,
+        retentionM2: during.m2.n >= RETENTION_MIN.m2 && during.m2.p95 <= B.m2,
+      } : { corpusKept: retention.every((x) => x.sessions === 0 && x.trash === 0) }),
       ...(u ? u.checks : {}),
     };
     const sorted = [...sizes].sort((a, b) => a - b);
@@ -372,7 +400,7 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
       killAtMs: w ? Math.round(Number(w.from - (emitted[0]?.t0 ?? w.from)) / 1e6) + IN_FLIGHT_MS : null, drainMs: r.drainMs, ingestLagMs: r.ingestLagMs, writerQueueAgeMs: r.queueAgeMs, deltaResyncs: r.deltaResyncs,
       restart: w ? { windowMs: Number(w.to - w.from) / 1e6 } : null,
       stored, backfill: { corpus: summary.case, doneMs: backfillDone ? Date.parse(backfillDone.t) - launched.created : null }, workspaceOpen,
-      retentionRan: retention.length > 0, retentionRuns: retention,
+      retentionRan: retention.length > 0, retentionRuns: retention, ...(during ? { duringRetention: during } : {}),
       notes: 'M1/M2 checks use events emitted outside the restart window (kill to restarted-ready + 5 s); restart-window samples are reported apart. '
         + 'A miss (never painted, or a hook spooled at the deadline) is timed as Infinity, which JSON prints as null. Queue age is checked as ingest lag '
         + '(emit -> commit, steady events): file syncs flush the writer right after they enqueue, so the writer\'s own 5 s queue-age peaks stay ~0. Drain counts steady events. '

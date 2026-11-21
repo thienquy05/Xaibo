@@ -348,13 +348,19 @@ export async function boot(o: BootOptions): Promise<Service> {
   });
   const purgeLog = (event: string, fields?: Record<string, string | number>) => o.log?.log(event, fields);
   // review M: a purge stops between batches once the service stops (the store closes right after); resume finishes it
+  // G5Rr1-2: a retention marker cleared by native activity seen during its purge: the adapters re-read its files
+  const onReimport = () => { void resync(); };
   const files = () => ({ dataDir: o.dataDir, backupDir: path.join(o.dataDir, 'backups'), secret: loadInstallSecret(o.dataDir), now: clock(), chunks: hooks?.chunks(),
-    stopped: () => stopped, log: purgeLog });
+    stopped: () => stopped, log: purgeLog, onReimport });
   let nightly: NodeJS.Timeout | undefined;
   const resume = async () => {
     try {
-      const resumed = await resumePurges(writer, { dataDir: o.dataDir, backupDir: path.join(o.dataDir, 'backups'), now: clock(), chunks: hooks?.chunks(),
-        stopped: () => stopped, log: purgeLog });
+      // the secret: a purge stopped while settling finishes it; round 2 review: an unreadable secret stops only that (a
+      // purge still settling stays owed), row phases and file work still resume
+      let secret: Buffer | undefined;
+      try { secret = loadInstallSecret(o.dataDir); } catch { secret = undefined; }
+      const resumed = await resumePurges(writer, { dataDir: o.dataDir, backupDir: path.join(o.dataDir, 'backups'), secret, now: clock(), chunks: hooks?.chunks(),
+        stopped: () => stopped, log: purgeLog, onReimport });
       if (resumed) o.log?.log('purge_resumed', { count: resumed });
     } catch (e) { o.log?.log('purge_resume_failed', { error: errorCode(e) }); }
     if (!stopped) nightly = setTimeout(() => { void resume(); }, spoolResumeDelay(clock())).unref();
@@ -364,7 +370,7 @@ export async function boot(o: BootOptions): Promise<Service> {
     // diff review M1: everything, the secret's read included, inside the chain: a failure is a logged rejection
     retentionRun ??= Promise.resolve().then(() => runRetention(writer, db, { dataDir: o.dataDir, backupDir: path.join(o.dataDir, 'backups'),
       secret: loadInstallSecret(o.dataDir), now: clock(), active: (agent, profile, sid) => isActive(engine?.status(agent, profile, sid)?.lifecycle ?? null),
-      stopped: () => stopped, chunks: hooks?.chunks(), ...(o.log ? { log: (event: string, fields?: Record<string, string | number>) => o.log!.log(event, fields) } : {}) }))
+      stopped: () => stopped, chunks: hooks?.chunks(), onReimport, ...(o.log ? { log: (event: string, fields?: Record<string, string | number>) => o.log!.log(event, fields) } : {}) }))
       .then((r) => { if (r.sessions || r.trash || r.quota) o.onRemoved?.(); return r; }) // G5b2-2
       .catch((e: unknown) => { o.log?.log('retention_failed', { error: errorCode(e) }); return null; })
       .finally(() => { retentionRun = null; });

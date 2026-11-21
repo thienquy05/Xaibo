@@ -222,21 +222,32 @@ test('spool files changed within the quiet window (mtime or ctime: a replay rena
   assert.equal(await resumePurges(h.writer, { dataDir: dir, backupDir: h.backups, now: Date.now() + 60_000 }), 0);
 });
 
-test('a purge that fails on SQLITE_FULL keeps the error, writes no marker and removes no file; the writer reports disk full', async () => {
+// Gate 5 round 2 (decision 2990): phase (a) writes only the marker (purge phase 'settle'); the space-hungry settlement
+// follows in bounded batches. A disk that fills there fails that batch like a row batch: the session stays hidden and
+// suppressed, the phase stays for resume, nothing is deleted or removed and totals hold; resume settles the rest once
+// space is back. (A full disk before phase (a) commits still rolls it back: no marker.)
+test('a purge whose settlement hits SQLITE_FULL keeps the phase for resume: logged, nothing deleted, no file removed; resume finishes it', async () => {
   const h = await seeded(400); // enough contributions that settling them needs new pages
   const { db, dir, CANARY } = h;
   const before = ['content-chunks', 'spool', 'backups'].flatMap((d) => files(join(dir, d))).map((f) => [f, sum(f)]);
+  const totals = liveMonthly(db, SECRET);
   db.exec('PRAGMA incremental_vacuum');
   db.exec(`PRAGMA max_page_count = ${n(db, 'SELECT page_count AS n FROM pragma_page_count')}`);
-  await assert.rejects(async () => purgeSession(h.writer, h.a, { dataDir: dir, backupDir: h.backups, secret: SECRET, now: Date.now(), reason: 'manual' }),
-    (e: { errcode?: number }) => ((e.errcode ?? 0) & 0xff) === 13);
+  const logged: string[] = [];
+  const r = await purgeSession(h.writer, h.a, { dataDir: dir, backupDir: h.backups, secret: SECRET, now: Date.now(), reason: 'manual', log: (e) => { logged.push(e); } });
   db.exec('PRAGMA max_page_count = 1073741823');
+  assert.deepEqual([r.purged, r.filesPending], [true, true]);
   assert.equal(h.writer.diskFull, true);
-  assert.equal(n(db, 'SELECT count(*) AS n FROM suppressions'), 0);
+  assert.deepEqual(logged, ['purge_rows_failed']);
+  assert.equal((db.prepare('SELECT purge_phase AS p FROM suppressions').get() as { p: string }).p, 'settle');
   assert.equal(n(db, 'SELECT count(*) AS n FROM sessions WHERE id = ?', h.a), 1);
-  assert.equal(n(db, 'SELECT count(*) AS n FROM settled_contributions'), 0);
-  assert.equal(n(db, 'SELECT count(*) AS n FROM event_fts WHERE event_fts MATCH ?', `"${CANARY}"`), 2);
+  assert.equal(n(db, 'SELECT count(*) AS n FROM event_fts WHERE event_fts MATCH ?', `"${CANARY}"`), 2, 'no row deleted');
   assert.deepEqual(['content-chunks', 'spool', 'backups'].flatMap((d) => files(join(dir, d))).map((f) => [f, sum(f)]), before);
+  assert.deepEqual(liveMonthly(db, SECRET), totals, 'totals unchanged');
+  await resumePurges(h.writer, { dataDir: dir, backupDir: h.backups, secret: SECRET, now: Date.now() + 60_000 });
+  assert.equal(h.writer.diskFull, false);
+  assert.equal(n(db, 'SELECT count(*) AS n FROM sessions WHERE id = ?', h.a), 0);
+  assert.deepEqual(liveMonthly(db, SECRET), totals, 'settled once');
 });
 
 // Gate 5 U1 (XAIBO-PROD-542)
@@ -283,4 +294,27 @@ test('G5a-3: a missing backup dir is done; an oversized own spool file holding t
   const r = await purgeSession(h.writer, h.a, { ...files_(h, Date.now() + 60_000), secret: SECRET, reason: 'manual', backupDir: join(h.dir, 'no-backups') });
   assert.deepEqual([r.purged, r.filesPending], [true, false]);
   for (const f of files(h.spool)) assert.ok(!readFileSync(f).includes(h.CANARY), f);
+});
+
+// Gate 5 round 2 G5a-3 (spool discovery): only a spool dir that does not exist is "no spool, done". One that cannot be
+// examined now (EACCES, EMFILE, ...) keeps the file work owed, as an unreadable backup dir or spool file does; the
+// same rule in spoolDir, rewriteSpool and spoolToday (a dir not ours stays never read).
+test('G5a-3: a spool dir that cannot be examined now keeps the work owed; only a missing one is done', async () => {
+  assert.equal(typeof purge.finishPending, 'function', 'finishPending exported');
+  const h = await hookStore();
+  h.db.prepare("INSERT INTO suppressions (agent, profile_id, native_session_id, reason, at, pending) VALUES ('claude', 'p1', ?, 'manual', 1, '[]')").run(A);
+  const who = { agent: 'claude', profile: 'p1', native: A };
+  const none = { items: () => [], remove: () => undefined } as unknown as Parameters<typeof purge.finishPending>[2]['chunks'];
+  const data = join(h.dir, 'files');
+  mkdirSync(join(data, 'spool'), { recursive: true, mode: 0o700 });
+  const opts = { dataDir: data, backupDir: join(h.dir, 'no-backups'), now: Date.now() + 60_000, chunks: none };
+  chmodSync(data, 0o600); // listable, not searchable: stat of spool/ fails with EACCES
+  let done: boolean, today: Set<string> | null;
+  try { done = purge.finishPending(h.writer, who, opts); today = purge.spoolToday(data, opts.now); } finally { chmodSync(data, 0o700); }
+  assert.equal(today, null, 'today\'s spool identities cannot be read now: unknown, never "none"');
+  assert.equal(done, false, 'EACCES on the spool dir is transient, never done');
+  assert.notEqual((h.db.prepare('SELECT pending FROM suppressions').get() as { pending: string | null }).pending, null);
+  assert.equal(purge.finishPending(h.writer, who, opts), true, 'examinable again: done');
+  h.db.prepare("INSERT INTO suppressions (agent, profile_id, native_session_id, reason, at, pending) VALUES ('claude', 'p1', ?, 'manual', 1, '[]')").run(B);
+  assert.equal(purge.finishPending(h.writer, { ...who, native: B }, { ...opts, dataDir: join(h.dir, 'no-data') }), true, 'no spool dir at all: done');
 });

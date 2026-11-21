@@ -12,8 +12,9 @@ import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFile
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { ClaudeAdapter } from '../../src/service/adapters/claude/index.ts';
-import { purgeSession } from '../../src/service/history/purge.ts';
+import { purgeSession, resumePurges } from '../../src/service/history/purge.ts';
 import { reimport } from '../../src/service/history/reimport.ts';
+import { clear as clearMarker } from '../../src/service/history/suppression.ts';
 import { createIntake } from '../../src/service/receivers/intake.ts';
 import { createReportIntake } from '../../src/service/receivers/report.ts';
 import { addRegistration } from '../../src/service/receivers/registrations.ts';
@@ -241,4 +242,75 @@ test('review H2/M2: a reset checkpoint survives an ingest that started before it
     events: [{ nativeSessionId: S, source: 'transcript', confidence: 'confirmed', nativeId: 'stale-1', kind: 'user', sourceSeq: 1, sourceTs: Date.now(), receivedTs: Date.now() }] });
   assert.equal(count(db, "SELECT count(*) FROM events WHERE native_id = 'stale-1'"), 0, 'a batch the epoch guard refuses commits no events');
   assert.deepEqual([row().offset, row().size, row().epoch], [0, -1, before.epoch + 1]);
+});
+
+// Gate 5 round 2 G5Rr1-2 (EC-22, XAIBO-PROD-542; design security review): native continuation scanned while a retention
+// purge still owes work is refused (the checkpoint still advances) and recorded on the marker as fresh_at. Once neither
+// the purge phase nor file work is owed (today's spool file holding the session closes only after UTC midnight), a
+// retention marker with fresh_at is cleared and its files reset (epoch + 1, the G5f-1 reread path): the next scan
+// re-imports the whole session, continuation included, with no further native write. A manual marker stays.
+const nextDay = (t: number) => Date.UTC(new Date(t).getUTCFullYear(), new Date(t).getUTCMonth(), new Date(t).getUTCDate() + 1);
+test('G5Rr1-2: continuation during a retention purge is re-imported once the purge and its file work are done; manual stays out', async () => {
+  const h = await imported();
+  const { db, dataDir } = h;
+  const at = Date.now() - 60_000;
+  const marker = () => ({ ...db.prepare('SELECT * FROM suppressions').get() }) as Record<string, unknown>;
+  // today's spool file holds a record of the session: the purge owes that file until the day closes
+  mkdirSync(join(dataDir, 'spool'), { mode: 0o700 });
+  writeFileSync(join(dataDir, 'spool', `${new Date(at).toISOString().slice(0, 10)}.jsonl`),
+    `${JSON.stringify(envelope({ session_id: S, received_ts: at - 1_000, payload: { hook_event_name: 'Stop', session_id: S } }))}\n`, { mode: 0o600 });
+  const r = await purgeSession(h.writer, h.sid, { dataDir, backupDir: join(dataDir, 'backups'), secret: SECRET, now: at, reason: 'retention', stopped: () => true });
+  assert.deepEqual([r.purged, r.filesPending], [true, true], 'fixture: stopped after phase (a)');
+  appendFileSync(h.transcript, continued(Date.now()));
+  await h.adapter.backfill(); // refused while the purge is under way
+  assert.equal(count(db, "SELECT count(*) FROM events WHERE native_id = '00000000-0000-4000-8000-0000000010f1'"), 0, 'refused while deleting rows');
+  assert.equal(typeof marker()['fresh_at'], 'number', 'the refused batch\'s new native activity is recorded on the marker');
+
+  await resumePurges(h.writer, { dataDir, backupDir: join(dataDir, 'backups'), secret: SECRET, now: Date.now() }); // rows done; today's file still owed
+  await h.adapter.backfill();
+  assert.notEqual(marker()['pending'], null, 'today\'s spool file keeps the file work owed');
+  assert.equal(marker()['cleared_at'], null, 'not cleared while work is owed');
+  assert.equal(count(db, 'SELECT count(*) FROM sessions WHERE native_session_id = ?', S), 0);
+
+  let woken = 0;
+  const closed = nextDay(Date.now()) + 60_000;
+  assert.equal(await resumePurges(h.writer, { dataDir, backupDir: join(dataDir, 'backups'), now: closed, onReimport: () => { woken++; } }), 1, 'the day closed: file work done');
+  assert.equal(marker()['pending'], null);
+  assert.equal(marker()['cleared_at'], closed, 'the retention marker with fresh activity clears, at the service clock (not the native record time)');
+  await resumePurges(h.writer, { dataDir, backupDir: join(dataDir, 'backups'), now: closed + 1, onReimport: () => { woken++; } });
+  assert.equal(woken, 1, 'the adapters are woken exactly once');
+  await h.adapter.backfill(); // no further native write
+  assert.equal(count(db, 'SELECT count(*) FROM sessions WHERE native_session_id = ?', S), 1, 'the continued session is re-imported');
+  assert.equal(count(db, 'SELECT count(*) FROM events'), h.events + 1, 'whole: its old records and the continuation');
+  assert.equal(january(liveMonthly(db, SECRET)), january(h.monthly), 'settled January is not counted twice (FR-52)');
+
+  const g = await imported();
+  await purgeSession(g.writer, g.sid, { dataDir: g.dataDir, backupDir: join(g.dataDir, 'backups'), secret: SECRET, now: at, reason: 'manual', stopped: () => true });
+  appendFileSync(g.transcript, continued(Date.now()));
+  await g.adapter.backfill();
+  await resumePurges(g.writer, { dataDir: g.dataDir, backupDir: join(g.dataDir, 'backups'), secret: SECRET, now: Date.now() + 60_000 });
+  await g.adapter.backfill();
+  assert.equal(count(g.db, 'SELECT count(*) FROM sessions WHERE native_session_id = ?', S), 0, 'a manual purge stays out');
+  assert.equal(count(g.db, 'SELECT count(*) FROM suppressions WHERE cleared_at IS NULL'), 1);
+});
+
+// Gate 5 round 2 security review (test b): a manual purge of a session re-imported after a retention marker with
+// fresh activity cleared resets that marker (manual, no fresh_at, uncleared): new native activity never brings it back.
+test('round 2 review: a manual purge over a cleared retention marker with fresh_at resets it and stays suppressed', async () => {
+  const h = await imported();
+  const { db, dataDir } = h;
+  const at = Date.now() - 60_000;
+  await purgeSession(h.writer, h.sid, { dataDir, backupDir: join(dataDir, 'backups'), secret: SECRET, now: at, reason: 'retention' });
+  db.prepare('UPDATE suppressions SET fresh_at = ?').run(at + 1);
+  h.writer.transact((tdb) => clearMarker(tdb, WHO, at + 2)); // cleared by that activity: files reset for a whole re-read
+  await h.adapter.backfill(); // re-imported
+  const sid = (db.prepare('SELECT id FROM sessions WHERE native_session_id = ?').get(S) as { id: number }).id;
+  await purgeSession(h.writer, sid, { dataDir, backupDir: join(dataDir, 'backups'), secret: SECRET, now: Date.now(), reason: 'manual' });
+  const m = { ...db.prepare('SELECT reason, fresh_at, cleared_at FROM suppressions').get() } as Record<string, unknown>;
+  assert.deepEqual(m, { reason: 'manual', fresh_at: null, cleared_at: null });
+  appendFileSync(h.transcript, continued(Date.now() + 1_000));
+  await h.adapter.backfill();
+  await resumePurges(h.writer, { dataDir, backupDir: join(dataDir, 'backups'), secret: SECRET, now: Date.now() + 60_000 });
+  await h.adapter.backfill();
+  assert.equal(count(db, 'SELECT count(*) FROM sessions WHERE native_session_id = ?', S), 0, 'stays out');
 });

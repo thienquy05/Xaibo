@@ -475,3 +475,27 @@ test('G5d-1 refresh gate: no new run while one is pending; only the current run\
   assert.equal(replyApplies(g2, 2), true);
   assert.equal(replyApplies({ ...g2, pending: false }, 2), true, 'a run\'s replies apply until a newer run starts');
 });
+
+// Gate 5 round 2 G5Rr1-4: a tick that comes while a refresh run is pending is not dropped: the gate records it (the
+// caller stores `again`) and, when that run settles, exactly one more run follows, so the final activity is shown.
+test('G5Rr1-4 refresh gate: a tick during a pending run queues one rerun when it settles; none without a missed tick', async () => {
+  const tree = await import('../../../src/renderer/agent-map/tree.ts') as Record<string, unknown>;
+  assert.equal(typeof tree.settleRefresh, 'function', 'tree.settleRefresh exists');
+  type Gate = { gen: number; pending: boolean; again?: boolean };
+  const startRefresh = tree.startRefresh as (g: Gate) => Gate | null;
+  const settleRefresh = tree.settleRefresh as (g: Gate, gen: number) => { gate: Gate; rerun: boolean };
+  const g1 = startRefresh({ gen: 0, pending: false, again: false })!;
+  assert.equal(startRefresh(g1), null, 'a tick while the run is pending starts nothing');
+  const missed = { ...g1, again: true }; // what the caller stores for that tick
+  const s1 = settleRefresh(missed, g1.gen);
+  assert.equal(s1.rerun, true, 'the missed tick reruns once the run settles');
+  assert.equal(s1.gate.pending, false);
+  const g2 = startRefresh(s1.gate)!;
+  assert.equal(g2.gen, 2);
+  assert.ok(!g2.again, 'the rerun takes the missed tick');
+  const s2 = settleRefresh(g2, g2.gen);
+  assert.deepEqual([s2.rerun, s2.gate.pending], [false, false], 'no missed tick: no rerun');
+  const stale = settleRefresh({ ...g2, again: true }, 1);
+  assert.equal(stale.rerun, false, 'an older run settling changes nothing');
+  assert.deepEqual(stale.gate, { ...g2, again: true });
+});

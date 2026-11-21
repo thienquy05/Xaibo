@@ -6,8 +6,9 @@
 // each in the same app. G5g-2: common terms are 1- and 2-syllable corpus words that match most events (counts reported and
 // checked). G5g-1: the warm launch then stays open into the app's own first retention run (10 min after its backfill,
 // real clock): session retention Never, so the run only expires the tp quota streams (older than 45 days); samples run
-// back to back from just before it is due until retention_run is logged, and those that started after the store's quota
-// rows were seen dropping and ended before retention_run are the samples during retention. Clicks and waits run in the
+// back to back from just before it is due until retention_run is logged; every sample that overlaps the run (ended after
+// the store's quota rows were seen dropping, started before retention_run) counts with its full latency, and one that
+// timed out there is a miss (G5Rr2-1). Clicks and waits run in the
 // page, so no Playwright round trip is timed. Targets: selection p95 <= 300 ms, search p95 <= 500 ms. Also reported: M12
 // at TP (each cold launch), DB/WAL/FTS bytes. ponytail: unfiltered search only (the filtered variant is measured at T3 in
 // the owner-started scale-up stage, P5-T19); M1/M2 dispatch lag during retention needs the live-load emitter (t2.ts),
@@ -94,8 +95,10 @@ async function search(l: Launched, term: string): Promise<{ ms: number; rendered
 type Sample = { kind: 'select' | 'search' | 'common'; t0: number; t1: number; ms: number | null };
 
 /** G5g-1: samples back to back in the open launch `l` from LEAD_MS before its first retention run is due until the run is
- *  logged. A sample is during retention when it started after fewer usage_history rows were first seen (an upper bound on
- *  the run's start: quota expiry is its only work under Never) and ended before retention_run (logged at its end). */
+ *  logged. G5Rr2-1: a sample is during retention when it overlaps the run: it ended at or after the moment fewer
+ *  usage_history rows were first seen (the run was under way then: quota expiry is its only work under Never) and started
+ *  at or before retention_run (logged at its end). A slow one that finishes after the run keeps its whole latency; one
+ *  that timed out inside the window is a miss. */
 async function duringRetention(l: Launched, rare: string[], common: string[]) {
   const done = await until(() => serviceLog(l.dataDir).filter((e) => e.event === 'backfill_done' && Date.parse(e.t) >= l.created).at(-1), 30 * 60_000, 500);
   const due = Date.parse(done.t) + RETENTION_DELAY_MS;
@@ -112,8 +115,9 @@ async function duringRetention(l: Launched, rare: string[], common: string[]) {
     const timed = async (kind: Sample['kind'], f: () => Promise<number | null>) => {
       const t0 = Date.now();
       const ms = await f();
-      samples.push({ kind, t0, t1: Date.now(), ms });
-      if (drop === null && count() < before) drop = Date.now();
+      const t1 = Date.now();
+      if (drop === null && count() < before) drop = t1; // the run was under way as this sample ended: it overlaps
+      samples.push({ kind, t0, t1, ms });
     };
     for (let k = 0; !run && Date.now() < due + RUN_WAIT_MS; k++) {
       await timed('select', () => select(l, k + 1));
@@ -124,7 +128,7 @@ async function duringRetention(l: Launched, rare: string[], common: string[]) {
     after = count();
   } finally { db.close(); }
   const end = run?.at;
-  const inside = samples.filter((s) => drop !== null && end !== undefined && s.t0 >= drop && s.t1 <= end);
+  const inside = samples.filter((s) => drop !== null && end !== undefined && s.t1 >= drop && s.t0 <= end);
   const ms = (...kinds: Sample['kind'][]) => inside.filter((s) => kinds.includes(s.kind) && s.ms !== null).map((s) => s.ms!);
   return {
     usageHistoryRows: { before, after }, run: run ? { sessions: run.sessions, trash: run.trash, quota: run.quota } : null,

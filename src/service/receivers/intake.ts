@@ -188,6 +188,8 @@ export interface HooksOptions extends IntakeOptions {
   customAgent?: (agent: string) => boolean;
   /** XAIBO-PROD-431: wait before retrying a listen that failed (default SOCKET_RETRY_MS). */
   socketRetryMs?: number;
+  /** Gate 5 (hooksOnce): interval between spool replays while the service runs (default REPLAY_INTERVAL_MS). */
+  replayIntervalMs?: number;
 }
 /** socket: the listening server, null while none listens (a failed listen is retried). */
 export interface Hooks { intake: Intake; readonly socket: SocketServer | null; replay: Promise<ReplayResult>; close(): Promise<void>;
@@ -197,11 +199,17 @@ export interface Hooks { intake: Intake; readonly socket: SocketServer | null; r
 // ponytail: a fixed retry interval while the socket cannot listen (a full disk cannot create it); back off if a long
 // outage ever shows the retries costing anything.
 const SOCKET_RETRY_MS = 5000;
+// Gate 5 (hooksOnce, perf finding): a hook the forwarder spooled during a short stall (past its ~50 ms deadline) while the
+// socket listens is replayed while the service runs, not only at the next start. ponytail: a fixed interval with a quiet
+// window for plain files the forwarder may still append to, doubling up to REPLAY_BACKOFF_MAX_MS while a replay cannot
+// finish (disk full, store errors); a spooled hook waits up to ~interval + quiet. Watch the spool dir if that is too slow.
+const REPLAY_INTERVAL_MS = 10_000, REPLAY_QUIET_MS = 5_000, REPLAY_BACKOFF_MAX_MS = 5 * 60_000;
 
 /** Service start (and each (re)listen): listen first, so hooks fired meanwhile are acked instead of spooling behind the
  *  replay, then replay the spool in the background (its cleanup waits a grace). A socket that cannot listen is logged
  *  once and retried until it listens or the service closes (XAIBO-PROD-431); the replay still runs, and runs again
- *  after a late listen (after the first one ends) for the hooks the forwarder spooled meanwhile. */
+ *  after a late listen (after the first one ends) for the hooks the forwarder spooled meanwhile, and on an interval while
+ *  the service runs (Gate 5, hooksOnce). */
 export async function startHooks(o: HooksOptions): Promise<Hooks> {
   const intake = createIntake(o);
   // XAIBO-PROD-443: a chunk dir that cannot be opened (not ours, a full disk) holds report intake only, and only until a
@@ -220,7 +228,7 @@ export async function startHooks(o: HooksOptions): Promise<Hooks> {
       failed = true;
       return undefined;
     }
-    if (failed) { failed = false; o.log?.log('report_intake_ready'); void lastReplay.then(runReplay, runReplay); }
+    if (failed) { failed = false; o.log?.log('report_intake_ready'); void runReplay(); }
     return live;
   };
   open();
@@ -236,15 +244,28 @@ export async function startHooks(o: HooksOptions): Promise<Hooks> {
     const reg = reports.registry.current(id); // identity from the registry, never the record (P3-T13c)
     return reg ? reports.intake.deliver(reg, frame, receivedTs) : Promise.resolve({ status: 'rejected', code: 'auth' });
   };
-  const runReplay = () => {
-    const r = replaySpool({ dataDir: o.dataDir, db: o.db, deliver: intake.deliver, stopped: () => stopped, ...(o.now ? { now: o.now } : {}),
-      deliverReport }).then((x) => {
-      o.log?.log('spool_replay', { delivered: x.delivered, torn: x.torn, skipped: x.skipped, deferred: x.deferred, dropped: x.dropped, complete: x.complete ? 1 : 0 });
+  /** One replay after the latest one settled (single flight: start, late listen, report recovery and interval replays).
+   *  interval: plain files inside the quiet window wait, and only a replay that did something is logged. */
+  const runReplay = (interval = false): Promise<ReplayResult> => {
+    const r = lastReplay.catch(() => undefined).then(() => replaySpool({ dataDir: o.dataDir, db: o.db, deliver: intake.deliver, stopped: () => stopped,
+      ...(o.now ? { now: o.now } : {}), deliverReport, ...(interval ? { quietMs: REPLAY_QUIET_MS } : {}) })).then((x) => {
+      if (!interval || x.delivered || x.torn || x.skipped || x.dropped || !x.complete) {
+        o.log?.log('spool_replay', { delivered: x.delivered, torn: x.torn, skipped: x.skipped, deferred: x.deferred, dropped: x.dropped, complete: x.complete ? 1 : 0 });
+      }
       return x;
     });
     r.catch((e: unknown) => o.log?.log('spool_replay_failed', { error: errorCode(e) }));
     lastReplay = r;
     return r;
+  };
+  const every = o.replayIntervalMs ?? REPLAY_INTERVAL_MS;
+  let wait = every;
+  let timer: NodeJS.Timeout | undefined;
+  const arm = () => { if (!stopped) timer = setTimeout(tick, wait).unref(); };
+  const tick = () => {
+    if (stopped) return;
+    runReplay(true).then((x) => { wait = x.complete ? every : Math.min(wait * 2, REPLAY_BACKOFF_MAX_MS); },
+      () => { wait = Math.min(wait * 2, REPLAY_BACKOFF_MAX_MS); }).finally(arm);
   };
   const listen = async (): Promise<boolean> => {
     try {
@@ -255,12 +276,13 @@ export async function startHooks(o: HooksOptions): Promise<Hooks> {
       return true;
     } catch (e) {
       if (!down) { down = true; o.log?.log('hook_socket_failed', { error: e instanceof SocketError ? e.code : errorCode(e) }); }
-      if (!stopped) retry = setTimeout(() => { void listen().then((ok) => { if (ok) void replay.then(runReplay, runReplay); }); }, o.socketRetryMs ?? SOCKET_RETRY_MS);
+      if (!stopped) retry = setTimeout(() => { void listen().then((ok) => { if (ok) void runReplay(); }); }, o.socketRetryMs ?? SOCKET_RETRY_MS);
       return false;
     }
   };
   await listen();
   const replay = runReplay();
-  return { intake, get socket() { return socket; }, replay, close: async () => { stopped = true; clearTimeout(retry); await socket?.close(); },
+  arm();
+  return { intake, get socket() { return socket; }, replay, close: async () => { stopped = true; clearTimeout(retry); clearTimeout(timer); await socket?.close(); },
     chunks: () => open()?.chunks };
 }

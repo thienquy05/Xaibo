@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
-import { answerCost, answerFiles, answerLiveSet, answerMarkers, answerSession, answerSlice, answerSubagents, answerTools, answerTranscript, sessionsByKey, usageScopes } from '../../src/service/api.ts';
+import { answerCost, answerFiles, answerUsageHistory, answerLiveSet, answerMarkers, answerSession, answerSlice, answerSubagents, answerTools, answerTranscript, sessionsByKey, usageScopes } from '../../src/service/api.ts';
 import { mapGroups } from '../../src/service/history/map.ts';
 import { applyOverlay, listHistory } from '../../src/service/history/overlay.ts';
 import { purgeSession, resumePurges } from '../../src/service/history/purge.ts';
@@ -20,6 +20,7 @@ import { reimport } from '../../src/service/history/reimport.ts';
 import { answerHistoryRow, answerSearch } from '../../src/service/history/tools.ts';
 import type { Batch } from '../../src/service/store/writer.ts';
 import { priceUsage } from '../../src/service/usage/cost.ts';
+import { clearUsageHistory } from '../../src/service/usage/clear.ts';
 import { liveMonthly } from '../../src/service/usage/monthly.ts';
 import { loadPrices } from '../../src/service/usage/prices.ts';
 import type { HistoryFilter, LiveStatus, OverlayOp } from '../../src/shared/ipc.ts';
@@ -69,7 +70,7 @@ async function large(count = 12) {
     hook(txs.length);
     return r;
   };
-  const opts = { dataDir: h.dir, backupDir: join(h.dir, 'backups'), now: now - 60_000 };
+  const opts = { dataDir: h.dir, backupDir: join(h.dir, 'backups'), now: now - 60_000, secret: SECRET }; // round 2: resume settles, so it needs the secret
   return { ...h, id, rows, txs, files: files(h.db), setHook: (f: (i: number) => void) => { hook = f; }, opts };
 }
 
@@ -89,8 +90,9 @@ test('G5-N1: a session larger than the batch bound is purged in bounded transact
   }
   assert.ok(h.txs.filter((t) => t.rows > 0).length >= Math.ceil(total / LIMITS.rows), 'one batch per bound');
   // review L (code): a row-bounded step that deleted fewer rows than its bound is done, with no extra empty transaction;
-  // 17 = phase (a), the sweep, the two file-work transactions, the twelve steps with nothing to delete, events' last check
-  assert.ok(h.txs.filter((t) => t.rows === 0).length <= 17, `empty transactions: ${h.txs.filter((t) => t.rows === 0).length}`);
+  // 17 = phase (a), the sweep, the two file-work transactions, the twelve steps with nothing to delete, events' last check;
+  // + 6 settle batches (round 2: 25 requests, turns and readings at 5 a batch, then the session and model keys)
+  assert.ok(h.txs.filter((t) => t.rows === 0).length <= 23, `empty transactions: ${h.txs.filter((t) => t.rows === 0).length}`);
   assert.ok(atLive !== undefined && atLive > 0, 'a live commit ran between batches, before the purge finished');
   assert.equal(n(h.db, 'SELECT count(*) AS n FROM events WHERE native_id = ?', 'live-1'), 1, 'the live write committed');
   assert.equal(h.rows(), 0);
@@ -196,7 +198,8 @@ test('review M (code): a failing batch is logged with an error code (no content)
   const r = await purgeSession(h.writer, h.id, { ...h.opts, secret: SECRET, reason: 'manual', limits: LIMITS, vacuum: false, log: (e, f) => { logged.push([e, f]); } });
   assert.deepEqual([r.purged, r.filesPending], [true, true]);
   assert.deepEqual(logged, [['purge_rows_failed', { error: 'EFAULT' }]]);
-  assert.equal(({ ...h.db.prepare('SELECT * FROM suppressions').get() } as Record<string, unknown>)['purge_phase'], 'rows');
+  // round 2: the third transaction is a settle batch, so the phase it keeps is 'settle'
+  assert.equal(({ ...h.db.prepare('SELECT * FROM suppressions').get() } as Record<string, unknown>)['purge_phase'], 'settle');
   h.writer.transact = inner;
   assert.equal(await resumePurges(h.writer, { ...h.opts, now: Date.now() + 60_000 }), 1);
 });
@@ -223,4 +226,121 @@ test('re-review L: resume after a stop touches no marker (the store closes right
   h.db.prepare("INSERT INTO suppressions (agent, profile_id, native_session_id, reason, at, pending) VALUES ('claude', 'p1', 'owed', 'manual', 1, '[]')").run();
   assert.equal(await resumePurges(h.writer, { dataDir: h.dir, backupDir: join(h.dir, 'backups'), now: Date.now(), stopped: () => true }), 0);
   assert.equal(n(h.db, 'SELECT count(*) AS n FROM suppressions WHERE pending IS NOT NULL'), 1, 'its file work stays owed');
+});
+
+// Gate 5 round 2 G5-N1 (settlement; design security review approve-with-fixes): measured on the round-2 tree, phase (a)
+// of a 20k-event session (8k requests, 1k turns) held the writer ~106 ms (5k: ~33 ms, 50k: ~230 ms). Phase (a) now writes
+// the marker with purge phase 'settle' (hidden from UI readers, blocks() true; the monthly side excludes only 'rows', so
+// totals and Clear stay right); 'u'/'t' keys settle in rowid batches (usage id, turn id cursor on the marker, stored with
+// that batch's marks), 's'/'m' keys in the last settle transaction from the frozen rows; only then 'rows' and deletion.
+const phaseOf = (db: DatabaseSync) => (db.prepare('SELECT purge_phase AS p FROM suppressions').get() as { p: string | null } | undefined)?.p ?? null;
+const keys = (db: DatabaseSync) => (db.prepare('SELECT key FROM settled_contributions ORDER BY key').all() as { key: string }[]).map((r) => r.key);
+
+test('G5-N1 settle: contributions settle in bounded transactions under phase \'settle\' (hidden, nothing deleted); totals hold throughout', async () => {
+  const h = await large(); // 12 requests + 12 turns + quota: 27 contributions with its session and model keys, over 5 per batch
+  const before = liveMonthly(h.db, SECRET);
+  const total = h.rows();
+  const settled = () => n(h.db, 'SELECT count(*) AS n FROM settled_contributions');
+  const perTx: number[] = [], moved: number[] = [], deleted: number[] = [], shown: number[] = [];
+  let last = settled(), sawSettle = 0;
+  h.setHook((i) => {
+    const now = settled();
+    perTx.push(now - last);
+    last = now;
+    if (JSON.stringify(liveMonthly(h.db, SECRET)) !== JSON.stringify(before)) moved.push(i);
+    if (phaseOf(h.db) === 'settle') {
+      sawSettle++;
+      if (h.rows() !== total) deleted.push(i);
+      if (answerHistoryRow(h.db, h.id).row !== null || listHistory(h.db, ALL, null, 100).rows.length) shown.push(i);
+    }
+  });
+  await purgeSession(h.writer, h.id, { ...h.opts, secret: SECRET, reason: 'manual', limits: LIMITS, vacuum: false });
+  assert.ok(settled() >= 27, `fixture: every contribution settled (${settled()})`);
+  assert.ok(sawSettle >= 2, `the purge phase was 'settle' after ${sawSettle} transactions (phase (a) and the settle batches)`);
+  assert.ok(Math.max(...perTx) <= 2 * LIMITS.rows, `contributions settled per transaction: ${perTx.join(',')} (bound ${2 * LIMITS.rows})`);
+  assert.deepEqual(deleted, [], 'no row deleted while settling');
+  assert.deepEqual(shown, [], 'hidden from UI readers while settling');
+  assert.deepEqual(moved, [], 'totals unchanged after every transaction, settling included');
+  assert.deepEqual(liveMonthly(h.db, SECRET), before);
+});
+
+test('G5-N1 settle: a Clear usage history during \'settle\' marks the session\'s keys; later settle batches never add them back', async () => {
+  const h = await large();
+  let cleared = false;
+  h.setHook(() => {
+    if (cleared || phaseOf(h.db) !== 'settle') return;
+    cleared = true;
+    h.writer.transact((db) => clearUsageHistory(db, SECRET, Date.now()));
+  });
+  await purgeSession(h.writer, h.id, { ...h.opts, secret: SECRET, reason: 'manual', limits: LIMITS, vacuum: false });
+  assert.ok(cleared, 'fixture: Clear ran while the purge phase was \'settle\'');
+  for (const t of ['monthly_usage', 'monthly_sessions', 'monthly_quota_peaks']) assert.equal(n(h.db, `SELECT count(*) AS n FROM ${t}`), 0, `${t} stays cleared`);
+  const m = liveMonthly(h.db, SECRET);
+  assert.deepEqual([m.usage.length, m.sessions.length, m.quota.length], [0, 0, 0]);
+  assert.equal(n(h.db, 'SELECT count(*) AS n FROM settled_contributions WHERE cleared = 0'), 0, 'every key of the session is marked cleared');
+});
+
+test('G5-N1 settle: stopped between settle batches, resume settles the rest exactly once (none twice, none lost)', async () => {
+  const ref = await large();
+  await purgeSession(ref.writer, ref.id, { ...ref.opts, secret: SECRET, reason: 'manual', limits: LIMITS, vacuum: false });
+  const want = keys(ref.db);
+  const h = await large();
+  const before = liveMonthly(h.db, SECRET);
+  await purgeSession(h.writer, h.id, { ...h.opts, secret: SECRET, reason: 'manual', limits: LIMITS, vacuum: false, stopped: () => h.txs.length >= 2 });
+  assert.equal(phaseOf(h.db), 'settle', 'the stop left the settlement part done');
+  const partial = keys(h.db).length;
+  assert.ok(partial > 0 && partial < want.length, `part settled: ${partial} of ${want.length}`);
+  assert.equal(n(h.db, 'SELECT count(*) AS n FROM sessions WHERE id = ?', h.id), 1, 'nothing deleted before settlement ends');
+  assert.deepEqual(liveMonthly(h.db, SECRET), before, 'totals unchanged while stopped mid-settlement');
+  assert.equal(await resumePurges(h.writer, { ...h.opts, now: Date.now() + 60_000 }), 1);
+  assert.deepEqual(keys(h.db), want, 'the same keys as an uninterrupted purge');
+  assert.deepEqual(liveMonthly(h.db, SECRET), before);
+  assert.equal(n(h.db, 'SELECT count(*) AS n FROM sessions WHERE id = ?', h.id), 0);
+});
+
+test('G5-N1 settle (guard): a month with model-unknown and named records counts its session under the named model only', async () => {
+  const h = await large();
+  const early = Array.from({ length: 6 }, (_, i) => i); // the first batches see only model-unknown rows
+  h.db.prepare(`UPDATE turns SET model_id = NULL WHERE native_turn_id IN (SELECT value FROM json_each(?))`).run(JSON.stringify(early.map((i) => `bt-${i}`)));
+  h.db.prepare(`UPDATE usage SET model_id = NULL WHERE identity IN (SELECT value FROM json_each(?))`).run(JSON.stringify(early.map((i) => `big:${i}`)));
+  const before = liveMonthly(h.db, SECRET);
+  await purgeSession(h.writer, h.id, { ...h.opts, secret: SECRET, reason: 'manual', limits: LIMITS, vacuum: false });
+  assert.equal(n(h.db, "SELECT coalesce(sum(sessions), 0) AS n FROM monthly_usage WHERE model_id = ''"), 0, 'no model-unavailable session count');
+  assert.equal(n(h.db, "SELECT coalesce(sum(sessions), 0) AS n FROM monthly_usage WHERE model_id = 'claude-x'"), 1);
+  assert.deepEqual(liveMonthly(h.db, SECRET), before);
+});
+
+// Gate 5 round 2 G5Rr1-5 (design security review): usage history answers a scope of a session being purged (any purge
+// phase) or kept out by an uncleared marker exactly like an empty scope; account scopes (no session) stay served.
+test('G5Rr1-5: usage history of a purging session\'s own scope answers like an empty scope; an account scope stays', async () => {
+  const h = await large();
+  const scope = n(h.db, 'SELECT id AS n FROM usage_scopes WHERE session_id = ?', h.id);
+  const account = Number(h.db.prepare("INSERT INTO usage_scopes (scope_key, profile_id, agent, session_id, verified) VALUES ('account', 'p1', 'claude', NULL, 1)").run().lastInsertRowid);
+  sample(h.db, account, { percent: 12, at: T0 + 5 });
+  const history = (id: number) => answerUsageHistory(h.db, { v: 1, type: 'usageHistory', id: 1, scope: id, stream: 'codex', from: 0, to: Number.MAX_SAFE_INTEGER, cursor: null, limit: 50 });
+  assert.equal(history(scope).records.length, 1, 'fixture: its quota reading is served');
+  await purgeSession(h.writer, h.id, { ...h.opts, secret: SECRET, reason: 'retention', limits: LIMITS, vacuum: false, stopped: () => h.txs.length >= 3 });
+  assert.ok(h.rows() > 0 && n(h.db, 'SELECT count(*) AS n FROM usage_history WHERE usage_scope_id = ?', scope) === 1, 'fixture: its reading is still stored');
+  const empty = { ...history(999_999) };
+  assert.deepEqual({ ...history(scope) }, empty, 'hidden while its purge runs: the same answer as an unknown, empty scope');
+  assert.equal(history(account).records.length, 1, 'the account scope is still served');
+});
+
+// Gate 5 round 2 security review (test a): a resume that cannot read the install secret cannot settle: the purge stays
+// in 'settle', the session hidden and kept out, totals unchanged; nothing is deleted.
+test('round 2 review: resume without the install secret leaves a settling purge in \'settle\': hidden, writes refused, totals unchanged', async () => {
+  const h = await large();
+  const before = liveMonthly(h.db, SECRET);
+  await purgeSession(h.writer, h.id, { ...h.opts, secret: SECRET, reason: 'retention', limits: LIMITS, vacuum: false, stopped: () => true });
+  const { secret: _secret, ...noSecret } = h.opts;
+  assert.equal(await resumePurges(h.writer, { ...noSecret, now: Date.now() + 60_000 }), 0);
+  assert.equal(phaseOf(h.db), 'settle');
+  assert.equal(n(h.db, 'SELECT count(*) AS n FROM sessions WHERE id = ?', h.id), 1, 'nothing deleted');
+  assert.deepEqual(answerHistoryRow(h.db, h.id), { row: null }, 'hidden');
+  const fresh = Date.now();
+  h.writer.commitLive({ profileId: 'p1', agent: 'claude', file: { ...cp(join(h.dir, 'native', `${A}.jsonl`)), mtime: fresh, size: 30, offset: 30 }, fileSession: A,
+    sessions: [{ nativeSessionId: A, lastActivity: fresh }],
+    events: [{ nativeSessionId: A, source: 'transcript', confidence: 'confirmed', nativeId: 'nosecret-1', kind: 'user', sourceSeq: 199, sourceTs: fresh, fileMtime: fresh, receivedTs: fresh }] });
+  assert.equal(n(h.db, "SELECT count(*) AS n FROM events WHERE native_id = 'nosecret-1'"), 0, 'kept out');
+  assert.deepEqual(liveMonthly(h.db, SECRET), before, 'totals unchanged');
 });

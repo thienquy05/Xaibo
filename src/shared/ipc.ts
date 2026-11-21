@@ -255,7 +255,8 @@ export const OVERLAY_ERRORS = ['not-found', 'invalid', 'read-only', 'disk-full',
 export type OverlayResult = { ok: true; id?: number } | { ok: false; error: (typeof OVERLAY_ERRORS)[number] };
 // XAIBO-PROD-527 (P5-T18 part 1; design §6.4, §6.6): search, purge, suppressed sessions, Re-import, retention, storage.
 export const QUERY_MAX = 256, SNIPPET_MAX = 200, RETENTION_MAX = 3650;
-export interface SearchKey { rank: number; session: number }
+/** event: the rowid of the last match read (Gate 5 round 2 review: exact continuation inside equal-rank ties). */
+export interface SearchKey { rank: number; session: number; event: number }
 export interface SearchHit { row: HistoryRow; event: number; snippet: string }
 export const PURGE_RESULTS = ['purged', 'not-found', 'busy', 'read-only', 'disk-full', 'failed'] as const;
 export const REIMPORT_RESULTS = ['ok', 'none', 'pending', 'native-gone', 'not-found', 'read-only', 'disk-full', 'failed'] as const;
@@ -331,7 +332,8 @@ export type PortMessage =
   // P5-T17a: failed = the store could not answer (the renderer offers Retry), never an empty ledger
   | ({ v: 1; type: 'monthly'; id: number; failed?: true } & LedgerPage)
   | { v: 1; type: 'clearUsage'; id: number; result: ClearUsageResult }
-  | { v: 1; type: 'search'; id: number; hits: SearchHit[]; next: SearchKey | null; failed?: true }
+  /** capped (Gate 5 round 2 B): the bounded scan stopped before the page filled; results may be incomplete, next continues. */
+  | { v: 1; type: 'search'; id: number; hits: SearchHit[]; next: SearchKey | null; failed?: true; capped?: true }
   | { v: 1; type: 'purge'; id: number; result: (typeof PURGE_RESULTS)[number] }
   /** row null = no such session (gone: purged); failed (row null) = the store could not answer (keep the record, Retry). */
   | { v: 1; type: 'historyRow'; id: number; row: HistoryRow | null; failed?: true }
@@ -632,7 +634,7 @@ function parseHistoryRow(x: unknown): HistoryRow | null {
 const KEY = /^[0-9a-f]{64}$/;
 const keyOk = (x: unknown): x is string => typeof x === 'string' && KEY.test(x);
 const parseSearchKey = (x: unknown): SearchKey | null | undefined => (x === null ? null
-  : exactKeys(x, ['rank', 'session']) && finite(x.rank) && positive(x.session) ? { rank: x.rank, session: x.session } : undefined);
+  : exactKeys(x, ['rank', 'session', 'event']) && finite(x.rank) && positive(x.session) && positive(x.event) ? { rank: x.rank, session: x.session, event: x.event } : undefined);
 const parseSuppressedCursor = (x: unknown): SuppressedCursor | null | undefined => (x === null ? null
   : exactKeys(x, ['at', 'key']) && finite(x.at) && keyOk(x.key) ? { at: x.at, key: x.key } : undefined);
 export function parseRetentionSetting(x: unknown): RetentionSetting | null {
@@ -850,7 +852,8 @@ export function parsePortMessage(x: unknown): PortMessage | null {
   if (m.type === 'clearUsage') return count(m.id) && oneOf(CLEAR_USAGE_RESULTS, m.result) ? { v: 1, type: 'clearUsage', id: m.id, result: m.result } : null;
   if (m.type === 'search') {
     const hits = all(m.hits, MAX_ITEMS, parseSearchHit), next = parseSearchKey(m.next), failed = failedOf(hits !== null && hits.length === 0 && next === null);
-    return count(m.id) && hits && next !== undefined && failed ? { v: 1, type: 'search', id: m.id, hits, next, ...failed } : null;
+    const capped = m.capped === undefined ? {} : m.capped === true ? { capped: true as const } : null;
+    return count(m.id) && hits && next !== undefined && failed && capped ? { v: 1, type: 'search', id: m.id, hits, next, ...failed, ...capped } : null;
   }
   if (m.type === 'suppressed') {
     const rows = all(m.rows, MAX_ITEMS, parseSuppressedRow), next = parseSuppressedCursor(m.next), failed = failedOf(rows !== null && rows.length === 0 && next === null);

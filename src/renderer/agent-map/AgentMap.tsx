@@ -15,7 +15,7 @@ import { show, visible } from '../text.ts';
 import { compactStatus } from '../workspace/view.ts';
 import {
   collapse, cursorFor, emptyLevel, evictedText, expand, groupDetail, holdsSessions, kindOf, loadedText, nodeText, nounOf, pageArrived, pageFailed, pageSize,
-  dropSession, pageRefreshed, pagingAnchor, refocus, replyApplies, resumeLevel, startRefresh, REFUSED, returnTarget, sessionKey, connectorPath, rowLabel, rows as flatten, sessionDetail, setPositions, touch, treeKey, typeLabel, type Detail, type Dir, type Expansion, type Kids, type Level, type Row,
+  dropSession, pageRefreshed, pagingAnchor, refocus, replyApplies, resumeLevel, startRefresh, settleRefresh, REFUSED, returnTarget, sessionKey, connectorPath, rowLabel, rows as flatten, sessionDetail, setPositions, touch, treeKey, typeLabel, type Detail, type RefreshGate, type Dir, type Expansion, type Kids, type Level, type Row,
 } from './tree.ts';
 
 export interface MapApi {
@@ -123,10 +123,10 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
   // starts only once the previous one settled, and a reply applies only while its run is the latest.
   // `refreshed`: a refresh reply was applied, and whether focus was in the tree just before (review L: only then it moves)
   const refreshed = useRef<{ inTree: boolean } | null>(null);
-  const gate = useRef({ gen: 0, pending: false });
+  const gate = useRef<RefreshGate>({ gen: 0, pending: false });
   const refresh = () => {
     const g = startRefresh(gate.current);
-    if (!g) return;
+    if (!g) { gate.current = { ...gate.current, again: true }; return; } // G5Rr1-4: rerun once this run settles
     gate.current = g;
     const run: Promise<unknown>[] = [];
     const x = sRef.current;
@@ -149,7 +149,11 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
         }, () => undefined));
       }
     }
-    void Promise.allSettled(run).then(() => { if (gate.current.gen === g.gen) gate.current = { ...gate.current, pending: false }; });
+    void Promise.allSettled(run).then(() => {
+      const r = settleRefresh(gate.current, g.gen);
+      gate.current = r.gate;
+      if (r.rerun) refreshRef.current();
+    });
   };
   // a focused or selected row a refresh removed hands over to its nearest surviving ancestor (focus only moves when it was
   // in the tree: a refresh never takes focus from elsewhere)

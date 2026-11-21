@@ -13,7 +13,7 @@ import { CodexAdapter } from '../../src/service/adapters/codex/index.ts';
 import { EXCERPT_MAX, listSessions } from '../../src/service/api.ts';
 import { openStore } from '../../src/service/store/db.ts';
 import { Writer } from '../../src/service/store/writer.ts';
-import { parsePortMessage } from '../../src/shared/ipc.ts';
+import { parsePortMessage, type LiveStatus } from '../../src/shared/ipc.ts';
 import { claudeProfile } from '../helpers/claude-profile.ts';
 
 const sid = (n: string) => `00000000-0000-4000-8000-0000000f${n}`;
@@ -50,7 +50,7 @@ test('Claude: the first typed prompt is the excerpt; reminders, meta and tool re
   assert.deepEqual(r[sid('0004')], { title: 'Only AI', excerpt: null });
   assert.deepEqual(r[sid('0005')], { title: null, excerpt: null }, 'a blank prompt is no excerpt');
   const cut = r[sid('0003')]!.excerpt!;
-  assert.ok(cut.length <= EXCERPT_MAX && cut.endsWith('…'), 'cut to EXCERPT_MAX with an ellipsis');
+  assert.ok([...cut].length <= EXCERPT_MAX && cut.endsWith('…'), 'cut to EXCERPT_MAX code points with an ellipsis');
   assert.ok(!/[\uD800-\uDBFF]…$/.test(cut), 'never ends inside a surrogate pair');
 
   // The row with an excerpt survives the renderer's IPC parse; a non-string excerpt fails it.
@@ -117,4 +117,114 @@ test('017: stored Codex context messages become injected; typed prompts and othe
   assert.deepEqual(flags.slice(0, CONTEXT_PREFIXES.length).map((f) => f.injected), CONTEXT_PREFIXES.map(() => 1), 'every Codex context fragment');
   assert.deepEqual(flags.slice(CONTEXT_PREFIXES.length).map((f) => f.injected), [0, 0, 0], 'typed prompt, reply and other agents untouched');
   assert.equal(rows(s.db).c1!.excerpt, 'synthetic prompt about <environment_context>');
+});
+
+// Gate 5 round 2 A (owner decision 2026-11-20, M12/M13 at TP): the untitled-session excerpt is computed at ingest and
+// stored on the session (migration 025); the list, delta, live-set and history reads issue no events query for it, so a
+// session with no prompt (thousands of records walked per read before) costs nothing. Same rules as before.
+test('A: list, delta, live-set and history reads issue no events query for excerpts; the stored excerpt follows the same rules', async () => {
+  const { StatementSync } = await import('node:sqlite');
+  const { answerLiveSet, sessionsByKey } = await import('../../src/service/api.ts');
+  const { listHistory } = await import('../../src/service/history/overlay.ts');
+  const p = await claudeProfile([]);
+  const dir = join(p.root, 'projects', '-tmp-xaibo-fixture-excerpt');
+  mkdirSync(dir, { recursive: true });
+  const put = (s: string, ...l: string[]) => writeFileSync(join(dir, `${s}.jsonl`), lines(...l));
+  put(sid('0101'), user(sid('0101'), '<system-reminder>synthetic reminder</system-reminder>'),
+    user(sid('0101'), [{ type: 'tool_result', tool_use_id: 'toolu_x', content: 'tool output' }]), user(sid('0101'), 'Fix   the\n\tflaky   login test'));
+  // no prompt at all: 3,000 assistant records
+  put(sid('0102'), ...Array.from({ length: 3000 }, (_, i) => JSON.stringify({ parentUuid: null, isSidechain: false, type: 'assistant', uuid: sid(`8${String(i).padStart(3, '0')}`.slice(0, 4)) + i,
+    timestamp: '2026-01-01T00:00:01.000Z', cwd: '/tmp/xaibo-fixture/excerpt', sessionId: sid('0102'), entrypoint: 'cli',
+    message: { model: 'claude-x', id: `msg_${i}`, type: 'message', role: 'assistant', content: [{ type: 'text', text: `reply ${i}` }] } })));
+  const a = new ClaudeAdapter({ db: p.db, writer: p.writer, profileId: 'p1', root: p.root, intervalMs: 60_000 });
+  await a.start();
+  a.stop();
+  assert.ok(Number((p.db.prepare('SELECT count(*) AS n FROM events').get() as { n: number }).n) >= 3000, 'fixture: imported');
+
+  p.db.prepare('UPDATE sessions SET last_activity = ?').run(Date.now()); // inside the live window, so the live set lists them
+  const seen: string[] = [];
+  const proto = StatementSync.prototype as unknown as Record<string, (...a: unknown[]) => unknown>;
+  const orig = Object.fromEntries(['all', 'get', 'iterate', 'run'].map((m) => [m, proto[m]!]));
+  for (const m of Object.keys(orig)) {
+    proto[m] = function (this: { sourceSQL: string }, ...args: unknown[]) { if (/\bevents\b/.test(this.sourceSQL)) seen.push(this.sourceSQL); return orig[m]!.apply(this, args); };
+  }
+  let listed, delta, live, history;
+  const busy: LiveStatus = { lifecycle: 'busy', confidence: 'confirmed', health: 'connected', reason: null, outcome: null, findings: [], since: null };
+  try {
+    listed = listSessions(p.db, null, 50, [], []).rows;
+    delta = sessionsByKey(p.db, [sid('0101'), sid('0102')].map((n) => ({ agent: 'claude', profileId: 'p1', nativeSessionId: n })), [], [], () => busy);
+    live = answerLiveSet(p.db, { v: 1, type: 'liveSet', id: 1 }, Date.now(), [], [], () => busy).rows;
+    history = listHistory(p.db, { mode: 'all', agent: null, project: null, folder: null }, null, 50).rows;
+  } finally { Object.assign(proto, orig); }
+  assert.equal(seen.length, 0, `no events query on any read path; got ${seen.length}: ${seen[0]?.replace(/\s+/g, ' ').slice(0, 60)}`);
+  const ids = new Map((p.db.prepare('SELECT id, native_session_id AS n FROM sessions').all() as { id: number; n: string }[]).map((r) => [r.n, r.id]));
+  for (const [name, list] of [['list', listed], ['delta', delta], ['live set', live], ['history', history]] as const) {
+    const by = (n: string) => (list as { id: number; excerpt?: string | null }[]).find((r) => r.id === ids.get(n));
+    assert.equal(by(sid('0101'))?.excerpt, 'Fix the flaky login test', `${name}: the stored excerpt`);
+    assert.equal(by(sid('0102'))?.excerpt ?? null, null, `${name}: no prompt, no excerpt`);
+  }
+});
+
+/** Runs `f` and counts the statements it executes whose SQL reads the events table. */
+async function eventsQueries<T>(f: () => T): Promise<[T, number]> {
+  const { StatementSync } = await import('node:sqlite');
+  const proto = StatementSync.prototype as unknown as Record<string, (...a: unknown[]) => unknown>;
+  const orig = Object.fromEntries(['all', 'get', 'iterate', 'run'].map((m) => [m, proto[m]!]));
+  let n = 0;
+  for (const m of Object.keys(orig)) proto[m] = function (this: { sourceSQL: string }, ...a: unknown[]) { if (/\bevents\b/.test(this.sourceSQL)) n++; return orig[m]!.apply(this, a); };
+  try { return [f(), n]; } finally { Object.assign(proto, orig); }
+}
+
+// Gate 5 round 2 A (design security review): the stored excerpt keeps excerptOf's rules: the visible (current, not
+// injected, not subagent) record the classifier calls a prompt with the lowest source_seq. It is recomputed when an
+// earlier prompt arrives or the first is superseded or rewound; cut to EXCERPT_MAX code points.
+test('A: the stored excerpt follows an earlier prompt, a superseded or rewound first prompt, and is cut by code points', async () => {
+  const { hookStore, T0 } = await import('../helpers/hook-store.ts');
+  const h = await hookStore();
+  const X = sid('0201'), Y = sid('0202');
+  const rec = (text: string) => JSON.stringify({ type: 'user', message: { role: 'user', content: text } });
+  const prompt = (s: string, nativeId: string, seq: number, text: string, revise = false) => ({ nativeSessionId: s, source: 'transcript', confidence: 'confirmed' as const,
+    nativeId, kind: 'message', role: 'user', sourceSeq: seq, sourceTs: T0 + seq, receivedTs: T0 + seq, content: text, raw: rec(text), ...(revise ? { revise: true } : {}) });
+  const commit = (s: string, ...events: ReturnType<typeof prompt>[]) => h.writer.commitLive({ profileId: 'p1', agent: 'claude', sessions: [{ nativeSessionId: s, startedAt: T0 }], events });
+  const excerpt = async (s: string) => {
+    const id = (h.db.prepare('SELECT id FROM sessions WHERE native_session_id = ?').get(s) as { id: number }).id;
+    const [rows, n] = await eventsQueries(() => listSessions(h.db, null, 50, [], []).rows);
+    assert.equal(n, 0, 'read without an events query');
+    return rows.find((r) => r.id === id)?.excerpt ?? null;
+  };
+  commit(X, prompt(X, 'p5', 5, 'Later prompt'));
+  assert.equal(await excerpt(X), 'Later prompt');
+  commit(X, prompt(X, 'p2', 2, 'Earlier prompt'));
+  assert.equal(await excerpt(X), 'Earlier prompt', 'an earlier prompt arriving later replaces it');
+  commit(X, prompt(X, 'r2', 2, 'Replacement prompt', true));
+  assert.equal(await excerpt(X), 'Replacement prompt', 'the first prompt superseded (and the later one rewound)');
+  commit(X, { ...prompt(X, 'r1', 1, 'reply', true), kind: 'message', role: 'assistant', raw: JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: 'reply' } }) });
+  assert.equal(await excerpt(X), null, 'every prompt rewound: no excerpt');
+  commit(Y, prompt(Y, 'e1', 1, '😀'.repeat(200)));
+  const cut = (await excerpt(Y))!;
+  assert.equal([...cut].length, EXCERPT_MAX, 'EXCERPT_MAX code points, the last an ellipsis');
+  assert.ok(cut.endsWith('…'));
+});
+
+// Gate 5 round 2 A: migration 025 adds the stored excerpt and backfills it for existing sessions, except a session with
+// an uncleared suppression marker (its purge is under way).
+test('A: migration 025 backfills stored excerpts of existing sessions, never one with an uncleared marker', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'xexcerpt-mig-'));
+  const opts = { file: join(dir, 'xaibo.db'), backupDir: join(dir, 'backups') };
+  const { loadMigrations } = await import('../../src/service/store/db.ts');
+  const before = await openStore({ ...opts, migrations: loadMigrations().filter((m) => m.version < 25) });
+  const db0 = before.db;
+  db0.prepare("INSERT INTO profiles (id, agent, root, origin) VALUES ('p1', 'claude', '/tmp/xaibo-fixture/root', 'default')").run();
+  const ev = db0.prepare(`INSERT INTO events (session_id, schema_version, source, confidence, native_id, kind, role, source_seq, received_ts, content, raw)
+    VALUES (?, 1, 'transcript', 'confirmed', ?, 'message', 'user', 1, 1, ?, ?)`);
+  for (const [n, text] of [['s-ok', 'Backfilled prompt'], ['s-marked', 'Marked prompt']] as const) {
+    const id = Number(db0.prepare("INSERT INTO sessions (agent, profile_id, native_session_id, last_activity) VALUES ('claude', 'p1', ?, 1)").run(n).lastInsertRowid);
+    ev.run(id, `${n}-1`, text, JSON.stringify({ type: 'user', message: { role: 'user', content: text } }));
+  }
+  db0.prepare("INSERT INTO suppressions (agent, profile_id, native_session_id, reason, at, purge_phase) VALUES ('claude', 'p1', 's-marked', 'retention', 1, 'rows')").run();
+  db0.close();
+  const { db } = await openStore(opts);
+  assert.ok(db.prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'excerpt'").get(), 'sessions.excerpt exists');
+  const got = Object.fromEntries((db.prepare('SELECT native_session_id AS n, excerpt FROM sessions').all() as { n: string; excerpt: string | null }[]).map((r) => [r.n, r.excerpt]));
+  assert.deepEqual(got, { 's-ok': 'Backfilled prompt', 's-marked': null });
 });

@@ -250,7 +250,7 @@ CREATE TABLE sessions (
   record_count INTEGER NOT NULL DEFAULT 0,
   unknown_count INTEGER NOT NULL DEFAULT 0,
   quarantined_count INTEGER NOT NULL DEFAULT 0,
-  drift INTEGER NOT NULL DEFAULT 0, originator TEXT, source_kind TEXT, native_archived INTEGER NOT NULL DEFAULT 0, current_model TEXT, current_effort TEXT, current_model_ts INTEGER, account_epoch TEXT, repo_key TEXT, worktree TEXT, repo_reason TEXT, ai_title TEXT,
+  drift INTEGER NOT NULL DEFAULT 0, originator TEXT, source_kind TEXT, native_archived INTEGER NOT NULL DEFAULT 0, current_model TEXT, current_effort TEXT, current_model_ts INTEGER, account_epoch TEXT, repo_key TEXT, worktree TEXT, repo_reason TEXT, ai_title TEXT, excerpt TEXT,
   UNIQUE (agent, profile_id, native_session_id)
 );
 CREATE INDEX sessions_activity ON sessions (last_activity DESC, id);
@@ -304,7 +304,7 @@ CREATE TABLE suppressions (
   native_session_id TEXT NOT NULL,
   reason TEXT NOT NULL CHECK (reason IN ('manual', 'retention')),
   at INTEGER NOT NULL,
-  pending TEXT, files TEXT, cleared_at INTEGER, purge_phase TEXT,
+  pending TEXT, files TEXT, cleared_at INTEGER, purge_phase TEXT, fresh_at INTEGER, settle_cursor TEXT,
   PRIMARY KEY (agent, profile_id, native_session_id)
 ) WITHOUT ROWID;
 CREATE INDEX suppressions_pending ON suppressions (agent) WHERE pending IS NOT NULL;
@@ -335,6 +335,7 @@ CREATE TABLE turns (
   effort TEXT, utc_offset INTEGER,
   UNIQUE (session_id, native_turn_id)
 );
+CREATE INDEX turns_session ON turns (session_id);
 CREATE INDEX turns_started ON turns (session_id, started_at);
 CREATE TABLE usage (
   id INTEGER PRIMARY KEY,
@@ -386,6 +387,7 @@ CREATE TABLE usage_scopes (
   session_id INTEGER REFERENCES sessions(id),
   verified INTEGER NOT NULL CHECK (verified IN (0, 1))
 );
+CREATE INDEX usage_session ON usage (session_id);
 CREATE TABLE usage_snapshots (
   id INTEGER PRIMARY KEY,
   schema_version INTEGER NOT NULL,

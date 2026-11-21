@@ -30,6 +30,8 @@ export interface ReplayOptions {
   maxBytes?: number;
   /** True once the service stops: no delivery or write after that; the files stay for the next start. */
   stopped?: () => boolean;
+  /** Gate 5 (interval replay): a plain file written or renamed this recently (ms, real clock) is left for a later pass. */
+  quietMs?: number;
 }
 /** deferred: spool files left for the next replay by the aggregate bound. */
 /** dropped: report records refused for good (revoked registration, invalid report). */
@@ -58,10 +60,13 @@ const own = (st: Stats) => uid === undefined || st.uid === uid;
 const lstat = (p: string) => { try { return lstatSync(p); } catch { return null; } };
 const regularOwn = (st: Stats | null) => !!st && st.isFile() && own(st) && st.nlink === 1;
 
+/** <dataDir>/spool when it is a directory of our own; null when it does not exist or is not ours (never read). Any other
+ *  stat error (EACCES, EMFILE, ...) throws: the caller keeps its work owed (Gate 5 G5a-3). */
 export function spoolDir(dataDir: string): string | null {
   const dir = path.join(dataDir, 'spool');
-  const st = lstat(dir);
-  if (!st || !st.isDirectory() || !own(st)) return null;
+  let st: Stats;
+  try { st = lstatSync(dir); } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null; throw e; }
+  if (!st.isDirectory() || !own(st)) return null;
   if (st.mode & 0o077) chmodSync(dir, 0o700);
   return dir;
 }
@@ -183,8 +188,11 @@ export async function replaySpool(o: ReplayOptions): Promise<ReplayResult> {
   for (const name of readdirSync(dir).sort()) {
     const plain = PLAIN.exec(name);
     if (!plain && !TAKEN.test(name)) continue;
-    const size = lstat(path.join(dir, name))?.size ?? 0;
+    const st = lstat(path.join(dir, name));
+    const size = st?.size ?? 0;
     if (bytes > 0 && bytes + size > maxBytes) { r.deferred++; continue; } // not renamed: the next replay takes it
+    // the forwarder may still be appending to a plain file written just now: a later pass takes it
+    if (plain && o.quietMs && st && Date.now() - Math.max(st.mtimeMs, st.ctimeMs) < o.quietMs) { r.deferred++; continue; }
     const file = plain ? take(dir, name, `${plain[1]}.replay-${randomUUID()}.jsonl`) : path.join(dir, name);
     const got = file && readOwn(file, FILE_MAX);
     if (!got) { r.skipped++; continue; }

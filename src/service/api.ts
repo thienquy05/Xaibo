@@ -1,7 +1,7 @@
 // Read-only session list API (P1-T12, S-29, FR-09): keyset pages over (last_activity DESC with unknown last, id),
 // default 50 rows, hard cap 100; rows by session key for the coalesced deltas the service pushes after commits.
 import { nativeExpiresAt } from './history/native-availability.ts';
-import type { DatabaseSync, StatementSync } from 'node:sqlite';
+import type { DatabaseSync } from 'node:sqlite';
 import { IPC_VERSION, isObj } from '../shared/ipc.ts';
 import type { ContextReading, CoverageCode, Credits, Cursor, HistoryCursor, LiveStatus, Page, PortMessage, PortRequest, SessionRow, TCursor, TranscriptItem, UsageRecord, UsageScope } from '../shared/ipc.ts';
 import { COST_CODE, COST_COMPONENTS, MAX_COST_CODES, MAX_COST_GROUPS, MAX_ITEMS, MAX_RECORDS, MAX_REFERENCES, MAX_SCOPES, parseContext, parseCost, PREVIEW_BYTES,
@@ -18,6 +18,7 @@ import { sessionKind } from './resume.ts';
 import { LIVE_WINDOW_MS } from './status/feed.ts'; // D-P3-09 feed eligibility
 import { sessionCost } from './usage/cost.ts';
 import { notPurging } from './history/suppression.ts';
+import { VISIBLE } from './history/excerpt.ts';
 import { displayName, modelLabel, type ModelEntry, type ModelList } from './usage/models.ts';
 
 export const PAGE_DEFAULT = 50;
@@ -34,11 +35,15 @@ const titles = new WeakMap<DatabaseSync, string>();
  *  connection (a connection never migrates after its first read). */
 function titleOf(db: DatabaseSync): string {
   let t = titles.get(db);
-  if (t === undefined) titles.set(db, t = db.prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'ai_title'").get() ? 'coalesce(s.title, s.ai_title)' : 's.title');
+  if (t === undefined) {
+    const has = (c: string) => db.prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = ?").get(c) !== undefined;
+    // Gate 5 round 2 A: likewise the stored excerpt (migration 025)
+    titles.set(db, t = `${has('ai_title') ? 'coalesce(s.title, s.ai_title)' : 's.title'} AS title, ${has('excerpt') ? 's.excerpt' : 'NULL'} AS excerpt`);
+  }
   return t;
 }
 /** The session row query for this connection's schema. */
-export const ROW = (db: DatabaseSync) => `SELECT s.id, s.agent, s.profile_id, s.native_session_id, s.entrypoint, s.originator, s.current_model, s.current_effort, s.cwd, ${titleOf(db)} AS title, s.last_activity, s.drift, s.quarantined_count, s.native_available, s.native_archived,
+export const ROW = (db: DatabaseSync) => `SELECT s.id, s.agent, s.profile_id, s.native_session_id, s.entrypoint, s.originator, s.current_model, s.current_effort, s.cwd, ${titleOf(db)}, s.last_activity, s.drift, s.quarantined_count, s.native_available, s.native_archived,
   EXISTS (SELECT 1 FROM source_files f WHERE f.session_id = s.id AND f.status = 'compressed_not_imported') AS compressed,
   (SELECT c.percentage FROM context_snapshots c WHERE c.session_id = s.id ORDER BY c.generation DESC, c.id DESC LIMIT 1) AS context_pct,
   (SELECT CASE WHEN COUNT(u.uncached_input) + COUNT(u.cache_read) + COUNT(u.cache_write) + COUNT(u.output) = 0 THEN NULL
@@ -52,7 +57,7 @@ const ORDER = 'ORDER BY s.last_activity DESC, s.id LIMIT ?';
 
 /** The status engine's view of a session by agent and native id (P3-T10); null when it has no evidence. */
 export type LiveOf = (agent: string, nativeSessionId: string, profileId: string) => LiveStatus | null;
-export interface Raw { tokens: number | null; tokens_gap: number; id: number; agent: string; profile_id: string; native_session_id: string; context_pct: number | null; entrypoint: string | null; originator: string | null; current_model: string | null; current_effort: string | null; cwd: string | null; title: string | null; last_activity: number | null; drift: number; quarantined_count: number; compressed: number;
+export interface Raw { tokens: number | null; tokens_gap: number; id: number; agent: string; profile_id: string; native_session_id: string; context_pct: number | null; entrypoint: string | null; originator: string | null; current_model: string | null; current_effort: string | null; cwd: string | null; title: string | null; excerpt?: string | null; last_activity: number | null; drift: number; quarantined_count: number; compressed: number;
   native_available: number | null; native_archived: number }
 /** At most `max` UTF-16 units, ending in "…" when cut; never ends inside a surrogate pair. */
 export const cut = (s: string, max: number) => (s.length <= max ? s : `${s.slice(0, (s.charCodeAt(max - 2) & 0xfc00) === 0xd800 ? max - 2 : max - 1)}…`);
@@ -61,32 +66,9 @@ const display = (s: string | null): string | null => (s === null ? null : cut(s,
 // label is "<display name> · <effort>", the raw id when unlisted, "Model unavailable" without evidence (P2-T08).
 // P3-T10: live status from the engine, the latest context percentage (clamped to the 0–100 the IPC accepts) and the
 // session ~$ estimate (Phase 2 selection; an unreadable estimate is unavailable, never zero).
-// XAIBO-PROD-509 (P5-T02c, EC-66): an untitled session's first prompt, in-app only (notifications never see it): the first
-// record the transcript classifier calls a prompt among the first PROMPT_SCAN visible user records, whitespace collapsed,
-// cut to EXCERPT_MAX. ponytail: computed per untitled row on each list read (an index walk plus a few small parses);
-// store it on the session if list reads slow down.
-// Gate 5 G5b2-3: a record over EXCERPT_RECORD_MAX bytes is skipped in the query, never loaded or parsed, so one row costs
-// at most PROMPT_SCAN bounded parses. ponytail: a session whose only prompts are that large shows no excerpt; store a
-// bounded prompt prefix at ingest if that matters.
-export const EXCERPT_MAX = 120;
-const PROMPT_SCAN = 8;
-const EXCERPT_RECORD_MAX = 128 * 1024;
-const excerptStatements = new WeakMap<DatabaseSync, StatementSync>(); // prepared once per connection (review L1)
-function excerptOf(db: DatabaseSync, agent: string, session: number): string | null {
-  try {
-    const q = excerptStatements.get(db) ?? excerptStatements.set(db, db.prepare(`SELECT e.kind, e.role, e.content, e.raw FROM events e
-      WHERE ${VISIBLE} AND (e.role = 'user' OR e.kind = 'user')
-        AND coalesce(octet_length(e.content), 0) <= ${EXCERPT_RECORD_MAX} AND coalesce(octet_length(e.raw), 0) <= ${EXCERPT_RECORD_MAX} ORDER BY e.source_seq, e.id LIMIT ${PROMPT_SCAN}`)).get(db)!;
-    for (const row of q.iterate(session) as Iterable<Pick<TrRow, 'kind' | 'role' | 'content' | 'raw'>>) {
-      const it = classifyItem(stored(agent, row));
-      if (it?.kind !== 'prompt' || !it.text) continue;
-      // Collapse a bounded prefix (a prompt can be megabytes); drop a surrogate half left by the slice.
-      const t = it.text.slice(0, 8 * EXCERPT_MAX).replace(/\s+/g, ' ').trim().replace(/[\uD800-\uDBFF]$/, '');
-      if (t) return cut(it.text.length > 8 * EXCERPT_MAX ? `${t}…` : t, EXCERPT_MAX);
-    }
-  } catch { /* an unreadable session has no excerpt */ }
-  return null;
-}
+// XAIBO-PROD-509 (P5-T02c, EC-66): an untitled session's first prompt, in-app only. Gate 5 round 2 A: stored on the
+// session by the writer (history/excerpt.ts); a read never walks events for it.
+export { EXCERPT_MAX } from './history/excerpt.ts';
 
 export const toRow = (db: DatabaseSync, kinds: SessionKind[], models: ModelEntry[], live?: LiveOf) => (r: Raw): SessionRow => {
   const k = sessionKind(kinds, r);
@@ -96,7 +78,7 @@ export const toRow = (db: DatabaseSync, kinds: SessionKind[], models: ModelEntry
   const usable = cost.amountUsd !== null && Number.isFinite(cost.amountUsd) && cost.amountUsd >= 0;
   return {
     id: r.id, agent: r.agent, entrypoint: display(r.entrypoint), origin: k?.badge ?? null, interactive: k?.interactive ?? null,
-    model: display(modelLabel(displayName(models, r.current_model), r.current_effort))!, cwd: display(r.cwd), title: display(r.title), excerpt: r.title === null ? excerptOf(db, r.agent, r.id) : null, lastActivity: r.last_activity,
+    model: display(modelLabel(displayName(models, r.current_model), r.current_effort))!, cwd: display(r.cwd), title: display(r.title), excerpt: r.title === null ? r.excerpt ?? null : null, lastActivity: r.last_activity,
     drift: r.drift === 1, compressed: r.compressed === 1, quarantined: r.quarantined_count,
     native: { available: r.native_available !== 0, archived: r.native_archived === 1 }, // P5-T12: false only when confirmed gone
     live: live?.(r.agent, r.native_session_id, r.profile_id) ?? null,
@@ -232,6 +214,14 @@ export const USAGE_HISTORY_PAGE = `SELECT id, kind, measured_at, used_percent, w
 export function answerUsageHistory(db: DatabaseSync, req: PortRequest & { type: 'usageHistory' }): PortMessage & { type: 'usageHistory' } {
   const n = Math.min(req.limit, HISTORY_MAX);
   const c = req.cursor;
+  const empty = { v: IPC_VERSION, type: 'usageHistory', id: req.id, records: [], next: null } as const;
+  // G5Rr1-5: a session's own scope while its purge runs or a marker keeps it out answers like an empty scope (as
+  // usageScopes hides it); account scopes stay. A store older than suppressions has neither.
+  try {
+    if (!db.prepare(`SELECT 1 FROM usage_scopes sc WHERE sc.id = ? AND (sc.session_id IS NULL OR EXISTS (SELECT 1 FROM sessions s WHERE s.id = sc.session_id
+      AND ${notPurging(db)} AND NOT EXISTS (SELECT 1 FROM suppressions x WHERE x.agent = s.agent AND x.profile_id = s.profile_id
+        AND x.native_session_id = s.native_session_id AND x.cleared_at IS NULL)))`).get(req.scope)) return { ...empty, records: [] };
+  } catch { /* an older schema: no purge, no marker */ }
   try {
     // Review L: the cursor is the index lower bound, so later pages seek instead of rescanning the window.
     const raw = db.prepare(USAGE_HISTORY_PAGE).all(req.scope, req.stream, Math.max(req.from, c?.measuredAt ?? req.from), req.to, c?.measuredAt ?? null, c?.measuredAt ?? null, c?.id ?? null, n) as
@@ -253,8 +243,7 @@ export const RAW_BUDGET = 32 * 1024 * 1024; // characters of stored record text 
 /** Rows the last transcript request loaded (tests check the budget bounds loading). */
 export const transcriptStats = { rowsRead: 0 };
 // P4-T09a: chunk rows of an oversized line (EC-15) are storage, not records: never paged, counted or sliced on their own.
-const VISIBLE = `e.session_id = ? AND e.source IN ('transcript', 'rollout') AND e.subagent_native_id IS NULL AND e.revision_status = 'current' AND e.injected = 0
-  AND e.kind NOT IN ('content-chunk', 'raw-chunk')`;
+
 const TR_COLS = 'e.id, e.kind, e.role, e.content, e.raw, e.source_seq AS seq, e.source_ts AS ts, e.ingest_id AS ingest';
 interface TrRow { id: number; kind: string; role: string | null; content: string | null; raw: string | null; seq: number; ts: number | null; ingest: string | null }
 

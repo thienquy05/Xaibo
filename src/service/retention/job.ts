@@ -4,12 +4,12 @@
 // whatever the setting or Keep. Every deletion is settled into the monthly totals in its own transaction first. Each
 // purge re-checks eligibility inside its transaction; the run yields to the event loop between transactions so live
 // commits go first, stops on a full disk or service stop, and refuses to run on a clock behind its last run.
-// XAIBO-PROD-542: purges run in bounded batches (purge.ts) and stop with the run; today's spool file is read once per run
-// (G5a-2); abandoned and orphaned content-chunk items are reaped through the live chunk store (G5a-4).
+// XAIBO-PROD-542: purges run in bounded batches (purge.ts) and stop with the run; today's spool file is re-read only when
+// it changed (G5a-2, G5Rr1-3); abandoned and orphaned content-chunk items are reaped through the live chunk store (G5a-4).
 import { statSync } from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
 import type { ChunkStore } from '../adapters/generic/chunks.ts';
-import { deletesAllowed, purgeSession, resumePurges, spoolToday, vacuum } from '../history/purge.ts';
+import { deletesAllowed, purgeSession, resumePurges, todayCache, vacuum } from '../history/purge.ts';
 import { readRegistrations } from '../receivers/registrations.ts';
 import { TRASH_MS } from '../history/trash.ts';
 import { LIVE_WINDOW_MS } from '../status/feed.ts';
@@ -27,6 +27,8 @@ export interface RetentionOptions {
   log?: (event: string, fields?: Record<string, string | number>) => void;
   /** The report intake's live chunk store (purge and the reaper remove items through it); absent = no reaping. */
   chunks?: ChunkStore | undefined;
+  /** G5Rr1-2: a retention marker cleared by native activity seen during its purge (purge.ts FileOptions). */
+  onReimport?: () => void;
 }
 export interface RetentionResult { sessions: number; trash: number; quota: number; skipped: null | 'clock-behind' | 'invalid-setting' }
 
@@ -47,7 +49,8 @@ export async function runRetention(writer: Writer, db: DatabaseSync, o: Retentio
   // clock already ahead at the first run after boot is not detected here; the daily timer compares wall and monotonic time.
   if (o.now < lastRun) { o.log?.('retention_skipped', { reason: 'clock-behind' }); return { ...r, skipped: 'clock-behind' }; }
   const halt = () => writer.diskFull || !!o.stopped?.() || !db.isOpen;
-  const files = { dataDir: o.dataDir, backupDir: o.backupDir, now: o.now, chunks: o.chunks, today: spoolToday(o.dataDir, o.now), stopped: halt, ...(o.log ? { log: o.log } : {}) };
+  const files = { dataDir: o.dataDir, backupDir: o.backupDir, now: o.now, chunks: o.chunks, today: todayCache(), stopped: halt, secret: o.secret,
+    ...(o.onReimport ? { onReimport: o.onReimport } : {}), ...(o.log ? { log: o.log } : {}) };
   await resumePurges(writer, files); // review M3: owed row and file work keeps a marker blocking, so it is finished first
   try { // G5a-4: the registry is read after the items are listed; an unreadable one reaps nothing
     const reaped = o.chunks?.reap(o.now, () => { const regs = readRegistrations(o.dataDir); return regs && new Set(regs.map((x) => x.id)); }) ?? 0;

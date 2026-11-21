@@ -6,14 +6,14 @@
 process.env.TZ = 'UTC';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { openChunks } from '../../src/service/adapters/generic/chunks.ts';
 import type { DatabaseSync } from 'node:sqlite';
 import { runRetention } from '../../src/service/retention/job.ts';
 import { DAY, setRetention } from '../../src/service/retention/policy.ts';
 import { liveMonthly } from '../../src/service/usage/monthly.ts';
-import { hookStore } from '../helpers/hook-store.ts';
+import { envelope, hookStore } from '../helpers/hook-store.ts';
 import { request, sample, SECRET, session, turn } from '../helpers/monthly.ts';
 
 const NOW = Date.UTC(2026, 10, 18, 12);
@@ -147,4 +147,29 @@ test('G5a-4: a run reaps chunk items of unregistered registrations through the l
   writeFileSync(join(h.dir, 'registrations.json'), '[]', { mode: 0o600 });
   await run(NOW + 1);
   assert.equal(chunks.items().length, 0, 'none registered: the orphan goes');
+});
+
+// Gate 5 round 2 G5Rr1-3 (G5a-2): today's spool file is the forwarder's; a purge whose session it holds owes it until the
+// day closes. A record of the session the forwarder appends after the run began (after any snapshot of the file) still
+// keeps the work owed: the check is made when the file work runs, after the session's rows are gone.
+test('G5Rr1-3: a record of the session appended to today\'s spool file during the run keeps its purge file work owed', async () => {
+  const h = await seeded();
+  const spool = join(h.dir, 'spool');
+  mkdirSync(spool, { mode: 0o700 });
+  const today = join(spool, `${new Date(NOW).toISOString().slice(0, 10)}.jsonl`);
+  let written = false;
+  const inner = h.writer.transact.bind(h.writer);
+  h.writer.transact = <T>(fn: (db: DatabaseSync) => T): T => {
+    const r = inner(fn);
+    // right after the purge of 'old' committed its phase (a): the forwarder spools a hook of that session
+    if (!written && h.db.prepare("SELECT 1 FROM suppressions WHERE native_session_id = 'old'").get()) {
+      written = true;
+      writeFileSync(today, `${JSON.stringify(envelope({ session_id: 'old', payload: { hook_event_name: 'Stop', session_id: 'old' } }))}\n`, { mode: 0o600 });
+    }
+    return r;
+  };
+  const r = await h.run();
+  assert.ok(written && r.sessions >= 1, 'fixture: the record was appended while the run purged the session');
+  assert.notEqual((h.db.prepare("SELECT pending FROM suppressions WHERE native_session_id = 'old'").get() as { pending: string | null }).pending, null,
+    'today\'s file holds a record of the session: its file work stays owed');
 });

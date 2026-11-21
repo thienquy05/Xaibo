@@ -11,6 +11,7 @@ import { contextStep, type ContextObs, type Snapshot } from '../usage/context.ts
 import { codexReadings, historyStep, scopeKey, sourceTime, type Reading, type Stored } from '../usage/snapshots.ts';
 import { LAST_RUN_KEY, QUOTA_MS } from '../retention/policy.ts';
 import { utcOffset } from '../usage/monthly.ts';
+import { computeExcerpt } from '../history/excerpt.ts';
 
 export const SCHEMA_VERSION = 1;
 // The FTS row of an event is its ftsPrefix; deletes (revisions, purge) must pass that same text, so changing this bound
@@ -144,6 +145,10 @@ function prepare(db: DatabaseSync) {
         started_at = min(coalesce(sessions.started_at, excluded.started_at), coalesce(excluded.started_at, sessions.started_at)),
         last_activity = max(coalesce(sessions.last_activity, excluded.last_activity), coalesce(excluded.last_activity, sessions.last_activity))
       RETURNING id`),
+    // Gate 5 round 2 A: the stored excerpt and what decides whether a batch can change it
+    excerptOf: db.prepare('SELECT excerpt FROM sessions WHERE id = ?'),
+    setExcerpt: db.prepare('UPDATE sessions SET excerpt = ? WHERE id = ? AND excerpt IS NOT ?'),
+    lastSeq: db.prepare(`SELECT max(source_seq) AS m FROM events WHERE session_id = ? AND source = ? AND revision_status = 'current'`),
     setTitle: db.prepare('UPDATE sessions SET title = ? WHERE agent = ? AND profile_id = ? AND native_session_id = ? AND title IS NOT ?'),
     // P5-T08 (review H2): a checkpoint read before a re-import reset (older epoch) never moves the reset one; no epoch = unguarded
     upsertFile: db.prepare(`INSERT INTO source_files (profile_id, session_id, path, kind, dev, ino, size, mtime, offset, head_hash, status)
@@ -168,6 +173,8 @@ function prepare(db: DatabaseSync) {
       ON CONFLICT DO UPDATE SET state = excluded.state, chunks = excluded.chunks, bytes = excluded.bytes, content = excluded.content,
         updated_ts = excluded.updated_ts WHERE report_content.state = 'pending'`),
     deleteFts: db.prepare("INSERT INTO event_fts (event_fts, rowid, content) VALUES ('delete', ?, ?)"),
+    freshAt: db.prepare(`UPDATE suppressions SET fresh_at = max(coalesce(fresh_at, ?1), ?1) WHERE agent = ? AND profile_id = ? AND native_session_id = ?
+      AND reason = 'retention' AND cleared_at IS NULL`),
     supersede: db.prepare(`UPDATE events SET revision_status = CASE WHEN source_seq = ? THEN 'superseded' ELSE 'rewound' END
       WHERE session_id = ? AND source = ? AND source_seq >= ? AND revision_status = 'current' AND native_id != ? RETURNING id, content`),
     replaced: db.prepare(`UPDATE events SET revision_status = 'superseded' WHERE session_id = ? AND source = ? AND source_seq = ? AND revision_status = 'rewound'
@@ -269,19 +276,25 @@ function prepare(db: DatabaseSync) {
  *  blocks): their events, subagent links and quarantine rows go too, and a dropped file session leaves the file's
  *  checkpoint unattached (its quarantine dropped), so the checkpoint still advances and the other sessions of the file
  *  still commit. `clear`: retention markers this batch's new native activity clears (re-import). */
-function unsuppressed(st: ReturnType<typeof prepare>, batch: Batch): { batch: Batch; gone: Set<string>; clear: Set<string> } {
+/** fresh: sessions kept out of this batch although it carries new native activity for them (time of the latest), a
+ *  retention marker's purge still under way or owing file work (G5Rr1-2). */
+function unsuppressed(st: ReturnType<typeof prepare>, batch: Batch): { batch: Batch; gone: Set<string>; clear: Set<string>; fresh: Map<string, number> } {
   const ids = new Set([...batch.sessions.map((s) => s.nativeSessionId), ...(batch.fileSession !== undefined ? [batch.fileSession] : [])]);
-  const gone = new Set<string>(), clear = new Set<string>();
+  const gone = new Set<string>(), clear = new Set<string>(), fresh = new Map<string, number>();
   for (const id of ids) {
     const m = st.marker.get(batch.agent, batch.profileId, id) as Marker | undefined;
     if (!m || m.cleared_at !== null) continue;
-    const fresh = batch.events.some((e) => e.nativeSessionId === id && e.sourceTs !== undefined && e.sourceTs > m.at && (e.fileMtime === undefined || e.fileMtime > m.at));
-    (blocks(m, fresh) ? gone : clear).add(id);
+    const at = batch.events.filter((e) => e.nativeSessionId === id && e.sourceTs !== undefined && e.sourceTs > m.at && (e.fileMtime === undefined || e.fileMtime > m.at))
+      .reduce((t, e) => Math.max(t, e.sourceTs!), -Infinity);
+    const isFresh = at !== -Infinity;
+    if (!blocks(m, isFresh)) { clear.add(id); continue; }
+    gone.add(id);
+    if (isFresh && m.reason === 'retention') fresh.set(id, at);
   }
-  if (!gone.size) return { batch, gone, clear };
+  if (!gone.size) return { batch, gone, clear, fresh };
   const { fileSession, quarantine, subagents, ...rest } = batch;
   const fileGone = fileSession !== undefined && gone.has(fileSession);
-  return { gone, clear, batch: {
+  return { gone, clear, fresh, batch: {
     ...rest, sessions: batch.sessions.filter((s) => !gone.has(s.nativeSessionId)), events: batch.events.filter((e) => !gone.has(e.nativeSessionId)),
     ...(fileSession !== undefined && !fileGone ? { fileSession } : {}),
     ...(quarantine ? { quarantine: fileGone ? [] : quarantine.filter((q) => q.nativeSessionId === undefined || !gone.has(q.nativeSessionId)) } : {}),
@@ -421,7 +434,7 @@ export function commitBatch(db: DatabaseSync, input: Batch): Batch {
   db.exec('BEGIN IMMEDIATE');
   try {
     // read inside the transaction (keeps the session objects): a purge committed meanwhile is seen
-    const { batch, gone, clear } = unsuppressed(st, input);
+    const { batch, gone, clear, fresh } = unsuppressed(st, input);
     const d = batch.delivery, r = batch.report;
     // review: a delivery intake would refuse (a suppressed session, or one timed before its purge) commits nothing, not even its dedup row
     const refused = (agent: string, profile: string, native: string, ts: number) => refuses(st.marker.get(agent, profile, native) as Marker | undefined, ts);
@@ -468,6 +481,9 @@ export function commitBatch(db: DatabaseSync, input: Batch): Batch {
     const who = (native: string) => ({ agent: batch.agent, profile: batch.profileId, native });
     if (file.id !== null) {
       for (const id of gone) if (input.fileSession === id || input.events.some((e) => e.nativeSessionId === id)) noteFile(db, who(id), file.id);
+      // G5Rr1-2: a refused file batch with new native activity is remembered (its checkpoint still advances); the marker
+      // clears once its purge owes nothing more (purge.ts finishFiles) and the session is re-imported from the start
+      for (const [id, at] of fresh) st.freshAt.run(at, batch.agent, batch.profileId, id);
     }
     for (const id of clear) clearMarker(db, who(id), Math.max(...batch.events.filter((e) => e.nativeSessionId === id).map((e) => e.receivedTs)));
     // XAIBO-PROD-542 G5f-1: a file batch that clears a marker commits only the session rows, the clear and the reset of its
@@ -478,6 +494,18 @@ export function commitBatch(db: DatabaseSync, input: Batch): Batch {
       if (clear.size) st.resetFile.run(file.id);
       db.exec('COMMIT');
       return { ...batch, events: [], ...(batch.quarantine ? { quarantine: [] } : {}), ...(batch.subagents ? { subagents: [] } : {}), reread: true };
+    }
+
+    // Gate 5 round 2 A: sessions whose excerpt this batch can change: a visible user record or a revision. A pure append
+    // after every stored record never changes an excerpt already found. ponytail: a session with no prompt yet recomputes
+    // (one bounded query: the first PROMPT_SCAN user records) on each batch with a user record.
+    const excerpts = new Map<number | bigint, boolean>(); // session -> recompute
+    for (const e of batch.events) {
+      if ((e.source !== 'transcript' && e.source !== 'rollout') || !(e.revise || e.role === 'user' || e.kind === 'user')) continue;
+      const sid = sessionId(e.nativeSessionId);
+      if (excerpts.get(sid)) continue;
+      const before = Math.max(...['transcript', 'rollout'].map((src) => (st.lastSeq.get(sid, src) as { m: number | null }).m ?? -Infinity));
+      excerpts.set(sid, !!e.revise || e.sourceSeq <= before || (st.excerptOf.get(sid) as { excerpt: string | null } | undefined)?.excerpt == null);
     }
 
     const added = new Map<number | bigint, [number, number, number]>();
@@ -539,6 +567,7 @@ export function commitBatch(db: DatabaseSync, input: Batch): Batch {
 
     for (const s of batch.subagents ?? []) st.link.run(sessionId(s.nativeSessionId), s.nativeId, file.id, s.agentType ?? null);
 
+    for (const [sid, recompute] of excerpts) if (recompute) { const x = computeExcerpt(db, batch.agent, sid); if (x !== undefined) st.setExcerpt.run(x, sid, x); } // undefined: unknown, kept
     for (const [id, [records, unknown, quarantined]] of added) {
       st.counts.run(records, unknown, quarantined, id);
       st.drift.run(id);

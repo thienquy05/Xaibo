@@ -178,3 +178,141 @@ test('keyset paging: pages progress, are disjoint, ordered by rank then session,
   assert.equal(searchSessions(db, 'iguana', ALL, null, 0).hits.length, 50, 'default page 50');
   assert.equal(searchSessions(db, 'iguana', ALL, null, 10_000).hits.length, 100, 'hard cap 100');
 });
+
+// Gate 5 round 2 B (owner decision 2026-11-20; M13 at the PRD-size TP corpus: common-term search p95 ~5-10 s): the first
+// page no longer groups every matching event. FTS matches are read best rank first with a bounded scan that stops once
+// the page has `limit` visible sessions, under a hard cap on events examined (SEARCH_SCAN_MAX, counted in searchStats);
+// snippets only for the page; keyset continuation on the same SearchKey. Measured on the round-2 tree: this fixture's
+// first page ran ~2.3M SQLite VM steps (~32 ms here, seconds at TP on disk), the cost of grouping all 50,000 matches.
+test('B: a common term matching 50,000 events in 1,000 sessions: the first page examines a bounded number of events; paging stays consistent', async () => {
+  const q = await import('../../../src/service/search/query.ts') as Record<string, unknown>;
+  assert.equal(typeof q.SEARCH_SCAN_MAX, 'number', 'SEARCH_SCAN_MAX exported');
+  assert.equal(typeof q.searchStats, 'object', 'searchStats exported');
+  const { StatementSync } = await import('node:sqlite');
+  const { db } = await store();
+  db.exec('BEGIN');
+  const ss = db.prepare("INSERT INTO sessions (agent, profile_id, native_session_id, last_activity) VALUES ('claude', 'p1', ?, ?)");
+  const ins = db.prepare(`INSERT INTO events (session_id, schema_version, source, confidence, native_id, kind, role, source_seq, received_ts, content)
+    VALUES (?, 1, 'transcript', 'observed', ?, 'user', 'user', ?, ?, ?)`);
+  const fts = db.prepare('INSERT INTO event_fts (rowid, content) VALUES (?, ?)');
+  let seq = 0;
+  for (let s = 1; s <= 1000; s++) {
+    const id = Number(ss.run(sid(5000 + s), T + s).lastInsertRowid);
+    for (let k = 0; k < 50; k++) {
+      const c = `synthetic ka text ${'lo '.repeat((s * 7 + k) % 9)}number ${k}`; // ranks vary within and across sessions
+      fts.run(Number(ins.run(id, `b${++seq}`, seq, T, c).lastInsertRowid), ftsPrefix(c));
+    }
+  }
+  db.exec('COMMIT');
+  // the unbounded grouping (one row per matching session over all matches): the cost the first page must stay far below
+  const steps = (f: () => unknown) => {
+    const proto = StatementSync.prototype as unknown as Record<string, (...a: unknown[]) => unknown>;
+    const orig = Object.fromEntries(['all', 'get', 'iterate', 'run'].map((m) => [m, proto[m]!]));
+    const first = new Map<{ stat(c: string): number }, number>();
+    for (const m of Object.keys(orig)) proto[m] = function (this: { stat(c: string): number }, ...a: unknown[]) { if (!first.has(this)) first.set(this, this.stat('vmStep')); return orig[m]!.apply(this, a); };
+    try { f(); } finally { Object.assign(proto, orig); }
+    return [...first].reduce((n, [s, v]) => n + s.stat('vmStep') - v, 0);
+  };
+  const all = steps(() => db.prepare(`SELECT e.session_id, min(m.rank) FROM (SELECT rowid AS id, rank FROM event_fts WHERE event_fts MATCH '"ka"') m
+    JOIN events e ON e.id = m.id GROUP BY e.session_id`).all());
+  let page!: ReturnType<typeof searchSessions>;
+  const t0 = performance.now();
+  const used = steps(() => { page = find(db, 'ka', {}, 50); });
+  const ms = performance.now() - t0;
+  assert.equal(page.hits.length, 50);
+  const stats = q.searchStats as { examined: number };
+  assert.ok(stats.examined > 0 && stats.examined <= (q.SEARCH_SCAN_MAX as number), `events examined ${stats.examined} (cap ${String(q.SEARCH_SCAN_MAX)})`);
+  assert.ok(used <= all / 4, `first page VM steps ${used} vs ${all} grouping every match`);
+  assert.ok(ms < 1000, `first page ${ms.toFixed(0)} ms`);
+  // continuation: the next page follows on, no session twice, (rank, session) never goes back
+  const next = searchSessions(db, 'ka', ALL, page.next, 50);
+  assert.equal(next.hits.length, 50);
+  const both = [...page.hits, ...next.hits];
+  assert.equal(new Set(both.map((h) => h.session)).size, 100, 'no session repeated across pages');
+  for (let i = 1; i < both.length; i++) {
+    const a = both[i - 1]!, b = both[i]!;
+    assert.ok(a.rank < b.rank || (a.rank === b.rank && a.session < b.session), `order at ${i}`);
+  }
+});
+
+// Gate 5 round 2 B (design security review): scope, suppression, Trash and mode filters apply inside the bounded scan,
+// before counting toward the cap and before any content is read: matches the filter drops never use up the cap.
+test('B: filtered-out matches (Trash, a purge under way) never use up the scan cap; modes still restrict', async () => {
+  const q = await import('../../../src/service/search/query.ts') as Record<string, unknown>;
+  assert.equal(typeof q.SEARCH_SCAN_MAX, 'number', 'SEARCH_SCAN_MAX exported');
+  const cap = q.SEARCH_SCAN_MAX as number;
+  const { db, session, ev } = await store();
+  db.exec('BEGIN');
+  const trashed: number[] = [];
+  for (let i = 0; i < 50; i++) { const s = session(); trashed.push(s); for (let k = 0; k < Math.ceil((cap + 100) / 50); k++) ev(s, 'ka ka ka'); }
+  const purging = session();
+  for (let k = 0; k < cap + 100; k++) ev(purging, 'ka ka ka');
+  db.prepare("INSERT INTO suppressions (agent, profile_id, native_session_id, reason, at, purge_phase) SELECT agent, profile_id, native_session_id, 'retention', 1, 'rows' FROM sessions WHERE id = ?").run(purging);
+  db.exec('COMMIT');
+  for (const s of trashed) assert.ok(applyOverlay(db, { kind: 'trash', session: s, on: true }, { readOnly: false, now: T }).ok);
+  const visible = session();
+  ev(visible, `ka ${'filler words that make this match rank worse '.repeat(40)}`);
+  const all = find(db, 'ka', {}, 50) as ReturnType<typeof searchSessions> & { capped?: boolean };
+  assert.deepEqual(all.hits.map((h) => h.session), [visible], 'the one visible match is found past the filtered ones');
+  assert.ok(!all.capped, 'not capped: the filtered matches were never counted');
+  const trash = find(db, 'ka', { mode: 'trash' }, 50).hits.map((h) => h.session);
+  assert.ok(trash.length > 0 && trash.every((x) => trashed.includes(x)), 'Trash mode: trashed sessions only');
+  assert.ok(!trash.includes(visible) && !trash.includes(purging));
+});
+
+// Gate 5 round 2 B: when the cap stops a scan before the page is full, the page says so (`capped`, the renderer shows
+// "results may be incomplete" with the coverage note) and `next` continues; a session shown on an earlier page never
+// comes back through a worse-ranked match.
+test('B: a scan stopped by the cap returns a short page with capped and next; paging reaches every session once', async () => {
+  const q = await import('../../../src/service/search/query.ts') as Record<string, unknown>;
+  assert.equal(typeof q.SEARCH_SCAN_MAX, 'number', 'SEARCH_SCAN_MAX exported');
+  const cap = q.SEARCH_SCAN_MAX as number;
+  const { db, session, ev } = await store();
+  db.exec('BEGIN');
+  const hot: number[] = [], cool: number[] = [];
+  for (let i = 0; i < 10; i++) { const s = session(); hot.push(s); for (let k = 0; k < Math.ceil(cap / 10) + 20; k++) ev(s, 'ka ka ka ka'); }
+  for (let i = 0; i < 100; i++) { const s = session(); cool.push(s); ev(s, `ka ${'filler words that make this match rank worse '.repeat(40)}`); }
+  db.exec('COMMIT');
+  type Page = ReturnType<typeof searchSessions> & { capped?: boolean };
+  const first = searchSessions(db, 'ka', ALL, null, 50) as Page;
+  assert.ok(first.hits.length < 50 && first.hits.every((h) => hot.includes(h.session)), `a short page of the best sessions (${first.hits.length})`);
+  assert.equal(first.capped, true, 'capped: results may be incomplete');
+  assert.notEqual(first.next, null, 'and it continues');
+  const seen = first.hits.map((h) => h.session);
+  for (let page = first, i = 0; page.next && i < 30; i++) { page = searchSessions(db, 'ka', ALL, page.next, 50) as Page; seen.push(...page.hits.map((h) => h.session)); }
+  assert.equal(seen.length, new Set(seen).size, 'no session on two pages');
+  assert.deepEqual([...seen].sort((a, b) => a - b), [...hot, ...cool].sort((a, b) => a - b), 'every matching session reached once');
+  const { parsePortMessage } = await import('../../../src/shared/ipc.ts');
+  const reply = parsePortMessage({ v: 1, type: 'search', id: 1, hits: [], next: { rank: -1, session: 1, event: 7 }, capped: true }) as { capped?: boolean } | null;
+  assert.equal(reply?.capped, true, 'the capped flag crosses IPC');
+});
+
+// Gate 5 round 2 security review (LOW/MED): equal-rank ties are bounded too, and the cursor carries the event rowid
+// (rank, session, event) so a page cut inside a tie continues exactly there: one session holding thousands of identical
+// short records amid other sessions of the same rank never makes a page read past the cap, and no session is skipped.
+test('round 2 review: a huge equal-rank tie is read at most SEARCH_SCAN_MAX matches a page; paging reaches every session once', async () => {
+  const q = await import('../../../src/service/search/query.ts') as Record<string, unknown>;
+  const cap = q.SEARCH_SCAN_MAX as number;
+  const stats = q.searchStats as { examined: number };
+  const { db, session, ev } = await store();
+  db.exec('BEGIN');
+  const others: number[] = [];
+  for (let i = 0; i < 30; i++) { const s = session(); others.push(s); ev(s, 'ka ka'); }
+  const big = session();
+  for (let k = 0; k < 3 * cap; k++) ev(big, 'ka ka');
+  for (let i = 0; i < 30; i++) { const s = session(); others.push(s); ev(s, 'ka ka'); }
+  db.exec('COMMIT');
+  type Page = ReturnType<typeof searchSessions> & { capped?: boolean };
+  const seen: number[] = [], examined: number[] = [];
+  let page = searchSessions(db, 'ka', ALL, null, 50) as Page;
+  for (let i = 0; ; i++) {
+    examined.push(stats.examined);
+    seen.push(...page.hits.map((h) => h.session));
+    if (!page.next || i > 40) break;
+    assert.equal(typeof (page.next as { event?: unknown }).event, 'number', 'the cursor carries the event rowid');
+    page = searchSessions(db, 'ka', ALL, page.next, 50) as Page;
+  }
+  assert.ok(Math.max(...examined) <= cap, `matches examined per page: ${examined.join(',')} (cap ${cap})`);
+  assert.equal(seen.length, new Set(seen).size, 'no session on two pages');
+  assert.deepEqual([...seen].sort((a, b) => a - b), [...others, big].sort((a, b) => a - b), 'every session reached once');
+});

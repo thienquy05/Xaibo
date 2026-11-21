@@ -18,6 +18,8 @@ export const initialQuery: Query = { mode: 'all', search: '', agent: null, group
 export const NO_MATCH = 'No matches. Change filters or clear search.';
 // Gate 5 G5c-3 (PRD §5.7): the second sentence is the service's SEARCH_ITEM_LIMIT (service/search/query.ts, FTS_MAX_BYTES)
 export const COVERAGE = 'Search covers retained indexed content; incomplete sources may have gaps. Only the first 64 KiB of each item is searchable.';
+/** Gate 5 round 2 B: a search page the service's bounded scan cut short (Load more continues it). */
+export const INCOMPLETE = 'Results may be incomplete: the search stopped at its scan limit. Load more continues it.';
 
 /** The service filter; null for Live, which shows the live set, and for Suppressed, which pages suppression metadata. */
 export function filterOf(q: Query): HistoryFilter | null {
@@ -106,22 +108,29 @@ export function listTexts(q: Query, live: LiveState): { title: string; empty: st
 }
 
 /** Review L9: a resync reloads the loaded window (at least one page) page by page; a later failure keeps the pages
- *  already fetched and the cursor continues after them (as data/pages.reloadWindow). */
-export async function refill<R, K>(want: number, page: number, fetch: (cursor: K | null, limit: number) => Promise<{ rows: R[]; next: K | null }>): Promise<{ rows: R[]; next: K | null }> {
+ *  already fetched and the cursor continues after them (as data/pages.reloadWindow). Gate 5 round 2 review: a capped
+ *  search page ends the refill (its cursor kept: Load more continues), so one reload runs at most one capped scan. */
+export async function refill<R, K>(want: number, page: number, fetch: (cursor: K | null, limit: number) => Promise<{ rows: R[]; next: K | null; capped?: boolean }>):
+  Promise<{ rows: R[]; next: K | null; capped?: true }> {
   const target = Math.max(want, page);
   const rows: R[] = [];
-  let cursor: K | null = null;
+  let cursor: K | null = null, capped = false;
   do {
-    let p: { rows: R[]; next: K | null };
+    let p: { rows: R[]; next: K | null; capped?: boolean };
     try { p = await fetch(cursor, Math.min(page, target - rows.length)); } catch (e) {
       if (!rows.length) throw e;
       break;
     }
     rows.push(...p.rows);
     cursor = p.next;
-  } while (cursor !== null && rows.length < target);
-  return { rows, next: cursor };
+    capped = !!p.capped;
+  } while (cursor !== null && !capped && rows.length < target);
+  return { rows, next: cursor, ...(capped ? { capped: true as const } : {}) };
 }
+
+/** Gate 5 round 2 review: "results may be incomplete" after an applied reply: a new query or a reload takes its own
+ *  pages' state, Load more can only add to it. */
+export const incompleteAfter = (prev: boolean, kind: 'new' | 'resync' | 'more', capped: boolean): boolean => (kind === 'more' ? prev || capped : capped);
 
 /** The plain view stays within the loaded window (as model.applyDelta): past `capacity` rows the tail is trimmed and the
  *  cursor moves to the last kept row, so Load more brings the rest. next undefined = keep the current cursor. */

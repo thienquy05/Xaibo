@@ -183,11 +183,11 @@ test('IPC: the new requests and replies parse strictly', () => {
   const ok = (m: object) => assert.ok(parsePortRequest({ v: 1, id: 2, ...m }), JSON.stringify(m));
   const no = (m: object) => assert.equal(parsePortRequest({ v: 1, id: 2, ...m }), null, JSON.stringify(m));
   ok({ type: 'search', query: 'alpha', filter: ALL, cursor: null, limit: 50 });
-  ok({ type: 'search', query: 'alpha', filter: ALL, cursor: { rank: -1.25, session: 3 }, limit: 50 });
+  ok({ type: 'search', query: 'alpha', filter: ALL, cursor: { rank: -1.25, session: 3, event: 9 }, limit: 50 });
   no({ type: 'search', query: '', filter: ALL, cursor: null, limit: 50 });
   no({ type: 'search', query: 'x'.repeat(257), filter: ALL, cursor: null, limit: 50 });
-  no({ type: 'search', query: 'a', filter: ALL, cursor: { rank: Number.NaN, session: 3 }, limit: 50 });
-  no({ type: 'search', query: 'a', filter: ALL, cursor: { rank: Infinity, session: 3 }, limit: 50 });
+  no({ type: 'search', query: 'a', filter: ALL, cursor: { rank: Number.NaN, session: 3, event: 9 }, limit: 50 });
+  no({ type: 'search', query: 'a', filter: ALL, cursor: { rank: Infinity, session: 3, event: 9 }, limit: 50 });
   ok({ type: 'purge', session: 4 });
   no({ type: 'purge', session: 0 });
   no({ type: 'purge', session: [4, 5] });

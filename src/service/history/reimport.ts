@@ -18,6 +18,11 @@ export function reimport(writer: Writer, who: Identity, o: FileOptions & { keep?
   if (!live()) return 'none';
   if (!finishPending(writer, who, o)) return 'pending'; // a cleared marker must not let the purge's file work remove re-imported data
   return writer.transact((db) => {
+    // G5Rr1-2: the file work just finished and cleared a retention marker that saw new native activity: re-imported already
+    if (db.prepare('SELECT 1 FROM suppressions WHERE agent = ? AND profile_id = ? AND native_session_id = ? AND cleared_at IS NULL').get(who.agent, who.profile, who.native) === undefined) {
+      if (o.keep) db.prepare('INSERT INTO overlays (agent, profile_id, native_session_id, keep) VALUES (?, ?, ?, 1) ON CONFLICT DO UPDATE SET keep = 1').run(who.agent, who.profile, who.native);
+      return 'ok';
+    }
     const paths = db.prepare(`SELECT f.path FROM suppressions s, json_each(coalesce(s.files, '[]')) j JOIN source_files f ON f.id = j.value
       WHERE s.agent = ? AND s.profile_id = ? AND s.native_session_id = ? AND s.cleared_at IS NULL`).all(who.agent, who.profile, who.native) as { path: string }[];
     const listed = (db.prepare("SELECT json_array_length(coalesce(files, '[]')) AS n FROM suppressions WHERE agent = ? AND profile_id = ? AND native_session_id = ?")

@@ -18,7 +18,7 @@ import { findingBadges, formatTime, PAGE, recordLabel } from '../model.ts';
 import { Icon } from '../status/StatusBadge.tsx';
 import { show, visible } from '../text.ts';
 import { compactStatus, type SessionChanges } from '../workspace/view.ts';
-import { canLoadMore, capped, COVERAGE, emphasis, failureNote, filterOf, freshList, groupLabel, initialQuery, isPlain, listTexts, mergeLive, mergeRows, MODES, modeKey,
+import { canLoadMore, capped, COVERAGE, INCOMPLETE, incompleteAfter, emphasis, failureNote, filterOf, freshList, groupLabel, initialQuery, isPlain, listTexts, mergeLive, mergeRows, MODES, modeKey,
   lastKnownRows, refill, rowLines, startLoad, type BrowseRow, type ListState, type LiveState, type Query } from './browse.ts';
 import { doneText, errorText, goneUndo, menuClosed, menuItems, NOTICE, opOf, place, trashed, undoFocus, undoLabel, undone, type Shared, type Toggle, type Undo } from './actions.ts';
 import { MoveDialog, type MoveApi, type MoveOutcome, type MoveTarget } from './MoveDialog.tsx';
@@ -29,7 +29,7 @@ import { neighbourId, type PurgeResult } from './trash.ts';
 
 export interface BrowseApi extends MoveApi, SuppressedApi {
   history(filter: HistoryFilter, cursor: HistoryKey | null, limit: number): Promise<{ rows: HistoryRow[]; next: HistoryKey | null }>;
-  search(query: string, filter: HistoryFilter, cursor: SearchKey | null, limit: number): Promise<{ hits: { row: HistoryRow; snippet: string }[]; next: SearchKey | null; failed?: true }>;
+  search(query: string, filter: HistoryFilter, cursor: SearchKey | null, limit: number): Promise<{ hits: { row: HistoryRow; snippet: string }[]; next: SearchKey | null; failed?: true; capped?: true }>;
   mapGroups(parent: MapGroup | null, cursor: MapGroup | null, limit: number): Promise<{ groups: MapNode[]; next: MapGroup | null }>;
   /** XAIBO-PROD-532: an overlay op, and one session's fresh history row (null = gone; throws when unavailable). */
   overlay(op: OverlayOp): Promise<OverlayResult>;
@@ -142,7 +142,7 @@ function GroupItem({ api, node, selected, onPick }: { api: BrowseApi; node: MapN
 }
 
 type List = ListState<HistoryKey | SearchKey>;
-type Page = { rows: HistoryRow[]; next: HistoryKey | SearchKey | null; snippets: (readonly [number, string])[] };
+type Page = { rows: HistoryRow[]; next: HistoryKey | SearchKey | null; snippets: (readonly [number, string])[]; capped?: true };
 const fresh = (): List => freshList();
 
 export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, onOpen, hide, history = null, onHistory, headerTrash = null, onOpenSuppressed, suppressedOpen = null, suppressedGone = null }: {
@@ -159,6 +159,7 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
 }) {
   const [q, setQ] = useState<Query>(initialQuery);
   const [list, setList] = useState<List>(fresh);
+  const [incomplete, setIncomplete] = useState(false); // round 2 B: a search page was capped
   const [draft, setDraft] = useState('');
   const [agentDraft, setAgentDraft] = useState('');
   const [groupName, setGroupName] = useState<string | null>(null);
@@ -340,7 +341,7 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
   const fetchPage = (query: Query, f: HistoryFilter, cursor: HistoryKey | SearchKey | null, limit: number): Promise<Page> => query.search
     ? api.search(query.search, f, cursor as SearchKey | null, limit).then((r) => {
       if (r.failed) throw new Error('search failed');
-      return { rows: r.hits.map((h) => h.row), next: r.next, snippets: r.hits.map((h) => [h.row.id, h.snippet] as const) };
+      return { rows: r.hits.map((h) => h.row), next: r.next, snippets: r.hits.map((h) => [h.row.id, h.snippet] as const), ...(r.capped ? { capped: true as const } : {}) };
     })
     : api.history(f, cursor as HistoryKey | null, limit).then((r) => ({ rows: r.rows, next: r.next, snippets: [] }));
 
@@ -352,14 +353,17 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
     if (kind === 'more' && !canLoadMore(before)) return;
     const g = kind === 'more' ? gen.current : ++gen.current; // a new query or resync drops replies for the old one
     if (kind !== 'more') held.current = new Map();
+    if (kind === 'new') setIncomplete(false);
     setList(kind === 'new' ? fresh() : (x) => startLoad(x, kind));
     const page: Promise<Page> = kind === 'more' ? fetchPage(query, f, before.next, PAGE)
       : kind === 'resync' ? refill(before.capacity, PAGE, (cursor: HistoryKey | SearchKey | null, limit) => fetchPage(query, f, cursor, limit)
-        .then((p) => ({ rows: p.rows.map((row) => ({ row, snip: p.snippets.find(([id]) => id === row.id)?.[1] })), next: p.next })))
-        .then((r) => ({ rows: r.rows.map((x) => x.row), next: r.next, snippets: r.rows.flatMap((x) => (x.snip === undefined ? [] : [[x.row.id, x.snip] as const])) }))
+        .then((p) => ({ rows: p.rows.map((row) => ({ row, snip: p.snippets.find(([id]) => id === row.id)?.[1] })), next: p.next, capped: !!p.capped })))
+        .then((r) => ({ rows: r.rows.map((x) => x.row), next: r.next, snippets: r.rows.flatMap((x) => (x.snip === undefined ? [] : [[x.row.id, x.snip] as const])),
+          ...(r.capped ? { capped: true as const } : {}) }))
       : fetchPage(query, f, null, PAGE);
     page.then((r) => {
       if (g !== gen.current) return;
+      setIncomplete((x) => incompleteAfter(x, kind, !!r.capped)); // round 2 review: only for the reply that applies
       const replay = kind === 'more' ? [] : [...(held.current?.values() ?? [])];
       if (kind !== 'more') held.current = null;
       setList((x) => {
@@ -494,7 +498,7 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
         ) : null}
         </>}
       </div>
-      {t.searching ? <p className="x-list-foot">{COVERAGE}</p> : null}
+      {t.searching ? <p className="x-list-foot">{incomplete ? `${INCOMPLETE} ` : ''}{COVERAGE}</p> : null}
       <MoveDialog target={moveTarget} api={api} onDone={(id, to) => void moved(id, to)} onClosed={() => setMoveTarget(null)} />
       <PurgeDialog target={purgeTarget} purge={(id) => api.purge(id)} onDone={purged} onClosed={() => setPurgeTarget(null)} />
       <Menu id={MENU} label="More actions" entries={entries} note={menu?.status === 'loading' ? <p className="x-hint">Loading actions…</p>

@@ -3,6 +3,7 @@
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statfsSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { backfillExcerpts } from '../history/excerpt.ts';
 
 export interface Migration { version: number; name: string; sql: string }
 export type ReadOnlyReason = 'migration-failed' | 'insufficient-space' | 'newer-schema';
@@ -114,6 +115,7 @@ export async function openStore(o: StoreOptions): Promise<Store> {
       if (fkOff) db.exec('PRAGMA foreign_keys = OFF');
       db.exec('BEGIN IMMEDIATE');
       db.exec(m.sql);
+      if (m.version === 25) backfillExcerpts(db); // Gate 5 round 2 A: in the migration's own transaction
       if (fkOff && db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('dangling reference');
       db.exec(`PRAGMA user_version = ${m.version}`);
       db.exec('COMMIT');

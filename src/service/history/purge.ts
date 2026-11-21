@@ -1,8 +1,12 @@
 // XAIBO-PROD-515 (P5-T07; FR-11, Q-5.1, Q-5.2, research L6): purge of Xaibo's copy of one session, through the writer (so
 // its disk-full state applies). XAIBO-PROD-542 (Gate 5 G5-N1): in phases, so no transaction holds the writer for long.
-//  (a) One short transaction settles the session's contributions (FR-52, exactly once), captures the files and the
-//      registrations that held its records, detaches the files, drops their quarantine and writes the Suppression marker
-//      with its purge phase. From then on every reader hides the session and nothing brings it back (suppression.ts).
+//  (a) One short transaction captures the files and the registrations that held its records, detaches the files, drops
+//      their quarantine and writes the Suppression marker with purge phase 'settle'. From then on every reader hides the
+//      session and nothing brings it back (suppression.ts).
+//  (settle) Gate 5 round 2: its contributions settle (FR-52, exactly once) in bounded batches, requests, then turns, then
+//      session-linked quota readings by row id, the cursor and the months and models seen stored on the marker with each
+//      batch's marks; the session and per-model keys go in the last batch from those frozen rows, which flips the phase to
+//      'rows'. Nothing is deleted before. The monthly side leaves out only 'rows', so totals never move meanwhile.
 //  (b) Its dependent rows, then its events and their FTS rows, go in batches bounded by rows and FTS bytes, each its own
 //      writer transaction with a yield between, so live writes go first.
 //  (c) One idempotent sweep of every session-keyed table and the session row clears the phase.
@@ -22,24 +26,33 @@ import { atomicWrite, fsyncDir } from '../fs-private.ts';
 import { openRegistry, readRegistrations } from '../receivers/registrations.ts';
 import { readOwn, spoolDir } from '../receivers/spool-replay.ts';
 import { ftsPrefix, FTS_MAX_BYTES, type Writer } from '../store/writer.ts';
-import { settle } from '../usage/settle.ts';
+import { quotaContributions, SESSION_ROW, sessionKeys, type Contribution, type Months, type Read, type SessionRow } from '../usage/monthly.ts';
+import { settleContributions } from '../usage/settle.ts';
 import { errorCode } from '../../shared/crash.ts';
-import { suppress, type Identity, type SuppressionReason } from './suppression.ts';
+import { clear, suppress, type Identity, type SuppressionReason } from './suppression.ts';
 
 export interface FileOptions {
   dataDir: string; backupDir: string; now: number;
   /** The report intake's live chunk store: items go through it (its quota freed); absent = removed on disk (no store runs). */
   chunks?: ChunkStore | undefined;
-  /** G5a-2: identities in today's spool file, read once per retention run (spoolToday); absent = read when needed. */
-  today?: Set<string> | null;
+  /** G5a-2/G5Rr1-3: today's spool identities, cached per retention run by the file's (ino, size, mtime, ctime); the file
+   *  is checked when the file work runs, so a record appended after any earlier read is seen. Absent = no cache. */
+  today?: TodayCache;
   /** Rows and FTS bytes per batch transaction of phase (b) (tests use small ones). */
   limits?: PurgeLimits;
   /** True once the caller stops: the row phases end between batches and resume later. */
   stopped?: () => boolean;
   /** Fixed event names and error codes only (a failed batch: purge_rows_failed). */
   log?: (event: string, fields?: Record<string, string | number>) => void;
+  /** The install secret: needed to settle a purge's contributions (absent: a purge still settling stays owed). */
+  secret?: Buffer;
+  /** G5Rr1-2: a retention marker was cleared by native activity seen while its purge ran: wake the adapters. */
+  onReimport?: () => void;
 }
 export interface PurgeLimits { rows: number; ftsBytes: number }
+export interface TodayCache { key: string; ids: Set<string> | null }
+/** A fresh per-run cache of today's spool identities. */
+export const todayCache = (): TodayCache => ({ key: '', ids: null });
 export interface PurgeOptions extends FileOptions {
   secret: Buffer; reason: SuppressionReason;
   /** P5-T09 (review H2): re-checked inside phase (a); false = the session is no longer eligible, nothing done. */
@@ -97,8 +110,6 @@ function begin(db: DatabaseSync, id: number, listed: { id: string; agent: string
     ...(db.prepare('SELECT DISTINCT registration_id AS r FROM report_delivery WHERE agent = ? AND profile_key = ? AND native_session_id = ?')
       .all(...key) as { r: string }[]).map((x) => x.r),
   ])];
-  const quota = (db.prepare('SELECT id FROM usage_history WHERE usage_scope_id IN (SELECT id FROM usage_scopes WHERE session_id = ?)').all(id) as { id: number }[]).map((r) => r.id);
-  settle(db, { sessions: [id], quota }, o.secret, o.now); // FR-52: once, before anything it counts is deleted
   // P5-T08 (review M2): the files that held its records, for a re-import: its own rows and any file its events came from
   const files = (db.prepare('SELECT id FROM source_files WHERE session_id = ?1 UNION SELECT file_id FROM events WHERE session_id = ?1 AND file_id IS NOT NULL')
     .all(id) as { id: number }[]).map((r) => r.id);
@@ -192,6 +203,20 @@ async function rowPhases(writer: Writer, who: Identity, o: FileOptions): Promise
   const key = [who.agent, who.profile, who.native] as const;
   let regs = '[]';
   try {
+    for (;;) { // the settlement, before any deletion
+      await deletesAllowed(writer);
+      if (o.stopped?.() || writer.diskFull) return false;
+      if (!o.secret) { // cannot settle without the install secret: a purge still settling stays owed
+        const phase = writer.transact((db) => (db.prepare('SELECT purge_phase AS p FROM suppressions WHERE agent = ? AND profile_id = ? AND native_session_id = ?')
+          .get(...key) as { p: string | null } | undefined)?.p ?? null);
+        if (phase === 'settle') return false;
+        break;
+      }
+      const secret = o.secret, now = o.now;
+      const settled = writer.transact((db) => settleStep(db, who, lim, secret, now));
+      await tick(); // live commits go first
+      if (settled) break;
+    }
     for (const step of steps(who)) {
       for (;;) {
         await deletesAllowed(writer);
@@ -215,6 +240,58 @@ async function rowPhases(writer: Writer, who: Identity, o: FileOptions): Promise
     if (!o.stopped?.()) o.log?.('purge_rows_failed', { error: errorCode(e) });
     return false;
   }
+}
+
+type SettleCursor = { u: number; t: number; q: number; m: Record<string, { month: string; offset: number; ts: number; models: string[] }> };
+const SETTLED = -1; // a cursor field whose table is done
+const num = (x: unknown) => (typeof x === 'number' && Number.isSafeInteger(x) ? x : 0);
+/** The stored cursor; an unreadable one starts over (settle() skips keys already settled, so a restart only repeats reads). */
+function readCursor(v: string | null): SettleCursor {
+  try {
+    const c = JSON.parse(v ?? 'null') as Partial<SettleCursor> | null;
+    if (c && typeof c === 'object') return { u: num(c.u), t: num(c.t), q: num(c.q), m: c.m && typeof c.m === 'object' ? c.m : {} };
+  } catch { /* starts over */ }
+  return { u: 0, t: 0, q: 0, m: {} };
+}
+/** One settlement batch of the session: at most `lim.rows` rows read (requests, then turns, then quota readings); the
+ *  last also settles its session and per-model keys and flips the phase to 'rows'. True once settled. Inside the
+ *  writer's transaction, with the cursor saved alongside the marks. */
+function settleStep(db: DatabaseSync, who: Identity, lim: PurgeLimits, secret: Buffer, now: number): boolean {
+  const key = [who.agent, who.profile, who.native] as const;
+  const m = db.prepare('SELECT purge_phase, settle_cursor FROM suppressions WHERE agent = ? AND profile_id = ? AND native_session_id = ?').get(...key) as
+    { purge_phase: string | null; settle_cursor: string | null } | undefined;
+  if (m?.purge_phase !== 'settle') return true;
+  const s = db.prepare(`${SESSION_ROW} WHERE agent = ? AND profile_id = ? AND native_session_id = ?`).get(...key) as SessionRow | undefined;
+  const c = readCursor(m.settle_cursor);
+  const out: Contribution[] = [];
+  if (s) {
+    const k = sessionKeys(db, secret);
+    const months: Months = new Map(Object.entries(c.m).map(([mo, x]) => [mo, { at: { month: x.month, offset: x.offset }, ts: x.ts, models: new Set(x.models) }]));
+    const quota = db.prepare('SELECT id FROM usage_history WHERE usage_scope_id IN (SELECT id FROM usage_scopes WHERE session_id = ?) AND id > ? ORDER BY id LIMIT ?');
+    let budget = lim.rows;
+    const stage = (field: 'u' | 't' | 'q', run: (after: number, n: number, read: Read) => Iterable<Contribution>) => {
+      if (budget <= 0 || c[field] === SETTLED) return;
+      const n = budget, read: Read = { rows: 0, last: c[field] };
+      for (const x of run(c[field], n, read)) out.push(x);
+      budget -= read.rows;
+      c[field] = read.rows < n ? SETTLED : read.last;
+    };
+    stage('u', (after, n, read) => k.usage(s, months, after, Number.MAX_SAFE_INTEGER, n, read));
+    stage('t', (after, n, read) => k.turns(s, months, after, Number.MAX_SAFE_INTEGER, n, read));
+    stage('q', (after, n, read) => {
+      const ids = (quota.all(s.id, after, n) as { id: number }[]).map((r) => r.id);
+      read.rows = ids.length;
+      read.last = ids.at(-1) ?? after;
+      return quotaContributions(db, secret, ids);
+    });
+    c.m = Object.fromEntries([...months].map(([mo, x]) => [mo, { month: x.at.month, offset: x.at.offset, ts: x.ts, models: [...x.models] }]));
+    if (c.u === SETTLED && c.t === SETTLED && c.q === SETTLED) out.push(...k.session(s, months)); // from the frozen rows
+  }
+  settleContributions(db, [out], now);
+  const done = !s || (c.u === SETTLED && c.t === SETTLED && c.q === SETTLED);
+  db.prepare('UPDATE suppressions SET purge_phase = ?, settle_cursor = ? WHERE agent = ? AND profile_id = ? AND native_session_id = ?')
+    .run(done ? 'rows' : 'settle', done ? null : JSON.stringify(c), ...key);
+  return done;
 }
 
 /** Phase (c): every session-keyed row left (normally none: written meanwhile, or by an older purge), then the session. */
@@ -302,8 +379,18 @@ function finishFiles(writer: Writer, who: Identity, regs: string[], o: FileOptio
   const backups = step(() => dropBackups(o.backupDir, who), { deleted: 0, done: false });
   done &&= spool.done && backups.done;
   if (done) {
-    step(() => writer.transact((db) => db.prepare('UPDATE suppressions SET pending = NULL WHERE agent = ? AND profile_id = ? AND native_session_id = ? AND purge_phase IS NULL')
-      .run(who.agent, who.profile, who.native)), undefined);
+    // G5Rr1-2: once nothing is owed, a retention marker that saw new native activity meanwhile (fresh_at) clears and resets
+    // its files (epoch + 1: the G5f-1 reread), so the next scan re-imports the whole session; a manual one stays
+    const key = [who.agent, who.profile, who.native] as const;
+    const reimported = step(() => writer.transact((db) => {
+      db.prepare('UPDATE suppressions SET pending = NULL WHERE agent = ? AND profile_id = ? AND native_session_id = ? AND purge_phase IS NULL').run(...key);
+      const m = db.prepare('SELECT reason, fresh_at, cleared_at, pending, purge_phase FROM suppressions WHERE agent = ? AND profile_id = ? AND native_session_id = ?')
+        .get(...key) as { reason: string; fresh_at: number | null; cleared_at: number | null; pending: string | null; purge_phase: string | null } | undefined;
+      if (m?.reason !== 'retention' || m.fresh_at === null || m.cleared_at !== null || m.pending !== null || m.purge_phase !== null) return false;
+      clear(db, who, o.now); // round 2 review: cleared at the service clock, not the native record's time
+      return true;
+    }), false);
+    if (reimported) o.onReimport?.();
   }
   return { chunkItems, spoolFiles: spool.files, backupsDeleted: backups.deleted, filesPending: !done };
 }
@@ -333,15 +420,26 @@ function identityOf(line: string): string | null {
 /** G5a-2: the identities today's spool file holds, read once per retention run; empty when it is absent or not ours
  *  (never read), null when it cannot be read now. */
 export function spoolToday(dataDir: string, now: number): Set<string> | null {
-  const dir = spoolDir(dataDir);
+  let dir: string | null;
+  try { dir = spoolDir(dataDir); } catch { return null; } // G5a-3: only a missing spool dir is "none"
   if (!dir) return new Set();
-  const file = path.join(dir, `${new Date(now).toISOString().slice(0, 10)}.jsonl`);
+  return todayIds(path.join(dir, `${new Date(now).toISOString().slice(0, 10)}.jsonl`));
+}
+
+/** G5Rr1-3: the identities `file` holds now; read again whenever its (ino, size, mtime, ctime) differs from the cached
+ *  read (the key is taken before the read, so an append during it only causes another read). Empty when absent or not
+ *  ours (never read), null when it cannot be read now. */
+function todayIds(file: string, cache?: TodayCache): Set<string> | null {
   let st: Stats;
   try { st = lstatSync(file); } catch (e) { return errno(e) === 'ENOENT' ? new Set() : null; }
   if (!st.isFile() || st.nlink !== 1 || !own(st)) return new Set();
+  const key = `${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
+  if (cache?.ids && cache.key === key) return cache.ids;
   const got = readOwn(file, SPOOL_MAX);
   if (!got) return null;
-  return new Set(got.buf.toString('utf8').split('\n').map(identityOf).filter((k): k is string => k !== null));
+  const ids = new Set(got.buf.toString('utf8').split('\n').map(identityOf).filter((k): k is string => k !== null));
+  if (cache) { cache.key = key; cache.ids = ids; }
+  return ids;
 }
 
 /** G5a-3: true when the file's bytes name the session id (a JSON string), read in 1 MiB steps. */
@@ -362,7 +460,7 @@ function mentions(file: string, native: string): boolean {
   } finally { closeSync(fd); }
 }
 
-/** A listing error (EACCES, EMFILE, ...) throws: the work stays owed; no spool dir is done. */
+/** A stat or listing error of the spool dir (EACCES, EMFILE, ...) throws: the work stays owed; no spool dir is done. */
 function rewriteSpool(o: FileOptions, who: Identity, regs: Set<string>): { files: number; done: boolean } {
   const dir = spoolDir(o.dataDir);
   if (!dir) return { files: 0, done: true };
@@ -373,7 +471,7 @@ function rewriteSpool(o: FileOptions, who: Identity, regs: Set<string>): { files
     if (!m) continue;
     const file = path.join(dir, name);
     if (!m[2] && m[1]! >= today) { // G5a-2: the forwarder's file; its records of the session keep the work owed
-      const ids = o.today !== undefined ? o.today : spoolToday(o.dataDir, o.now);
+      const ids = todayIds(file, o.today);
       if (ids === null || ids.has(hookKey(who)) || [...regs].some((r) => ids.has(reportKey(r, who.native)))) done = false;
       continue;
     }

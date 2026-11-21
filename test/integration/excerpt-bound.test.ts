@@ -1,4 +1,5 @@
-// Gate 5 G5b2-3 (XAIBO-PROD-509 follow-up): an untitled row's excerpt reads a bounded amount of record text. A user
+// Gate 5 G5b2-3 (XAIBO-PROD-509 follow-up): an untitled row's excerpt reads a bounded amount of record text (round 2 A:
+// when the writer computes it). A user
 // record too large for the bound is skipped in the query (never loaded or parsed), so the excerpt comes from the next
 // small prompt. Synthetic rows only.
 import { test } from 'node:test';
@@ -6,7 +7,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { listSessions } from '../../src/service/api.ts';
+import { computeExcerpt } from '../../src/service/history/excerpt.ts';
 import { openStore } from '../../src/service/store/db.ts';
 
 test('G5b2-3: a multi-MiB first user record is skipped; the excerpt is the next small prompt, and the big record is never parsed', async (t) => {
@@ -27,7 +28,14 @@ test('G5b2-3: a multi-MiB first user record is skipped; the excerpt is the next 
   let largest = 0;
   JSON.parse = ((text: string, reviver?: (k: string, v: unknown) => unknown) => { largest = Math.max(largest, String(text).length); return parse(text, reviver); }) as typeof JSON.parse;
   let excerpt: string | null | undefined;
-  try { excerpt = listSessions(db, null, 50).rows[0]!.excerpt; } finally { JSON.parse = parse; }
+  try { excerpt = computeExcerpt(db, 'claude', 1); } finally { JSON.parse = parse; } // Gate 5 round 2 A: computed by the writer, stored
   assert.equal(excerpt, 'Small synthetic prompt');
   assert.ok(largest < 256 * 1024, `no oversized record parsed (largest JSON.parse input ${largest})`);
+});
+
+// Gate 5 round 2 security review (LOW): a store error while computing is "unknown" (undefined), never "no excerpt"
+// (null): the writer keeps the stored excerpt instead of overwriting it with null.
+test('round 2 review: computeExcerpt answers undefined when the store cannot be read, null only when there is no prompt', async () => {
+  const { DatabaseSync } = await import('node:sqlite');
+  assert.equal(computeExcerpt(new DatabaseSync(':memory:'), 'claude', 1), undefined, 'no events table: unknown');
 });

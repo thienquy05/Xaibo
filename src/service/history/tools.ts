@@ -29,13 +29,14 @@ interface Files { dataDir: string; backupDir: string; secret: Buffer; now: numbe
 
 /** One search page; hits whose session is gone by the time its row is read are dropped (design review L4). */
 export function answerSearch(db: DatabaseSync, q: { query: string; filter: HistoryFilter; cursor: SearchKey | null; limit: number },
-  kinds: SessionKind[] = [], models: ModelEntry[] = [], live?: LiveOf): { hits: SearchHit[]; next: SearchKey | null } {
+  kinds: SessionKind[] = [], models: ModelEntry[] = [], live?: LiveOf): { hits: SearchHit[]; next: SearchKey | null; capped?: true } {
   const began = !db.isTransaction;
   if (began) db.exec('BEGIN'); // hits and rows from one snapshot
   try {
     const r = searchSessions(db, q.query, q.filter, q.cursor, q.limit);
     const rows = historyRows(db, r.hits.map((h) => h.session), kinds, models, live);
-    return { hits: r.hits.flatMap((h) => { const row = rows.get(h.session); return row ? [{ row, event: h.event, snippet: h.snippet }] : []; }), next: r.next };
+    return { hits: r.hits.flatMap((h) => { const row = rows.get(h.session); return row ? [{ row, event: h.event, snippet: h.snippet }] : []; }), next: r.next,
+      ...(r.capped ? { capped: true as const } : {}) }; // round 2 B: the scan stopped at its bound
   } finally { if (began && db.isTransaction) db.exec('COMMIT'); }
 }
 

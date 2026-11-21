@@ -315,9 +315,13 @@ export function resumeLevel<T, C>(l: Level<T, C>): Level<T, C> {
 
 /** Gate 5 review M (G5d-1): a refresh run starts only once the previous one settled (null = skip), with a new generation;
  *  a reply applies only while its run is the latest. */
-export interface RefreshGate { gen: number; pending: boolean }
+export interface RefreshGate { gen: number; pending: boolean; again?: boolean }
 export const startRefresh = (g: RefreshGate): RefreshGate | null => (g.pending ? null : { gen: g.gen + 1, pending: true });
 export const replyApplies = (g: RefreshGate, gen: number) => g.gen === gen;
+/** Gate 5 G5Rr1-4: run `gen` settled; a tick it missed (`again`, set by the caller while pending) reruns once. An older
+ *  run settling changes nothing. */
+export const settleRefresh = (g: RefreshGate, gen: number): { gate: RefreshGate; rerun: boolean } =>
+  (g.gen !== gen ? { gate: g, rerun: false } : { gate: { gen: g.gen, pending: false, again: false }, rerun: !!g.again });
 
 /** Gate 5 G5d-1: a focused or selected row a refresh removed hands over to its nearest ancestor still shown (as Return's
  *  dropSession and collapse do); null = nothing on its path is shown. */
