@@ -85,3 +85,13 @@ test('purgeStep: open, confirm once, results for the shown session only, unexpec
   assert.equal(goneElsewhere.close, false, "A's success never closes B's dialog");
   assert.equal(goneElsewhere.outcome?.gone, true);
 });
+
+// Gate 5 second review M1 (run 178): a purge that hid the session but could not finish its rows says so, and the record
+// leaves the list as for a finished purge (the service keeps the session hidden)
+test('second review M1: pending purge text and routing', () => {
+  const t = purgeText('pending' as never);
+  assert.match(t, /could not finish/);
+  assert.match(t, /stays hidden/);
+  assert.doesNotMatch(t, /Nothing was purged|disk may be full/); // round 4 review: stops and store errors take this path too
+  assert.deepEqual(routePurge('pending' as never, true), { close: true, gone: true, dialog: null, note: t });
+});

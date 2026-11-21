@@ -261,7 +261,7 @@ test('review M (code): stopping the service during a manual purge ends it betwee
   db.exec('COMMIT');
   const purged = svc.purge(id);
   svc.stop();
-  assert.equal(await purged, 'purged', 'hidden and suppressed: the rest is owed');
+  assert.equal(await purged, 'pending', 'hidden and suppressed: the rest is owed (Gate 5 second review M1: pending, not purged)');
   assert.ok(!events.includes('purge_rows_failed'), 'a stop is no failure (the store was not used after it closed)');
   const again = await boot({ dataDir: s.dataDir, home: s.home, catalog, intervalMs: 60_000 });
   try {

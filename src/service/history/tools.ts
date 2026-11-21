@@ -17,7 +17,7 @@ import { isDiskFull } from '../store/db.ts';
 import type { Writer } from '../store/writer.ts';
 import type { ModelEntry } from '../usage/models.ts';
 import { historyRows } from './overlay.ts';
-import { purgeSession } from './purge.ts';
+import { purgeSession, type FileOptions } from './purge.ts';
 import { reimport } from './reimport.ts';
 import { notPurging, type Identity } from './suppression.ts';
 import type { ChunkStore } from '../adapters/generic/chunks.ts';
@@ -105,13 +105,17 @@ export class PurgeLimit {
 
 /** A purge the owner confirmed (reason manual, P5-T07 engine through the writer). An unknown session is not counted.
  *  `hidden`: called once the session is hidden (phase a), before its rows are deleted in batches. */
-export async function purgeManual(writer: Writer, session: number, o: Files & { limit: PurgeLimit; hidden?: () => void }): Promise<Purge> {
+export async function purgeManual(writer: Writer, session: number, o: FileOptions & { secret: Buffer; limit: PurgeLimit; hidden?: () => void }): Promise<Purge> {
+  let hid = false; // Gate 5 second review M1 (design review 3014): once hidden, a failure is 'pending', never "nothing purged"
   try {
     if (!writer.transact((db) => db.prepare(`SELECT 1 FROM sessions s WHERE id = ? AND ${notPurging(db)}`).get(session) !== undefined)) return 'not-found';
     if (!o.limit.take()) return 'busy';
-    return (await purgeSession(writer, session, { dataDir: o.dataDir, backupDir: o.backupDir, now: o.now, secret: o.secret, reason: 'manual', chunks: o.chunks,
-      ...(o.hidden ? { hidden: o.hidden } : {}) })).purged ? 'purged' : 'not-found';
-  } catch (e) { return isDiskFull(e) ? 'disk-full' : 'failed'; }
+    // the caller's options whole (stop, log), so the row phases see them; keep callers' objects to FileOptions (a spread is
+    // not excess-checked: vacuum, guard or limits would pass through)
+    const { limit: _limit, hidden, ...files } = o;
+    const r = await purgeSession(writer, session, { ...files, reason: 'manual', hidden: () => { hid = true; hidden?.(); } });
+    return !r.purged ? 'not-found' : r.rowsPending ? 'pending' : 'purged';
+  } catch (e) { return hid ? 'pending' : isDiskFull(e) ? 'disk-full' : 'failed'; }
 }
 
 /** Re-import by key; on ok the returning session is kept (D-P5-08). The caller triggers the reconcile. */

@@ -18,6 +18,7 @@ export function purgeText(p: PurgePhase): string {
     case null: return '';
     case 'applying': return 'Applying changes…';
     case 'purged': return 'Purged. Only the Xaibo copy was removed; native files are untouched.';
+    case 'pending': return 'Purge started but could not finish now. The session stays hidden and is not imported again; Xaibo finishes removing its copy automatically, at the next start or within a day.';
     case 'not-found': return 'This session is no longer available.';
     case 'busy': return 'Nothing was purged: at most 10 purges a minute. Try again shortly.'; // D-P5-07
     case 'read-only': return 'Nothing was purged: the store is read-only.';
@@ -30,7 +31,7 @@ export function purgeText(p: PurgePhase): string {
 /** close: close the dialog; gone: remove the record (and close its conversation); dialog: the phase it keeps showing;
  *  note: the text next to the trigger. */
 export function routePurge(r: Exclude<PurgePhase, 'applying' | null>, dialogOpen: boolean): { close: boolean; gone: boolean; dialog: PurgePhase; note: string | null } {
-  if (r === 'purged' || r === 'not-found') return { close: dialogOpen, gone: true, dialog: null, note: purgeText(r) };
+  if (r === 'purged' || r === 'pending' || r === 'not-found') return { close: dialogOpen, gone: true, dialog: null, note: purgeText(r) };
   return dialogOpen ? { close: false, gone: false, dialog: r, note: null } : { close: false, gone: false, dialog: null, note: purgeText(r) };
 }
 

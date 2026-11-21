@@ -240,3 +240,29 @@ test('historyRow: the list row by id (Keep, purge date, Trash); unknown null; cl
   for (const bad of [{ session: 0 }, { session: -1 }, { session: 1.5 }, { session: '4' }, { session: [4] }, {}, { session: 4, agent: 'claude' }])
     assert.equal(req(bad), null, JSON.stringify(bad));
 });
+
+// Gate 5 second review M1 (run 178): a manual purge whose row phases stop after the session is hidden (here a service
+// stop; a full disk or a store error take the same path) answers 'pending', never 'purged': the rows stay owed, the
+// session stays out of the list and search, and Re-import of its key waits ('pending')
+test('second review M1: a purge stopped after the session is hidden answers pending; it stays hidden; Re-import waits', async () => {
+  const s = await store();
+  const id = s.add('pend-a');
+  for (let i = 0; i < 3; i++) s.ev(id, `pending purge record ${i}`);
+  let hid = false;
+  const r = await purgeManual(s.writer, id, { ...s.files(), limit: new PurgeLimit(() => NOW), hidden: () => { hid = true; }, stopped: () => hid });
+  assert.equal(r, 'pending');
+  assert.ok(s.db.prepare("SELECT 1 FROM sessions WHERE native_session_id = 'pend-a'").get(), 'the rows are still owed');
+  assert.equal(listHistory(s.db, ALL, null, 100).rows.some((x) => x.id === id), false, 'hidden from the list');
+  assert.equal(answerSearch(s.db, { query: 'pending', filter: ALL, cursor: null, limit: 10 }).hits.length, 0, 'hidden from search');
+  const key = suppressionKey(SECRET, { agent: 'claude', profile: 'p1', native: 'pend-a' });
+  assert.equal(reimportKey(s.writer, s.db, key, s.files()), 'pending', 'Re-import waits for the purge');
+});
+
+// round 4 review L7: a throw after the session is hidden (here the hidden callback) still answers 'pending'
+test('round 4 review L7: a throw after the hide answers pending; the session stays hidden', async () => {
+  const s = await store();
+  const id = s.add('pend-b');
+  const r = await purgeManual(s.writer, id, { ...s.files(), limit: new PurgeLimit(() => NOW), hidden: () => { throw new Error('synthetic'); } });
+  assert.equal(r, 'pending');
+  assert.equal(listHistory(s.db, ALL, null, 100).rows.some((x) => x.id === id), false, 'hidden from the list');
+});

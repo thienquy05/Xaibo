@@ -62,7 +62,9 @@ export interface PurgeOptions extends FileOptions {
   /** Called once phase (a) committed: the session is hidden (renderer resync, ledger). */
   hidden?: () => void;
 }
-export interface PurgeResult { purged: boolean; chunkItems: number; spoolFiles: number; backupsDeleted: number; filesPending: boolean }
+/** rowsPending (Gate 5 second review M1): the session is hidden but its row phases did not finish (a full disk, a store
+ *  error or a stop); resumePurges finishes them. */
+export interface PurgeResult { purged: boolean; chunkItems: number; spoolFiles: number; backupsDeleted: number; filesPending: boolean; rowsPending: boolean }
 
 /** Spool files no forwarder appends to: plain files of an earlier UTC day, and files a replay has taken. Today's plain
  *  file is the forwarder's: never rewritten under it; a purge whose session it holds owes it until the day closes. */
@@ -76,7 +78,7 @@ const SQLITE_CORRUPT = 11, SQLITE_NOTADB = 26;
 // tune them from the TP retention probe if a batch still shows up in live latency.
 const LIMITS: PurgeLimits = { rows: 500, ftsBytes: 1 << 20 };
 const VACUUM_PAGES = 2048, VACUUM_STEPS = 100_000;
-const NONE: PurgeResult = { purged: false, chunkItems: 0, spoolFiles: 0, backupsDeleted: 0, filesPending: false };
+const NONE: PurgeResult = { purged: false, chunkItems: 0, spoolFiles: 0, backupsDeleted: 0, filesPending: false, rowsPending: false };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const uid = process.getuid?.();
 const own = (st: Stats) => uid === undefined || st.uid === uid;
@@ -87,10 +89,14 @@ export async function purgeSession(writer: Writer, sessionId: number, o: PurgeOp
   const who = writer.transact((db) => begin(db, sessionId, listed, o));
   if (!who) return NONE;
   o.hidden?.();
-  if (!(await drive(writer, who, o))) return { ...NONE, purged: true, filesPending: true };
-  const files = owed(writer, who, o);
+  // ponytail: owed rows wait for the next resumePurges (boot, UTC midnight + 10 s, each retention run) and finish only once
+  // the disk has space; a near-term resume needs a single-flight rerunner with a minimum interval (design review 3014 L4)
+  if (!(await drive(writer, who, o))) return { ...NONE, purged: true, filesPending: true, rowsPending: true };
+  // round 4 review L2: the rows are gone; a failing file check (a closed store) leaves the files owed, not the rows
+  let files: Omit<PurgeResult, 'purged' | 'rowsPending'>;
+  try { files = owed(writer, who, o); } catch { files = { ...NONE, filesPending: true }; }
   if (o.vacuum !== false) await vacuum(writer);
-  return { purged: true, ...files };
+  return { purged: true, ...files, rowsPending: false };
 }
 
 /** Phase (a). Null when there is no such session or it is no longer eligible. */
@@ -350,7 +356,7 @@ export function finishPending(writer: Writer, who: Identity, o: FileOptions): bo
   return !owed(writer, who, o).filesPending;
 }
 
-function owed(writer: Writer, who: Identity, o: FileOptions): Omit<PurgeResult, 'purged'> {
+function owed(writer: Writer, who: Identity, o: FileOptions): Omit<PurgeResult, 'purged' | 'rowsPending'> {
   const row = writer.transact((db) => db.prepare('SELECT pending, purge_phase FROM suppressions WHERE agent = ? AND profile_id = ? AND native_session_id = ?')
     .get(who.agent, who.profile, who.native) as { pending: string | null; purge_phase: string | null } | undefined);
   const none = { chunkItems: 0, spoolFiles: 0, backupsDeleted: 0 };
@@ -364,7 +370,7 @@ function registrations(pending: string): string[] {
 }
 
 /** The file work after the rows are gone; clears the marker's pending work once every step is done. Never throws. */
-function finishFiles(writer: Writer, who: Identity, regs: string[], o: FileOptions): Omit<PurgeResult, 'purged'> {
+function finishFiles(writer: Writer, who: Identity, regs: string[], o: FileOptions): Omit<PurgeResult, 'purged' | 'rowsPending'> {
   const set = new Set(regs);
   let done = true;
   const step = <T>(f: () => T, none: T): T => { try { return f(); } catch { done = false; return none; } };

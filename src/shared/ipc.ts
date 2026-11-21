@@ -258,7 +258,7 @@ export const QUERY_MAX = 256, SNIPPET_MAX = 200, RETENTION_MAX = 3650;
 /** event: the rowid of the last match read (Gate 5 round 2 review: exact continuation inside equal-rank ties). */
 export interface SearchKey { rank: number; session: number; event: number }
 export interface SearchHit { row: HistoryRow; event: number; snippet: string }
-export const PURGE_RESULTS = ['purged', 'not-found', 'busy', 'read-only', 'disk-full', 'failed'] as const;
+export const PURGE_RESULTS = ['purged', 'pending', 'not-found', 'busy', 'read-only', 'disk-full', 'failed'] as const; // pending: Gate 5 second review M1
 export const REIMPORT_RESULTS = ['ok', 'none', 'pending', 'native-gone', 'not-found', 'read-only', 'disk-full', 'failed'] as const;
 export const SAVE_RESULTS = ['saved', 'invalid', 'read-only', 'disk-full', 'failed'] as const;
 /** A suppressed (purged) session: key = opaque HMAC handle; profile = its label, 'Unavailable' when the profile is gone. */
