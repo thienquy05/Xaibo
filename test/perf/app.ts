@@ -136,9 +136,10 @@ export const retentionRuns = (dataDir: string, since: number) => serviceLog(data
 export const TP_MIN = { sessions: 1450, dbBytes: 2.4 * 2 ** 30 };
 export function tpWorkload(dataDir: string): { sessions: number; dbBytes: number } {
   const sessions = Number(query<number>(dataDir, 'SELECT count(*) FROM sessions'));
-  const dbBytes = fileBytes(path.join(dataDir, 'xaibo.db')) + fileBytes(path.join(dataDir, 'xaibo.db-wal'));
+  // Gate 5 second review L3: the logical size (used pages, WAL frames included once), not file + WAL (a high-water mark)
+  const dbBytes = Number(query<number>(dataDir, 'SELECT (page_count - freelist_count) * page_size FROM pragma_page_count(), pragma_freelist_count(), pragma_page_size()'));
   if (sessions < TP_MIN.sessions || dbBytes < TP_MIN.dbBytes) {
-    throw new Error(`TP workload too small: ${sessions} sessions and ${(dbBytes / 2 ** 30).toFixed(2)} GiB DB+WAL imported; PRD §6.6 TP needs `
+    throw new Error(`TP workload too small: ${sessions} sessions and ${(dbBytes / 2 ** 30).toFixed(2)} GiB DB imported; PRD §6.6 TP needs `
       + `>= ${TP_MIN.sessions} sessions and >= ~2.4 GiB. Regenerate: node scripts/gen-perf-corpus.ts --case tp`);
   }
   return { sessions, dbBytes };
