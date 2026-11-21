@@ -62,3 +62,22 @@ test('G5Su-1: loops released together by the Clear gate take turns: the second t
   assert.equal(starts.length, 2, 'turn runs the caller\'s transaction');
   assert.ok(starts[1]! - starts[0]! >= 40, `second transaction waited the 60 ms pause (gap ${(starts[1]! - starts[0]!).toFixed(1)} ms)`);
 });
+
+test('G5C2s-1: a Clear hold taken between the gate check and the transaction still holds the transaction back (G5b1-3)', async () => {
+  const p = await import('../../../src/service/history/purge.ts') as Record<string, unknown>;
+  const holdDeletes = p.holdDeletes as (w: object) => () => void;
+  const turn = p.turn as (w: object, f: () => void) => Promise<void>;
+  const w = {};
+  let ran = false, again = () => {};
+  const release = holdDeletes(w);
+  const t = turn(w, () => { ran = true; });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  // no await between these two: the release wakes deletesAllowed, then this hold runs in the microtask hop before turn
+  // resumes (Clear takes its hold and its watermarks synchronously); the transaction must see it
+  release(); queueMicrotask(() => { again = holdDeletes(w); });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(ran, false, 'the new hold keeps the deleting transaction back');
+  again();
+  await t;
+  assert.equal(ran, true, 'released: the transaction runs');
+});

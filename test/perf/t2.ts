@@ -335,6 +335,8 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
     // run 179 / G5Su-2: --retention qualifies on purges finished during the load, so they are counted here, before the drain
     // waits: retention markers whose rows are gone (a fresh data dir per probe)
     const purgedDone = withRetention ? Number((reader.prepare("SELECT count(*) AS n FROM suppressions WHERE reason = 'retention' AND purge_phase IS NULL").get() as { n: number }).n) : 0;
+    // G5C2s-3: and the purges still in their rows phase at the same moment (pending only falls later, so a later read is laxer)
+    const purgePending = withRetention ? Number((reader.prepare('SELECT count(*) AS n FROM suppressions WHERE purge_phase IS NOT NULL').get() as { n: number }).n) : 0;
     const backfillDone = imported();
 
     // Drain: wait until every event is painted (or 30 s), then judge drain from the trace.
@@ -373,8 +375,7 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
       const inRun = (e: Emitted) => windows.some((w) => e.t0 >= hrOf(w.from) && (w.to === null ? e.t0 <= loadEnd : e.t0 <= hrOf(w.to)));
       const x = analyze({ emitted: emitted.filter(inRun), service: traceFile('perf-trace-service.jsonl'), main: traceFile('perf-trace-main.jsonl'), restart: null, loadEnd });
       // Gate 5 round 3 G5St-1: a purge whose row work failed still counts in retention_run (purgeSession returns purged with
-      // the rows owed), so the run qualifies only when no purge is left in its rows phase
-      const purgePending = Number((reader.prepare('SELECT count(*) AS n FROM suppressions WHERE purge_phase IS NOT NULL').get() as { n: number }).n);
+      // the rows owed), so the run qualifies only when no purge but the one running is in its rows phase (purgePending, at load end)
       // run 179: a paced first retention run on t1mix outlasts the load (retention_run is logged at its end), so the run
       // qualifies on purges finished inside the load (purgedDone, counted at load end above)
       // and none failed and was finished later by a resume before this read (round 4 review L5)

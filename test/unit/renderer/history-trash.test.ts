@@ -95,3 +95,11 @@ test('second review M1: pending purge text and routing', () => {
   assert.doesNotMatch(t, /Nothing was purged|disk may be full/); // round 4 review: stops and store errors take this path too
   assert.deepEqual(routePurge('pending' as never, true), { close: true, gone: true, dialog: null, note: t });
 });
+
+test('G5C2r-3: purgeStep with a pending result on the shown session closes the dialog and removes the record', () => {
+  const r = purgeStep({ shown: 4, inflight: 4, phase: 'applying' }, { type: 'result', session: 4, result: 'pending', dialogOpen: true });
+  assert.deepEqual(r.s, { shown: 4, inflight: null, phase: null });
+  assert.equal(r.close, true);
+  assert.equal(r.outcome?.gone, true, 'the service keeps the session hidden: the record leaves the list');
+  assert.equal(r.outcome?.note, purgeText('pending'));
+});

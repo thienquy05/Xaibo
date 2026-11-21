@@ -272,6 +272,7 @@ test('Move to project or folder from the Session list and the open-session heade
   await headMore.click();
   await menu.getByRole('menuitem', { name: 'Move to Trash' }).click();
   await expect(page.getByRole('region', { name: 'In Trash' })).toBeVisible();
+  await expect(head.locator('.x-action-note')).toHaveText(''); // G5C2r-4: wide, the list's Undo notice says it; the header does not
   await expect(headMore).toHaveCount(0);
   await expect(page.locator('#open-session-title')).toBeFocused(); // re-review L4: the removed More button hands focus to the title
   // Gate 5 G5d-3: the header's Move to Trash takes the list's Undo notice; Undo focuses the reopened session's title
@@ -281,13 +282,16 @@ test('Move to project or folder from the Session list and the open-session heade
   await expect(page.getByRole('region', { name: 'In Trash' })).toHaveCount(0);
   await expect(page.locator('#open-session-title')).toBeFocused();
   // Gate 5 second review M1: below 800 px the open session hides the list, so the header itself says Moved to Trash
+  const size = await run.app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.getSize());
   await run.app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(700, 800));
   await expect.poll(() => page.evaluate(() => innerWidth)).toBeLessThan(800);
   await expect(page.locator('.x-list-slot')).toBeHidden(); // the layout the header note depends on
   await headMore.click();
   await menu.getByRole('menuitem', { name: 'Move to Trash' }).click();
   await expect(page.getByRole('region', { name: 'In Trash' })).toBeVisible();
-  await expect(head.locator('.x-action-note')).toContainText('Moved to Trash.');
+  // G5C2r-4: exactly one notice (a duplicated note would also contain the text)
+  await expect(head.locator('.x-action-note')).toHaveText('Moved to Trash. Only the Xaibo copy is affected; native files are untouched.');
+  await run.app!.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0]!.setSize(w!, h!), size);
 });
 
 // XAIBO-PROD-536 (P5-T18 part 3b-7; design §6.4 Suppressed, §5.4 Re-import; D-P5-08): a purged session is listed in

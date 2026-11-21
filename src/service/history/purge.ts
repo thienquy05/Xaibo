@@ -101,9 +101,10 @@ export async function pace(writer: object): Promise<void> {
 }
 /** pace, then the Clear gate, re-checked, then `f` (the caller's stop check and timed transaction) in the same continuation
  *  (Gate 5 G5Su-1): the gate wakes every waiting loop in one microtask drain, so a check that returned before the caller's
- *  transaction let the next released loop pass too; with `f` inside, it sees this loop's pause and takes its turn. */
+ *  transaction let the next released loop pass too; with `f` inside, it sees this loop's pause and takes its turn. The gate
+ *  is checked again right before `f` (G5C2s-1): a hold taken in the microtask hop after deletesAllowed returned still wins. */
 export async function turn<T>(writer: Writer, f: () => T): Promise<T> {
-  for (;;) { await pace(writer); await deletesAllowed(writer); if (!paceWait(writer)) return f(); }
+  for (;;) { await pace(writer); await deletesAllowed(writer); if (!gates.has(writer) && !paceWait(writer)) return f(); }
 }
 /** A purge transaction, timed for the writer's pause. */
 export function timed<T>(writer: Writer, f: () => T): T {
