@@ -4,7 +4,7 @@
 // a regular file where run/ must be (the socket server refuses it), then the file is removed.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 import { join } from 'node:path';
 import { createDecoder, encodeFrame } from '../../src/shared/hook-protocol.ts';
@@ -97,7 +97,7 @@ test('a hook spooled while the service runs is stored within the replay interval
     mkdirSync(join(h.dir, 'spool'), { mode: 0o700 });
     const day = new Date().toISOString().slice(0, 10);
     writeFileSync(join(h.dir, 'spool', `${day}.jsonl`), `${JSON.stringify(envelope({ session_id: SESSION }))}\n`, { mode: 0o600 });
-    assert.ok(await until(() => count(h.db, 'SELECT count(*) FROM hook_delivery') === 1, 15_000), 'the spooled hook is stored while the service runs (quiet window + grace)');
+    assert.ok(await until(() => count(h.db, 'SELECT count(*) FROM hook_delivery') === 1, 15_000), 'the spooled hook is stored while the service runs (interval + grace)');
   } finally { await svc.close(); }
 });
 
@@ -118,5 +118,67 @@ test('an interval replay of a hook spooled during a retention purge of its sessi
     assert.ok(await until(() => readdirSync(spool).filter((f) => f.endsWith('.jsonl')).length === 0, 15_000), 'the interval replay took and removed the spool file');
     assert.equal(count(h.db, 'SELECT count(*) FROM hook_delivery'), 0, 'nothing stored for the purging session');
     assert.equal(count(h.db, 'SELECT count(*) FROM events'), 0);
+  } finally { await svc.close(); }
+});
+
+// XAIBO-PROD-549 (Gate 5 disk-full): the forwarder keeps appending to today's spool file while the service is slow, so a
+// quiet window never opened and spool-only hooks waited until appends paused. The interval replay now takes the file
+// anyway (rename, grace and size checks keep late appends for the next pass).
+test('PROD-549: a spool file appended every second is still replayed while the service runs', async () => {
+  const h = await hookStore();
+  const svc = await startHooks({ dataDir: h.dir, db: h.db, writer: h.writer, replayIntervalMs: 100 });
+  const spool = join(h.dir, 'spool');
+  const file = join(spool, `${new Date().toISOString().slice(0, 10)}.jsonl`);
+  const add = () => appendFileSync(file, `${JSON.stringify(envelope({ session_id: SESSION }))}\n`, { mode: 0o600 });
+  try {
+    await svc.replay;
+    mkdirSync(spool, { mode: 0o700 });
+    add();
+    const every = setInterval(add, 1_000);
+    try {
+      assert.ok(await until(() => count(h.db, 'SELECT count(*) FROM hook_delivery') >= 1, 4_000), 'stored while appends continue');
+    } finally { clearInterval(every); }
+  } finally { await svc.close(); }
+});
+
+const full = () => { throw Object.assign(new Error('database or disk is full'), { code: 'ENOSPC' }); };
+
+test('PROD-549: disk recovery brings the next replay forward and the backoff back to the base interval', async () => {
+  const h = await hookStore();
+  const commit = h.writer.commitLive.bind(h.writer);
+  h.writer.commitLive = full;
+  const svc = await startHooks({ dataDir: h.dir, db: h.db, writer: h.writer, replayIntervalMs: 100, replayNowMinMs: 50 });
+  const spool = join(h.dir, 'spool');
+  const put = () => writeFileSync(join(spool, `${new Date().toISOString().slice(0, 10)}.jsonl`), `${JSON.stringify(envelope({ session_id: SESSION }))}\n`, { mode: 0o600, flag: 'a' });
+  try {
+    await svc.replay;
+    mkdirSync(spool, { mode: 0o700 });
+    put();
+    await sleep(3_200); // failed passes at ~0.1, 0.3, 0.7, 1.5, 3.1 s: the next would be ~6.3 s
+    assert.equal(count(h.db, 'SELECT count(*) FROM hook_delivery'), 0, 'fixture: the disk is full');
+    h.writer.commitLive = commit;
+    svc.replayNow();
+    assert.ok(await until(() => count(h.db, 'SELECT count(*) FROM hook_delivery') === 1, 1_500), 'replayed promptly, not at the backed-off interval');
+    put();
+    // the recovery pass resolves after its 1 s grace; 4 s stays below the ~6.4 s backed-off interval (review D183-1)
+    assert.ok(await until(() => count(h.db, 'SELECT count(*) FROM hook_delivery') === 2, 4_000), 'the interval is back to the base');
+  } finally { await svc.close(); }
+});
+
+test('PROD-549 (R183-1): replayNow storms on a store hovering near full are bounded by the floor between passes', async () => {
+  const h = await hookStore();
+  h.writer.commitLive = full;
+  const passes: number[] = [];
+  const svc = await startHooks({ dataDir: h.dir, db: h.db, writer: h.writer, replayIntervalMs: 60_000, replayNowMinMs: 200,
+    log: { log: (e: string) => { if (e === 'spool_replay') passes.push(Date.now()); } } });
+  try {
+    await svc.replay;
+    mkdirSync(join(h.dir, 'spool'), { mode: 0o700 });
+    writeFileSync(join(h.dir, 'spool', `${new Date().toISOString().slice(0, 10)}.jsonl`), `${JSON.stringify(envelope({ session_id: SESSION }))}\n`, { mode: 0o600 });
+    const before = passes.length;
+    for (const end = Date.now() + 1_000; Date.now() < end; await sleep(10)) svc.replayNow();
+    await sleep(300);
+    const n = passes.length - before;
+    assert.ok(n >= 2 && n <= 7, `${n} passes in ~1.3 s with a 200 ms floor`);
   } finally { await svc.close(); }
 });

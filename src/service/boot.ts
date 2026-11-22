@@ -251,7 +251,8 @@ export async function boot(o: BootOptions): Promise<Service> {
       if (lag !== null) parseLag = Math.max(parseLag, lag);
       price(); feed(b); o.onCommit?.(b);
     },
-    onDiskFull: (full) => { o.log?.log('disk_full', { full }); if (!full) hooks?.intake.recovered(); },
+    // PROD-549: on recovery the remembered gaps are written and the spool is replayed now, not at the backed-off interval
+    onDiskFull: (full) => { o.log?.log('disk_full', { full }); if (!full) { hooks?.intake.recovered(); hooks?.replayNow(); } },
   });
   const detections: Detection[] = [];
   const reloadPrices = (explicit = true) => {

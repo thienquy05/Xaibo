@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import fs, { appendFileSync, closeSync, existsSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, symlinkSync, writeFileSync, writeSync } from 'node:fs';
+import fs, { appendFileSync, closeSync, existsSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Envelope } from '../../src/shared/hook-protocol.ts';
 import { startHooks } from '../../src/service/receivers/intake.ts';
@@ -288,4 +288,59 @@ test('G5Rr1-3: readOwn answers null for a file that grows during the read, the b
   try { got = readOwn(file, 1 << 20); } finally { fs.readSync = read; syncBuiltinESMExports(); }
   assert.ok(grown, 'fixture: the file grew during the read');
   assert.equal(got, null, 'a stale read is "cannot read now"');
+});
+
+test('PROD-549 (R183-2): a stop seen during the yield before a delivery: no delivery after it', async () => {
+  const h = await hookStore();
+  const s = spoolOf(h.dir);
+  writeFileSync(join(s, '2026-01-01.jsonl'), [1, 2, 3].map((i) => line(envelope({ received_ts: T0 + i }))).join(''), { mode: 0o600 });
+  let stop = false;
+  let calls = 0;
+  const r = await replaySpool({ dataDir: h.dir, db: h.db, stopped: () => stop,
+    deliver: (e) => { calls++; setImmediate(() => { stop = true; }); return h.intake.deliver(e); } });
+  assert.equal(calls, 1, 'the stop queued during the first delivery is seen before the second');
+  assert.equal(r.complete, false);
+});
+
+test('PROD-549 (R183-3): an unterminated tail of a just-written file is not torn; the file is kept and the completed line replays next', async () => {
+  const h = await hookStore();
+  const s = spoolOf(h.dir);
+  const c = JSON.stringify(envelope());
+  const f = join(s, '2026-01-01.jsonl');
+  writeFileSync(f, `${JSON.stringify(envelope())}\n${JSON.stringify(envelope())}\n${c.slice(0, 20)}`, { mode: 0o600 });
+  const now = new Date();
+  utimesSync(f, now, now); // just written, whatever the machine load before this line (review D183-2)
+  const r1 = await replaySpool({ dataDir: h.dir, db: h.db, deliver: h.intake.deliver });
+  assert.deepEqual([r1.delivered, r1.torn], [2, 0], 'the forwarder may still be writing the last line');
+  const kept = readdirSync(s);
+  assert.equal(kept.length, 1, 'kept for the next pass');
+  appendFileSync(join(s, kept[0]!), `${c.slice(20)}\n`);
+  const r2 = await replaySpool({ dataDir: h.dir, db: h.db, deliver: h.intake.deliver });
+  assert.deepEqual([r2.delivered, r2.torn], [1, 0]);
+  assert.deepEqual(readdirSync(s), []);
+  assert.equal(count(h.db, 'SELECT count(*) FROM hook_gaps'), 0, 'no gap for a record that was only being written');
+});
+
+test('PROD-549 (R183-3): an unterminated tail older than the grace is still a torn line', async () => {
+  const h = await hookStore();
+  const s = spoolOf(h.dir);
+  const f = join(s, '2026-01-01.jsonl');
+  writeFileSync(f, `${JSON.stringify(envelope())}\n${JSON.stringify(envelope()).slice(0, 20)}`, { mode: 0o600 });
+  const old = new Date(Date.now() - 10_000);
+  utimesSync(f, old, old); // a forwarder that died mid-write
+  const r = await replaySpool({ dataDir: h.dir, db: h.db, deliver: h.intake.deliver });
+  assert.deepEqual([r.delivered, r.torn], [1, 1]);
+  assert.deepEqual(readdirSync(s), []);
+});
+
+test('PROD-549 (review D183-3): an unterminated tail with a future mtime (clock step) counts as old: torn, not kept forever', async () => {
+  const h = await hookStore();
+  const s = spoolOf(h.dir);
+  const f = join(s, '2026-01-01.jsonl');
+  writeFileSync(f, `${JSON.stringify(envelope())}\n${JSON.stringify(envelope()).slice(0, 20)}`, { mode: 0o600 });
+  const ahead = new Date(Date.now() + 60_000);
+  utimesSync(f, ahead, ahead);
+  const r = await replaySpool({ dataDir: h.dir, db: h.db, deliver: h.intake.deliver, graceMs: 50 });
+  assert.deepEqual([r.delivered, r.torn], [1, 1]);
+  assert.deepEqual(readdirSync(s), []);
 });

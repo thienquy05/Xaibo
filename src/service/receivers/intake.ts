@@ -190,20 +190,25 @@ export interface HooksOptions extends IntakeOptions {
   socketRetryMs?: number;
   /** Gate 5 (hooksOnce): interval between spool replays while the service runs (default REPLAY_INTERVAL_MS). */
   replayIntervalMs?: number;
+  /** PROD-549: least time between pass starts when replayNow brings one forward (default REPLAY_NOW_MIN_MS). */
+  replayNowMinMs?: number;
 }
 /** socket: the listening server, null while none listens (a failed listen is retried). */
 export interface Hooks { intake: Intake; readonly socket: SocketServer | null; replay: Promise<ReplayResult>; close(): Promise<void>;
   /** XAIBO-PROD-542 G5a-4: the report intake's live chunk store; undefined while it cannot open. */
-  chunks(): ChunkStore | undefined }
+  chunks(): ChunkStore | undefined;
+  /** PROD-549: the store recovered from disk full; replay the spool now instead of at the backed-off interval. */
+  replayNow(): void }
 
 // ponytail: a fixed retry interval while the socket cannot listen (a full disk cannot create it); back off if a long
 // outage ever shows the retries costing anything.
 const SOCKET_RETRY_MS = 5000;
 // Gate 5 (hooksOnce, perf finding): a hook the forwarder spooled during a short stall (past its ~50 ms deadline) while the
-// socket listens is replayed while the service runs, not only at the next start. ponytail: a fixed interval with a quiet
-// window for plain files the forwarder may still append to, doubling up to REPLAY_BACKOFF_MAX_MS while a replay cannot
-// finish (disk full, store errors); a spooled hook waits up to ~interval + quiet. Watch the spool dir if that is too slow.
-const REPLAY_INTERVAL_MS = 10_000, REPLAY_QUIET_MS = 5_000, REPLAY_BACKOFF_MAX_MS = 5 * 60_000;
+// socket listens is replayed while the service runs, not only at the next start. ponytail: a fixed interval, doubling up
+// to REPLAY_BACKOFF_MAX_MS while a replay cannot finish (disk full, store errors); a spooled hook waits up to ~interval.
+// The store's recovery from disk full brings the next pass forward (replayNow, at most one per REPLAY_NOW_MIN_MS; PROD-549).
+// Watch the spool dir if the interval is ever too slow.
+const REPLAY_INTERVAL_MS = 10_000, REPLAY_BACKOFF_MAX_MS = 5 * 60_000, REPLAY_NOW_MIN_MS = 2_000;
 
 /** Service start (and each (re)listen): listen first, so hooks fired meanwhile are acked instead of spooling behind the
  *  replay, then replay the spool in the background (its cleanup waits a grace). A socket that cannot listen is logged
@@ -245,10 +250,10 @@ export async function startHooks(o: HooksOptions): Promise<Hooks> {
     return reg ? reports.intake.deliver(reg, frame, receivedTs) : Promise.resolve({ status: 'rejected', code: 'auth' });
   };
   /** One replay after the latest one settled (single flight: start, late listen, report recovery and interval replays).
-   *  interval: plain files inside the quiet window wait, and only a replay that did something is logged. */
+   *  interval: only a replay that did something is logged. */
   const runReplay = (interval = false): Promise<ReplayResult> => {
     const r = lastReplay.catch(() => undefined).then(() => replaySpool({ dataDir: o.dataDir, db: o.db, deliver: intake.deliver, stopped: () => stopped,
-      ...(o.now ? { now: o.now } : {}), deliverReport, ...(interval ? { quietMs: REPLAY_QUIET_MS } : {}) })).then((x) => {
+      ...(o.now ? { now: o.now } : {}), deliverReport })).then((x) => {
       if (!interval || x.delivered || x.torn || x.skipped || x.dropped || !x.complete) {
         o.log?.log('spool_replay', { delivered: x.delivered, torn: x.torn, skipped: x.skipped, deferred: x.deferred, dropped: x.dropped, complete: x.complete ? 1 : 0 });
       }
@@ -259,14 +264,27 @@ export async function startHooks(o: HooksOptions): Promise<Hooks> {
     return r;
   };
   const every = o.replayIntervalMs ?? REPLAY_INTERVAL_MS;
+  const floor = o.replayNowMinMs ?? REPLAY_NOW_MIN_MS;
   let wait = every;
-  let timer: NodeJS.Timeout | undefined;
+  let timer: NodeJS.Timeout | undefined; // the one pending pass (interval or brought forward)
+  let running = false, again = false, lastStart = 0;
   const arm = () => { if (!stopped) timer = setTimeout(tick, wait).unref(); };
+  // PROD-549 (R183-1): only a complete pass resets the backoff; a pass brought forward starts no sooner than `floor`
+  // after the last start, through the same timer slot, so a store hovering near full cannot drive back-to-back passes.
+  // ponytail: soon() replaces a pending interval timer even when that one is due earlier; only an interval below the
+  // floor (tests) can see it. Keep the earlier due time if the interval is ever configured under REPLAY_NOW_MIN_MS.
+  const soon = () => { if (stopped) return; clearTimeout(timer); timer = setTimeout(tick, Math.max(0, lastStart + floor - Date.now())).unref(); };
   const tick = () => {
     if (stopped) return;
+    clearTimeout(timer); running = true; lastStart = Date.now();
     runReplay(true).then((x) => { wait = x.complete ? every : Math.min(wait * 2, REPLAY_BACKOFF_MAX_MS); },
-      () => { wait = Math.min(wait * 2, REPLAY_BACKOFF_MAX_MS); }).finally(arm);
+      () => { wait = Math.min(wait * 2, REPLAY_BACKOFF_MAX_MS); }).finally(() => {
+      running = false;
+      if (again) { again = false; soon(); } else arm();
+    });
   };
+  /** The store recovered (disk full -> healthy): the next pass now, not at the backed-off interval; coalesced. */
+  const replayNow = () => { if (stopped) return; if (running) { again = true; return; } soon(); };
   const listen = async (): Promise<boolean> => {
     try {
       const s = await startSocketServer({ dataDir: o.dataDir, onEnvelope: intake.deliver, ...(o.log ? { log: o.log } : {}), reports });
@@ -284,5 +302,5 @@ export async function startHooks(o: HooksOptions): Promise<Hooks> {
   const replay = runReplay();
   arm();
   return { intake, get socket() { return socket; }, replay, close: async () => { stopped = true; clearTimeout(retry); clearTimeout(timer); await socket?.close(); },
-    chunks: () => open()?.chunks };
+    chunks: () => open()?.chunks, replayNow };
 }

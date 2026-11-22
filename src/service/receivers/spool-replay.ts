@@ -30,8 +30,6 @@ export interface ReplayOptions {
   maxBytes?: number;
   /** True once the service stops: no delivery or write after that; the files stay for the next start. */
   stopped?: () => boolean;
-  /** Gate 5 (interval replay): a plain file written or renamed this recently (ms, real clock) is left for a later pass. */
-  quietMs?: number;
 }
 /** deferred: spool files left for the next replay by the aggregate bound. */
 /** dropped: report records refused for good (revoked registration, invalid report). */
@@ -53,7 +51,7 @@ const GRACE_MS = 1_000;
 type Gap = { reason: string; agent: string | null; session: string | null; from: number | null; to: number | null; count: number | null; locator: string };
 /** A taken file to remove once its grace has passed and it is unchanged. Every file waits, a taken one from an earlier
  *  replay too: a forwarder may still hold it open if that replay renamed it moments ago. */
-type Done = { file: string; ino: number; size: number; takenAt: number };
+type Done = { file: string; ino: number; size: number; mtimeMs: number; takenAt: number };
 
 const uid = process.getuid?.();
 const own = (st: Stats) => uid === undefined || st.uid === uid;
@@ -169,7 +167,7 @@ function overflowGaps(dir: string, db: DatabaseSync, now: number, done: Done[]) 
         if (x) { g.from = Math.min(g.from!, x.ts); g.to = Math.max(g.to!, x.ts); }
       }
     }
-    if (putGaps(db, [...groups.values()], now)) done.push({ file: file!, ino: got.ino, size: buf.length, takenAt: Date.now() });
+    if (putGaps(db, [...groups.values()], now)) done.push({ file: file!, ino: got.ino, size: buf.length, mtimeMs: got.mtimeMs, takenAt: Date.now() });
   }
   // Saturated: overflow lines stopped at the log's own cap, so from the flag's time until now the number is unknown.
   const flag = path.join(dir, 'overflow.saturated');
@@ -194,15 +192,20 @@ export async function replaySpool(o: ReplayOptions): Promise<ReplayResult> {
     const st = lstat(path.join(dir, name));
     const size = st?.size ?? 0;
     if (bytes > 0 && bytes + size > maxBytes) { r.deferred++; continue; } // not renamed: the next replay takes it
-    // the forwarder may still be appending to a plain file written just now: a later pass takes it
-    if (plain && o.quietMs && st && Date.now() - Math.max(st.mtimeMs, st.ctimeMs) < o.quietMs) { r.deferred++; continue; }
+    // XAIBO-PROD-549: taken even while the forwarder still appends (no quiet window): the rename, the grace and the
+    // inode/size/mtime check before removal keep a late append for the next pass
     const file = plain ? take(dir, name, `${plain[1]}.replay-${randomUUID()}.jsonl`) : path.join(dir, name);
     const got = file && readOwn(file, FILE_MAX);
     if (!got) { r.skipped++; continue; }
     bytes += got.buf.length;
-    files.push({ file: file!, ino: got.ino, size: got.buf.length, takenAt: Date.now() });
+    // R183-3: a last line without its newline in a file written within the grace may still be being written (one write
+    // per record): not torn, and the file stays for the next pass. Older, it is torn (a forwarder that died mid-write).
+    const age = Date.now() - got.mtimeMs; // a future mtime (clock step) counts as old, so a torn file is still recorded
+    const writing = got.buf.length > 0 && got.buf[got.buf.length - 1] !== 0x0a && age >= 0 && age < (o.graceMs ?? GRACE_MS);
+    const buf = writing ? got.buf.subarray(0, got.buf.lastIndexOf(0x0a) + 1) : got.buf;
+    if (!writing) files.push({ file: file!, ino: got.ino, size: got.buf.length, mtimeMs: got.mtimeMs, takenAt: Date.now() });
     let bad = 0;
-    for (const line of got.buf.toString('utf8').split('\n')) {
+    for (const line of buf.toString('utf8').split('\n')) {
       if (!line) continue;
       let x: unknown;
       try { x = JSON.parse(line); } catch { bad++; continue; }
@@ -217,6 +220,9 @@ export async function replaySpool(o: ReplayOptions): Promise<ReplayResult> {
   }
   records.sort((a, b) => a.ts - b.ts); // stable: same-ms records keep file order
   for (const rec of records) {
+    // PROD-549: yield before each delivery so socket callbacks and file syncs interleave with a backlog; the stop check
+    // comes after the yield, since close() and the store's close can run during it (R183-2)
+    await new Promise<void>((resolve) => setImmediate(resolve));
     if (o.stopped?.()) { r.complete = false; break; }
     if ('report' in rec && !o.deliverReport) { r.complete = false; break; } // kept for a service with report intake
     const res = 'hook' in rec ? await o.deliver(rec.hook) : await o.deliverReport!(rec.report.registration, rec.report.frame, rec.report.received_ts);
@@ -236,7 +242,7 @@ export async function replaySpool(o: ReplayOptions): Promise<ReplayResult> {
   if (o.stopped?.()) { r.complete = false; return r; } // stopped during the grace: the next start removes them
   for (const d of done) {
     const st = lstat(d.file);
-    if (st && st.ino === d.ino && st.size === d.size) unlink(d.file);
+    if (st && st.ino === d.ino && st.size === d.size && st.mtimeMs === d.mtimeMs) unlink(d.file); // R183-4: mtime too
   }
   return r;
 }
