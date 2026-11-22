@@ -9,6 +9,7 @@ import { LineSplitter, type Line } from '../lines.ts';
 import type { Batch, QuarantineRow, SourceFileCheckpoint, Writer } from '../store/writer.ts';
 import { headHash, HEAD_BYTES, readRange, readZstd, startOffset, zstdAvailable, type Checkpoint } from '../tail.ts';
 import { Watcher, type WatchFn } from '../watch.ts';
+import { counters } from '../perf-counters.ts';
 
 /** Thrown out of a read when a commit asks for the file to be read again (G5f-1). */
 const REREAD = Symbol('reread');
@@ -108,9 +109,11 @@ export abstract class TailAdapter<F extends TailFile, R extends TailRecord> {
   wake(): Promise<void> { return this.#watcher.scan(); }
 
   sync(file: F, live: boolean): Promise<void> {
-    const next = (this.#chains.get(file.path) ?? Promise.resolve()).then(() => this.#sync(file, live));
+    counters.syncsStarted++; counters.syncsPending++; // XAIBO-PROD-552 (perf trace only)
+    const next = (this.#chains.get(file.path) ?? Promise.resolve()).then(() => this.#sync(file, live))
+      .finally(() => { counters.syncsPending--; });
     // A failed sync (read or commit) makes the watcher forget the file, so the next scan or wake retries it.
-    this.#chains.set(file.path, next.catch(() => this.#watcher.forget(file.path)));
+    this.#chains.set(file.path, next.catch(() => { counters.syncFailures++; this.#watcher.forget(file.path); }));
     return next;
   }
 
@@ -174,6 +177,7 @@ export abstract class TailAdapter<F extends TailFile, R extends TailRecord> {
     const flush = async (final = false) => {
       const cp = { ...base, size: final ? base.size : lastEnd, offset: lastEnd, headHash: await hashAt(lastEnd), status };
       const committed = this.o.writer.enqueue(this.toBatch(file, cp, records, quarantine), live);
+      counters.batches++; counters.records += records.length;
       records = [];
       quarantine = [];
       bytes = 0;

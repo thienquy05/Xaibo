@@ -18,6 +18,7 @@ import { traceableIds } from './trace-ids.ts';
 import { answerMonthly, MonthlyCache } from './usage/ledger.ts';
 import { answerHistoryRow, answerSearch, retentionState, suppressedPage } from './history/tools.ts';
 import { StorageMeter } from './storage/meter.ts';
+import { takePerf } from './perf-counters.ts';
 
 // P3-T10: 50 ms keeps one push per window while leaving most of M1's 250 ms hook-to-paint budget; the tick re-reads
 // sessions whose status changes with time alone (settle within interval + 250 ms, M1), coverage is re-read slowly.
@@ -195,6 +196,8 @@ async function main(dataDir: string, log: Logger) {
     try {
       const metrics = { ...svc!.metrics(), deltaResyncs: resyncs };
       stamp({ ev: 'metrics', ...metrics }); // P4-T11: the live-load run reads queue age and resyncs from the perf trace
+      // XAIBO-PROD-552 (D-P5-20/22): content-free counters and the service's memory, perf trace only
+      if (trace) { const m = process.memoryUsage(); stamp({ ev: 'perf', ...takePerf(), rss: m.rss, heapUsed: m.heapUsed, heapTotal: m.heapTotal, external: m.external, arrayBuffers: m.arrayBuffers }); }
       parent.postMessage({ v: IPC_VERSION, type: 'metrics', metrics } satisfies ServiceEvent);
     }
     catch (e) { log.log('metrics_failed', { error: errorCode(e) }); }

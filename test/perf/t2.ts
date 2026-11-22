@@ -358,7 +358,11 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
       const w = fillNs !== null && freeNs !== null
         ? [{ name: 'preFill', from: startNs, to: fillNs }, { name: 'full', from: fillNs, to: freeNs }, { name: 'postFree', from: freeNs, to: kill }]
         : [{ name: 'preKill', from: startNs, to: kill }];
-      return [...w, { name: 'postRestart', from: back, to: loadEnd }];
+      // Codex round 2: one p95 over the whole post-free span hides whether it stays degraded; 10 s slices from the free
+      const slices: { name: string; from: bigint; to: bigint }[] = [];
+      const step = 10_000_000_000n;
+      if (freeNs !== null) for (let t = freeNs; t < kill; t += step) slices.push({ name: `pf+${Number((t - freeNs) / 1_000_000_000n)}s`, from: t, to: t + step < kill ? t + step : kill });
+      return [...w, ...slices, { name: 'postRestart', from: back, to: loadEnd }];
     };
     const result = () => (tornTrace = 0, analyze({ emitted, service: traceFile('perf-trace-service.jsonl'), main: traceFile('perf-trace-main.jsonl'), restart, faults: faults(), loadEnd, phases: phases() }));
     resolveLate();
@@ -500,7 +504,9 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
         diskFullEvents: serviceLog(dataDir).filter((e) => e.event === 'disk_full').map((e) => `${Math.round((Date.parse(e.t) - start) / 1000)}:${(e as { full?: boolean }).full ? 'full' : 'ok'}`),
         renderer: { ...renderer, mainEvents: (await rendererEvents()).map((x) => x.replace(/:(\d{13})$/, (_m, t: string) => `:${Number(t) - launched.created}`)) },
         m5UnderLoadFootprintMiB: fp, m5AtPeak: m5Samples.reduce<(typeof m5Samples)[number] | null>((p, x) => (x.totalMiB !== null && (p === null || x.totalMiB > (p.totalMiB ?? 0)) ? x : p), null),
-        m5Samples, phases: r.phases, imageOnly, serviceStarts: readies(), tornServiceLogLines: tornLogLines(dataDir), tornTraceLines: tornTrace,
+        m5Samples, phases: r.phases, imageOnly, serviceStarts: readies(),
+        // XAIBO-PROD-552: the service's content-free perf counters and memory every 5 s (seconds after the load start)
+        servicePerf: traceFile('perf-trace-service.jsonl').filter((x) => x.ev === 'perf').map((x) => ({ ...x, t: undefined, atS: Math.round(Number(BigInt(x.t) - startNs) / 1e9) })), tornServiceLogLines: tornLogLines(dataDir), tornTraceLines: tornTrace,
         serviceEvents: Object.entries(serviceLog(dataDir).reduce<Record<string, number>>((m, e) => { m[e.event] = (m[e.event] ?? 0) + 1; return m; }, {})).filter(([k]) => !/^(scan|watch)/.test(k)),
         serviceErrors: serviceLog(dataDir).filter((e) => 'error' in e).map((e) => `${e.event}:${String((e as { error?: unknown }).error)}`).slice(0, 40), agentCalls: { count: calls.length, prohibited: calls.filter((c) => PROHIBITED.test(c)).length },
       };

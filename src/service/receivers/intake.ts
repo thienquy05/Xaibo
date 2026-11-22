@@ -21,6 +21,7 @@ import { createReportIntake, type ReportIntake } from './report.ts';
 import type { ChunkStore } from '../adapters/generic/chunks.ts';
 import { SocketError, startSocketServer, type IntakeResult, type SocketOptions, type SocketServer } from './socket.ts';
 import { replaySpool, type ReplayResult } from './spool-replay.ts';
+import { counters } from '../perf-counters.ts';
 
 export interface IntakeOptions {
   db: DatabaseSync;
@@ -259,6 +260,7 @@ export async function startHooks(o: HooksOptions): Promise<Hooks> {
       lastStart = performance.now(); // G5Sx-1: every pass (startup, late listen, report recovery, interval) at its real start
       return replaySpool({ dataDir: o.dataDir, db: o.db, deliver: intake.deliver, stopped: () => stopped, ...(o.now ? { now: o.now } : {}), deliverReport });
     }).then((x) => {
+      counters.replayPasses++; counters.replayDelivered += x.delivered; // XAIBO-PROD-552 (perf trace only)
       if (!interval || x.delivered || x.torn || x.skipped || x.dropped || !x.complete) {
         o.log?.log('spool_replay', { delivered: x.delivered, torn: x.torn, skipped: x.skipped, deferred: x.deferred, dropped: x.dropped, complete: x.complete ? 1 : 0 });
       }

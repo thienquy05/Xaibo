@@ -17,6 +17,7 @@ import { hookMapper } from '../adapters/generic/mapping.ts';
 import { reportEvidence } from '../adapters/generic/report.ts';
 import { loadCatalog, type Catalog } from '../catalog/validate.ts';
 import { awake, freshPatterns, onCall, RULE_DEFAULTS, type Patterns, type RuleSettings } from './rules.ts';
+import { counters } from '../perf-counters.ts';
 
 export type Lifecycle = 'idle' | 'busy' | 'waiting-for-permission' | 'needs-input' | 'error' | 'ended' | 'unknown';
 export type Confidence = 'confirmed' | 'inferred' | 'heuristic';
@@ -413,13 +414,13 @@ export function createEngine(o: EngineOptions): StatusEngine {
     // An ignored insert (the store's unique key spans profiles) leaves the entry in memory only, like a failed one.
     try {
       if (put.run(agent, profile, sid, dedup, x.ts, x.rank, x.seq, x.conf, JSON.stringify(x.evs), x.pid ?? null, x.pseq ?? null).changes === 0) s.unstored = true;
-    } catch { s.unstored = true; o.log('status_store_failed'); }
+    } catch { s.unstored = true; counters.statusStoreFailed++; o.log('status_store_failed'); }
     const pending = new Set(s.fold.requests.keys());
     let i = s.entries.length;
     while (i > 0 && after(s.entries[i - 1]!, x) > 0) i--;
     s.entries.splice(i, 0, x);
     if (i === s.entries.length - 1) step(s.fold, x, rules, (kind) => o.log(`status_conflict agent=${agent} kind=${kind}`));
-    else { s.fold = fresh(); for (const e of s.entries) step(s.fold, e, rules); } // out of order: refold in causal order
+    else { counters.refolds++; counters.refoldEntries += s.entries.length; s.fold = fresh(); for (const e of s.entries) step(s.fold, e, rules); } // out of order: refold in causal order
     // Notify intent: only an entry that carries a request, and only for a request id pending now that was not before
     // (one prompt reported twice, a refold of earlier evidence or a late request already resolved in causal order sends
     // nothing; request ids derived from fold order are never remembered, review M1/M2). An entry received more than

@@ -12,6 +12,7 @@ import { codexReadings, historyStep, scopeKey, sourceTime, type Reading, type St
 import { LAST_RUN_KEY, QUOTA_MS } from '../retention/policy.ts';
 import { utcOffset } from '../usage/monthly.ts';
 import { computeExcerpt } from '../history/excerpt.ts';
+import { counters, timed } from '../perf-counters.ts';
 
 export const SCHEMA_VERSION = 1;
 // The FTS row of an event is its ftsPrefix; deletes (revisions, purge) must pass that same text, so changing this bound
@@ -625,8 +626,11 @@ export class Writer {
   #commit(batch: Batch): Batch {
     // ponytail: while full every commit still runs as the probe (SQLite fails fast without growing); a pause timer if
     // the retried file reads ever cost too much.
+    const t0 = performance.now();
     const done = this.#guard(() => this.#o.commit(this.#db, batch)) ?? batch;
+    const t1 = performance.now();
     this.#o.onCommit?.(done); // never a suppressed session
+    counters.commits++; timed('sql', t1 - t0); timed('callback', performance.now() - t1); // XAIBO-PROD-552 (perf trace only)
     return done;
   }
 
