@@ -5,6 +5,7 @@
 // scope's label, else a view-local "Scope N" ordinal (never an identity).
 import type { LedgerMonth, LedgerQuota } from '../../shared/ipc.ts';
 import { costText } from '../model.ts';
+import { windowTitle } from '../usage/presentation.ts';
 import { abbreviate } from '../overview/totals.ts';
 
 export const METRICS = ['tokens', 'cost', 'sessions', 'turns'] as const;
@@ -60,14 +61,8 @@ export function monthsPerPage(width: number): number {
   return width < 320 ? 1 : width < 640 ? 3 : width < 1200 ? 6 : 12;
 }
 
-export function windowText(minutes: number | null): string {
-  if (minutes === null) return 'Window unknown';
-  if (minutes > 0 && minutes % 1440 === 0) return `${minutes / 1440} d window`;
-  if (minutes > 0 && minutes % 60 === 0) return `${minutes / 60} h window`;
-  return `${minutes} min window`;
-}
 export function quotaRows(quota: LedgerQuota[]) {
-  return quota.map((q) => ({ month: q.month, scope: q.label ?? `Scope ${q.scope}`, limit: q.limitId, window: windowText(q.windowMinutes),
+  return quota.map((q) => ({ month: q.month, scope: q.label ?? `Scope ${q.scope}`, limit: q.limitId, window: windowTitle(q.windowMinutes, 'Window unknown'),
     peak: `${Number(q.peakPercent.toFixed(1))}%`, verified: q.verified ? 'Verified scope' : 'Scope not verified', observations: q.observations }));
 }
 

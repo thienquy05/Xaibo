@@ -3,6 +3,8 @@
 // in the dialog and created first (the service reuses an existing name); then one move op. Only Xaibo's overlay
 // changes, never cwd or native files. Every outcome is said in words; a lost reply is unavailable, never success.
 import { NAME_MAX, type HistoryRow, type Named, type OVERLAY_ERRORS, type OverlayOp, type OverlayResult } from '../../shared/ipc.ts';
+import { routeResult } from '../components/dialog-model.ts';
+import { APPLYING, RESULT_UNAVAILABLE } from '../model.ts';
 
 /** A select's value: an existing id, none, or a new one named in the dialog. */
 export type Target = number | 'none' | 'new';
@@ -53,7 +55,7 @@ export async function runMove(d: MoveDraft, session: number, overlay: (op: Overl
 export function moveText(p: MovePhase): string {
   switch (p) {
     case null: return '';
-    case 'applying': return 'Applying changes…';
+    case 'applying': return APPLYING;
     case 'moved': return 'Moved. Only Xaibo\'s organization changed; the working folder and native files are untouched.';
     case 'invalid': return 'That name cannot be used. Nothing was moved.';
     case 'limit': return 'Too many projects or folders. Nothing was moved.';
@@ -61,18 +63,14 @@ export function moveText(p: MovePhase): string {
     case 'read-only': return 'Xaibo is read-only. Nothing was moved.';
     case 'disk-full': return 'The disk is full. Nothing was moved.';
     case 'store': return 'The change could not be saved. Nothing was moved.';
-    case 'unavailable': return 'The result is unavailable. Closing this dialog does not cancel the operation.';
+    case 'unavailable': return RESULT_UNAVAILABLE;
   }
 }
 
-/** close: close the dialog; moved: place focus (§5.4); refresh: read the row again (review M3: also after a lost reply
- *  or not-found, as the plain row actions do); dialog: the phase an open dialog keeps showing with Close only; note: the
- *  text beside the trigger (the dialog is closed, or it moved). */
-export function routeMove(r: MoveResult, dialogOpen: boolean): { close: boolean; moved: boolean; refresh: boolean; dialog: MovePhase; note: string | null } {
-  if (r === 'moved') return { close: dialogOpen, moved: true, refresh: true, dialog: null, note: moveText(r) };
-  const refresh = r === 'unavailable' || r === 'not-found';
-  return dialogOpen ? { close: false, moved: false, refresh, dialog: r, note: null } : { close: false, moved: false, refresh, dialog: null, note: moveText(r) };
-}
+/** done (moved): place focus (§5.4); refresh: read the row again (review M3: also after a lost reply or not-found, as the
+ *  plain row actions do); the rest is components/dialog-model.ts routeResult. */
+export const routeMove = (r: MoveResult, dialogOpen: boolean) =>
+  ({ ...routeResult(r, r === 'moved', dialogOpen, moveText), refresh: r === 'moved' || r === 'unavailable' || r === 'not-found' });
 
 /** Where focus goes once a move result's row was read again (design §5.4): the moved record, the list heading (the
  *  record left this list: View moved session), or the trigger (the row could not be read). review L1 (re-review): only

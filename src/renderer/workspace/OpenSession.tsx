@@ -345,7 +345,7 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
         if (to.refresh) void reread().then(() => { if (to.close) moreRef.current?.focus(); });
       }} />
       <PurgeDialog target={purgeTarget} purge={(s) => api.purge(s)} onClosed={() => setPurgeTarget(null)}
-        onDone={(s, to) => { if (to.note) setKeepNote(to.note); if (to.gone) onHistory?.(s, null); }} />{/* gone: Workspace closes this conversation */}
+        onDone={(s, to) => { if (to.note) setKeepNote(to.note); if (to.done) onHistory?.(s, null); }} />{/* done (gone): Workspace closes this conversation */}
       <div className="x-tabs" role="group" aria-label="Session section" inert={drawer}>
         {SECTIONS.map((s, i) => {
           const p = count(s);

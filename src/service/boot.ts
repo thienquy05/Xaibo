@@ -5,7 +5,7 @@
 // listens and the spool replays, before the file backfill; a full disk is logged and its hook-only gap written on recovery.
 import { statSync } from 'node:fs';
 import path from 'node:path';
-import { OUTCOMES, REASONS, RULES, type AgentStatus, type Banner, type ClearUsageResult, type PurgeResult, type ReimportResult, type RetentionSetting, type SaveRetentionResult, type LiveStatus, type NotifyState, type ServiceMetrics } from '../shared/ipc.ts';
+import { isActive, OUTCOMES, REASONS, RULES, type AgentStatus, type Banner, type ClearUsageResult, type PurgeResult, type ReimportResult, type RetentionSetting, type SaveRetentionResult, type LiveStatus, type NotifyState, type ServiceMetrics } from '../shared/ipc.ts';
 import type { Logger } from '../shared/log.ts';
 import { AgyAdapter } from './adapters/agy/index.ts';
 import { ClaudeAdapter } from './adapters/claude/index.ts';
@@ -24,7 +24,6 @@ import { errorCode } from '../shared/crash.ts';
 import { approvedLabel } from './history/overlay.ts';
 import { holdDeletes, resumePurges, spoolResumeDelay } from './history/purge.ts';
 import { retentionScheduler, runRetention, type RetentionResult } from './retention/job.ts';
-import { isActive } from './retention/policy.ts';
 import { loadInstallSecret } from '../shared/log.ts';
 import { openStore, type Store } from './store/db.ts';
 import { startHooks, type Hooks } from './receivers/intake.ts';

@@ -4,7 +4,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { clockJumped, DAY, eligible, isActive, parseRetention, purgeAt, RETENTION_DEFAULT, retentionOf, setRetention } from '../../../src/service/retention/policy.ts';
+import { clockJumped, DAY, eligible, parseRetention, purgeAt, retentionOf, setRetention } from '../../../src/service/retention/policy.ts';
+import { isActive, RETENTION_DEFAULT } from '../../../src/shared/ipc.ts';
 import { retentionScheduler } from '../../../src/service/retention/job.ts';
 import { blocks, refuses, type Marker, type SuppressionReason } from '../../../src/service/history/suppression.ts';
 import { trashPurgeAt } from '../../../src/service/history/trash.ts';

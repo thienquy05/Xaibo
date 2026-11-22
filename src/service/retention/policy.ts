@@ -2,10 +2,9 @@
 // 1-3650 or Never, default 45; a session is eligible N x 24 h of elapsed time after its last activity unless it is kept,
 // in Trash (its own 30-day timer), live, or active within the last 24 h. Elapsed milliseconds only: no zone or DST.
 import type { DatabaseSync } from 'node:sqlite';
-import { RETENTION_MAX, type LiveStatus, type RetentionSetting } from '../../shared/ipc.ts';
+import { RETENTION_DEFAULT, RETENTION_MAX, type RetentionSetting } from '../../shared/ipc.ts';
 
 export const DAY = 24 * 3600_000;
-export const RETENTION_DEFAULT = 45;
 /** No automatic purge of a session active within this (EC-22). */
 export const RECENT_MS = DAY;
 /** Account-level usage history expires this long after its measurement (§5.11). */
@@ -47,10 +46,6 @@ export function eligible(c: Candidate, r: RetentionSetting, now: number): boolea
   const at = purgeAt(c.lastActivity, r);
   return at !== null && c.lastActivity !== null && !c.keep && !c.trashed && !c.active && now - c.lastActivity >= RECENT_MS && at <= now;
 }
-
-/** Live states retention never purges (EC-22). */
-export const isActive = (lifecycle: LiveStatus['lifecycle'] | null): boolean =>
-  lifecycle === 'busy' || lifecycle === 'waiting-for-permission' || lifecycle === 'needs-input';
 
 /** Review H3: the wall clock moved more than 1 h further than the monotonic clock (set ahead). */
 export const clockJumped = (from: { wall: number; mono: number }, to: { wall: number; mono: number }): boolean =>

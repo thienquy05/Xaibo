@@ -100,7 +100,7 @@ export function MoveDialog({ target, api, onDone, onClosed }: {
     shown.current = null;
     setPhase(null);
     trigger.current?.focus();
-    if (running !== null) onDone(running, { close: false, moved: false, refresh: false, dialog: null, note: moveText('applying') });
+    if (running !== null) onDone(running, { close: false, done: false, refresh: false, dialog: null, note: moveText('applying') });
     onClosed();
   };
 

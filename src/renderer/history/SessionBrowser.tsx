@@ -9,7 +9,7 @@
 // XAIBO-PROD-535 (P5-T18 part 3b-6; design §5.4): Move to… opens the Move dialog; a moved record is placed back (or
 // leaves a map-group view it no longer belongs to) and takes focus, else the results heading with View moved session.
 import { useEffect, useRef, useState } from 'react';
-import { QUERY_MAX, type AgentStatus, type HistoryFilter, type HistoryKey, type HistoryRow, type MapGroup, type MapNode, type OverlayOp, type OverlayResult, type SearchKey,
+import { QUERY_MAX, type AgentStatus, type HistoryFilter, type HistoryKey, type HistoryRow, type MapGroup, type MapNode, type OverlayOp, type OverlayResult, type PurgeResult, type SearchKey,
   type SessionRow, type SuppressedRow } from '../../shared/ipc.ts';
 import { Menu, type MenuEntry } from '../components/Menu.tsx';
 import { VirtualList } from '../components/VirtualList.tsx';
@@ -18,14 +18,16 @@ import { findingBadges, formatTime, PAGE, recordLabel } from '../model.ts';
 import { Icon } from '../status/StatusBadge.tsx';
 import { show, visible } from '../text.ts';
 import { compactStatus, type SessionChanges } from '../workspace/view.ts';
-import { canLoadMore, capped, COVERAGE, emptyShown, focusLost, incompleteAfter, incompleteNote, emphasis, failureNote, filterOf, freshList, groupLabel, initialQuery, isPlain, listTexts, mergeLive, mergeRows, MODES, modeKey,
+import { canLoadMore, capped, COVERAGE, emptyShown, focusLost, incompleteAfter, incompleteNote, emphasis, failureNote, filterOf, freshList, groupLabel, initialQuery, isPlain, listTexts, mergeLive, mergeRows, MODES,
   lastKnownRows, refill, rowLines, startLoad, type BrowseRow, type ListState, type LiveState, type Query } from './browse.ts';
 import { doneText, errorText, goneUndo, menuClosed, menuItems, NOTICE, opOf, place, trashed, undoFocus, undoLabel, undone, type Shared, type Toggle, type Undo } from './actions.ts';
 import { MoveDialog, type MoveApi, type MoveOutcome, type MoveTarget } from './MoveDialog.tsx';
 import { moveFocus } from './move.ts';
 import { SuppressedList, type Gone, type SuppressedApi } from './SuppressedList.tsx';
 import { PurgeDialog, type PurgeTarget } from './PurgeDialog.tsx';
-import { neighbourId, type PurgeResult } from './trash.ts';
+import { neighbourId } from './trash.ts';
+import { holdsSessions } from '../agent-map/tree.ts';
+import { nextFocus } from '../components/virtual-list-model.ts';
 
 export interface BrowseApi extends MoveApi, SuppressedApi {
   history(filter: HistoryFilter, cursor: HistoryKey | null, limit: number): Promise<{ rows: HistoryRow[]; next: HistoryKey | null }>;
@@ -121,7 +123,7 @@ function GroupLevel({ api, parent, selected, onPick }: { api: BrowseApi; parent:
 function GroupItem({ api, node, selected, onPick }: { api: BrowseApi; node: MapNode; selected: MapGroup | null; onPick: (g: MapGroup, label: string) => void }) {
   const l = groupLabel(node);
   const [open, setOpen] = useState(false);
-  const expandable = l.kind === 'project' || l.kind === 'repo';
+  const expandable = !holdsSessions(node.group);
   return (
     <li>
       <div className="x-tree-row">
@@ -293,9 +295,9 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
     setNote('Restored from Trash.');
     void refresh(row.id);
   };
-  const purged = (id: number, to: { gone: boolean; note: string | null }) => {
+  const purged = (id: number, to: { done: boolean; note: string | null }) => {
     if (to.note) setNote(to.note);
-    if (!to.gone) return;
+    if (!to.done) return;
     // design §5.4: following, previous, then the list heading; only for a record this list shows (review M2: otherwise
     // nothing changes here and a later unrelated change would take focus)
     if (query.current.mode !== 'live' && current.current.rows.some((r) => r.id === id)) focusAfter.current = neighbourId(current.current.rows, id);
@@ -437,7 +439,7 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
           {MODES.map((m, i) => (
             <button key={m.mode} ref={(el) => { modeRefs.current[i] = el; }} type="button" className="x-mode" aria-pressed={q.mode === m.mode}
               aria-controls="session-results" tabIndex={i === focusMode ? 0 : -1} onFocus={() => setFocusMode(i)}
-              onKeyDown={(e) => { const n = modeKey(e.key, i, MODES.length); if (n === null) return; e.preventDefault(); setFocusMode(n); modeRefs.current[n]?.focus(); }}
+              onKeyDown={(e) => { const n = nextFocus(i, e.key, MODES.length, 'horizontal'); if (n === null) return; e.preventDefault(); setFocusMode(n); modeRefs.current[n]?.focus(); }}
               onClick={() => {
                 if (m.mode === 'trash') setGroupName(null); // review L7: map groups never hold Trash rows
                 setQ((x) => ({ ...x, mode: m.mode, group: m.mode === 'trash' ? null : x.group }));

@@ -29,7 +29,8 @@ export function keyOf(g: MapGroup): string {
 export const sessionKey = (id: number) => `s:${id}`;
 
 const trim = (p: string) => p.replace(/\/+$/, '');
-const base = (p: string) => trim(p).split('/').pop() ?? '';
+/** The last path segment ('' for a path of slashes only: the map then says the label is unavailable). */
+export const base = (p: string) => trim(p).split('/').pop() ?? '';
 const parentDir = (p: string) => trim(p).split('/').slice(0, -1).join('/');
 /** The evidenced repository folder of a common git directory: `<repo>/.git` names `<repo>`; a bare `<repo>.git` drops
  *  the suffix. */
@@ -249,10 +250,9 @@ export function groupDetail(n: MapNode, name: (agent: string) => string): Detail
   lines.push(['Sessions', num(n.sessions)], ['Live', num(n.live)], ['Agents', agentList(n.agents, name)]);
   return { heading: t.label, lines };
 }
-const titleOf = titleLabel;
 /** The Details pane for a selected session leaf (Open in Session sits below it). */
 export function sessionDetail(r: HistoryRow, name: (agent: string) => string): Detail {
-  return { heading: titleOf(r), lines: [['Agent', name(r.agent)], ['Model', r.model], ['Last activity', formatTime(r.lastActivity)], ['Cwd', r.cwd ?? 'Unavailable']] };
+  return { heading: titleLabel(r), lines: [['Agent', name(r.agent)], ['Model', r.model], ['Last activity', formatTime(r.lastActivity)], ['Cwd', r.cwd ?? 'Unavailable']] };
 }
 /** A treeitem's accessible name: short and stable, never its whole content. */
 export function rowLabel(r: Row, name: (agent: string) => string): string {
@@ -260,7 +260,7 @@ export function rowLabel(r: Row, name: (agent: string) => string): string {
   return r.type === 'session' ? recordLabel({ ...r.row, agent: name(r.row.agent) }) : r.label;
 }
 /** What typeahead matches: the visible label of loaded rows. */
-export const typeLabel = (r: Row) => (r.type === 'group' ? nodeText(r.node, (a) => a).label : r.type === 'session' ? titleOf(r.row) : r.label);
+export const typeLabel = (r: Row) => (r.type === 'group' ? nodeText(r.node, (a) => a).label : r.type === 'session' ? titleLabel(r.row) : r.label);
 
 export const REFUSED = 'Collapse another branch to expand this one';
 /** review L1: labels escaped and capped; null = a branch no longer shown. */

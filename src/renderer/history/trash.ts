@@ -2,10 +2,10 @@
 // asks first with the §5.4 copy; its outcome is said in words; purged (or already gone) closes the dialog and removes the
 // record; any other result stays in the open dialog with Close (no resubmission), or goes next to the trigger when the
 // dialog was already closed (Chromium can close a dialog on a second Escape even while applying).
-import type { HistoryRow, PURGE_RESULTS } from '../../shared/ipc.ts';
-import { formatTime } from '../model.ts';
+import type { HistoryRow, PurgeResult } from '../../shared/ipc.ts';
+import { routeResult, type DialogState } from '../components/dialog-model.ts';
+import { APPLYING, day, RESULT_UNAVAILABLE } from '../model.ts';
 
-export type PurgeResult = (typeof PURGE_RESULTS)[number];
 export type PurgePhase = 'applying' | PurgeResult | 'unavailable' | null;
 
 export const PURGE_TITLE = 'Purge Xaibo copy?';
@@ -16,7 +16,7 @@ export const PURGE_BODY = '1 session. Xaibo removes its copy and suppresses the 
 export function purgeText(p: PurgePhase): string {
   switch (p) {
     case null: return '';
-    case 'applying': return 'Applying changes…';
+    case 'applying': return APPLYING;
     case 'purged': return 'Purged. Only the Xaibo copy was removed; native files are untouched.';
     case 'pending': return 'Purge started but could not finish now. The session stays hidden and is not imported again; Xaibo finishes removing its copy automatically, at the next start or within a day.';
     case 'not-found': return 'This session is no longer available.';
@@ -24,18 +24,15 @@ export function purgeText(p: PurgePhase): string {
     case 'read-only': return 'Nothing was purged: the store is read-only.';
     case 'disk-full': return 'Nothing was purged: the disk is full.';
     case 'failed': return 'Nothing was purged.';
-    case 'unavailable': return 'The result is unavailable. Closing this dialog does not cancel the operation.';
+    case 'unavailable': return RESULT_UNAVAILABLE;
   }
 }
 
-/** close: close the dialog; gone: remove the record (and close its conversation); dialog: the phase it keeps showing;
- *  note: the text next to the trigger. */
-export function routePurge(r: Exclude<PurgePhase, 'applying' | null>, dialogOpen: boolean): { close: boolean; gone: boolean; dialog: PurgePhase; note: string | null } {
-  if (r === 'purged' || r === 'pending' || r === 'not-found') return { close: dialogOpen, gone: true, dialog: null, note: purgeText(r) };
-  return dialogOpen ? { close: false, gone: false, dialog: r, note: null } : { close: false, gone: false, dialog: null, note: purgeText(r) };
-}
-
-const day = (ms: number) => formatTime(ms).slice(0, 10);
+export type PurgeSettled = Exclude<PurgePhase, 'applying' | null>;
+const GONE = new Set<PurgeSettled>(['purged', 'pending', 'not-found']);
+/** Purged, pending (the service keeps the session hidden) or already gone is done: close the dialog, remove the record
+ *  (and close its conversation); anything else stays (components/dialog-model.ts routeResult). */
+export const routePurge = (r: PurgeSettled, dialogOpen: boolean) => routeResult(r, GONE.has(r), dialogOpen, purgeText);
 /** The open session's Trash banner lines; an unknown date is said, never guessed. */
 export function trashBanner(r: HistoryRow): { trashed: string; autoEmpty: string } {
   return {
@@ -51,24 +48,6 @@ export function neighbourId(rows: readonly { id: number }[], id: number): number
   return i < 0 ? null : (rows[i + 1]?.id ?? rows[i - 1]?.id ?? null);
 }
 
-/** The Purge dialog (review M1): shown = the session the open dialog asks about; inflight = the session whose purge is
- *  running (one at a time: Chromium can close the dialog on a second Escape while applying, and it can be reopened). */
-export interface PurgeState { shown: number | null; inflight: number | null; phase: PurgePhase }
-export type PurgeEvent = { type: 'open'; id: number } | { type: 'confirm' } | { type: 'closed' }
-  | { type: 'result'; session: number; result: Exclude<PurgePhase, 'applying' | null>; dialogOpen: boolean };
-/** send: the session to purge now; close: close the dialog; outcome: where the result goes (removal, note). A result
- *  changes the dialog only while it still shows that session. */
-export function purgeStep(s: PurgeState, e: PurgeEvent): { s: PurgeState; send?: number; close?: boolean; outcome?: ReturnType<typeof routePurge> } {
-  switch (e.type) {
-    case 'open': return { s: { shown: e.id, inflight: s.inflight, phase: s.inflight !== null ? 'applying' : null } };
-    case 'confirm':
-      if (s.shown === null || s.inflight !== null || s.phase !== null) return { s };
-      return { s: { ...s, inflight: s.shown, phase: 'applying' }, send: s.shown };
-    case 'closed': return { s: { ...s, shown: null, phase: null } };
-    case 'result': {
-      const mine = s.shown === e.session;
-      const outcome = routePurge(e.result, e.dialogOpen && mine);
-      return { s: { shown: s.shown, inflight: null, phase: mine ? outcome.dialog : null }, close: outcome.close, outcome };
-    }
-  }
-}
+/** The Purge dialog (review M1), keyed by session id: one purge at a time (Chromium can close the dialog on a second
+ *  Escape while applying, and it can be reopened); runs on components/dialog-model.ts dialogStep with routePurge. */
+export type PurgeState = DialogState<number, PurgeSettled>;

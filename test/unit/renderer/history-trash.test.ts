@@ -7,7 +7,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { HistoryRow } from '../../../src/shared/ipc.ts';
 import { formatTime } from '../../../src/renderer/model.ts';
-import { neighbourId, PURGE_BODY, PURGE_TITLE, purgeStep, purgeText, routePurge, trashBanner, type PurgeState } from '../../../src/renderer/history/trash.ts';
+import { neighbourId, PURGE_BODY, PURGE_TITLE, purgeText, routePurge, trashBanner, type PurgeState } from '../../../src/renderer/history/trash.ts';
+import { dialogStep } from '../../../src/renderer/components/dialog-model.ts';
 
 const at = (d: number) => new Date(2026, 10, d, 12).getTime();
 const day = (ms: number) => formatTime(ms).slice(0, 10);
@@ -36,12 +37,12 @@ test('purge texts: every phase in words; busy names the per-minute cap (D-P5-07)
 });
 
 test('routePurge: purged or gone closes and removes; other results stay in the open dialog, or go next to the trigger', () => {
-  assert.deepEqual(routePurge('purged', true), { close: true, gone: true, dialog: null, note: purgeText('purged') });
-  assert.deepEqual(routePurge('not-found', true), { close: true, gone: true, dialog: null, note: purgeText('not-found') });
-  assert.deepEqual(routePurge('purged', false), { close: false, gone: true, dialog: null, note: purgeText('purged') });
+  assert.deepEqual(routePurge('purged', true), { close: true, done: true, dialog: null, note: purgeText('purged') });
+  assert.deepEqual(routePurge('not-found', true), { close: true, done: true, dialog: null, note: purgeText('not-found') });
+  assert.deepEqual(routePurge('purged', false), { close: false, done: true, dialog: null, note: purgeText('purged') });
   for (const r of ['busy', 'read-only', 'disk-full', 'failed', 'unavailable'] as const) {
-    assert.deepEqual(routePurge(r, true), { close: false, gone: false, dialog: r, note: null }, r);
-    assert.deepEqual(routePurge(r, false), { close: false, gone: false, dialog: null, note: purgeText(r) }, `${r} after the dialog closed`);
+    assert.deepEqual(routePurge(r, true), { close: false, done: false, dialog: r, note: null }, r);
+    assert.deepEqual(routePurge(r, false), { close: false, done: false, dialog: null, note: purgeText(r) }, `${r} after the dialog closed`);
   }
 });
 
@@ -60,30 +61,30 @@ test('neighbourId: the following record, else the previous, else none (the list 
 
 // review M1: one purge in flight at a time; a dialog reopened while one runs shows it applying and cannot send another;
 // a late reply changes the dialog only while it still shows that session, and always routes the outcome
-test('purgeStep: open, confirm once, results for the shown session only, unexpected close keeps the request', () => {
+test('dialogStep (Purge): open, confirm once, results for the shown session only, unexpected close keeps the request', () => {
   const idle: PurgeState = { shown: null, inflight: null, phase: null };
-  let r = purgeStep(idle, { type: 'open', id: 4 });
+  let r = dialogStep(idle, { type: 'open', id: 4 }, routePurge);
   assert.deepEqual(r.s, { shown: 4, inflight: null, phase: null });
-  r = purgeStep(r.s, { type: 'confirm' });
+  r = dialogStep(r.s, { type: 'confirm' }, routePurge);
   assert.equal(r.send, 4);
   assert.deepEqual(r.s, { shown: 4, inflight: 4, phase: 'applying' });
-  assert.equal(purgeStep(r.s, { type: 'confirm' }).send, undefined, 'never twice');
-  const closed = purgeStep(r.s, { type: 'closed' }).s; // Chromium closed it on a second Escape while applying
+  assert.equal(dialogStep(r.s, { type: 'confirm' }, routePurge).send, undefined, 'never twice');
+  const closed = dialogStep(r.s, { type: 'closed' }, routePurge).s; // Chromium closed it on a second Escape while applying
   assert.deepEqual(closed, { shown: null, inflight: 4, phase: null });
-  const reopened = purgeStep(closed, { type: 'open', id: 7 }).s;
+  const reopened = dialogStep(closed, { type: 'open', id: 7 }, routePurge).s;
   assert.deepEqual(reopened, { shown: 7, inflight: 4, phase: 'applying' }, 'another purge waits for the one in flight');
-  assert.equal(purgeStep(reopened, { type: 'confirm' }).send, undefined);
-  const late = purgeStep(reopened, { type: 'result', session: 4, result: 'busy', dialogOpen: true });
+  assert.equal(dialogStep(reopened, { type: 'confirm' }, routePurge).send, undefined);
+  const late = dialogStep(reopened, { type: 'result', id: 4, result: 'busy', dialogOpen: true }, routePurge);
   assert.deepEqual(late.s, { shown: 7, inflight: null, phase: null }, "A's busy never lands in B's dialog; B can be confirmed");
   assert.equal(late.close, false);
   assert.deepEqual(late.outcome, routePurge('busy', false), "A's outcome goes beside its trigger");
-  const own = purgeStep({ shown: 4, inflight: 4, phase: 'applying' }, { type: 'result', session: 4, result: 'purged', dialogOpen: true });
+  const own = dialogStep({ shown: 4, inflight: 4, phase: 'applying' }, { type: 'result', id: 4, result: 'purged', dialogOpen: true }, routePurge);
   assert.deepEqual(own, { s: { shown: 4, inflight: null, phase: null }, close: true, outcome: routePurge('purged', true) });
-  const failed = purgeStep({ shown: 4, inflight: 4, phase: 'applying' }, { type: 'result', session: 4, result: 'failed', dialogOpen: true });
+  const failed = dialogStep({ shown: 4, inflight: 4, phase: 'applying' }, { type: 'result', id: 4, result: 'failed', dialogOpen: true }, routePurge);
   assert.deepEqual(failed.s, { shown: 4, inflight: null, phase: 'failed' });
-  const goneElsewhere = purgeStep(reopened, { type: 'result', session: 4, result: 'purged', dialogOpen: true });
+  const goneElsewhere = dialogStep(reopened, { type: 'result', id: 4, result: 'purged', dialogOpen: true }, routePurge);
   assert.equal(goneElsewhere.close, false, "A's success never closes B's dialog");
-  assert.equal(goneElsewhere.outcome?.gone, true);
+  assert.equal(goneElsewhere.outcome?.done, true);
 });
 
 // Gate 5 second review M1 (run 178): a purge that hid the session but could not finish its rows says so, and the record
@@ -93,13 +94,13 @@ test('second review M1: pending purge text and routing', () => {
   assert.match(t, /could not finish/);
   assert.match(t, /stays hidden/);
   assert.doesNotMatch(t, /Nothing was purged|disk may be full/); // round 4 review: stops and store errors take this path too
-  assert.deepEqual(routePurge('pending' as never, true), { close: true, gone: true, dialog: null, note: t });
+  assert.deepEqual(routePurge('pending' as never, true), { close: true, done: true, dialog: null, note: t });
 });
 
-test('G5C2r-3: purgeStep with a pending result on the shown session closes the dialog and removes the record', () => {
-  const r = purgeStep({ shown: 4, inflight: 4, phase: 'applying' }, { type: 'result', session: 4, result: 'pending', dialogOpen: true });
+test('G5C2r-3: dialogStep with a pending result on the shown session closes the dialog and removes the record', () => {
+  const r = dialogStep({ shown: 4, inflight: 4, phase: 'applying' }, { type: 'result', id: 4, result: 'pending', dialogOpen: true }, routePurge);
   assert.deepEqual(r.s, { shown: 4, inflight: null, phase: null });
   assert.equal(r.close, true);
-  assert.equal(r.outcome?.gone, true, 'the service keeps the session hidden: the record leaves the list');
+  assert.equal(r.outcome?.done, true, 'the service keeps the session hidden: the record leaves the list');
   assert.equal(r.outcome?.note, purgeText('pending'));
 });

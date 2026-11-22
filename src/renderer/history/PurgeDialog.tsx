@@ -3,7 +3,10 @@
 // dismissed; a failure or an unknown outcome stays with Close and no resubmission). Cancel and Close return focus to the
 // exact Purge trigger. The outcome goes to `onDone` (trash.routePurge): the caller removes a gone record and moves focus.
 import { useEffect, useRef, useState } from 'react';
-import { PURGE_BODY, PURGE_TITLE, purgeStep, purgeText, routePurge, type PurgeEvent, type PurgePhase, type PurgeResult, type PurgeState } from './trash.ts';
+import type { PurgeResult } from '../../shared/ipc.ts';
+import { ConfirmDialog } from '../components/ConfirmDialog.tsx';
+import { dialogStep, type DialogEvent } from '../components/dialog-model.ts';
+import { PURGE_BODY, PURGE_TITLE, purgeText, routePurge, type PurgePhase, type PurgeSettled, type PurgeState } from './trash.ts';
 
 export type PurgeTarget = { id: number; trigger: HTMLElement | null } | null;
 export type PurgeOutcome = ReturnType<typeof routePurge>;
@@ -15,11 +18,11 @@ export function PurgeDialog({ target, purge, onDone, onClosed }: {
   onClosed: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
-  // review M1: one purge in flight; results change the dialog only while it still shows their session (trash.purgeStep)
+  // review M1: one purge in flight; results change the dialog only while it still shows their session (dialogStep)
   const state = useRef<PurgeState>({ shown: null, inflight: null, phase: null });
   const [phase, setPhase] = useState<PurgePhase>(null);
   const trigger = useRef<HTMLElement | null>(null);
-  const step = (e: PurgeEvent) => { const r = purgeStep(state.current, e); state.current = r.s; setPhase(r.s.phase); return r; };
+  const step = (e: DialogEvent<number, PurgeSettled>) => { const r = dialogStep(state.current, e, routePurge); state.current = r.s; setPhase(r.s.phase); return r; };
   useEffect(() => {
     if (!target) return;
     trigger.current = target.trigger;
@@ -36,8 +39,8 @@ export function PurgeDialog({ target, purge, onDone, onClosed }: {
     const r = step({ type: 'confirm' });
     if (r.send === undefined) return;
     const session = r.send;
-    const done = (result: Exclude<PurgePhase, 'applying' | null>) => {
-      const out = step({ type: 'result', session, result, dialogOpen: dialog.current?.open === true });
+    const done = (result: PurgeSettled) => {
+      const out = step({ type: 'result', id: session, result, dialogOpen: dialog.current?.open === true });
       if (out.close) close(false); // purged or gone: its trigger left with the record; the caller moves focus
       if (out.outcome) onDone(session, out.outcome);
     };
@@ -49,23 +52,11 @@ export function PurgeDialog({ target, purge, onDone, onClosed }: {
     const running = state.current.inflight;
     step({ type: 'closed' });
     trigger.current?.focus();
-    if (running !== null) onDone(running, { close: false, gone: false, dialog: null, note: purgeText('applying') });
+    if (running !== null) onDone(running, { close: false, done: false, dialog: null, note: purgeText('applying') });
     onClosed();
   };
   return (
-    <dialog ref={dialog} className="x-dialog" aria-labelledby="purge-title" aria-describedby="purge-body"
-      onCancel={(e) => { e.preventDefault(); if (phase !== 'applying') close(true); }} onClose={closed}>
-      <h2 id="purge-title">{PURGE_TITLE}</h2>
-      <p id="purge-body">{PURGE_BODY}</p>
-      <p aria-live="polite">{purgeText(phase)}</p>
-      <div className="x-dialog-actions">{/* Close replaces the pressed buttons after a failure, so it takes focus */}
-        {phase === null || phase === 'applying' ? <>
-          <button type="button" className="x-btn x-btn-secondary" autoFocus aria-disabled={phase === 'applying' || undefined}
-            onClick={() => { if (phase === null) close(true); }}>Cancel</button>
-          <button type="button" className="x-btn x-btn-danger" aria-disabled={phase === 'applying' || undefined} aria-busy={phase === 'applying' || undefined}
-            onClick={confirm}>Purge</button>
-        </> : <button type="button" className="x-btn x-btn-secondary" autoFocus onClick={() => close(true)}>Close</button>}
-      </div>
-    </dialog>
+    <ConfirmDialog dialog={dialog} name="purge" title={PURGE_TITLE} body={PURGE_BODY} phase={phase} text={purgeText(phase)} confirm="Purge" danger
+      onConfirm={confirm} onDismiss={() => close(true)} onClosed={closed} />
   );
 }

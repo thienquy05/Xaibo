@@ -5,7 +5,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SuppressedRow } from '../../../src/shared/ipc.ts';
-import { appendPage, deliver, newGone, recordName, REIMPORT_BODY, REIMPORT_TITLE, reimportStep, reimportText, routeReimport, suppressedLines, type ReimportState } from '../../../src/renderer/history/suppressed.ts';
+import { appendPage, deliver, newGone, recordName, REIMPORT_BODY, REIMPORT_TITLE, reimportText, routeReimport, suppressedLines, type ReimportState } from '../../../src/renderer/history/suppressed.ts';
+import { dialogStep } from '../../../src/renderer/components/dialog-model.ts';
 
 const at = (d: number) => new Date(2026, 10, d, 12).getTime();
 const srow = (key: string, extra: Partial<SuppressedRow> = {}): SuppressedRow => ({ key: key.padEnd(64, '0'), agent: 'claude', profile: '~/.claude', reason: 'manual', at: at(18), filesPending: false, ...extra });
@@ -43,39 +44,41 @@ test('reimportText: every outcome in words; nothing claims success without ok; u
 });
 
 test('routeReimport: ok, none and not-found close and remove the record; pending and native-gone keep it; others stay in an open dialog', () => {
-  for (const r of ['ok', 'none', 'not-found'] as const) assert.deepEqual(routeReimport(r, true), { close: true, gone: true, dialog: null, note: reimportText(r) }, r);
-  assert.deepEqual(routeReimport('ok', false), { close: false, gone: true, dialog: null, note: reimportText('ok') });
+  for (const r of ['ok', 'none', 'not-found'] as const) assert.deepEqual(routeReimport(r, true), { close: true, done: true, dialog: null, note: reimportText(r) }, r);
+  assert.deepEqual(routeReimport('ok', false), { close: false, done: true, dialog: null, note: reimportText('ok') });
   for (const r of ['pending', 'native-gone', 'read-only', 'disk-full', 'failed', 'unavailable'] as const) {
-    assert.deepEqual(routeReimport(r, true), { close: false, gone: false, dialog: r, note: null }, r);
-    assert.deepEqual(routeReimport(r, false), { close: false, gone: false, dialog: null, note: r === 'unavailable' ? 'The result is unavailable.' : reimportText(r) }, r);
+    assert.deepEqual(routeReimport(r, true), { close: false, done: false, dialog: r, note: null }, r);
+    assert.deepEqual(routeReimport(r, false), { close: false, done: false, dialog: null, note: r === 'unavailable' ? 'The result is unavailable.' : reimportText(r) }, r);
   }
 });
 
-test('reimportStep: confirm sends once; Applying blocks a second send; a dialog reopened while applying says so', () => {
-  const idle: ReimportState = { open: false, inflight: false, phase: null };
-  const opened = reimportStep(idle, { type: 'open' }).s;
-  assert.deepEqual(opened, { open: true, inflight: false, phase: null });
-  const sent = reimportStep(opened, { type: 'confirm' });
-  assert.equal(sent.send, true);
-  assert.deepEqual(sent.s, { open: true, inflight: true, phase: 'applying' });
-  assert.equal(reimportStep(sent.s, { type: 'confirm' }).send, undefined, 'one Re-import at a time');
-  const closed = reimportStep(sent.s, { type: 'closed' }).s; // Chromium's second Escape
-  assert.deepEqual(closed, { open: false, inflight: true, phase: null });
-  assert.deepEqual(reimportStep(closed, { type: 'open' }).s, { open: true, inflight: true, phase: 'applying' });
-  assert.equal(reimportStep(reimportStep(closed, { type: 'open' }).s, { type: 'confirm' }).send, undefined);
+// XAIBO-PROD-551: the pane's dialog runs on the shared dialogStep, keyed by the record's key (the pane shows one record)
+test('dialogStep (Re-import): confirm sends once; Applying blocks a second send; a dialog reopened while applying says so', () => {
+  const idle: ReimportState = { shown: null, inflight: null, phase: null };
+  const opened = dialogStep(idle, { type: 'open', id: 'k' }, routeReimport).s;
+  assert.deepEqual(opened, { shown: 'k', inflight: null, phase: null });
+  const sent = dialogStep(opened, { type: 'confirm' }, routeReimport);
+  assert.equal(sent.send, 'k');
+  assert.deepEqual(sent.s, { shown: 'k', inflight: 'k', phase: 'applying' });
+  assert.equal(dialogStep(sent.s, { type: 'confirm' }, routeReimport).send, undefined, 'one Re-import at a time');
+  const closed = dialogStep(sent.s, { type: 'closed' }, routeReimport).s; // Chromium's second Escape
+  assert.deepEqual(closed, { shown: null, inflight: 'k', phase: null });
+  const reopened = dialogStep(closed, { type: 'open', id: 'k' }, routeReimport).s;
+  assert.deepEqual(reopened, { shown: 'k', inflight: 'k', phase: 'applying' });
+  assert.equal(dialogStep(reopened, { type: 'confirm' }, routeReimport).send, undefined);
 });
 
-test('reimportStep: a result routes by whether the dialog is still open; a failure keeps Close only (no resubmission)', () => {
-  const applying: ReimportState = { open: true, inflight: true, phase: 'applying' };
-  const ok = reimportStep(applying, { type: 'result', result: 'ok', dialogOpen: true });
-  assert.deepEqual(ok.s, { open: false, inflight: false, phase: null });
+test('dialogStep (Re-import): a result routes by whether the dialog is still open; a failure keeps Close only (no resubmission)', () => {
+  const applying: ReimportState = { shown: 'k', inflight: 'k', phase: 'applying' };
+  const ok = dialogStep(applying, { type: 'result', id: 'k', result: 'ok', dialogOpen: true }, routeReimport);
+  assert.deepEqual(ok.s, { shown: 'k', inflight: null, phase: null }, 'the pane closes the dialog itself (close)');
   assert.equal(ok.close, true);
-  assert.equal(ok.outcome?.gone, true);
-  const failed = reimportStep(applying, { type: 'result', result: 'native-gone', dialogOpen: true });
-  assert.deepEqual(failed.s, { open: true, inflight: false, phase: 'native-gone' });
-  assert.equal(reimportStep(failed.s, { type: 'confirm' }).send, undefined, 'Close only after a failure');
-  const late = reimportStep({ open: false, inflight: true, phase: null }, { type: 'result', result: 'unavailable', dialogOpen: false });
-  assert.deepEqual(late.s, { open: false, inflight: false, phase: null });
+  assert.equal(ok.outcome?.done, true);
+  const failed = dialogStep(applying, { type: 'result', id: 'k', result: 'native-gone', dialogOpen: true }, routeReimport);
+  assert.deepEqual(failed.s, { shown: 'k', inflight: null, phase: 'native-gone' });
+  assert.equal(dialogStep(failed.s, { type: 'confirm' }, routeReimport).send, undefined, 'Close only after a failure');
+  const late = dialogStep({ shown: null, inflight: 'k', phase: null }, { type: 'result', id: 'k', result: 'unavailable', dialogOpen: false }, routeReimport);
+  assert.deepEqual(late.s, { shown: null, inflight: null, phase: null });
   assert.equal(late.outcome?.note, 'The result is unavailable.', 'review L3: no dialog is left to close');
 });
 

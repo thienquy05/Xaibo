@@ -30,7 +30,6 @@ interface State { roots: Level<MapNode, MapGroup>; kids: Kids; exp: Expansion; s
 export interface MapSnapshot { state: State }
 /** A request in flight when the map was left never answers this instance (review M1: resumeLevel). */
 const resume = (x: State): State => ({ ...x, roots: resumeLevel(x.roots), kids: Object.fromEntries(Object.entries(x.kids).map(([k, l]) => [k, resumeLevel(l)])) });
-const rootsEmptyFlag = (x: State) => x.roots.pages.every((p) => p.items.length === 0);
 const start = (): State => ({ roots: { ...(emptyLevel() as Level<MapNode, MapGroup>), loading: 'first' }, kids: {}, exp: { expanded: [], visit: {}, tick: 0 }, selected: null });
 const leafFilter = (group: MapGroup): HistoryFilter => ({ mode: 'all', agent: null, project: null, folder: null, group });
 
@@ -49,6 +48,8 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
   const [announce, setAnnounce] = useState('');
   const [focusReq, setFocusReq] = useState<{ key: string; n: number } | null>(null);
   const focusKey = useRef<string>('');
+  /** Focus moves to row `k` (each request once, even to the same key). */
+  const focusTo = (k: string) => { focusKey.current = k; setFocusReq((f) => ({ key: k, n: (f?.n ?? 0) + 1 })); };
   const tokens = useRef(new Map<string, number>()); // the latest request per level: older answers are dropped
   const seq = useRef(0); // review M1: one counter for all levels, so a collapsed and re-expanded level never reuses a token
   const list = useMemo(() => flatten(s.roots, s.kids, s.exp.expanded), [s.roots, s.kids, s.exp.expanded]);
@@ -83,7 +84,7 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
       const old = parent === null ? sRef.current.roots : sRef.current.kids[parent];
       const anchor = dir !== 'first' && old ? pagingAnchor(old as Level<Child, MapGroup | HistoryKey>, dir) : null;
       put((l) => pageArrived(l, dir, cursor, r.items, r.next));
-      if (anchor && focusKey.current === `${dir === 'prev' ? 'start' : 'end'}:${id}`) { focusKey.current = anchor; setFocusReq((f) => ({ key: anchor, n: (f?.n ?? 0) + 1 })); }
+      if (anchor && focusKey.current === `${dir === 'prev' ? 'start' : 'end'}:${id}`) focusTo(anchor);
       say(note + loadedText(dir, noun, r.items.length));
     }, () => {
       if (tokens.current.get(id) !== token) return;
@@ -102,8 +103,7 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
     const parent = row.parent, group = groupOf(parent);
     // review L1 (part 2b): the leaf is focused and selected at once; the check only moves on when it was dropped
     setS((x) => ({ ...x, selected: leaf }));
-    focusKey.current = leaf;
-    setFocusReq((f) => ({ key: leaf, n: (f?.n ?? 0) + 1 }));
+    focusTo(leaf);
     let live = true;
     api.historyRow(restoreId).then((r) => r, () => 'failed' as const).then((check) => {
       const t = returnTarget(leaf, parent, group, check);
@@ -111,7 +111,7 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
       const shown = flatten(sRef.current.roots, sRef.current.kids, sRef.current.exp.expanded).some((r) => r.key === parent);
       if (!shown) return; // collapsed or evicted meanwhile: nothing to move to
       setS((x) => ({ ...x, kids: dropSession(x.kids, parent, restoreId), selected: x.selected === leaf ? parent : x.selected }));
-      if (focusKey.current === leaf) { focusKey.current = parent; setFocusReq((f) => ({ key: parent, n: (f?.n ?? 0) + 1 })); }
+      if (focusKey.current === leaf) focusTo(parent);
       setNotice(t.notice);
       if (t.notice) say(t.notice);
     });
@@ -168,8 +168,8 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
     if (k && !byKey.has(k)) {
       const to = refocus(before, list, k);
       if (to) {
-        focusKey.current = to;
-        if (r.inTree) setFocusReq((f) => ({ key: to, n: (f?.n ?? 0) + 1 }));
+        if (r.inTree) focusTo(to);
+        else focusKey.current = to;
       }
     }
     const sel = sRef.current.selected;
@@ -216,7 +216,7 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
     const r = collapse(s.exp, key, parentOf, focusKey.current);
     for (const k of r.removed) tokens.current.delete(k);
     setS((x) => { const kids = { ...x.kids }; for (const k of r.removed) delete kids[k]; return { ...x, exp: r.e, kids }; });
-    if (r.focus !== focusKey.current) { focusKey.current = r.focus; setFocusReq((f) => ({ key: r.focus, n: (f?.n ?? 0) + 1 })); }
+    if (r.focus !== focusKey.current) focusTo(r.focus);
   };
   const activate = (r: Row) => {
     setNotice(null);
@@ -242,7 +242,7 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
 
   const selected = s.selected === null ? null : byKey.get(s.selected) ?? null;
   const detail: Detail | null = selected?.type === 'group' ? groupDetail(selected.node, name) : selected?.type === 'session' ? sessionDetail(selected.row, name) : null;
-  const rootsEmpty = rootsEmptyFlag(s);
+  const rootsEmpty = s.roots.pages.every((p) => p.items.length === 0);
 
   return (
     <div className="x-map-area">

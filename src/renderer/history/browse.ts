@@ -2,9 +2,9 @@
 // the service filter (Live shows the Dashboard's evidenced live set instead of paging); rows take live updates by id,
 // and only the unfiltered All view inserts and reorders them; row lines say what the overlay and the native state know,
 // nothing guessed; snippets split into text runs with the search terms emphasized (rendered as text, never HTML).
-import { nativeBadge, type HistoryFilter, type HistoryKey, type HistoryRow, type MapGroup, type MapNode, type SessionRow } from '../../shared/ipc.ts';
-import { formatTime, PAGE } from '../model.ts';
-import { repoName } from '../agent-map/tree.ts';
+import { nativeBadge, QUERY_MAX_TERMS, type HistoryFilter, type HistoryKey, type HistoryRow, type MapGroup, type MapNode, type SessionRow } from '../../shared/ipc.ts';
+import { day, PAGE } from '../model.ts';
+import { base, kindOf, repoName, type Kind } from '../agent-map/tree.ts';
 
 export type Mode = 'all' | 'live' | 'archived' | 'trash' | 'suppressed';
 export const MODES: { mode: Mode; label: string }[] = [
@@ -149,7 +149,6 @@ export function capped(rows: HistoryRow[], capacity: number): { rows: HistoryRow
   return { rows: kept, next: { pinned: last.pinned, lastActivity: last.lastActivity, id: last.id } };
 }
 
-const day = (ms: number) => formatTime(ms).slice(0, 10);
 export interface Line { text: string; tone: 'success' | 'warning' | null }
 /** What the row's overlay and native state say; a live-set row or one inserted from a live update (overlay not read
  *  yet) says nothing about the overlay. */
@@ -173,10 +172,9 @@ export function rowLines(r: BrowseRow): Line[] {
 /** Case folding per code point, keeping a character whose lower case has another length (e.g. 'İ'), so positions in the
  *  folded text are positions in the original (review L8). */
 const fold = (s: string) => [...s].map((c) => { const l = c.toLowerCase(); return l.length === c.length ? l : c; }).join('');
-const SEARCH_TERMS = 16; // the service's QUERY_MAX_TERMS (service/search/query.ts): later terms are not searched
 /** Search terms (quotes stripped) emphasized case-insensitively; plain text runs, never markup. */
 export function emphasis(snippet: string, search: string): { text: string; hit: boolean }[] {
-  const terms = search.split(/\s+/u).filter(Boolean).slice(0, SEARCH_TERMS).map((t) => fold(t.replaceAll('"', ''))).filter((t) => t.length > 0 && /[\p{L}\p{N}]/u.test(t));
+  const terms = search.split(/\s+/u).filter(Boolean).slice(0, QUERY_MAX_TERMS).map((t) => fold(t.replaceAll('"', ''))).filter((t) => t.length > 0 && /[\p{L}\p{N}]/u.test(t));
   if (!terms.length) return [{ text: snippet, hit: false }];
   const lower = fold(snippet);
   const out: { text: string; hit: boolean }[] = [];
@@ -190,23 +188,13 @@ export function emphasis(snippet: string, search: string): { text: string; hit: 
   return out;
 }
 
-/** Roving focus in the Session list mode group: Left/Right in DOM order (no wrap), Home/End; null = not ours. */
-export function modeKey(key: string, i: number, n: number): number | null {
-  switch (key) {
-    case 'ArrowRight': return Math.min(n - 1, i + 1);
-    case 'ArrowLeft': return Math.max(0, i - 1);
-    case 'Home': return 0;
-    case 'End': return n - 1;
-    default: return null;
-  }
-}
-
-const base = (p: string) => p.replace(/\/+$/, '').split('/').pop() || p;
-export interface GroupLabel { label: string; note: string | null; kind: 'project' | 'repo' | 'worktree' | 'folder' }
+export interface GroupLabel { label: string; note: string | null; kind: Kind }
+/** XAIBO-PROD-551 (D-P5-15 item 7): the kind and base names of the Agent Map tree (agent-map/tree.ts). */
 export function groupLabel(n: MapNode): GroupLabel {
-  const at = n.group.at;
-  if (at === null) return { label: n.project?.name ?? 'Unknown project', note: null, kind: 'project' };
+  const at = n.group.at, kind = kindOf(n.group);
+  if (at === null) return { label: n.project?.name ?? 'Unknown project', note: null, kind };
   // XAIBO-PROD-540: the key is the common git directory (`<repo>/.git` for a standard checkout), so name it as the Agent Map does
-  if ('repo' in at) return at.worktree === null ? { label: repoName(at.repo) || 'Repository label unavailable', note: null, kind: 'repo' } : { label: base(at.worktree), note: null, kind: 'worktree' };
-  return at.cwd === null ? { label: 'Cwd unavailable', note: null, kind: 'folder' } : { label: base(at.cwd), note: 'Repository grouping unavailable', kind: 'folder' };
+  // review L1: never a blank label (a path of slashes only keeps the path)
+  if ('repo' in at) return { label: at.worktree === null ? repoName(at.repo) || 'Repository label unavailable' : base(at.worktree) || at.worktree, note: null, kind };
+  return at.cwd === null ? { label: 'Cwd unavailable', note: null, kind } : { label: base(at.cwd) || at.cwd, note: 'Repository grouping unavailable', kind };
 }

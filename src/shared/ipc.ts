@@ -255,6 +255,11 @@ export const OVERLAY_ERRORS = ['not-found', 'invalid', 'read-only', 'disk-full',
 export type OverlayResult = { ok: true; id?: number } | { ok: false; error: (typeof OVERLAY_ERRORS)[number] };
 // XAIBO-PROD-527 (P5-T18 part 1; design §6.4, §6.6): search, purge, suppressed sessions, Re-import, retention, storage.
 export const QUERY_MAX = 256, SNIPPET_MAX = 200, RETENTION_MAX = 3650;
+/** XAIBO-PROD-551 (D-P5-15 item 15): search reads at most this many terms (later ones are not searched or emphasized);
+ *  retention defaults to this many days; retention never purges a session in an active lifecycle (EC-22). */
+export const QUERY_MAX_TERMS = 16, RETENTION_DEFAULT = 45;
+export const isActive = (lifecycle: LiveStatus['lifecycle'] | null): boolean =>
+  lifecycle === 'busy' || lifecycle === 'waiting-for-permission' || lifecycle === 'needs-input';
 /** event: the rowid of the last match read (Gate 5 round 2 review: exact continuation inside equal-rank ties). */
 export interface SearchKey { rank: number; session: number; event: number }
 export interface SearchHit { row: HistoryRow; event: number; snippet: string }

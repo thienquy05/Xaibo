@@ -9,13 +9,15 @@
 // with a matching aria-invalid, and are never clamped; a failed Save focuses the invalid field. Storage is passive service
 // data (one measurement per 60 s at most in the service) and never shows a disk capacity.
 import { useEffect, useId, useReducer, useRef, useState } from 'react';
-import type { ClearUsageResult, RetentionSetting, SAVE_RESULTS, StorageReport } from '../../shared/ipc.ts';
+import type { ClearUsageResult, RetentionSetting, SaveRetentionResult, StorageReport } from '../../shared/ipc.ts';
+import { ConfirmDialog } from '../components/ConfirmDialog.tsx';
+import { APPLYING, RESULT_UNAVAILABLE } from '../model.ts';
 import { initialRetention, lastRunText, measureStorage, retentionReducer, saveText, storageView, storageWhen, toSend, type Draft, type RetentionState, type StorageRow } from './retention-view.ts';
 
 export interface SettingsApi {
   clearUsage(): Promise<ClearUsageResult>;
   retention(): Promise<{ setting: RetentionSetting | null; lastRunAt: number | null }>;
-  setRetention(value: RetentionSetting): Promise<(typeof SAVE_RESULTS)[number]>;
+  setRetention(value: RetentionSetting): Promise<SaveRetentionResult>;
   storage(refresh: boolean): Promise<{ report: StorageReport | null; failed: boolean }>;
 }
 type Phase = 'applying' | ClearUsageResult | 'unavailable' | null;
@@ -23,11 +25,11 @@ type Phase = 'applying' | ClearUsageResult | 'unavailable' | null;
 export function clearStatusText(p: Phase): string {
   switch (p) {
     case null: return '';
-    case 'applying': return 'Applying changes…';
+    case 'applying': return APPLYING;
     case 'cleared': return 'Usage history cleared. Usage observed from now on will appear.';
     case 'read-only': return 'Usage history was not cleared: the store is read-only.';
     case 'failed': return 'Usage history was not cleared. Nothing was changed.';
-    case 'unavailable': return 'The result is unavailable. Closing this dialog does not cancel the operation.';
+    case 'unavailable': return RESULT_UNAVAILABLE;
   }
 }
 
@@ -93,23 +95,10 @@ export function Settings({ api, readOnly }: { api: SettingsApi; readOnly: boolea
           <span aria-live="polite">{clearStatusText(section)}</span>
         </div>
       </section>
-      {/* Escape is Cancel before submission and blocked while applying (§5.1) */}
-      <dialog ref={dialog} className="x-dialog" aria-labelledby="clear-usage-title" aria-describedby="clear-usage-body"
-        onCancel={(e) => { e.preventDefault(); if (phase !== 'applying') close(); }} onClose={closed}>
-        <h2 id="clear-usage-title">Clear usage history?</h2>
-        <p id="clear-usage-body">
-          The monthly totals are removed and every usage record already observed is left out of them from now on. Usage observed
-          afterwards appears as usual. Sessions, account usage snapshots and quotas are not deleted.
-        </p>
-        <p aria-live="polite">{clearStatusText(phase)}</p>
-        <div className="x-dialog-actions">{/* Close replaces the pressed button after a failure, so it takes focus */}
-          {phase === null || phase === 'applying' ? <>
-            <button type="button" className="x-btn x-btn-secondary" aria-disabled={phase === 'applying' || undefined} onClick={() => { if (phase === null) close(); }}>Cancel</button>
-            <button type="button" className="x-btn x-btn-primary" aria-disabled={phase === 'applying' || undefined} aria-busy={phase === 'applying' || undefined}
-              onClick={() => { if (phase === null) confirm(); }}>Clear usage history</button>
-          </> : <button type="button" className="x-btn x-btn-secondary" autoFocus onClick={close}>Close</button>}
-        </div>
-      </dialog>
+      <ConfirmDialog dialog={dialog} name="clear-usage" title="Clear usage history?" phase={phase} text={clearStatusText(phase)} confirm="Clear usage history"
+        body={'The monthly totals are removed and every usage record already observed is left out of them from now on. Usage observed'
+          + ' afterwards appears as usual. Sessions, account usage snapshots and quotas are not deleted.'}
+        onConfirm={confirm} onDismiss={close} onClosed={closed} />
     </div>
   );
 }

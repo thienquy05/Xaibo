@@ -62,7 +62,7 @@ test('labels and months per page: month to date, detail state; 12 wide, 6 normal
 test('quota rows: label or a view-local "Scope N", window and verification in words, uncapped peak', () => {
   const rows = quotaRows([q(), q({ scope: 2, label: null, windowMinutes: null, verified: false, agent: null, peakPercent: 120 })]);
   assert.deepEqual(rows.map((r) => [r.scope, r.window, r.peak, r.verified]),
-    [['Default profile', '5 h window', '61.5%', 'Verified scope'], ['Scope 2', 'Window unknown', '120%', 'Scope not verified']]);
+    [['Default profile', '5-hour window', '61.5%', 'Verified scope'], ['Scope 2', 'Window unknown', '120%', 'Scope not verified']]);
 });
 
 test('MonthlyLedger markup: SVG with visible numbers, words without bars, month controls, table, separate quota section', () => {

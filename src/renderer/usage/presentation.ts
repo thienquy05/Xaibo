@@ -2,7 +2,7 @@
 // FR-46): derived at render time from the service's raw newest measurement, against the local clock. Nothing here asks
 // an agent or provider for anything; a missing value is a phrase, never 0.
 import type { UsageScope } from '../../shared/ipc.ts';
-import { DAY as D, formatTime, HOUR as H, MIN as M, SEC as S, shortTime } from '../model.ts';
+import { day, DAY as D, formatTime, HOUR as H, MIN as M, SEC as S, shortTime } from '../model.ts';
 import { visible } from '../text.ts';
 
 export const STALE_MS = 15 * 60_000;
@@ -17,10 +17,12 @@ const UNAVAILABLE: Record<string, string> = {
   claude: 'Unavailable — no statusLine quota observation',
   codex: 'Unavailable — no rate-limit observation',
 };
-function windowTitle(minutes: number | null, stream: string | null): string {
-  if (minutes === null) return stream === null ? 'Quota' : visible(stream);
-  if (minutes % 1440 === 0) return `${minutes / 1440}-day window`;
-  if (minutes % 60 === 0) return `${minutes / 60}-hour window`;
+/** XAIBO-PROD-551 (D-P5-15 item 13): a quota window in words (usage rows and the monthly quota table); `unknown` when the
+ *  window is not reported. A non-positive window is never a day or hour window. */
+export function windowTitle(minutes: number | null, unknown: string): string {
+  if (minutes === null) return unknown;
+  if (minutes > 0 && minutes % 1440 === 0) return `${minutes / 1440}-day window`;
+  if (minutes > 0 && minutes % 60 === 0) return `${minutes / 60}-hour window`;
   return `${minutes}-minute window`;
 }
 const pct = (p: number) => {
@@ -61,7 +63,7 @@ export function usageView(s: UsageScope, now: number, lastKnown: string | null =
     ? `Reported credits ${visible(s.credits.balance)}` : s.credits?.hasCredits === false ? 'No credits' : null;
   const measured = s.measuredAt ?? s.firstObservedAt; // review: a reading with no measured time ages from its first observation
   const labels = readingLabels(s.asOf, s.firstObservedAt, measured, measured !== null && now - measured > STALE_MS);
-  const base = { ...empty, title: windowTitle(s.windowMinutes, s.stream), freshness: labels.freshness, unverified: s.verified === false, plan: s.plan ? `Plan ${visible(s.plan)}` : null, credits,
+  const base = { ...empty, title: windowTitle(s.windowMinutes, s.stream === null ? 'Quota' : visible(s.stream)), freshness: labels.freshness, unverified: s.verified === false, plan: s.plan ? `Plan ${visible(s.plan)}` : null, credits,
     lastKnown: lastKnown === null ? null : `Last known · ${lastKnown}` };
   if (s.resetsAt !== null && now >= s.resetsAt) return { ...base, value: 'Reset passed; awaiting observation' };
   return {
@@ -83,7 +85,7 @@ export function shiftDay(dayStart: number, days: number): number {
 /** The local day holding `ms`: [midnight, next midnight) and its YYYY-MM-DD label. */
 export function dayRange(ms: number): { from: number; to: number; date: string } {
   const from = shiftDay(ms, 0);
-  return { from, to: shiftDay(from, 1), date: formatTime(from).slice(0, 10) };
+  return { from, to: shiftDay(from, 1), date: day(from) };
 }
 /** First and last day starts the Observed history pager may show: today and the 44 days before it. */
 export const historyBounds = (now: number) => ({ first: shiftDay(now, -(HISTORY_DAYS - 1)), last: shiftDay(now, 0) });

@@ -10,9 +10,8 @@ import type { DatabaseSync } from 'node:sqlite';
 import { hasTable, pageSize } from '../api.ts';
 import { needsOverlay, scopeWhere } from '../history/overlay.ts';
 import { notPurging } from '../history/suppression.ts';
-import { QUERY_MAX, SNIPPET_MAX, type HistoryFilter, type SearchKey } from '../../shared/ipc.ts';
+import { QUERY_MAX, QUERY_MAX_TERMS, SNIPPET_MAX, type HistoryFilter, type SearchKey } from '../../shared/ipc.ts';
 
-export const QUERY_MAX_TERMS = 16;
 // Review M1: snippet() re-tokenizes a hit's whole stored content (an event up to the 8 MiB parse cap: ~450 ms when a term
 // repeats through it), so the snippet is cut from this many leading characters instead.
 const SNIPPET_SCAN = 16_384, SNIPPET_LEAD = 60;
