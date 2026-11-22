@@ -100,7 +100,8 @@ test('EC-71: tailed files renamed out, moved within and unlinked under load: han
   assert.equal(w.total(), 0, 'stop closes every handle');
 });
 
-test('EC-71: a tailed file replaced at the same path gets a fresh watch; the handle on the dead file is closed', async () => {
+const replaceSkip = process.platform !== 'darwin' && 'inode numbers are reused at once off macOS (S-23)'; // see the header
+test('EC-71: a tailed file replaced at the same path gets a fresh watch; the handle on the dead file is closed', { skip: replaceSkip }, async () => {
   const p = await claudeProfile([]);
   const dir = join(p.root, 'projects', '-tmp-xaibo-fixture-ec71r');
   mkdirSync(dir, { recursive: true });
