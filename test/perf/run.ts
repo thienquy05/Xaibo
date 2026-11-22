@@ -41,6 +41,8 @@ const { values } = parseArgs({ allowNegative: true, options: {
   import: { type: 'boolean', default: true }, // --no-import skips the full-import timing run
   packaged: { type: 'boolean', default: false }, seconds: { type: 'string' }, 'with-live-probes': { type: 'boolean', default: false },
   usage: { type: 'boolean', default: false }, 'disk-full': { type: 'boolean', default: true }, retention: { type: 'boolean', default: false }, // --no-disk-full: usage without the volume
+  // D-P5-20 control (Codex plan): the data dir on the disk image, but the image is never filled
+  'image-only': { type: 'boolean', default: false },
 } });
 const corpusRoot = path.join(REPO, '.cache', 'perf-corpus');
 const corpus = (name: string) => {
@@ -63,7 +65,7 @@ else if (values.tier === 'T0' && values.only === 'm4') result = { tier: 'T0', se
 else if (values.tier === 'M5') result = { tier: 'M5', seed: Number(values.seed), ...await m4m5Probe(corpus('t1mix'), Number(values.seconds ?? '300')) };
 else if (values.tier === 'TP' && values.only === 'quota') result = { seed: Number(values.seed), ...await quotaProbe(corpus('tp')) };
 else if (values.tier === 'TP' && values.only === 'm13') result = { seed: Number(values.seed), ...await m13Probe(corpus('tp'), Number(values.runs)) };
-else if (values.tier === 'TP' || values.tier === 'T2') result = await liveLoad(values.tier, corpus('t1mix'), Number(values.seed), values.seconds ? Number(values.seconds) : undefined, values.usage, values['disk-full'], values.retention);
+else if (values.tier === 'TP' || values.tier === 'T2') result = await liveLoad(values.tier, corpus('t1mix'), Number(values.seed), values.seconds ? Number(values.seconds) : undefined, values.usage, values['disk-full'], values.retention, values['image-only']);
 else throw new Error('usage: --tier T1 --metric m3-first-list|m3-full [--runs n] | --tier T0 --only notify|live|tee|m16|m4|cold [--runs n] | --tier TP --only quota|m13 [--runs n] | --tier TP|T2 [--usage | --retention] [--seconds n] | --tier M5 [--seconds n] | --case ec15');
 
 const out = path.join(REPO, '.cache', 'perf');

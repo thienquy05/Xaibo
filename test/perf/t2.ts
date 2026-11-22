@@ -90,7 +90,7 @@ export function seedSessions(home: string, count: number, codexShare: number) {
 
 /** usage: P4-T12b frames and checks; diskFull (with usage): the data dir on its own volume, filled once (off: the
  *  attribution run that tells the volume's write cost from the usage work). */
-export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, seconds?: number, usage = false, withDiskFull = true, withRetention = false) {
+export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, seconds?: number, usage = false, withDiskFull = true, withRetention = false, imageOnly = false) {
   const p = { ...PROFILES[tier], ...(seconds ? { seconds } : {}) };
   // review M7: the fault (FAULT_AT_MS or the quarter mark, fill, 20 s hold, <= 15 s clear, 5 s settle) must end before the kill at half
   if (usage && withDiskFull && p.seconds < 240) throw new Error('--usage with the disk-full fault needs --seconds >= 240 (or --no-disk-full)');
@@ -170,6 +170,7 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
     const fileIds: string[] = [];
     let hooksSent = 0;
     const start = Date.now();
+    const startNs = now(); // D-P5-20: the phase windows below (hrtime, as emitted events)
     const hrAtStart = now(); // wall clock (service log) to the hrtime of emits and trace lines
     const hrOf = (wall: number) => hrAtStart + BigInt(Math.round((wall - start) * 1e6));
     const loadEndAt = start + p.seconds * 1000;
@@ -255,14 +256,17 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
     const banner = () => launched.page.getByText('Disk full: collection paused').first().isVisible().catch(() => false);
     let full: Window | null = null;
     let fillAt = 0;
+    let fillNs: bigint | null = null, freeNs: bigint | null = null;
     const diskFull = { fillMs: null as number | null, backfillRunning: null as boolean | null, storeFull: null as boolean | null, bannerShown: false, bannerCleared: null as boolean | null, workspaceReopened: null as boolean | null, reopenMs: null as number | null,
       skipped: !vol }; // review L11: --no-disk-full passes diskFullFaulted by skipping it
     const fillFile = vol ? path.join(vol.mount, 'fill.bin') : '';
     const fault = async () => {
       await sleep(Math.min(FAULT_AT_MS, (p.seconds * 1000) / 4));
       if (stopped) return; // review M7: another step failed; do not fill the disk on the way to cleanup
+      if (imageOnly) return; // D-P5-20 control: the image without the fill (diskFullFaulted then fails by design)
       const from = now() - BigInt(IN_FLIGHT_MS * 1e6);
       const t = fillAt = Date.now();
+      fillNs = now();
       diskFull.backfillRunning = imported() === undefined;
       if (!fillVolume(fillFile)) throw new Error('could not fill the data volume');
       diskFull.fillMs = Date.now() - t;
@@ -271,6 +275,7 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
       await area('Dashboard');
       for (const end = Date.now() + FULL_HOLD_MS; Date.now() < end;) { diskFull.bannerShown ||= await banner(); await sleep(500); }
       unlinkSync(fillFile);
+      freeNs = now();
       for (const end = Date.now() + 15_000; Date.now() < end && await banner();) await sleep(250);
       diskFull.bannerCleared = !(await banner());
       // the store itself hit the full disk, not only the banner: read after the free (round 3 review M2), since the
@@ -290,12 +295,20 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
     const footprints: (number | null)[] = [];
     // with the volume: its free space every 10 s (does the store itself fill it outside the fault?)
     const volumeFree: { atS: number; freeMiB: number }[] = [];
+    // D-P5-22 (Codex plan): each sample also split by Electron process type (one process each; `rest` = the service and
+    // other children counted in the tree total), so the peak's owner is read at the same instant, never summed peaks
+    const m5Samples: { atS: number; totalMiB: number | null; byType: Record<string, number>; restMiB: number | null }[] = [];
     const memLoop = async () => {
       while (!stopped && Date.now() < loadEndAt) {
         await sleep(10_000);
-        if (vol) { const f = statfsSync(vol.mount); volumeFree.push({ atS: Math.round((Date.now() - start) / 1000), freeMiB: Math.round((f.bavail * f.bsize) / 2 ** 20) }); }
-        const pids = await launched.app.evaluate(({ app: a }) => a.getAppMetrics().map((m) => m.pid));
-        footprints.push(footprintMiB(psTree(pids).map((x) => x.pid)));
+        const atS = Math.round((Date.now() - start) / 1000);
+        if (vol) { const f = statfsSync(vol.mount); volumeFree.push({ atS, freeMiB: Math.round((f.bavail * f.bsize) / 2 ** 20) }); }
+        const procs = await launched.app.evaluate(({ app: a }) => a.getAppMetrics().map((m) => ({ pid: m.pid, type: m.type })));
+        const total = footprintMiB(psTree(procs.map((m) => m.pid)).map((x) => x.pid));
+        footprints.push(total);
+        const byType: Record<string, number> = {};
+        for (const m of procs) { const f = footprintMiB([m.pid]); if (f !== null) byType[m.type] = Math.round((byType[m.type] ?? 0) + f); }
+        m5Samples.push({ atS, totalMiB: total === null ? null : Math.round(total), byType, restMiB: total === null ? null : Math.round(total - Object.values(byType).reduce((n, x) => n + x, 0)) });
       }
     };
 
@@ -339,7 +352,15 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
     const traceFile = (f: string) => readFileSync(path.join(dataDir, 'logs', f), 'utf8').split('\n').filter((x) => x.endsWith('}'))
       .flatMap((x) => { try { return [JSON.parse(x) as TraceLine]; } catch { tornTrace++; return []; } });
     const faults = () => (full ? [full as Window] : []);
-    const result = () => (tornTrace = 0, analyze({ emitted, service: traceFile('perf-trace-service.jsonl'), main: traceFile('perf-trace-main.jsonl'), restart, faults: faults(), loadEnd }));
+    // D-P5-20 (Codex plan): hop p95s per phase, to see whether commits are slow only while ingestion resumes after the free
+    const phases = () => {
+      const kill = restart?.from ?? loadEnd, back = restart?.to ?? loadEnd;
+      const w = fillNs !== null && freeNs !== null
+        ? [{ name: 'preFill', from: startNs, to: fillNs }, { name: 'full', from: fillNs, to: freeNs }, { name: 'postFree', from: freeNs, to: kill }]
+        : [{ name: 'preKill', from: startNs, to: kill }];
+      return [...w, { name: 'postRestart', from: back, to: loadEnd }];
+    };
+    const result = () => (tornTrace = 0, analyze({ emitted, service: traceFile('perf-trace-service.jsonl'), main: traceFile('perf-trace-main.jsonl'), restart, faults: faults(), loadEnd, phases: phases() }));
     resolveLate();
     let r = result();
     for (const end = Date.now() + 30_000; r.unpainted.steady + r.unpainted.restart > 0 && Date.now() < end;) { await sleep(1000); resolveLate(); r = result(); }
@@ -478,7 +499,8 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
         // seconds after the load start, full or recovered (lines written while full are lost by design, XAIBO-PROD-430)
         diskFullEvents: serviceLog(dataDir).filter((e) => e.event === 'disk_full').map((e) => `${Math.round((Date.parse(e.t) - start) / 1000)}:${(e as { full?: boolean }).full ? 'full' : 'ok'}`),
         renderer: { ...renderer, mainEvents: (await rendererEvents()).map((x) => x.replace(/:(\d{13})$/, (_m, t: string) => `:${Number(t) - launched.created}`)) },
-        m5UnderLoadFootprintMiB: fp, serviceStarts: readies(), tornServiceLogLines: tornLogLines(dataDir), tornTraceLines: tornTrace,
+        m5UnderLoadFootprintMiB: fp, m5AtPeak: m5Samples.reduce<(typeof m5Samples)[number] | null>((p, x) => (x.totalMiB !== null && (p === null || x.totalMiB > (p.totalMiB ?? 0)) ? x : p), null),
+        m5Samples, phases: r.phases, imageOnly, serviceStarts: readies(), tornServiceLogLines: tornLogLines(dataDir), tornTraceLines: tornTrace,
         serviceEvents: Object.entries(serviceLog(dataDir).reduce<Record<string, number>>((m, e) => { m[e.event] = (m[e.event] ?? 0) + 1; return m; }, {})).filter(([k]) => !/^(scan|watch)/.test(k)),
         serviceErrors: serviceLog(dataDir).filter((e) => 'error' in e).map((e) => `${e.event}:${String((e as { error?: unknown }).error)}`).slice(0, 40), agentCalls: { count: calls.length, prohibited: calls.filter((c) => PROHIBITED.test(c)).length },
       };
