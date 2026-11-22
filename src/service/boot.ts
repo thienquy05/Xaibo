@@ -107,6 +107,10 @@ export function retentionDelayFromEnv(env: Record<string, string | undefined>): 
   const n = Number(v);
   return n <= 2_147_483_647 ? n : undefined; // review L: setTimeout clamps a larger delay to 1 ms
 }
+/** XAIBO-PROD-553 (D-P5-22 diagnostic): XAIBO_TEMP_STORE=file puts SQLite temp storage on disk, only under
+ *  XAIBO_PERF_TRACE=1 (test only); anything else keeps the shipped MEMORY default. */
+export const tempStoreFromEnv = (env: Record<string, string | undefined>): 'file' | undefined =>
+  (env.XAIBO_PERF_TRACE === '1' && env.XAIBO_TEMP_STORE === 'file' ? 'file' : undefined);
 
 // P4-T10c2 parse lag: commit time minus a file's last write (its mtime at sync), for files written within LIVE_LAG_MS;
 // older files are history import and a future mtime is clock skew, so neither is lag. ponytail: mtime has the file
@@ -119,7 +123,8 @@ export function parseLagOf(now: number, mtime: number): number | null {
 }
 
 export async function boot(o: BootOptions): Promise<Service> {
-  const store = await openStore({ file: path.join(o.dataDir, 'xaibo.db'), backupDir: path.join(o.dataDir, 'backups') });
+  const temp = tempStoreFromEnv(process.env);
+  const store = await openStore({ file: path.join(o.dataDir, 'xaibo.db'), backupDir: path.join(o.dataDir, 'backups'), ...(temp ? { tempStore: temp } : {}) });
   const { db, readOnly } = store;
   let prices: Prices | null = null;
   // P2-T10/T14: after each commit price only usage rows above the high-water mark; after a price load, every pending row.

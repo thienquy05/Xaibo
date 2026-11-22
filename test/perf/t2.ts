@@ -121,7 +121,8 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
     // --usage: the data dir on its own volume, so the disk-full fault fills the store's disk and nothing else
     let ownDataDir: string | undefined;
     if (usage && withDiskFull) { vol = volume(root, VOLUME_GIB); process.once('SIGINT', onSigint); ownDataDir = path.join(vol.mount, 'data'); mkdirSync(ownDataDir, { mode: 0o700 }); }
-    l = await launch(claude, { codex, agy: agyRoot(home), env: { XAIBO_PERF_TRACE: '1', ...(withRetention ? { XAIBO_RETENTION_DELAY_MS: String(RETENTION_START_MS) } : {}) },
+    l = await launch(claude, { codex, agy: agyRoot(home), env: { XAIBO_PERF_TRACE: '1', ...(withRetention ? { XAIBO_RETENTION_DELAY_MS: String(RETENTION_START_MS) } : {}),
+      ...(process.env.XAIBO_TEMP_STORE ? { XAIBO_TEMP_STORE: process.env.XAIBO_TEMP_STORE } : {}) }, // XAIBO-PROD-553 diagnostic
       ...(ownDataDir ? { dataDir: ownDataDir } : {}) });
     const launched = l;
     const dataDir = launched.dataDir;
@@ -505,6 +506,8 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
         renderer: { ...renderer, mainEvents: (await rendererEvents()).map((x) => x.replace(/:(\d{13})$/, (_m, t: string) => `:${Number(t) - launched.created}`)) },
         m5UnderLoadFootprintMiB: fp, m5AtPeak: m5Samples.reduce<(typeof m5Samples)[number] | null>((p, x) => (x.totalMiB !== null && (p === null || x.totalMiB > (p.totalMiB ?? 0)) ? x : p), null),
         m5Samples, phases: r.phases, imageOnly, serviceStarts: readies(),
+        // D-P5-20/22: which storage this run measured (image figures are never internal-SSD figures) and the temp store
+        storage: ownDataDir ? `HFS+ sparse image (${VOLUME_GIB} GiB)` : 'internal disk', tempStore: process.env.XAIBO_TEMP_STORE === 'file' ? 'file' : 'memory',
         // XAIBO-PROD-552: the service's content-free perf counters and memory every 5 s (seconds after the load start)
         servicePerf: traceFile('perf-trace-service.jsonl').filter((x) => x.ev === 'perf').map((x) => ({ ...x, t: undefined, atS: Math.round(Number(BigInt(x.t) - startNs) / 1e9) })), tornServiceLogLines: tornLogLines(dataDir), tornTraceLines: tornTrace,
         serviceEvents: Object.entries(serviceLog(dataDir).reduce<Record<string, number>>((m, e) => { m[e.event] = (m[e.event] ?? 0) + 1; return m; }, {})).filter(([k]) => !/^(scan|watch)/.test(k)),

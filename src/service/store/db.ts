@@ -13,6 +13,8 @@ export interface StoreOptions {
   backupDir: string;
   migrations?: Migration[];
   freeBytes?: (dir: string) => number;
+  /** XAIBO-PROD-553 (D-P5-22 diagnostic, perf trace only via boot.ts tempStoreFromEnv): SQLite temp storage; MEMORY by default. */
+  tempStore?: 'memory' | 'file';
 }
 
 const MIGRATIONS_DIR = new URL('./migrations/', import.meta.url);
@@ -42,12 +44,12 @@ const userVersion = (db: DatabaseSync) => Number(Object.values(db.prepare('PRAGM
 const sizeOf = (f: string) => (existsSync(f) ? statSync(f).size : 0);
 const freeBytesOf = (dir: string) => { const s = statfsSync(dir); return s.bavail * s.bsize; };
 
-function openReadWrite(file: string): DatabaseSync {
+function openReadWrite(file: string, tempStore: 'memory' | 'file' = 'memory'): DatabaseSync {
   if (!existsSync(file)) closeSync(openSync(file, 'a', 0o600)); // SQLite creates -wal/-shm with the DB file's mode
   chmodSync(file, 0o600);
   const db = new DatabaseSync(file);
   db.exec('PRAGMA auto_vacuum = INCREMENTAL'); // only takes effect before the first table
-  db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA temp_store = MEMORY');
+  db.exec(`PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA temp_store = ${tempStore === 'file' ? 'FILE' : 'MEMORY'}`);
   return db;
 }
 
@@ -99,7 +101,7 @@ export async function openStore(o: StoreOptions): Promise<Store> {
     if (found > Math.max(0, ...migrations.map((m) => m.version))) return { db: probe, readOnly: true, reason: 'newer-schema' };
     probe.close();
   }
-  const db = openReadWrite(o.file);
+  const db = openReadWrite(o.file, o.tempStore);
   const current = userVersion(db);
   const pending = migrations.filter((m) => m.version > current);
   if (pending.length === 0) return { db, readOnly: false };
