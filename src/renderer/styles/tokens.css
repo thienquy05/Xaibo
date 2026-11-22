@@ -512,6 +512,12 @@ summary:hover { background: var(--x-tint); }
 .x-filters { display: grid; gap: var(--x-space-2); padding: 0 var(--x-space-1) var(--x-space-3); font-size: var(--x-text-small); }
 .x-filters label { display: grid; gap: 2px; color: var(--x-muted); }
 .x-filters select { min-height: var(--x-control-height); font: inherit; color: var(--x-ink); background: var(--x-surface); border: var(--x-border); border-radius: var(--x-radius-control); padding: 0 var(--x-space-2); }
+/* XAIBO-PROD-555: the Cwd, Activity between and Model filter rows */
+.x-filters .x-input { min-width: 0; font-size: var(--x-text-small); padding: 0 var(--x-space-2); }
+.x-date-range { display: grid; grid-template-columns: 1fr 1fr; gap: var(--x-space-2); margin: 0; padding: 0; border: 0; min-width: 0; }
+.x-date-range legend { padding: 0; margin-bottom: 2px; color: var(--x-muted); }
+.x-field-error { grid-column: 1 / -1; margin: 0; color: var(--x-danger); }
+.x-filter-model { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--x-space-2); overflow-wrap: anywhere; }
 .x-acts { display: flex; flex-wrap: wrap; gap: var(--x-space-2); }
 .x-tree-root { padding-bottom: var(--x-space-2); font-size: var(--x-text-small); }
 .x-tree { list-style: none; margin: 0; padding: 0; }

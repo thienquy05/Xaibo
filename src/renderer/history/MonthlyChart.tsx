@@ -11,6 +11,8 @@ import { visible } from '../text.ts';
 import { bars, ledgerStatus, metricValue, METRIC_LABEL, METRICS, monthLabel, monthsPerPage, PLOT, quotaRows, scaleCaption, shortMonth, type Metric } from './monthly-view.ts';
 
 export type MonthlyApi = (filter: LedgerFilter, end: string | null, limit: number) => Promise<LedgerPage & { failed?: true }>;
+/** XAIBO-PROD-555 (design §6.1.1): what Return to Dashboard restores after the month detail's retained-sessions link. */
+export interface LedgerSnap { metric: Metric; filter: LedgerFilter; end: string | null; month: string }
 const COL = 96, TOP = 28, HEIGHT = 220; // SVG units per month; numbers above the plot, month names below
 
 const num = (n: number | null) => (n === null ? 'Unavailable' : n.toLocaleString('en-US'));
@@ -22,7 +24,9 @@ const revisionsText = (m: LedgerMonth) => (m.priceRevisions.length ? `Price revi
 
 /** The ledger for one fetched page (presentational; state lives in MonthlyChart). */
 export function MonthlyLedger(p: { page: LedgerPage; metric: Metric; selected: number; open: string | null; onSelect: (i: number) => void;
-  onOpen: (month: string) => void; onKey: (e: KeyboardEvent, i: number) => void; controls: MutableRefObject<(HTMLButtonElement | null)[]> }) {
+  onOpen: (month: string) => void; onKey: (e: KeyboardEvent, i: number) => void; controls: MutableRefObject<(HTMLButtonElement | null)[]>;
+  /** XAIBO-PROD-555: opens the month's retained sessions; null when the model filter is the unavailable model (no session filter for it). */
+  onSessions?: ((month: string) => void) | null }) {
   const months = p.page.months, b = bars(months, p.metric), width = Math.max(1, months.length) * COL;
   const opened = months.find((m) => m.month === p.open) ?? null;
   const quota = quotaRows(p.page.quota);
@@ -66,6 +70,9 @@ export function MonthlyLedger(p: { page: LedgerPage; metric: Metric; selected: n
           </dl>
           <p>{opened.detail === 'totals-only' ? 'Details expired: only this month’s totals are kept, so there are no retained sessions to open.'
             : opened.detail === 'some-expired' ? 'Some details expired: totals include sessions that are no longer retained.' : 'All details for this month are retained.'}</p>
+          {opened.detail === 'totals-only' || p.onSessions === undefined ? null
+            : p.onSessions === null ? <p>Retained sessions cannot be listed for an unavailable model.</p>
+              : <button type="button" className="x-button" onClick={() => p.onSessions!(opened.month)}>Open retained sessions</button>}
         </div>
       ) : null}
       {/* T15b reflow: a wide table scrolls in its own keyboard-reachable region, never the page (WCAG 1.4.10 data-table exception) */}
@@ -108,15 +115,19 @@ export function MonthlyLedger(p: { page: LedgerPage; metric: Metric; selected: n
 
 const ALL = 'all'; // option values: 'all', or 'v:' + the value ('' is a real model id: model unavailable)
 /** The panel: metric and filters, paging, loading and failure states. */
-export function MonthlyChart({ api, name }: { api: MonthlyApi; name: (agent: string) => string }) {
-  const [metric, setMetric] = useState<Metric>('tokens');
-  const [draft, setDraft] = useState({ agent: ALL, model: ALL });
-  const [filter, setFilter] = useState<LedgerFilter>({ agent: null, model: null });
-  const [end, setEnd] = useState<string | null>(null);
+export function MonthlyChart({ api, name, onSessions, restore = null }: { api: MonthlyApi; name: (agent: string) => string;
+  /** XAIBO-PROD-555: the month detail's link to its retained sessions (Session, filtered); restore: the ledger as it was left. */
+  onSessions?: (month: string, filter: LedgerFilter, snap: LedgerSnap) => void; restore?: LedgerSnap | null }) {
+  const [metric, setMetric] = useState<Metric>(restore?.metric ?? 'tokens');
+  const toOption = (v: string | null) => (v === null ? ALL : `v:${v}`);
+  const [draft, setDraft] = useState({ agent: toOption(restore?.filter.agent ?? null), model: toOption(restore?.filter.model ?? null) });
+  const [filter, setFilter] = useState<LedgerFilter>(restore?.filter ?? { agent: null, model: null });
+  const [end, setEnd] = useState<string | null>(restore?.end ?? null);
   const [perPage, setPerPage] = useState(6);
   const [state, setState] = useState<{ page: LedgerPage | null; failed: boolean; loading: boolean }>({ page: null, failed: false, loading: true });
   const [selected, setSelected] = useState(0);
-  const [open, setOpen] = useState<string | null>(null);
+  const [open, setOpen] = useState<string | null>(restore?.month ?? null);
+  const backTo = useRef(restore?.month ?? null); // XAIBO-PROD-555: Return to Dashboard focuses that month's control once loaded
   const [attempt, setAttempt] = useState(0);
   // review M4: the last loaded filter options stay while a page is loading or failed (the service sends unfiltered lists)
   const [opts, setOpts] = useState<{ agents: string[]; models: string[] }>({ agents: [], models: [] });
@@ -141,11 +152,20 @@ export function MonthlyChart({ api, name }: { api: MonthlyApi; name: (agent: str
       setState({ page: page.failed ? null : page, failed: !!page.failed, loading: false });
       setSelected((i) => Math.min(i, Math.max(0, page.months.length - 1)));
       if (!page.failed) setOpts({ agents: page.agents, models: page.models });
+      const restoring = backTo.current !== null, back = page.failed ? -1 : page.months.findIndex((m) => m.month === backTo.current);
+      backTo.current = null;
+      // review L4: a month no longer on the page (a narrower window) or a failed page puts focus on the panel heading
+      if (back >= 0) { setSelected(back); requestAnimationFrame(() => controls.current[back]?.focus()); }
+      else if (restoring) requestAnimationFrame(() => document.getElementById('monthly-heading')?.focus());
       if (!page.failed && refocus.current) {
         refocus.current = false;
         requestAnimationFrame(() => (controls.current[0] ?? prev.current)?.focus());
       }
-    }, () => { if (live) setState({ page: null, failed: true, loading: false }); });
+    }, () => {
+      if (!live) return;
+      setState({ page: null, failed: true, loading: false });
+      if (backTo.current !== null) { backTo.current = null; requestAnimationFrame(() => document.getElementById('monthly-heading')?.focus()); }
+    });
     return () => { live = false; };
   }, [api, filter, end, perPage, attempt]);
   const page = state.page;
@@ -180,7 +200,8 @@ export function MonthlyChart({ api, name }: { api: MonthlyApi; name: (agent: str
       {state.failed ? <p className="x-gap">Could not load monthly usage. <button type="button" className="x-button" onClick={() => { refocus.current = true; setAttempt((n) => n + 1); }}>Retry</button></p>
         : page && !page.months.length ? <p>No observations yet. Monthly totals appear after the first observed session.</p>
           : page ? <MonthlyLedger page={page} metric={metric} selected={selected} open={open} controls={controls} onSelect={setSelected}
-            onOpen={(m) => setOpen((o) => (o === m ? null : m))} onKey={(e, i) => rovingKey(e, i, page.months.length, controls.current)} /> : null}
+            onOpen={(m) => setOpen((o) => (o === m ? null : m))} onKey={(e, i) => rovingKey(e, i, page.months.length, controls.current)}
+            onSessions={!onSessions ? undefined : filter.model === '' ? null : (m) => onSessions(m, filter, { metric, filter, end, month: m })} /> : null}
     </div>
   );
 }

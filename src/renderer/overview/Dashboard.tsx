@@ -4,13 +4,13 @@
 // (totals.ts, queue.ts, usage/presentation.ts); while the collector is not running every live label reads "Last known".
 // Service-supplied strings go through visible() (EC-55).
 import { useEffect, useReducer, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
-import type { AgentStatus, Banner, HistoryCursor, LiveStatus, SessionRow, UsageRecord, UsageScope } from '../../shared/ipc.ts';
+import type { AgentStatus, Banner, HistoryCursor, LedgerFilter, LiveStatus, SessionRow, UsageRecord, UsageScope } from '../../shared/ipc.ts';
 import { LoadingLine, RetryNotice } from '../components/RetryNotice.tsx';
 import { VirtualList } from '../components/VirtualList.tsx';
 import { retryIdle, retryStep, type Retry } from '../retry.ts';
 import { rovingKey } from '../components/virtual-list-model.ts';
 import { Coverage } from '../Coverage.tsx';
-import { MonthlyChart, type MonthlyApi } from '../history/MonthlyChart.tsx';
+import { MonthlyChart, type LedgerSnap, type MonthlyApi } from '../history/MonthlyChart.tsx';
 import { AgentStrip } from '../Health.tsx';
 import { capText, clock, costText, formatTime, openSessionLabels, recordLabel, type LiveSetState } from '../model.ts';
 import { Record as SessionRecord } from '../SessionList.tsx';
@@ -45,6 +45,8 @@ export function Dashboard(p: {
   api: UsageApi; tick: number; onSetPath: (agent: string) => void;
   /** P4-T05d: a live record's Open session button opens it in the Session area. */
   onOpen?: (row: SessionRow) => void;
+  /** XAIBO-PROD-555: the monthly ledger's retained-sessions link and the ledger state Return to Dashboard restores. */
+  onMonthSessions?: (month: string, filter: LedgerFilter, snap: LedgerSnap) => void; ledgerRestore?: LedgerSnap | null;
   /** XAIBO-PROD-437: the selected view lives in the app, so it survives an area switch and Return to Dashboard. */
   view: View; onView: (v: View) => void;
   /** XAIBO-PROD-437 review M1: the record Return to Dashboard restores (its row stays mounted in the Live list). */
@@ -95,8 +97,8 @@ export function Dashboard(p: {
                 <UsageView api={p.api} tick={p.tick} name={name} lastKnown={lastKnown} />
                 {/* P5-T17b (design §6.1.1): the ledger lives in this view below usage scopes, at the view's full width */}
                 <section aria-labelledby="monthly-heading">
-                  <h2 id="monthly-heading">Monthly usage</h2>
-                  {p.api.monthly ? <MonthlyChart api={p.api.monthly} name={name} /> : <p>Monthly usage unavailable</p>}
+                  <h2 id="monthly-heading" tabIndex={-1}>Monthly usage</h2>
+                  {p.api.monthly ? <MonthlyChart api={p.api.monthly} name={name} onSessions={p.onMonthSessions} restore={p.ledgerRestore ?? null} /> : <p>Monthly usage unavailable</p>}
                 </section>
               </>}
         </section>

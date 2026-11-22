@@ -40,6 +40,7 @@ export const opOf = (kind: Toggle, r: HistoryRow): OverlayOp => ({ kind, session
 export function matches(q: Query, r: HistoryRow): boolean {
   if (q.agent !== null && r.agent !== q.agent) return false;
   if (q.group && (q.group.project === null ? r.project !== null : r.project?.id !== q.group.project)) return false;
+  if ((q.state === 'pinned' && !r.pinned) || (q.state === 'kept' && !r.keep)) return false; // XAIBO-PROD-555 review M1
   switch (q.mode) {
     case 'all': return r.trashedAt === null;
     case 'archived': return r.archivedAt !== null && r.trashedAt === null;
@@ -64,7 +65,9 @@ export function place(rows: BrowseRow[], id: number, row: HistoryRow | null, q: 
     const replaced = rows.map((r) => (r.id === id ? row : r));
     return { rows: searching ? replaced : replaced.sort(order), placed: true };
   }
-  if (searching || past || (q.group && q.group.at !== null)) return { rows, placed: false };
+  // XAIBO-PROD-555 review M1: cwd, activity, model and the native states are not on a history row either
+  if (searching || past || (q.group && q.group.at !== null) || q.cwd !== null || q.from !== null || q.model !== null
+    || q.state === 'native-deleted' || q.state === 'native-archived') return { rows, placed: false };
   return { rows: [...rows, row].sort(order), placed: true };
 }
 

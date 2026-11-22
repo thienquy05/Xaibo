@@ -2,7 +2,7 @@
 // the service filter (Live shows the Dashboard's evidenced live set instead of paging); rows take live updates by id,
 // and only the unfiltered All view inserts and reorders them; row lines say what the overlay and the native state know,
 // nothing guessed; snippets split into text runs with the search terms emphasized (rendered as text, never HTML).
-import { nativeBadge, QUERY_MAX_TERMS, type HistoryFilter, type HistoryKey, type HistoryRow, type MapGroup, type MapNode, type SessionRow } from '../../shared/ipc.ts';
+import { nativeBadge, QUERY_MAX_TERMS, type HISTORY_STATES, type HistoryFilter, type HistoryKey, type HistoryRow, type MapGroup, type MapNode, type SessionRow } from '../../shared/ipc.ts';
 import { day, PAGE } from '../model.ts';
 import { base, kindOf, repoName, type Kind } from '../agent-map/tree.ts';
 
@@ -12,8 +12,37 @@ export const MODES: { mode: Mode; label: string }[] = [
   { mode: 'suppressed', label: 'Suppressed' }, // XAIBO-PROD-536 (D-P5-09): purged sessions' suppression metadata (suppressed.ts)
 ];
 /** search: the applied query ('' = none); group: the Projects and folders choice (null = all). */
-export interface Query { mode: Mode; search: string; agent: string | null; group: MapGroup | null }
-export const initialQuery: Query = { mode: 'all', search: '', agent: null, group: null };
+/** XAIBO-PROD-555 (design §6.4 Filters, D-P6-05): cwd (the folder and below), activity [from, to), a record state, a model
+ *  (set from the Dashboard month detail); null when unset. */
+export interface Query { mode: Mode; search: string; agent: string | null; group: MapGroup | null; cwd: string | null; from: number | null; to: number | null;
+  state: (typeof HISTORY_STATES)[number] | null; model: string | null }
+export const initialQuery: Query = { mode: 'all', search: '', agent: null, group: null, cwd: null, from: null, to: null, state: null, model: null };
+export const STATE_LABEL: Record<(typeof HISTORY_STATES)[number], string> = { pinned: 'Pinned', kept: 'Kept', 'native-deleted': 'Native deleted', 'native-archived': 'Native archived' };
+/** The Filters disclosure's summary: the active filters in words, or None. */
+export function filterSummary(f: { agent: string | null; cwd: string | null; from: number | null; to: number | null; state: Query['state']; model: string | null }): string {
+  const parts = [f.agent, f.cwd, f.from !== null && f.to !== null ? `${day(f.from)} to ${day(f.to - 1)}` : null, f.state ? STATE_LABEL[f.state] : null, f.model ? `Model ${f.model}` : null];
+  return parts.filter((x): x is string => !!x).join(' · ') || 'None';
+}
+/** A ledger month 'YYYY-MM' as its local [first midnight, next month's first midnight); null for anything else. */
+export function monthRange(month: string): { from: number; to: number } | null {
+  const m = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(month);
+  return m ? { from: new Date(Number(m[1]), Number(m[2]) - 1, 1).getTime(), to: new Date(Number(m[1]), Number(m[2]), 1).getTime() } : null;
+}
+const dateOf = (v: string) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  // never a rolled-over date (Feb 30), nor a local midnight before epoch 0 (review M2: the service refuses a negative bound;
+  // years 0-99 map to 19xx; east of UTC 1970-01-01 is still before epoch 0)
+  return d.getTime() >= 0 && d.getMonth() === Number(m[2]) - 1 && d.getDate() === Number(m[3]) ? d : null;
+};
+/** From and To date inputs as [From midnight, the day after To); null = no range, undefined = invalid (half-empty, reversed). */
+export function dayRange(from: string, to: string): { from: number; to: number } | null | undefined {
+  if (from === '' && to === '') return null;
+  const a = dateOf(from), b = dateOf(to);
+  if (!a || !b || a > b) return undefined;
+  return { from: a.getTime(), to: new Date(b.getFullYear(), b.getMonth(), b.getDate() + 1).getTime() };
+}
 
 export const NO_MATCH = 'No matches. Change filters or clear search.';
 // Gate 5 G5c-3 (PRD §5.7): the second sentence is the service's SEARCH_ITEM_LIMIT (service/search/query.ts, FTS_MAX_BYTES)
@@ -30,12 +59,14 @@ export const focusLost = (active: object | null, body: object | null, from: { is
 /** The service filter; null for Live, which shows the live set, and for Suppressed, which pages suppression metadata. */
 export function filterOf(q: Query): HistoryFilter | null {
   if (q.mode === 'live' || q.mode === 'suppressed') return null;
-  return { mode: q.mode, agent: q.agent, project: null, folder: null, ...(q.group ? { group: q.group } : {}) };
+  return { mode: q.mode, agent: q.agent, project: null, folder: null, ...(q.group ? { group: q.group } : {}), ...(q.cwd !== null ? { cwd: q.cwd } : {}),
+    ...(q.from !== null && q.to !== null ? { from: q.from, to: q.to } : {}), ...(q.state !== null ? { state: q.state } : {}), ...(q.model !== null ? { model: q.model } : {}) };
 }
 /** Only search results carry an order label (design §6.4); the default order needs none, so the header stays one line. */
 export const orderLabel = (q: Query) => (q.search && q.mode !== 'live' ? 'Search relevance' : null);
 /** Only the unfiltered All view takes new sessions and reorders on activity. */
-export const isPlain = (q: Query) => q.mode === 'all' && q.search === '' && q.agent === null && q.group === null;
+export const isPlain = (q: Query) => q.mode === 'all' && q.search === '' && q.agent === null && q.group === null && q.cwd === null && q.from === null
+  && q.state === null && q.model === null;
 /** XAIBO-PROD-541 (design §6.13 B4): after collector loss, plain All sessions with no page loaded (its request waits on
  *  the dead port until the restart, D-P4-09, or failed) falls back to the last-known live rows held in memory; live rows
  *  cannot answer a search, filter, group or another mode. The resync on reconnect reloads the list. */
@@ -111,7 +142,8 @@ export function listTexts(q: Query, live: LiveState): { title: string; empty: st
   }
   if (q.mode === 'suppressed') return { title: label, order: null, searching: false, empty: 'No suppressed sessions.' }; // XAIBO-PROD-536
   const searching = q.search !== '';
-  const empty = searching ? NO_MATCH : q.agent || q.group ? 'No sessions match these filters.' : q.mode === 'trash' ? 'Trash is empty.'
+  const filtered = q.agent || q.group || q.cwd !== null || q.from !== null || q.state !== null || q.model !== null; // review L3
+  const empty = searching ? NO_MATCH : filtered ? 'No sessions match these filters.' : q.mode === 'trash' ? 'Trash is empty.'
     : q.mode === 'archived' ? 'No archived sessions.' : 'No sessions yet.';
   return { title: searching ? 'Matches' : label, empty, order: orderLabel(q), searching };
 }

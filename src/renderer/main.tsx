@@ -4,7 +4,7 @@ import { StrictMode, useCallback, useEffect, useLayoutEffect, useMemo, useReduce
 import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { parseHealth } from '../shared/ipc.ts';
-import type { AgentStatus, Banner, Health, SessionRow } from '../shared/ipc.ts';
+import type { AgentStatus, Banner, Health, LedgerFilter, SessionRow } from '../shared/ipc.ts';
 import { createClient, parseVisible, type Client, type PortLike } from './client.ts';
 import { HealthStatus } from './Health.tsx';
 import { Icon } from './status/StatusBadge.tsx';
@@ -20,6 +20,8 @@ import { Settings, type SettingsApi } from './settings/Settings.tsx';
 import type { BrowseApi } from './history/SessionBrowser.tsx';
 import { AgentMap, type MapSnapshot } from './agent-map/AgentMap.tsx';
 import { Workspace } from './workspace/Workspace.tsx';
+import { monthRange, type Query } from './history/browse.ts';
+import type { LedgerSnap } from './history/MonthlyChart.tsx';
 import type { SessionChanges } from './workspace/view.ts';
 import type { WorkspaceApi } from './workspace/OpenSession.tsx';
 import { workspaceApiOf } from './workspace/workspace-api.ts';
@@ -188,6 +190,7 @@ function App() {
   // review M1: the order comes from data (a virtual list mounts only rows near the viewport)
   const openSession = (row: SessionRow) => {
     origin.current = { id: row.id, view: dashView, order: openOrder(dashView, liveRows.current) };
+    setLedgerRestore(null); // the ledger's restore is used once (a later remount starts it fresh)
     setReturnFor(row.id);
     setReturnTo('Dashboard');
     setRequest(row);
@@ -221,9 +224,22 @@ function App() {
   // XAIBO-PROD-538/539: a session leaf opens in Session (design §6.5.1) with Return to Agent Map
   const openFromMap = (row: SessionRow) => { clearReturn(); setReturnFor(row.id); setReturnTo('Agent Map'); setRequest(row); setArea('session'); };
   const returnToMap = () => { const id = returnFor; clearReturn(); setMapReturn(id); setArea('map'); };
+  // XAIBO-PROD-555 (design §6.1.1): a ledger month's retained sessions open as the Session list filtered to that month,
+  // agent and model; the list's Return to Dashboard restores Usage and history with the ledger as left, at that month
+  const [preset, setPreset] = useState<Partial<Query> | null>(null);
+  const [ledgerRestore, setLedgerRestore] = useState<LedgerSnap | null>(null);
+  const ledgerSaved = useRef<LedgerSnap | null>(null);
+  const openMonth = (month: string, filter: LedgerFilter, snap: LedgerSnap) => {
+    const range = monthRange(month);
+    if (!range) return;
+    clearReturn(); ledgerSaved.current = snap; setLedgerRestore(null);
+    setPreset({ agent: filter.agent, model: filter.model, from: range.from, to: range.to });
+    setArea('session');
+  };
+  const returnToLedger = () => { setPreset(null); setLedgerRestore(ledgerSaved.current); setDashView('usage'); setArea('dashboard'); };
   const go = (to: Area) => (e: MouseEvent) => {
     e.preventDefault();
-    clearReturn();
+    clearReturn(); setPreset(null); setLedgerRestore(null);
     if (to === 'map') setMapReturn(null); // Gate 5 G5d-2: the nav link keeps the map as left (refreshed on entry), no Return target
     setArea(to);
     requestAnimationFrame(() => document.getElementById(HEADING[to])?.focus());
@@ -285,9 +301,11 @@ function App() {
             saved={mapSaved.current} restoreId={mapReturn} onSave={(m) => { mapSaved.current = m; }} />
           : area === 'dashboard'
           ? <Dashboard live={liveSet} liveFailed={liveFailed} liveRetry={liveRetry} onRetryLive={retryLive} lastKnown={lastKnown} agents={agents} banners={banners} api={api} tick={tick}
-            onSetPath={(agent) => window.xaibo?.setAgentPath(agent)} onOpen={openSession} view={dashView} onView={setDashView} focusId={focusId} />
+            onSetPath={(agent) => window.xaibo?.setAgentPath(agent)} onOpen={openSession} view={dashView} onView={(v) => { setLedgerRestore(null); setDashView(v); }} focusId={focusId}
+            onMonthSessions={openMonth} ledgerRestore={ledgerRestore} />
           : <Workspace list={list} changes={changes} browse={browseApi} agents={agents ?? []} live={{ rows: liveSet.rows, loaded: liveSet.loaded, failed: liveFailed, more: liveSet.more }} lastKnown={lastKnown !== null} api={workspaceApi} request={request} onRequestDone={clearRequest}
-            returnFor={returnFor} onReturn={returnTo === 'Agent Map' ? returnToMap : returnToDashboard} returnTo={returnTo} onListOpen={clearReturn} />}
+            returnFor={returnFor} onReturn={returnTo === 'Agent Map' ? returnToMap : returnToDashboard} returnTo={returnTo} onListOpen={clearReturn}
+            preset={preset} onReturnList={preset ? returnToLedger : null} />}
       </main>
     </div>
   );

@@ -88,6 +88,23 @@ test('place (Undo): a restored row returns in order when it belongs here; never 
   assert.equal(place(rows, 4, hrow(4), { ...initialQuery, mode: 'archived' }, false).placed, false, 'not in this mode');
 });
 
+// XAIBO-PROD-555 review M1: the Pinned/Kept state filters re-check the marker; the other new filters are not on a history row,
+// so Undo never inserts under them (as a repository or cwd group, G5c-1)
+test('matches and place under the Session list filters (cwd, date range, state, model)', () => {
+  const pinned = { ...initialQuery, state: 'pinned' as const }, kept = { ...initialQuery, state: 'kept' as const };
+  assert.equal(matches(pinned, hrow(1, { pinned: true })), true);
+  assert.equal(matches(pinned, hrow(1)), false, 'unpinned leaves the Pinned list');
+  assert.equal(matches(kept, hrow(1, { keep: true })), true);
+  assert.equal(matches(kept, hrow(1)), false, 'Keep removed leaves the Kept list');
+  assert.deepEqual(place([hrow(5, { pinned: true })], 5, hrow(5), pinned, false), { rows: [], placed: false });
+  const rows = [hrow(5), hrow(3)];
+  for (const extra of [{ cwd: '/w' }, { from: 1, to: 2 }, { model: 'm' }, { state: 'native-deleted' as const }, { state: 'native-archived' as const }]) {
+    assert.equal(place(rows, 4, hrow(4), { ...initialQuery, ...extra }, false).placed, false, JSON.stringify(extra));
+    assert.equal(place(rows, 5, hrow(5), { ...initialQuery, ...extra }, false).placed, true, `${JSON.stringify(extra)}: a shown row is replaced`);
+  }
+  assert.equal(place(rows, 4, hrow(4, { pinned: true }), pinned, false).placed, true, 'a pinned row returns to the Pinned list');
+});
+
 // review M3: a fresh row with no menu (gone, or in Trash since the list was read) closes the menu with a reason
 test('menuClosed: gone or in Trash closes the menu with a note; an ordinary row keeps it open', () => {
   assert.equal(menuClosed(null), 'This session is no longer available.');

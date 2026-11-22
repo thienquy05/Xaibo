@@ -9,16 +9,16 @@
 // XAIBO-PROD-535 (P5-T18 part 3b-6; design §5.4): Move to… opens the Move dialog; a moved record is placed back (or
 // leaves a map-group view it no longer belongs to) and takes focus, else the results heading with View moved session.
 import { useEffect, useRef, useState } from 'react';
-import { QUERY_MAX, type AgentStatus, type HistoryFilter, type HistoryKey, type HistoryRow, type MapGroup, type MapNode, type OverlayOp, type OverlayResult, type PurgeResult, type SearchKey,
+import { CWD_FILTER_MAX, HISTORY_STATES, QUERY_MAX, type AgentStatus, type HistoryFilter, type HistoryKey, type HistoryRow, type MapGroup, type MapNode, type OverlayOp, type OverlayResult, type PurgeResult, type SearchKey,
   type SessionRow, type SuppressedRow } from '../../shared/ipc.ts';
 import { Menu, type MenuEntry } from '../components/Menu.tsx';
 import { VirtualList } from '../components/VirtualList.tsx';
 import { Title } from '../SessionList.tsx';
-import { findingBadges, formatTime, PAGE, recordLabel } from '../model.ts';
+import { day, findingBadges, formatTime, PAGE, recordLabel } from '../model.ts';
 import { Icon } from '../status/StatusBadge.tsx';
 import { show, visible } from '../text.ts';
 import { compactStatus, type SessionChanges } from '../workspace/view.ts';
-import { canLoadMore, capped, COVERAGE, emptyShown, focusLost, incompleteAfter, incompleteNote, emphasis, failureNote, filterOf, freshList, groupLabel, initialQuery, isPlain, listTexts, mergeLive, mergeRows, MODES,
+import { canLoadMore, capped, COVERAGE, emptyShown, focusLost, incompleteAfter, incompleteNote, emphasis, failureNote, dayRange, filterOf, filterSummary, freshList, groupLabel, initialQuery, STATE_LABEL, isPlain, listTexts, mergeLive, mergeRows, MODES,
   lastKnownRows, refill, rowLines, startLoad, type BrowseRow, type ListState, type LiveState, type Query } from './browse.ts';
 import { doneText, errorText, goneUndo, menuClosed, menuItems, NOTICE, opOf, place, trashed, undoFocus, undoLabel, undone, type Shared, type Toggle, type Undo } from './actions.ts';
 import { MoveDialog, type MoveApi, type MoveOutcome, type MoveTarget } from './MoveDialog.tsx';
@@ -147,7 +147,7 @@ type List = ListState<HistoryKey | SearchKey>;
 type Page = { rows: HistoryRow[]; next: HistoryKey | SearchKey | null; snippets: (readonly [number, string])[]; capped?: true };
 const fresh = (): List => freshList();
 
-export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, onOpen, hide, history = null, onHistory, headerTrash = null, onOpenSuppressed, suppressedOpen = null, suppressedGone = null }: {
+export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, onOpen, hide, history = null, onHistory, headerTrash = null, onOpenSuppressed, suppressedOpen = null, suppressedGone = null, preset = null, onReturnList = null }: {
   api: BrowseApi; agents: AgentStatus[]; live: LiveRows; changes: SessionChanges; lastKnown: boolean;
   openId: number | null; onOpen: (r: HistoryRow) => void;
   /** The Hide session list button, shown while a session is open. */
@@ -158,12 +158,22 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
   headerTrash?: { id: number; n: number } | null;
   /** XAIBO-PROD-536: open a suppressed record's metadata pane; the one open; a record that left (Re-import). */
   onOpenSuppressed?: (r: SuppressedRow | null) => void; suppressedOpen?: string | null; suppressedGone?: Gone | null;
+  /** XAIBO-PROD-555 (design §6.1.1): the Dashboard month detail's query, read at mount (the month link always mounts the
+   *  Session area); the list's Return to Dashboard. */
+  preset?: Partial<Query> | null; onReturnList?: (() => void) | null;
 }) {
-  const [q, setQ] = useState<Query>(initialQuery);
+  const [q, setQ] = useState<Query>(() => ({ ...initialQuery, ...preset }));
   const [list, setList] = useState<List>(fresh);
   const [incomplete, setIncomplete] = useState(false); // round 2 B: a search page was capped
   const [draft, setDraft] = useState('');
-  const [agentDraft, setAgentDraft] = useState('');
+  const [agentDraft, setAgentDraft] = useState(q.agent ?? '');
+  // XAIBO-PROD-555 (design §6.4 Filters): the form's drafts; a half-empty or reversed date range says so on Apply
+  const [cwdDraft, setCwdDraft] = useState(q.cwd ?? '');
+  const [fromDraft, setFromDraft] = useState(q.from !== null ? day(q.from) : '');
+  const [toDraft, setToDraft] = useState(q.to !== null ? day(q.to - 1) : '');
+  const [stateDraft, setStateDraft] = useState<Query['state']>(q.state);
+  const [dateError, setDateError] = useState<string | null>(null);
+  const fromRef = useRef<HTMLInputElement>(null);
   const [groupName, setGroupName] = useState<string | null>(null);
   const [treeShown, setTreeShown] = useState(false); // review L10: the tree loads when its disclosure first opens
   const [focusMode, setFocusMode] = useState(0);
@@ -419,6 +429,17 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
   // review L2: leaving Suppressed closes its pane (a later outcome is said beside the list heading)
   useEffect(() => { if (q.mode !== 'suppressed' && suppressedOpen) onOpenSuppressed?.(null); }, [q.mode]);
   const apply = (next: Query) => { setQ(next); requestAnimationFrame(() => heading.current?.focus()); };
+  useEffect(() => { if (preset) requestAnimationFrame(() => heading.current?.focus()); }, []); // the month link lands on the results
+  const applyFilters = () => {
+    const range = dayRange(fromDraft, toDraft);
+    if (range === undefined) { setDateError('Enter both dates, with From on or before To.'); fromRef.current?.focus(); return; }
+    setDateError(null);
+    apply({ ...q, agent: agentDraft || null, cwd: cwdDraft.trim() || null, from: range?.from ?? null, to: range?.to ?? null, state: stateDraft });
+  };
+  const resetFilters = () => {
+    setAgentDraft(''); setCwdDraft(''); setFromDraft(''); setToDraft(''); setStateDraft(null); setDateError(null);
+    setQ((x) => ({ ...x, agent: null, cwd: null, from: null, to: null, state: null, model: null }));
+  };
   const isLive = q.mode === 'live';
   const isSupp = q.mode === 'suppressed';
   const t = listTexts(q, live);
@@ -432,6 +453,7 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
     <section className="x-pane x-list-pane" aria-labelledby="session-list-heading">
       <div className="x-pane-head">
         <h2 id="session-list-heading">Session list</h2>
+        {onReturnList ? <button type="button" className="x-btn x-btn-quiet" onClick={onReturnList}>Return to Dashboard</button> : null}
         {hide ? <button type="button" className="x-btn x-btn-quiet x-icon-btn x-wide-only" aria-label="Hide session list" onClick={hide}><Icon id="back" /></button> : null}
       </div>
       <div className="x-browse">
@@ -460,18 +482,38 @@ export function SessionBrowser({ api, agents, live, changes, lastKnown, openId, 
           </form>
           {q.search ? <button type="button" className="x-btn x-btn-quiet x-clear" onClick={() => { setDraft(''); apply({ ...q, search: '' }); }}>Clear search</button> : null}
           <div className="x-discl">
-            <details>
-              <summary><Icon id="chevron" />Filters<span className="x-sum-val">{agentName ? visible(agentName) : 'None'}</span></summary>
-              <form className="x-filters" onSubmit={(e) => { e.preventDefault(); apply({ ...q, agent: agentDraft || null }); }}>
+            {/* review L5: Live and Suppressed take no list filter (filterOf), so the Filters are not offered there */}
+            <details hidden={isLive || isSupp}>
+              <summary><Icon id="chevron" />Filters<span className="x-sum-val">{visible(filterSummary({ agent: agentName, cwd: q.cwd, from: q.from, to: q.to, state: q.state, model: q.model }))}</span></summary>
+              <form className="x-filters" onSubmit={(e) => { e.preventDefault(); applyFilters(); }}>
                 <label>Agent
                   <select value={agentDraft} onChange={(e) => setAgentDraft(e.target.value)}>
                     <option value="">Any agent</option>
                     {agents.map((a) => <option key={a.agent} value={a.agent}>{visible(a.name)}</option>)}
                   </select>
                 </label>
+                <label>Cwd
+                  <input className="x-input" type="text" value={cwdDraft} maxLength={CWD_FILTER_MAX} placeholder="Folder and below" onChange={(e) => setCwdDraft(e.target.value)} />
+                </label>
+                <fieldset className="x-date-range">
+                  <legend>Activity between</legend>
+                  <label>From<input ref={fromRef} className="x-input" type="date" min="1970-01-01" value={fromDraft} aria-invalid={dateError ? true : undefined}
+                    aria-describedby={dateError ? 'filter-date-error' : undefined} onChange={(e) => setFromDraft(e.target.value)} /></label>
+                  <label>To<input className="x-input" type="date" min="1970-01-01" value={toDraft} aria-invalid={dateError ? true : undefined}
+                    aria-describedby={dateError ? 'filter-date-error' : undefined} onChange={(e) => setToDraft(e.target.value)} /></label>
+                  {dateError ? <p id="filter-date-error" className="x-field-error">{dateError}</p> : null}
+                </fieldset>
+                <label>State
+                  <select value={stateDraft ?? ''} onChange={(e) => setStateDraft((e.target.value || null) as Query['state'])}>
+                    <option value="">Any state</option>
+                    {HISTORY_STATES.map((s) => <option key={s} value={s}>{STATE_LABEL[s]}</option>)}
+                  </select>
+                </label>
+                {q.model !== null ? <p className="x-filter-model">Model <span className="x-mono">{visible(q.model)}</span>{' '}
+                  <button type="button" className="x-btn x-btn-quiet" onClick={() => apply({ ...q, model: null })}>Remove model filter</button></p> : null}
                 <div className="x-acts">
                   <button type="submit" className="x-btn x-btn-primary">Apply</button>
-                  <button type="button" className="x-btn x-btn-quiet" onClick={() => { setAgentDraft(''); setQ((x) => ({ ...x, agent: null })); }}>Reset</button>
+                  <button type="button" className="x-btn x-btn-quiet" onClick={resetFilters}>Reset</button>
                 </div>
               </form>
             </details>
