@@ -1,0 +1,370 @@
+// XAIBO-PROD-532 (P5-T18 part 3b-3; design §6.4, §5.1, §5.4; look D-P5-09): Session list row actions in the packaged
+// app. Synthetic Claude sessions: the More menu (keyboard per §5.1: first item focused, arrows, Home/End, typeahead,
+// Escape back to the trigger; placed at its trigger), Pin/Keep/Archive as checked menu items with a polite outcome and
+// row lines, an unarchive that leaves Archived (heading fallback), Move to Trash with the Undo notice and the following
+// record focused, the Trash row in Trash mode, and Undo bringing the record back with focus on it.
+import { mkdirSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import type { Page } from '@playwright/test';
+import { expect, openSessions, shot, test } from './fixtures.ts';
+
+const sid = (i: number) => `00000000-0000-4000-8000-00000000ac${String(i).padStart(2, '0')}`;
+function claude(home: string, i: number, cwd: string, prompt: string) {
+  const dir = path.join(home, '.claude', 'projects', cwd.replaceAll('/', '-'));
+  mkdirSync(dir, { recursive: true });
+  const line = { parentUuid: null, type: 'user', uuid: `00000000-0000-4000-8000-00000000ce${String(i).padStart(2, '0')}`, timestamp: `2026-11-1${i}T10:00:00.000Z`,
+    cwd, sessionId: sid(i), entrypoint: 'cli', message: { role: 'user', content: prompt } };
+  writeFileSync(path.join(dir, `${sid(i)}.jsonl`), `${JSON.stringify(line)}\n`);
+}
+const records = (page: Page) => page.getByRole('list', { name: 'Sessions' }).getByRole('listitem');
+const modes = (page: Page) => page.getByRole('group', { name: 'Session list mode' });
+const more = (page: Page, text: string) => page.getByRole('button', { name: new RegExp(`^More actions for .*${text}`) });
+
+test('Session list row actions: menu keys, Pin, Keep, Archive, Move to Trash and Undo', async ({ xaibo }) => {
+  test.setTimeout(150_000);
+  xaibo.touchStore(() => {
+    claude(xaibo.home, 1, '/tmp/xaibo-fixture/atlas', 'Add a token bucket rate limiter');
+    claude(xaibo.home, 2, '/tmp/xaibo-fixture/notes', 'Summarize the meeting notes');
+    claude(xaibo.home, 3, '/tmp/xaibo-fixture/docs', 'Draft the release checklist');
+  });
+  const run = await xaibo.launch();
+  const page = await xaibo.window(run);
+  await run.app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(1280, 800));
+  await openSessions(page);
+  const pane = page.getByRole('region', { name: 'Session list' });
+  for (const x of ['rate limiter', 'meeting notes', 'release checklist']) await expect(records(page).filter({ hasText: x })).toHaveCount(1, { timeout: 20_000 });
+  const n = await records(page).count(); // the fixture home may hold sessions of its own
+  const note = pane.locator('.x-action-note');
+
+  // the menu from the keyboard: Enter opens it at its trigger; the first item takes focus once the fresh row is read
+  const trigger = more(page, 'rate limiter');
+  await trigger.focus();
+  await page.keyboard.press('Enter');
+  const menu = page.getByRole('menu', { name: 'More actions' });
+  const pin = menu.getByRole('menuitemcheckbox', { name: 'Pin' });
+  const moveTo = menu.getByRole('menuitem', { name: 'Move to…' }); // XAIBO-PROD-535: the first item (D-P5-09)
+  await expect(moveTo).toBeFocused();
+  await expect(pin).toHaveAttribute('aria-checked', 'false');
+  const [t, m] = [await trigger.boundingBox(), await menu.boundingBox()];
+  expect(Math.abs(m!.y - (t!.y + t!.height)) < 12 || Math.abs(m!.y + m!.height - t!.y) < 12, 'the menu sits at its trigger').toBe(true);
+  await shot(page, 'history-actions-menu');
+  await page.keyboard.press('ArrowDown');
+  await expect(pin).toBeFocused();
+  await page.keyboard.press('End');
+  await expect(menu.getByRole('menuitem', { name: 'Move to Trash' })).toBeFocused();
+  await page.keyboard.press('Home');
+  await expect(moveTo).toBeFocused();
+  await page.keyboard.press('k');
+  await expect(menu.getByRole('menuitemcheckbox', { name: 'Keep' })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(menu).toBeHidden();
+  await expect(trigger).toBeFocused();
+
+  // Pin: the record moves first with its pin; the outcome is polite; the menu shows it checked
+  await page.keyboard.press('Enter');
+  await expect(moveTo).toBeFocused();
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('Enter');
+  await expect(note).toHaveText('Pinned.');
+  await expect(records(page).first()).toContainText('Pinned: ');
+  await expect(records(page).first()).toContainText('rate limiter');
+  await expect(trigger).toBeFocused();
+  await trigger.click();
+  await expect(pin).toHaveAttribute('aria-checked', 'true');
+  // Keep: the record's line says Keep
+  await menu.getByRole('menuitemcheckbox', { name: 'Keep' }).click();
+  await expect(note).toHaveText('Kept. Retention will not purge this session.');
+  await expect(records(page).first().locator('[data-field="history"]')).toContainText('Keep');
+
+  // Archive: All keeps archived records; in Archived, unarchiving the only record leaves the heading focused
+  await more(page, 'meeting notes').click();
+  await menu.getByRole('menuitemcheckbox', { name: 'Archive' }).click();
+  await expect(note).toHaveText('Archived.');
+  await expect(records(page).filter({ hasText: 'meeting notes' }).locator('[data-field="history"]')).toContainText('Archived');
+  await modes(page).getByRole('button', { name: 'Archived' }).click();
+  await expect(records(page)).toHaveCount(1);
+  await more(page, 'meeting notes').click();
+  await menu.getByRole('menuitemcheckbox', { name: 'Archive' }).click();
+  await expect(note).toHaveText('Unarchived.');
+  await expect(pane.getByText('No archived sessions.')).toBeVisible();
+  await expect(pane.getByRole('heading', { name: 'Archived' })).toBeFocused();
+
+  // Move to Trash: the record leaves All; the following record takes focus; the Undo notice names the Xaibo copy
+  await modes(page).getByRole('button', { name: 'All sessions' }).click();
+  await expect(records(page)).toHaveCount(n);
+  const order = await records(page).allTextContents();
+  const i = order.findIndex((x) => x.includes('meeting notes'));
+  const following = order[i + 1] ?? order[i - 1]!;
+  await more(page, 'meeting notes').focus();
+  await page.keyboard.press('Enter');
+  await expect(moveTo).toBeFocused();
+  await page.keyboard.press('End');
+  await page.keyboard.press('Enter');
+  const undo = page.locator('.x-undo').filter({ hasText: 'Moved to Trash.' });
+  await expect(undo).toContainText('Only the Xaibo copy is affected; native files are untouched.');
+  await expect(records(page)).toHaveCount(n - 1);
+  await expect(records(page).filter({ hasText: 'meeting notes' })).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => document.activeElement?.textContent ?? '')).toContain(following.slice(0, 20));
+  await shot(page, 'history-actions-undo');
+  await modes(page).getByRole('button', { name: 'Trash' }).click();
+  await expect(records(page)).toHaveCount(1);
+  await expect(records(page).first().locator('[data-field="history"]')).toContainText('Trashed');
+  await expect(more(page, 'meeting notes')).toHaveCount(0); // Trash rows offer Restore and Purge instead (3b unit after this)
+
+  // Undo from All: the record returns in order and takes focus
+  await modes(page).getByRole('button', { name: 'All sessions' }).click();
+  await expect(records(page)).toHaveCount(n - 1);
+  await undo.getByRole('button', { name: 'Undo' }).click();
+  await expect(page.locator('.x-undo').filter({ hasText: 'Restored from Trash.' })).toBeVisible();
+  await expect(records(page)).toHaveCount(n);
+  await expect(page.locator('.x-list-pane .x-srow').filter({ hasText: 'meeting notes' })).toBeFocused();
+  await page.getByRole('button', { name: 'Dismiss' }).click();
+  await expect(page.locator('.x-undo').filter({ hasText: 'Restored from Trash.' })).toHaveCount(0);
+
+  // XAIBO-PROD-533: the open session's retention line and Keep toggle; a change in either place reaches the other
+  await page.locator('.x-list-pane .x-srow').filter({ hasText: 'rate limiter' }).click();
+  const head = page.locator('.x-open-head');
+  const retention = head.locator('[data-field="retention"]');
+  const keep = head.getByRole('button', { name: 'Keep' });
+  await expect(retention).toHaveText('Kept');
+  await expect(keep).toHaveAttribute('aria-pressed', 'true');
+  await shot(page, 'history-actions-open-keep');
+  await keep.click();
+  await expect(head.locator('.x-action-note')).toHaveText('Keep removed.');
+  await expect(keep).toHaveAttribute('aria-pressed', 'false');
+  await expect(retention).toHaveText(/^Purge scheduled \d{4}-\d{2}-\d{2}$/);
+  await expect(records(page).filter({ hasText: 'rate limiter' }).locator('[data-field="history"]')).not.toContainText('Keep');
+  await more(page, 'rate limiter').click();
+  await expect(menu.getByRole('menuitemcheckbox', { name: 'Keep' })).toHaveAttribute('aria-checked', 'false');
+  await menu.getByRole('menuitemcheckbox', { name: 'Keep' }).click();
+  await expect(retention).toHaveText('Kept');
+  await expect(keep).toHaveAttribute('aria-pressed', 'true');
+
+  // XAIBO-PROD-534: Trash records' Restore and Purge; Purge asks first (Cancel returns to its trigger); a purged record
+  // leaves the list with the heading focused when nothing is left
+  for (const text of ['release checklist', 'meeting notes']) {
+    await more(page, text).click();
+    await menu.getByRole('menuitem', { name: 'Move to Trash' }).click();
+    await expect(records(page).filter({ hasText: text })).toHaveCount(0);
+  }
+  await modes(page).getByRole('button', { name: 'Trash' }).click();
+  await expect(records(page)).toHaveCount(2);
+  await page.getByRole('button', { name: /^Restore .*release checklist/ }).click();
+  await expect(note).toHaveText('Restored from Trash.');
+  await expect(records(page)).toHaveCount(1);
+  const purge = page.getByRole('button', { name: /^Purge .*meeting notes/ });
+  await purge.click();
+  const dialog = page.getByRole('dialog', { name: 'Purge Xaibo copy?' });
+  await expect(dialog).toContainText('1 session.');
+  await expect(dialog).toContainText('Native files are untouched. This is logical deletion, not forensic secure erasure.');
+  await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
+  await shot(page, 'history-actions-purge');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(purge).toBeFocused();
+  // the open session of a Trash row shows the Trash banner; a purge from it closes the conversation
+  await records(page).filter({ hasText: 'meeting notes' }).locator('.x-srow').click();
+  const banner = page.getByRole('region', { name: 'In Trash' });
+  await expect(banner).toContainText('Only the Xaibo copy is affected; native files are untouched.');
+  await expect(banner).toContainText(/Moved to Trash \d{4}-\d{2}-\d{2}\. Auto-empty \d{4}-\d{2}-\d{2}\./);
+  await shot(page, 'history-actions-banner');
+  await banner.getByRole('button', { name: 'Purge' }).click();
+  await dialog.getByRole('button', { name: 'Purge' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByText('Choose a session to read its conversation')).toBeVisible();
+  await expect(pane.getByText('Trash is empty.')).toBeVisible();
+  await expect(pane.getByRole('heading', { name: 'Trash' })).toBeFocused();
+  // the Undo notice for the purged session explains instead of offering Undo (design §5.1)
+  await expect(page.locator('.x-undo')).toContainText('This session is no longer available, so it cannot be restored.');
+  await expect(page.locator('.x-undo').getByRole('button', { name: /Undo/ })).toHaveCount(0);
+});
+
+// XAIBO-PROD-535 (P5-T18 part 3b-6; design §5.4 Move to project/folder, §6.3 header More actions): the Move dialog from
+// a record's menu (a new project and folder, the name error, Escape back to the trigger), a map-group view that a moved
+// record leaves (heading and View moved session), and the open session's More actions (Move to…, Pin, Move to Trash).
+test('Move to project or folder from the Session list and the open-session header', async ({ xaibo }) => {
+  test.setTimeout(150_000);
+  xaibo.touchStore(() => {
+    claude(xaibo.home, 1, '/tmp/xaibo-fixture/atlas', 'Add a token bucket rate limiter');
+    claude(xaibo.home, 2, '/tmp/xaibo-fixture/notes', 'Summarize the meeting notes');
+  });
+  const run = await xaibo.launch();
+  const page = await xaibo.window(run);
+  await run.app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(1280, 800));
+  await openSessions(page);
+  const pane = page.getByRole('region', { name: 'Session list' });
+  for (const x of ['rate limiter', 'meeting notes']) await expect(records(page).filter({ hasText: x })).toHaveCount(1, { timeout: 20_000 });
+  const note = pane.locator('.x-action-note');
+  const menu = page.getByRole('menu', { name: 'More actions' });
+  const dialog = page.getByRole('dialog', { name: 'Move to project or folder' });
+  const project = dialog.getByRole('combobox', { name: 'Project', exact: true });
+  const folder = dialog.getByRole('combobox', { name: 'Folder', exact: true });
+  const moved = 'Moved. Only Xaibo\'s organization changed; the working folder and native files are untouched.';
+
+  // Cancel (Escape) returns to the exact More button
+  const notes = more(page, 'meeting notes');
+  await notes.click();
+  await menu.getByRole('menuitem', { name: 'Move to…' }).click();
+  await expect(project).toBeFocused();
+  await expect(project).toHaveValue('none');
+  await expect(dialog).toContainText('the working folder and native files are untouched');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(notes).toBeFocused();
+
+  // a new project and folder: an empty name is refused on Save with the field focused; then the record moves and keeps focus
+  await more(page, 'rate limiter').click();
+  await menu.getByRole('menuitem', { name: 'Move to…' }).click();
+  await project.selectOption('new');
+  await dialog.getByRole('button', { name: 'Save' }).click();
+  const name = dialog.getByRole('textbox', { name: 'Project name' });
+  await expect(name).toBeFocused();
+  await expect(name).toHaveAttribute('aria-invalid', 'true');
+  await expect(dialog).toContainText('Enter a project name.');
+  await name.fill('Atlas');
+  await folder.selectOption('new');
+  await dialog.getByRole('textbox', { name: 'Folder name' }).fill('Limits');
+  await shot(page, 'history-actions-move');
+  await dialog.getByRole('button', { name: 'Save' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(note).toHaveText(moved);
+  await expect(page.locator('.x-list-pane .x-srow').filter({ hasText: 'rate limiter' })).toBeFocused();
+  // the dialog reopens at the current project and folder
+  await more(page, 'rate limiter').click();
+  await menu.getByRole('menuitem', { name: 'Move to…' }).click();
+  await expect(project.locator('option:checked')).toHaveText('Atlas');
+  await expect(folder.locator('option:checked')).toHaveText('Limits');
+  await project.selectOption('new'); // review M2: Atlas's folders never show under a new project
+  await expect(folder.locator('option')).toHaveText(['No folder', 'New folder…']);
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+
+  // in the Atlas group view, moving to No project leaves the view: the heading and View moved session
+  await pane.getByText('Projects and folders').click();
+  await pane.locator('.x-tree-pick').filter({ hasText: 'Atlas' }).click();
+  await expect(records(page)).toHaveCount(1);
+  await more(page, 'rate limiter').click();
+  await menu.getByRole('menuitem', { name: 'Move to…' }).click();
+  await project.selectOption('none');
+  await expect(folder).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Save' }).click();
+  await expect(note).toHaveText(moved);
+  await expect(records(page)).toHaveCount(0);
+  await expect(page.locator('#results-heading')).toBeFocused();
+  await pane.getByRole('button', { name: 'View moved session' }).click();
+  const head = page.locator('.x-open-head');
+  await expect(page.locator('#open-session-title')).toContainText('rate limiter');
+
+  // the open session's More actions: Move to… (back to Atlas), Pin, Move to Trash (the Trash banner follows)
+  const headMore = head.getByRole('button', { name: 'More actions for this session' });
+  await headMore.click();
+  await expect(menu.getByRole('menuitemcheckbox', { name: 'Keep' })).toHaveCount(0); // Keep is the header's own toggle
+  await menu.getByRole('menuitem', { name: 'Move to…' }).click();
+  await expect(project).toHaveValue('none');
+  await project.selectOption({ label: 'Atlas' });
+  await expect(folder.locator('option', { hasText: 'Limits' })).toHaveCount(1);
+  await dialog.getByRole('button', { name: 'Save' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(head.locator('.x-action-note')).toHaveText(moved);
+  await expect(headMore).toBeFocused();
+  await headMore.click();
+  await menu.getByRole('menuitemcheckbox', { name: 'Pin' }).click();
+  await expect(head.locator('.x-action-note')).toHaveText('Pinned.');
+  await headMore.click();
+  await menu.getByRole('menuitem', { name: 'Move to Trash' }).click();
+  await expect(page.getByRole('region', { name: 'In Trash' })).toBeVisible();
+  await expect(head.locator('.x-action-note')).toHaveText(''); // G5C2r-4: wide, the list's Undo notice says it; the header does not
+  await expect(headMore).toHaveCount(0);
+  await expect(page.locator('#open-session-title')).toBeFocused(); // re-review L4: the removed More button hands focus to the title
+  // Gate 5 G5d-3: the header's Move to Trash takes the list's Undo notice; Undo focuses the reopened session's title
+  const undo = page.locator('.x-undo');
+  await expect(undo).toContainText('Moved to Trash.');
+  await undo.getByRole('button', { name: /^Undo/ }).click();
+  await expect(page.getByRole('region', { name: 'In Trash' })).toHaveCount(0);
+  await expect(page.locator('#open-session-title')).toBeFocused();
+  // Gate 5 second review M1: below 800 px the open session hides the list, so the header itself says Moved to Trash
+  const size = await run.app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.getSize());
+  await run.app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(700, 800));
+  await expect.poll(() => page.evaluate(() => innerWidth)).toBeLessThan(800);
+  await expect(page.locator('.x-list-slot')).toBeHidden(); // the layout the header note depends on
+  await headMore.click();
+  await menu.getByRole('menuitem', { name: 'Move to Trash' }).click();
+  await expect(page.getByRole('region', { name: 'In Trash' })).toBeVisible();
+  // G5C2r-4: exactly one notice (a duplicated note would also contain the text)
+  await expect(head.locator('.x-action-note')).toHaveText('Moved to Trash. Only the Xaibo copy is affected; native files are untouched.');
+  await run.app!.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0]!.setSize(w!, h!), size);
+});
+
+// XAIBO-PROD-536 (P5-T18 part 3b-7; design §6.4 Suppressed, §5.4 Re-import; D-P5-08): a purged session is listed in
+// Suppressed by its metadata only; opening it shows the metadata pane (no transcript); Re-import asks first (Cancel back
+// to Re-import), then the record leaves with the list heading focused, and the session returns to All with Keep.
+test('Suppressed: a purged session\'s metadata pane and Re-import', async ({ xaibo }) => {
+  test.setTimeout(150_000);
+  xaibo.touchStore(() => {
+    claude(xaibo.home, 1, '/tmp/xaibo-fixture/atlas', 'Add a token bucket rate limiter');
+    claude(xaibo.home, 2, '/tmp/xaibo-fixture/notes', 'Summarize the meeting notes');
+  });
+  const run = await xaibo.launch();
+  const page = await xaibo.window(run);
+  await run.app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(1280, 800));
+  await openSessions(page);
+  const pane = page.getByRole('region', { name: 'Session list' });
+  for (const x of ['rate limiter', 'meeting notes']) await expect(records(page).filter({ hasText: x })).toHaveCount(1, { timeout: 20_000 });
+  const menu = page.getByRole('menu', { name: 'More actions' });
+
+  // purge one session: Move to Trash, then Purge from Trash
+  await more(page, 'meeting notes').click();
+  await menu.getByRole('menuitem', { name: 'Move to Trash' }).click();
+  await modes(page).getByRole('button', { name: 'Trash' }).click();
+  await page.getByRole('button', { name: /^Purge .*meeting notes/ }).click();
+  await page.getByRole('dialog', { name: 'Purge Xaibo copy?' }).getByRole('button', { name: 'Purge' }).click();
+  await expect(pane.getByText('Trash is empty.')).toBeVisible();
+
+  // Suppressed lists it by metadata only; search and filters are hidden
+  await modes(page).getByRole('button', { name: 'Suppressed' }).click();
+  const supp = page.getByRole('list', { name: 'Suppressed sessions' }).getByRole('listitem');
+  await expect(supp).toHaveCount(1);
+  await expect(supp.first()).toContainText('claude · ');
+  await expect(supp.first()).toContainText('Purged by you');
+  await expect(supp.first()).not.toContainText('meeting notes');
+  await expect(pane.getByRole('search', { name: 'Search sessions' })).toBeHidden();
+  await shot(page, 'history-suppressed-list');
+
+  // the metadata pane: no transcript; Re-import asks first and Cancel returns to Re-import
+  await supp.first().getByRole('button').click();
+  const meta = page.getByRole('region', { name: 'Suppressed session' });
+  await expect(page.locator('#suppressed-title')).toBeFocused();
+  await expect(meta).toContainText('Purged by you');
+  await expect(meta).toContainText('purged content is never reconstructed');
+  await expect(meta).not.toContainText('meeting notes');
+  const reimport = meta.getByRole('button', { name: 'Re-import' });
+  await reimport.click();
+  const dialog = page.getByRole('dialog', { name: 'Re-import this session?' });
+  await expect(dialog).toContainText('removes the suppression');
+  await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
+  await shot(page, 'history-suppressed-reimport');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(reimport).toBeFocused();
+
+  // Re-import: the record leaves, the pane closes, the list heading takes focus with the outcome beside it
+  await reimport.click();
+  await dialog.getByRole('button', { name: 'Re-import' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(meta).toHaveCount(0);
+  await expect(pane.locator('.x-action-note')).toHaveText('Re-imported. The session returns to the list once its native files are read again; Keep is set.');
+  await expect(page.locator('#results-heading')).toBeFocused();
+  await expect(pane.getByText('No suppressed sessions.')).toBeVisible();
+  // the session comes back to All, kept (D-P5-08)
+  await modes(page).getByRole('button', { name: 'All sessions' }).click();
+  await expect(records(page).filter({ hasText: 'meeting notes' })).toHaveCount(1, { timeout: 20_000 });
+  await expect(records(page).filter({ hasText: 'meeting notes' }).locator('[data-field="history"]')).toContainText('Keep');
+  // re-review M: purged again, it is listed in Suppressed again (an earlier Re-import result never hides it)
+  await more(page, 'meeting notes').click();
+  await menu.getByRole('menuitem', { name: 'Move to Trash' }).click();
+  await modes(page).getByRole('button', { name: 'Trash' }).click();
+  await page.getByRole('button', { name: /^Purge .*meeting notes/ }).click();
+  await page.getByRole('dialog', { name: 'Purge Xaibo copy?' }).getByRole('button', { name: 'Purge' }).click();
+  await expect(pane.getByText('Trash is empty.')).toBeVisible();
+  await modes(page).getByRole('button', { name: 'Suppressed' }).click();
+  await expect(supp).toHaveCount(1);
+});

@@ -1,5 +1,6 @@
 // P2-T13 (EC-54, OQ-P2-04 default: no state-DB enrichment): rollout ingest never opens, changes or copies Codex state
-// DBs or session_index.jsonl, even with one DB exclusively locked and another holding a garbage schema.
+// DBs, even with one DB exclusively locked and another holding a garbage schema. session_index.jsonl is read for
+// thread names since P5-T02b (D-P5-03; codex-titles.test.ts) but never changed, copied or discovered.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';

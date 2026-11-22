@@ -2,13 +2,13 @@
 // user settings. Payloads are mapped to evidence by status-map.ts.
 import { lstatSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { isObj } from '../../../shared/ipc.ts';
 
 export const CLAUDE_HOOK_EVENTS = [
   'SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PermissionRequest', 'PermissionDenied',
   'Notification', 'Elicitation', 'ElicitationResult', 'SubagentStart', 'SubagentStop', 'Stop', 'StopFailure', 'PreCompact',
   'PostCompact', 'CwdChanged', 'SessionEnd',
 ] as const;
-const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 /** macOS system managed-settings location (managed-settings.json plus managed-settings.d/*.json). */
 export const CLAUDE_MANAGED_DIR = '/Library/Application Support/ClaudeCode';
@@ -21,11 +21,11 @@ export interface HookPolicy {
 const MAX_SETTINGS = 1 << 20;
 const absent = (e: unknown) => ['ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException).code ?? '');
 /** null when absent; 'bad' when unreadable (permission denied included), oversized, not JSON or not an object. */
-function settings(file: string): Record<string, unknown> | null | 'bad' {
+export function settings(file: string): Record<string, unknown> | null | 'bad' {
   let st;
   try { st = lstatSync(file); } catch (e) { return absent(e) ? null : 'bad'; }
   if (!st.isFile() || st.size > MAX_SETTINGS) return 'bad';
-  try { const v: unknown = JSON.parse(readFileSync(file, 'utf8')); return isObject(v) ? v : 'bad'; } catch { return 'bad'; }
+  try { const v: unknown = JSON.parse(readFileSync(file, 'utf8')); return isObj(v) ? v : 'bad'; } catch { return 'bad'; }
 }
 
 /** EC-49: what blocks the plugin route's command hooks. Project settings are per project and not read here. */

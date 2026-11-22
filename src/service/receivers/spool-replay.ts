@@ -51,23 +51,26 @@ const GRACE_MS = 1_000;
 type Gap = { reason: string; agent: string | null; session: string | null; from: number | null; to: number | null; count: number | null; locator: string };
 /** A taken file to remove once its grace has passed and it is unchanged. Every file waits, a taken one from an earlier
  *  replay too: a forwarder may still hold it open if that replay renamed it moments ago. */
-type Done = { file: string; ino: number; size: number; takenAt: number };
+type Done = { file: string; ino: number; size: number; mtimeMs: number; takenAt: number };
 
 const uid = process.getuid?.();
 const own = (st: Stats) => uid === undefined || st.uid === uid;
 const lstat = (p: string) => { try { return lstatSync(p); } catch { return null; } };
 const regularOwn = (st: Stats | null) => !!st && st.isFile() && own(st) && st.nlink === 1;
 
-function spoolDir(dataDir: string): string | null {
+/** <dataDir>/spool when it is a directory of our own; null when it does not exist or is not ours (never read). Any other
+ *  stat error (EACCES, EMFILE, ...) throws: the caller keeps its work owed (Gate 5 G5a-3). */
+export function spoolDir(dataDir: string): string | null {
   const dir = path.join(dataDir, 'spool');
-  const st = lstat(dir);
-  if (!st || !st.isDirectory() || !own(st)) return null;
+  let st: Stats;
+  try { st = lstatSync(dir); } catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null; throw e; }
+  if (!st.isDirectory() || !own(st)) return null;
   if (st.mode & 0o077) chmodSync(dir, 0o700);
   return dir;
 }
 
 /** The whole file if it is a regular, single-link file of our own within `max` bytes; never follows a symlink. */
-function readOwn(file: string, max: number): { buf: Buffer; ino: number } | null {
+export function readOwn(file: string, max: number): { buf: Buffer; ino: number; mtimeMs: number; ctimeMs: number } | null {
   let fd: number;
   try { fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch { return null; }
   try {
@@ -76,7 +79,10 @@ function readOwn(file: string, max: number): { buf: Buffer; ino: number } | null
     const buf = Buffer.alloc(st.size);
     let n = 0;
     while (n < st.size) { const r = readSync(fd, buf, n, st.size - n, n); if (r === 0) break; n += r; }
-    return { buf: buf.subarray(0, n), ino: st.ino };
+    // Gate 5 round 3 G5Rr1-3: an append or a rename (replay take()) during the read makes the bytes stale: null, owed
+    const after = lstat(file);
+    if (!after || after.ino !== st.ino || after.size !== st.size || after.mtimeMs !== st.mtimeMs) return null;
+    return { buf: buf.subarray(0, n), ino: st.ino, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs };
   } finally {
     closeSync(fd);
   }
@@ -136,6 +142,11 @@ function overflowLine(line: string): { ts: number; agent: string; session: strin
 }
 
 function overflowGaps(dir: string, db: DatabaseSync, now: number, done: Done[]) {
+  // P5-T08 (EC-21): no gap row names a purged session: lines of a session still suppressed, or timed before its purge
+  // (gap lines carry no profile; native ids are UUIDs)
+  const markers = db.prepare('SELECT at, cleared_at FROM suppressions WHERE agent = ? AND native_session_id = ?');
+  const purged = (x: { ts: number; agent: string; session: string | null }) => x.session !== null
+    && (markers.all(x.agent, x.session) as { at: number; cleared_at: number | null }[]).some((m) => m.cleared_at === null || x.ts <= m.at);
   for (const name of readdirSync(dir).sort()) {
     const fresh = name === 'overflow.log';
     const file = fresh ? take(dir, name, `overflow.taken-${randomUUID()}.log`) : OVERFLOW_TAKEN.test(name) ? path.join(dir, name) : null;
@@ -147,6 +158,7 @@ function overflowGaps(dir: string, db: DatabaseSync, now: number, done: Done[]) 
     for (const line of buf.toString('utf8').split('\n')) {
       if (!line) continue;
       const x = overflowLine(line);
+      if (x && purged(x)) continue;
       const key = JSON.stringify(x ? [x.agent, x.session] : null);
       const g = groups.get(key);
       if (!g) groups.set(key, { reason: 'spool-overflow', agent: x?.agent ?? null, session: x?.session ?? null, from: x?.ts ?? null, to: x?.ts ?? null, count: 1, locator: `overflow:${id}:${key}` });
@@ -155,7 +167,7 @@ function overflowGaps(dir: string, db: DatabaseSync, now: number, done: Done[]) 
         if (x) { g.from = Math.min(g.from!, x.ts); g.to = Math.max(g.to!, x.ts); }
       }
     }
-    if (putGaps(db, [...groups.values()], now)) done.push({ file: file!, ino: got.ino, size: buf.length, takenAt: Date.now() });
+    if (putGaps(db, [...groups.values()], now)) done.push({ file: file!, ino: got.ino, size: buf.length, mtimeMs: got.mtimeMs, takenAt: Date.now() });
   }
   // Saturated: overflow lines stopped at the log's own cap, so from the flag's time until now the number is unknown.
   const flag = path.join(dir, 'overflow.saturated');
@@ -177,15 +189,23 @@ export async function replaySpool(o: ReplayOptions): Promise<ReplayResult> {
   for (const name of readdirSync(dir).sort()) {
     const plain = PLAIN.exec(name);
     if (!plain && !TAKEN.test(name)) continue;
-    const size = lstat(path.join(dir, name))?.size ?? 0;
+    const st = lstat(path.join(dir, name));
+    const size = st?.size ?? 0;
     if (bytes > 0 && bytes + size > maxBytes) { r.deferred++; continue; } // not renamed: the next replay takes it
+    // XAIBO-PROD-549: taken even while the forwarder still appends (no quiet window): the rename, the grace and the
+    // inode/size/mtime check before removal keep a late append for the next pass
     const file = plain ? take(dir, name, `${plain[1]}.replay-${randomUUID()}.jsonl`) : path.join(dir, name);
     const got = file && readOwn(file, FILE_MAX);
     if (!got) { r.skipped++; continue; }
     bytes += got.buf.length;
-    files.push({ file: file!, ino: got.ino, size: got.buf.length, takenAt: Date.now() });
+    // R183-3: a last line without its newline in a file written within the grace may still be being written (one write
+    // per record): not torn, and the file stays for the next pass. Older, it is torn (a forwarder that died mid-write).
+    const age = Date.now() - got.mtimeMs; // a future mtime (clock step) counts as old, so a torn file is still recorded
+    const writing = got.buf.length > 0 && got.buf[got.buf.length - 1] !== 0x0a && age >= 0 && age < (o.graceMs ?? GRACE_MS);
+    const buf = writing ? got.buf.subarray(0, got.buf.lastIndexOf(0x0a) + 1) : got.buf;
+    if (!writing) files.push({ file: file!, ino: got.ino, size: got.buf.length, mtimeMs: got.mtimeMs, takenAt: Date.now() });
     let bad = 0;
-    for (const line of got.buf.toString('utf8').split('\n')) {
+    for (const line of buf.toString('utf8').split('\n')) {
       if (!line) continue;
       let x: unknown;
       try { x = JSON.parse(line); } catch { bad++; continue; }
@@ -200,6 +220,9 @@ export async function replaySpool(o: ReplayOptions): Promise<ReplayResult> {
   }
   records.sort((a, b) => a.ts - b.ts); // stable: same-ms records keep file order
   for (const rec of records) {
+    // PROD-549: yield before each delivery so socket callbacks and file syncs interleave with a backlog; the stop check
+    // comes after the yield, since close() and the store's close can run during it (R183-2)
+    await new Promise<void>((resolve) => setImmediate(resolve));
     if (o.stopped?.()) { r.complete = false; break; }
     if ('report' in rec && !o.deliverReport) { r.complete = false; break; } // kept for a service with report intake
     const res = 'hook' in rec ? await o.deliver(rec.hook) : await o.deliverReport!(rec.report.registration, rec.report.frame, rec.report.received_ts);
@@ -219,7 +242,7 @@ export async function replaySpool(o: ReplayOptions): Promise<ReplayResult> {
   if (o.stopped?.()) { r.complete = false; return r; } // stopped during the grace: the next start removes them
   for (const d of done) {
     const st = lstat(d.file);
-    if (st && st.ino === d.ino && st.size === d.size) unlink(d.file);
+    if (st && st.ino === d.ino && st.size === d.size && st.mtimeMs === d.mtimeMs) unlink(d.file); // R183-4: mtime too
   }
   return r;
 }

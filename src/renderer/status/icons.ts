@@ -38,6 +38,14 @@ const GEOMETRY = {
   'clock-gap': [line([12, 3], [5, 3], [3, 10], [5, 18], [12, 21], [20, 17], [21, 10]), line([12, 7], [12, 12], [16, 12])],
   // XAIBO-PROD-438 (D-P4-10): in progress; turns per design §2.3 (tokens.css .x-loading)
   loading: [{ kind: 'path', d: 'M12 4 A8 8 0 1 1 4 12' }],
+  // XAIBO-PROD-525 (P5-T16): the Settings navigation icon of design §4
+  settings: [{ kind: 'rect', x: 4, y: 4, w: 16, h: 16 }, line([4, 9], [20, 9]), line([9, 4], [9, 9]), line([4, 15], [20, 15]), line([15, 15], [15, 20])],
+  // XAIBO-PROD-529 (P5-T18 part 3a): the Session list's search, pin and folder rows of design §4
+  search: [{ kind: 'circle', cx: 10, cy: 10, r: 6 }, line([15, 15], [21, 21])],
+  pin: [line([7, 4], [17, 4], [15, 11], [19, 15], [5, 15], [9, 11], [7, 4]), line([12, 15], [12, 22])],
+  more: [{ kind: 'circle', cx: 5, cy: 12, r: 1 }, { kind: 'circle', cx: 12, cy: 12, r: 1 }, { kind: 'circle', cx: 19, cy: 12, r: 1 }], // XAIBO-PROD-532
+  trash: [line([3, 6], [21, 6]), line([8, 6], [8, 3], [16, 3], [16, 6]), line([6, 6], [7, 21], [17, 21], [18, 6]), line([10, 10], [10, 17]), line([14, 10], [14, 17])], // XAIBO-PROD-534
+  folder: [line([3, 6], [10, 6], [12, 9], [21, 9], [21, 20], [3, 20], [3, 6])],
 } satisfies Record<string, Shape[]>;
 
 export type IconId = keyof typeof GEOMETRY;

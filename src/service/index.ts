@@ -7,12 +7,17 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { errorCode, installCrashPolicy } from '../shared/crash.ts';
 import { accept, IPC_VERSION, parsePortRequest, parseServiceCommand } from '../shared/ipc.ts';
-import type { Banner, PortMessage, ServiceEvent } from '../shared/ipc.ts';
+import type { Banner, PortMessage, RetentionSetting, ServiceEvent, StorageReport } from '../shared/ipc.ts';
 import { appendQuiet, createLogger, loadInstallSecret, type Logger } from '../shared/log.ts';
 import { answer, answerCost, answerFiles, answerLiveSet, answerMarkers, answerSession, answerSlice, answerSubagents, answerTools, answerTranscript, answerUsage, answerUsageHistory, coalesce, createHub, sessionsByKey, type LiveOf } from './api.ts';
-import { boot, type Service } from './boot.ts';
+import { boot, retentionDelayFromEnv, type Service } from './boot.ts';
+import { applyOverlay, listFolders, listHistory, listProjects, resyncAfter } from './history/overlay.ts';
+import { mapGroups } from './history/map.ts';
 import type { Batch } from './store/writer.ts';
 import { traceableIds } from './trace-ids.ts';
+import { answerMonthly, MonthlyCache } from './usage/ledger.ts';
+import { answerHistoryRow, answerSearch, retentionState, suppressedPage } from './history/tools.ts';
+import { StorageMeter } from './storage/meter.ts';
 
 // P3-T10: 50 ms keeps one push per window while leaving most of M1's 250 ms hook-to-paint budget; the tick re-reads
 // sessions whose status changes with time alone (settle within interval + 250 ms, M1), coverage is re-read slowly.
@@ -22,6 +27,10 @@ const COVERAGE_MS = 5000;
 const parent = process.parentPort;
 const hub = createHub<MessagePortMain>();
 let svc: Service | undefined;
+let ledger: MonthlyCache | undefined; // P5-T17a: the monthly ledger cache, created before boot
+let meter: StorageMeter | undefined; // XAIBO-PROD-527: the storage meter (Settings), created before boot
+let secret: Buffer | undefined; // the per-install secret (suppressed-session keys)
+const STORAGE_MIN_MS = 60_000;
 let resolveBooted: (s: Service) => void = () => {};
 const booted = new Promise<Service>((resolve) => { resolveBooted = resolve; });
 const live: LiveOf = (agent, sid, profileId) => svc?.status(agent, sid, profileId) ?? null;
@@ -54,6 +63,9 @@ const changed = coalesce((keys) => {
   hub.sessions({ v: IPC_VERSION, type: 'sessions', rows, delta });
 }, DELTA_MS, setTimeout, DELTA_KEYS_MAX);
 
+/** Sessions left or came back (purge, retention, Trash/restore): the ledger recomputes and open windows resync. */
+const removed = () => { ledger?.invalidate(); if (hub.anyLive()) hub.sessions({ v: IPC_VERSION, type: 'resync' }); };
+
 let banners: Banner[] = [];
 const coverage = () => {
   const now = svc?.coverage() ?? [];
@@ -79,6 +91,71 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
       case 'files': port.postMessage(answerFiles(db, req)); break;
       case 'markers': port.postMessage(answerMarkers(db, req, s.models())); break;
       case 'cost': port.postMessage(answerCost(db, req, s.models())); break;
+      // P5-T17a: computed in a worker and cached (ledger.ts); failed when the store cannot answer
+      case 'monthly': void answerMonthly(ledger!, req).then((m) => port.postMessage(m)); break;
+      // XAIBO-PROD-527 (P5-T18 part 1): history tools and retention/storage settings
+      case 'search': {
+        let page: Omit<Extract<PortMessage, { type: 'search' }>, 'v' | 'type' | 'id'> = { hits: [], next: null, failed: true };
+        try { if (db.isOpen) page = answerSearch(db, req, s.kinds(), s.models(), live); } catch { /* failed */ }
+        port.postMessage({ v: IPC_VERSION, type: 'search', id: req.id, ...page } satisfies PortMessage); break;
+      }
+      // design review M6: the ledger and open windows refresh once the session is hidden (boot's onRemoved, phase a)
+      case 'purge': void s.purge(req.session).then((result) => port.postMessage({ v: IPC_VERSION, type: 'purge', id: req.id, result } satisfies PortMessage)); break;
+      case 'suppressed': {
+        let page: Omit<Extract<PortMessage, { type: 'suppressed' }>, 'v' | 'type' | 'id'> = { rows: [], next: null, failed: true };
+        try { if (db.isOpen) page = suppressedPage(db, secret!, homedir(), req.cursor, req.limit); } catch { /* failed */ }
+        port.postMessage({ v: IPC_VERSION, type: 'suppressed', id: req.id, ...page } satisfies PortMessage); break;
+      }
+      case 'historyRow': port.postMessage({ v: IPC_VERSION, type: 'historyRow', id: req.id, ...answerHistoryRow(db, req.session, s.kinds(), s.models(), live) } satisfies PortMessage); break;
+      case 'reimport': port.postMessage({ v: IPC_VERSION, type: 'reimport', id: req.id, result: s.reimport(req.key) } satisfies PortMessage); break;
+      case 'retention': {
+        let state: { setting: RetentionSetting | null; lastRunAt: number | null } = { setting: null, lastRunAt: null };
+        try { if (db.isOpen) state = retentionState(db); } catch { /* unreadable */ }
+        port.postMessage({ v: IPC_VERSION, type: 'retention', id: req.id, ...state } satisfies PortMessage); break;
+      }
+      case 'setRetention': port.postMessage({ v: IPC_VERSION, type: 'setRetention', id: req.id, result: s.saveRetention(req.value) } satisfies PortMessage); break;
+      case 'storage': { // measured in the meter's worker on request; at most once a minute (design review M4)
+        const last = meter!.latest(), now = Date.now();
+        const fresh = last !== null && last.measuredAt <= now && now - last.measuredAt < STORAGE_MIN_MS;
+        const reply = (report: StorageReport | null, failed?: true) =>
+          port.postMessage({ v: IPC_VERSION, type: 'storage', id: req.id, report, ...(failed ? { failed } : {}) } satisfies PortMessage);
+        if (!req.refresh || fresh) reply(last);
+        else meter!.refresh().then((r) => reply(r), () => reply(meter!.latest(), true));
+        break;
+      }
+      // P5-T16: the ledger recomputes on the next request (never from a run read before the clear); XAIBO-PROD-526: async
+      case 'clearUsage': void s.clearUsage().then((result) => {
+        if (result === 'cleared') ledger?.invalidate();
+        port.postMessage({ v: IPC_VERSION, type: 'clearUsage', id: req.id, result } satisfies PortMessage);
+      }); break;
+      // XAIBO-PROD-504 (P5-T01): history overlay; Gate 5 G5b2-5: a store that cannot answer says failed (the renderer keeps
+      // its rows and offers Retry), never an empty page
+      case 'history': {
+        let page: Omit<Extract<PortMessage, { type: 'history' }>, 'v' | 'type' | 'id'> = { rows: [], next: null, failed: true };
+        try { if (db.isOpen) page = listHistory(db, req.filter, req.cursor, req.limit, s.kinds(), s.models(), live); } catch { /* failed */ }
+        port.postMessage({ v: IPC_VERSION, type: 'history', id: req.id, ...page } satisfies PortMessage); break;
+      }
+      case 'projects': {
+        let page: Omit<Extract<PortMessage, { type: 'projects' }>, 'v' | 'type' | 'id'> = { projects: [], next: null, failed: true };
+        try { if (db.isOpen) page = listProjects(db, req.cursor, req.limit); } catch { /* failed */ }
+        port.postMessage({ v: IPC_VERSION, type: 'projects', id: req.id, ...page } satisfies PortMessage); break;
+      }
+      case 'folders': {
+        let page: Omit<Extract<PortMessage, { type: 'folders' }>, 'v' | 'type' | 'id'> = { folders: [], next: null, failed: true };
+        try { if (db.isOpen) page = listFolders(db, req.project, req.cursor, req.limit); } catch { /* failed */ }
+        port.postMessage({ v: IPC_VERSION, type: 'folders', id: req.id, ...page } satisfies PortMessage); break;
+      }
+      case 'mapGroups': { // P5-T01c: a store that cannot answer says failed (the renderer offers Retry), never an empty page
+        let page: Omit<Extract<PortMessage, { type: 'mapGroups' }>, 'v' | 'type' | 'id'> = { groups: [], next: null, failed: true };
+        try { if (db.isOpen) page = mapGroups(db, req.parent, req.cursor, req.limit, live); } catch { /* failed */ }
+        port.postMessage({ v: IPC_VERSION, type: 'mapGroups', id: req.id, ...page } satisfies PortMessage); break;
+      }
+      case 'overlay': {
+        const result = applyOverlay(db, req.op, { readOnly: s.store.readOnly || !db.isOpen, now: Date.now() });
+        port.postMessage({ v: IPC_VERSION, type: 'overlay', id: req.id, result } satisfies PortMessage);
+        if (resyncAfter(req.op, result)) removed(); // G5b2-4: other windows list it (or not) too
+        break;
+      }
       default: port.postMessage(db.isOpen ? answer(db, req, s.kinds(), s.models(), live) : { v: IPC_VERSION, type: 'page', id: req.id, rows: [], next: null });
     }
   });
@@ -94,6 +171,7 @@ function connect(port: MessagePortMain) {
 }
 
 function committed(b: Batch) {
+  ledger?.invalidate();
   const keys = new Set(b.sessions.map((s) => `${b.agent}\0${b.profileId}\0${s.nativeSessionId}`));
   for (const k of keys) changed(k);
   if (!trace) return;
@@ -115,13 +193,17 @@ const command = accept(parseServiceCommand, (m, transferred: MessagePortMain[]) 
 parent.on('message', (e) => command(e.data, e.ports));
 
 async function main(dataDir: string, log: Logger) {
+  secret = loadInstallSecret(dataDir);
+  ledger = new MonthlyCache({ file: path.join(dataDir, 'xaibo.db'), secret, home: homedir(), log: (e, f) => log.log(e, f) });
+  meter = new StorageMeter(dataDir);
   svc = await boot({
-    dataDir, home: homedir(), shell: process.env.SHELL, log,
+    dataDir, home: homedir(), shell: process.env.SHELL, log, retentionDelayMs: retentionDelayFromEnv(process.env),
     onCommit: committed,
     onAgents: (agents) => broadcast({ v: IPC_VERSION, type: 'agents', agents }),
     onNotify: (n) => parent.postMessage({ v: IPC_VERSION, type: 'notify', ...n } satisfies ServiceEvent), // P3-T11
     onTick: (keys) => { for (const k of keys) changed(k); }, // P3-T16e: a settle at its deadline, not the next tick
-    onPriced: () => { if (hub.anyLive()) hub.sessions({ v: IPC_VERSION, type: 'resync' }); }, // XAIBO-PROD-445: one per sliced job
+    onPriced: () => { ledger?.invalidate(); if (hub.anyLive()) hub.sessions({ v: IPC_VERSION, type: 'resync' }); }, // XAIBO-PROD-445: one per sliced job
+    onRemoved: removed, // XAIBO-PROD-542 G5b2-2: a retention run or manual purge removed sessions, Trash or usage history
   });
   resolveBooted(svc);
   setInterval(() => { for (const k of svc?.ticking() ?? []) changed(k); }, TICK_MS);

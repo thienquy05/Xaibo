@@ -2,6 +2,7 @@
 // quarantine. Pure and tolerant, like the Claude parser. Record types and shapes: S9 facts for Codex 0.160.0
 // (spikes/s9/evidence/facts.json, re-extracted 2026-11-11); payload types never observed there are kept raw only.
 import { createHash } from 'node:crypto';
+import { isObj } from '../../../shared/ipc.ts';
 import { utcMs } from '../../time.ts';
 import { accountMarker } from '../../usage/snapshots.ts';
 
@@ -46,10 +47,18 @@ export interface CodexRecord {
 export type ParseResult = { ok: true; record: CodexRecord } | { ok: false; reason: 'malformed' };
 
 type Obj = Record<string, unknown>;
-const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
 const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
 const joined = (parts: (string | undefined)[]) => parts.filter((p) => p).join('\n') || undefined;
 const texts = (v: unknown) => (typeof v === 'string' ? v : Array.isArray(v) ? joined(v.map((c) => (isObj(c) ? str(c.text) : undefined))) : undefined);
+// XAIBO-PROD-509 review M2: context fragments Codex 0.160.0 writes as user-role messages (its fragment list in the
+// program code), never typed by the owner: injected like developer messages and Claude's reminders (XAIBO-PROD-440).
+export const CONTEXT_PREFIXES = ['<environment_context>', '# AGENTS.md instructions', '<skill>', '<user_shell_command>', '<turn_aborted>',
+  '<subagent_notification>', '<context_window_guidance>', '<rollout_budget>', '<realtime_conversation>'];
+const contextFragment = (content: unknown) => {
+  const first = Array.isArray(content) ? content[0] : content;
+  const text = typeof first === 'string' ? first : isObj(first) ? str(first.text) : undefined;
+  return text !== undefined && CONTEXT_PREFIXES.some((p) => text.trimStart().startsWith(p));
+};
 
 /** File identity: hash of the first line (session_meta), stable while the file grows and across archive moves. */
 export const fileIdentity = (firstLine: Buffer) => createHash('sha256').update(firstLine).digest('hex').slice(0, 16);
@@ -82,7 +91,8 @@ function fromPayload(type: string, p: Obj): Partial<CodexRecord> & { kind: strin
       return { kind: 'world_state' };
     case 'response_item': {
       const meta = isObj(p.internal_chat_message_metadata_passthrough) ? str(p.internal_chat_message_metadata_passthrough.turn_id) : undefined;
-      if (pt === 'message') return { kind: 'message', role: str(p.role), content: texts(p.content), turnId: meta, injected: p.role === 'developer' };
+      if (pt === 'message') return { kind: 'message', role: str(p.role), content: texts(p.content), turnId: meta,
+        injected: p.role === 'developer' || (p.role === 'user' && contextFragment(p.content)) };
       if (pt === 'custom_tool_call') {
         const name = str(p.name);
         const input = str(p.input);

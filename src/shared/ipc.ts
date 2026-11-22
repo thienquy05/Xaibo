@@ -4,10 +4,11 @@
 // brokered port (P1-T12).
 export const IPC_VERSION = 1;
 
-export type ReadOnlyReason = 'migration-failed' | 'insufficient-space';
+export type ReadOnlyReason = 'migration-failed' | 'insufficient-space' | 'newer-schema';
 export const READ_ONLY_BANNER: Record<ReadOnlyReason, string> = {
   'migration-failed': 'Database migration failed: read-only',
   'insufficient-space': 'Not enough disk space to migrate the database: read-only',
+  'newer-schema': 'Database is from a newer Xaibo version: read-only',
 };
 
 /** main -> service; setPath carries a file the user picked in the native dialog (validated again by the service);
@@ -34,7 +35,7 @@ type Msg = Record<string, unknown>;
 const envelope = (x: unknown): Msg | null =>
   typeof x === 'object' && x !== null && !Array.isArray(x) && (x as Msg).v === IPC_VERSION ? (x as Msg) : null;
 const oneOf = <T extends string>(values: readonly T[], x: unknown): x is T => typeof x === 'string' && (values as readonly string[]).includes(x);
-const READ_ONLY = ['migration-failed', 'insufficient-space'] as const;
+const READ_ONLY = ['migration-failed', 'insufficient-space', 'newer-schema'] as const;
 const readOnlyOk = (x: unknown): x is ReadOnlyReason | null => x === null || oneOf(READ_ONLY, x);
 
 export const AGENT_ID = /^[a-z][a-z0-9-]{0,31}$/;
@@ -43,6 +44,8 @@ const text = (x: unknown, max = MAX_TEXT): x is string => typeof x === 'string' 
 const textOrNull = (x: unknown): x is string | null => x === null || text(x);
 const boolOrNull = (x: unknown): x is boolean | null => x === null || typeof x === 'boolean';
 const count = (x: unknown): x is number => Number.isSafeInteger(x) && (x as number) >= 0;
+/** A plain object (not null, not an array); the one shared guard for untrusted JSON (the SEA mains keep a copy). */
+export const isObj = (x: unknown): x is Msg => typeof x === 'object' && x !== null && !Array.isArray(x);
 const timeOrNull = (x: unknown): x is number | null => x === null || Number.isFinite(x);
 
 export function parseServiceCommand(x: unknown): ServiceCommand | null {
@@ -86,6 +89,10 @@ export function parseHealth(x: unknown): Health | null {
 export interface Cursor { lastActivity: number | null; id: number }
 export interface SessionRow {
   id: number; agent: string; entrypoint: string | null; cwd: string | null; title: string | null;
+  /** XAIBO-PROD-509 (EC-66): an untitled session's first-prompt excerpt, in-app only; absent or null = none. */
+  excerpt?: string | null;
+  /** XAIBO-PROD-519 (P5-T12): absent from older services. */
+  native?: NativeState;
   /** Catalog origin badge, null for an unknown kind; interactive null when unknown (P2-T04). */
   origin: string | null; interactive: boolean | null;
   /** "<display name> · <effort>", the raw id, or "Model unavailable" (P2-T08). */
@@ -153,7 +160,14 @@ export interface ContextReading {
   generation: number; used: number | null; window: number | null; basis: (typeof WINDOW_BASES)[number];
   source: (typeof CONTEXT_SOURCES)[number]; asOf: number | null; observedAt: number;
 }
-export interface SessionDetail { row: SessionRow; coverage: CoverageCode[]; context: ContextReading | null }
+/** XAIBO-PROD-519 (P5-T12; EC-23, EC-24, FR-13): the native transcript's state. available false = the native session's
+ *  files are confirmed gone (Xaibo's copy stays); archived = seen under the agent's archive. */
+export interface NativeState { available: boolean; archived: boolean }
+export const TRANSCRIPT_ONLY = 'Transcript only, not resumable';
+/** Design C15: the native-state marker, never overlay state. */
+export const nativeBadge = (n: NativeState): 'native deleted' | 'native archived' | null => (!n.available ? 'native deleted' : n.archived ? 'native archived' : null);
+/** nativeExpiresAt: when the agent's own cleanup is estimated to delete the native transcript (Claude; an estimate). */
+export interface SessionDetail { row: SessionRow; coverage: CoverageCode[]; context: ContextReading | null; nativeExpiresAt?: number | null }
 
 /** XAIBO-PROD-417 (P4-T07a; design §6.3.2): the session's cost breakdown. Groups are the per-request estimates of one
  *  (model, price revision, basis); a component's ~$ comes only from its applied rate over priced requests. */
@@ -206,7 +220,100 @@ export interface MCursor { ts: number; id: number }
 type IdPage<T extends string> = { v: 1; type: T; id: number; session: number; cursor: number | null; limit: number };
 export const MAX_FILE_TOUCHES = 2 * MAX_ITEMS; // a page holds up to MAX_ITEMS calls, at most two touches each
 const MAX_SOURCES = 8, MAX_SOURCE = 32, MAX_LABEL = 4097; // labels are cut to DISPLAY_MAX plus "…" by the service
+// XAIBO-PROD-504 (P5-T01; FR-10, US-5): the history overlay. The renderer names a session only by its row id.
+export const NAME_MAX = 200;
+export const HISTORY_MODES = ['all', 'archived', 'trash'] as const;
+/** XAIBO-PROD-510 (P5-T01c; design §6.5.1): a map group. project null = automatic grouping (moved sessions excluded),
+ *  else that Project override; at = a repository (worktree null: all its worktrees) or a cwd folder (repository grouping
+ *  absent; cwd null: Cwd unavailable); at null only under a project. Keys are the stored canonical paths. */
+export type MapAt = { repo: string; worktree: string | null } | { cwd: string | null };
+export interface MapGroup { project: number | null; at: MapAt | null }
+export const REPO_REASONS = ['no-git', 'unreadable', 'inconsistent', 'back-pointer', 'not-repository'] as const;
+/** reasons: a cwd group's recorded repository-grouping reasons, null = none recorded (a pre-015 row); counts are exact
+ *  service aggregates over the whole group, null when unavailable; agents are catalog ids, sorted. */
+export interface MapNode {
+  group: MapGroup; project: Named | null; reasons: ((typeof REPO_REASONS)[number] | null)[];
+  sessions: number | null; live: number | null; agents: string[] | null;
+}
+export interface HistoryFilter { mode: (typeof HISTORY_MODES)[number]; agent: string | null; project: number | null; folder: number | null; group?: MapGroup }
+/** History keyset: pinned first, then last activity descending (unknown last), then id. */
+export interface HistoryKey { pinned: boolean; lastActivity: number | null; id: number }
+export interface Named { id: number; name: string }
+export interface HistoryRow extends SessionRow { project: Named | null; folder: Named | null; pinned: boolean; archivedAt: number | null;
+  /** P5-T03: when the session went to Trash, and when Trash auto-empty makes it eligible for purge (30 × 24 h later). */
+  trashedAt: number | null; trashPurgeAt: number | null;
+  /** XAIBO-PROD-527 (P5-T18 part 1; US-6): Keep, and when retention makes the session eligible (null: Keep, Never, an
+   *  unreadable setting, no time, or a Trash row, which has trashPurgeAt). */
+  keep: boolean; purgeAt: number | null }
+export type OverlayOp =
+  | { kind: 'pin'; session: number; on: boolean } | { kind: 'archive'; session: number; on: boolean } | { kind: 'trash'; session: number; on: boolean }
+  | { kind: 'keep'; session: number; on: boolean }
+  | { kind: 'move'; session: number; project: number | null; folder: number | null }
+  | { kind: 'newProject'; name: string } | { kind: 'newFolder'; project: number; name: string } | { kind: 'confirmLabel'; session: number };
+export const OVERLAY_ERRORS = ['not-found', 'invalid', 'read-only', 'disk-full', 'store', 'limit'] as const;
+/** `id`: the project or folder a create or confirmLabel produced or reused. */
+export type OverlayResult = { ok: true; id?: number } | { ok: false; error: (typeof OVERLAY_ERRORS)[number] };
+// XAIBO-PROD-527 (P5-T18 part 1; design §6.4, §6.6): search, purge, suppressed sessions, Re-import, retention, storage.
+export const QUERY_MAX = 256, SNIPPET_MAX = 200, RETENTION_MAX = 3650;
+/** event: the rowid of the last match read (Gate 5 round 2 review: exact continuation inside equal-rank ties). */
+export interface SearchKey { rank: number; session: number; event: number }
+export interface SearchHit { row: HistoryRow; event: number; snippet: string }
+export const PURGE_RESULTS = ['purged', 'pending', 'not-found', 'busy', 'read-only', 'disk-full', 'failed'] as const; // pending: Gate 5 second review M1
+export const REIMPORT_RESULTS = ['ok', 'none', 'pending', 'native-gone', 'not-found', 'read-only', 'disk-full', 'failed'] as const;
+export const SAVE_RESULTS = ['saved', 'invalid', 'read-only', 'disk-full', 'failed'] as const;
+/** A suppressed (purged) session: key = opaque HMAC handle; profile = its label, 'Unavailable' when the profile is gone. */
+export interface SuppressedRow { key: string; agent: string; profile: string; reason: 'manual' | 'retention'; at: number; filesPending: boolean }
+export interface SuppressedCursor { at: number; key: string }
+export type RetentionSetting = { days: number } | 'never';
+export const STORAGE_CATEGORIES = ['content', 'search', 'usage', 'prices', 'other', 'free'] as const;
+export type StorageCategory = (typeof STORAGE_CATEGORIES)[number];
+export interface StorageReport {
+  measuredAt: number;
+  /** Bytes on disk per part; null = unavailable. */
+  files: { database: number | null; wal: number | null; contentChunks: number | null; spool: number | null; backups: number | null };
+  total: number | null;
+  /** page_count x page_size and its DBSTAT breakdown (tables with their indexes); null = unavailable. */
+  database: { bytes: number; categories: Record<StorageCategory, number> } | null;
+}
+/** XAIBO-PROD-523 (P5-T17a; design §6.1.1, US-20, FR-52): one month of the usage ledger. observed false = no observations
+ *  under the filter (every value null), never a zero; cost usd null = nothing priced (coverage counts say why). */
+export const LEDGER_MONTHS = 12;
+export const LEDGER_DETAIL = ['full', 'some-expired', 'totals-only'] as const;
+export interface LedgerTokens { uncachedInput: number; cacheRead: number; cacheWrite: number; output: number; total: number; gaps: number }
+export interface LedgerCost { usd: number | null; full: number; partial: number; none: number; pending: number }
+export interface LedgerMonth {
+  month: string; monthToDate: boolean; detail: (typeof LEDGER_DETAIL)[number]; observed: boolean;
+  sessions: number | null; turns: number | null; tokens: LedgerTokens | null; cost: LedgerCost | null; priceRevisions: number[];
+}
+/** A quota peak; scope is a response-local ordinal (never an identity), label a current scope's label or null. */
+export interface LedgerQuota { month: string; scope: number; label: string | null; agent: string | null; limitId: string; windowMinutes: number | null; verified: boolean; peakPercent: number; observations: number }
+/** older/newer: the `end` month of the previous/next page, null at either end. */
+export interface LedgerPage { months: LedgerMonth[]; quota: LedgerQuota[]; older: string | null; newer: string | null; agents: string[]; models: string[] }
+export interface LedgerFilter { agent: string | null; model: string | null }
+/** P5-T16: cleared; read-only = the store refused writes; failed = the transaction did not commit (nothing changed). */
+export const CLEAR_USAGE_RESULTS = ['cleared', 'read-only', 'failed'] as const;
+export type ClearUsageResult = (typeof CLEAR_USAGE_RESULTS)[number];
 export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Cursor | null; limit: number }
+  /** P5-T17a: the ledger page of at most `limit` (1..12) observed months ending at `end` (null = the latest). */
+  | { v: 1; type: 'monthly'; id: number; filter: LedgerFilter; end: string | null; limit: number }
+  /** P5-T16: Clear usage history (Settings, after the owner's confirmation). */
+  | { v: 1; type: 'clearUsage'; id: number }
+  /** XAIBO-PROD-527 (P5-T18 part 1): history tools and retention/storage settings. */
+  | { v: 1; type: 'search'; id: number; query: string; filter: HistoryFilter; cursor: SearchKey | null; limit: number }
+  | { v: 1; type: 'purge'; id: number; session: number }
+  /** XAIBO-PROD-531 (P5-T18 part 3b-2): one session's history row (row actions, the open session's Keep and purge date). */
+  | { v: 1; type: 'historyRow'; id: number; session: number }
+  | { v: 1; type: 'suppressed'; id: number; cursor: SuppressedCursor | null; limit: number }
+  | { v: 1; type: 'reimport'; id: number; key: string }
+  | { v: 1; type: 'retention'; id: number }
+  | { v: 1; type: 'setRetention'; id: number; value: RetentionSetting }
+  | { v: 1; type: 'storage'; id: number; refresh: boolean }
+  | { v: 1; type: 'history'; id: number; filter: HistoryFilter; cursor: HistoryKey | null; limit: number }
+  | { v: 1; type: 'projects'; id: number; cursor: number | null; limit: number }
+  | { v: 1; type: 'folders'; id: number; project: number; cursor: number | null; limit: number }
+  | { v: 1; type: 'overlay'; id: number; op: OverlayOp }
+  /** P5-T01c: a page of map groups under parent (null = roots); cursor is the last group of the previous page. */
+  | { v: 1; type: 'mapGroups'; id: number; parent: MapGroup | null; cursor: MapGroup | null; limit: number }
   /** P4-T02: the window is visible (live session deltas wanted) or hidden (paused; the renderer resyncs by cursor). */
   | { v: 1; type: 'live'; on: boolean }
   /** P4-T04a: the live-session set (tracked, non-ended, active within 24 h), capped; deltas keep it current. */
@@ -222,6 +329,25 @@ export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Curs
   | { v: 1; type: 'markers'; id: number; session: number; cursor: MCursor | null; limit: number }
   | { v: 1; type: 'cost'; id: number; session: number };
 export type PortMessage =
+  // P5-T17a: failed = the store could not answer (the renderer offers Retry), never an empty ledger
+  | ({ v: 1; type: 'monthly'; id: number; failed?: true } & LedgerPage)
+  | { v: 1; type: 'clearUsage'; id: number; result: ClearUsageResult }
+  /** capped (Gate 5 round 2 B): the bounded scan stopped before the page filled; results may be incomplete, next continues. */
+  | { v: 1; type: 'search'; id: number; hits: SearchHit[]; next: SearchKey | null; failed?: true; capped?: true }
+  | { v: 1; type: 'purge'; id: number; result: (typeof PURGE_RESULTS)[number] }
+  /** row null = no such session (gone: purged); failed (row null) = the store could not answer (keep the record, Retry). */
+  | { v: 1; type: 'historyRow'; id: number; row: HistoryRow | null; failed?: true }
+  | { v: 1; type: 'suppressed'; id: number; rows: SuppressedRow[]; next: SuppressedCursor | null; failed?: true }
+  | { v: 1; type: 'reimport'; id: number; result: (typeof REIMPORT_RESULTS)[number] }
+  /** setting null = the stored value is unreadable (no session retention runs on it). */
+  | { v: 1; type: 'retention'; id: number; setting: RetentionSetting | null; lastRunAt: number | null }
+  | { v: 1; type: 'setRetention'; id: number; result: (typeof SAVE_RESULTS)[number] }
+  | { v: 1; type: 'storage'; id: number; report: StorageReport | null; failed?: true }
+  | { v: 1; type: 'history'; id: number; rows: HistoryRow[]; next: HistoryKey | null; failed?: true }
+  | { v: 1; type: 'projects'; id: number; projects: Named[]; next: number | null; failed?: true }
+  | { v: 1; type: 'folders'; id: number; folders: Named[]; next: number | null; failed?: true }
+  | { v: 1; type: 'overlay'; id: number; result: OverlayResult }
+  | { v: 1; type: 'mapGroups'; id: number; groups: MapNode[]; next: MapGroup | null; failed?: true }
   | { v: 1; type: 'cost'; id: number; cost: CostDetail | null }
   | { v: 1; type: 'session'; id: number; detail: SessionDetail | null }
   | { v: 1; type: 'transcript'; id: number; items: TranscriptItem[]; prev: TCursor | null; next: TCursor | null }
@@ -244,14 +370,12 @@ export type PortMessage =
 
 function parseCursor(x: unknown): Cursor | null | undefined { // undefined = invalid
   if (x === null) return null;
-  if (typeof x !== 'object' || Array.isArray(x)) return undefined;
-  const c = x as Msg;
-  return count(c.id) && timeOrNull(c.lastActivity) ? { lastActivity: c.lastActivity, id: c.id } : undefined;
+  return isObj(x) && count(x.id) && timeOrNull(x.lastActivity) ? { lastActivity: x.lastActivity, id: x.id } : undefined;
 }
 
 function parseRow(x: unknown): SessionRow | null {
-  if (typeof x !== 'object' || x === null || Array.isArray(x)) return null;
-  const r = x as Msg;
+  if (!isObj(x)) return null;
+  const r = x;
   if (!count(r.id) || !text(r.agent, 64) || !textOrNull(r.entrypoint) || !textOrNull(r.cwd) || !textOrNull(r.title)) return null;
   if (!(r.origin === null || text(r.origin, 64)) || !boolOrNull(r.interactive) || !text(r.model)) return null;
   if (!timeOrNull(r.lastActivity) || typeof r.drift !== 'boolean' || typeof r.compressed !== 'boolean' || !count(r.quarantined)) return null;
@@ -259,7 +383,11 @@ function parseRow(x: unknown): SessionRow | null {
   if (live === undefined || !(r.contextPct === null || (Number.isFinite(r.contextPct) && (r.contextPct as number) >= 0 && (r.contextPct as number) <= 100))) return null;
   if (!(r.costUsd === null || (Number.isFinite(r.costUsd) && (r.costUsd as number) >= 0)) || !oneOf(COSTS, r.costCoverage)) return null;
   if (!(r.tokens === null || count(r.tokens)) || typeof r.tokensComplete !== 'boolean') return null;
-  return { id: r.id, agent: r.agent, entrypoint: r.entrypoint, origin: r.origin, interactive: r.interactive, model: r.model, cwd: r.cwd, title: r.title, lastActivity: r.lastActivity, drift: r.drift, compressed: r.compressed, quarantined: r.quarantined,
+  if (r.excerpt !== undefined && !textOrNull(r.excerpt)) return null;
+  const n = r.native;
+  if (n !== undefined && !(isObj(n) && typeof n.available === 'boolean' && typeof n.archived === 'boolean')) return null;
+  return { id: r.id, agent: r.agent, entrypoint: r.entrypoint, origin: r.origin, interactive: r.interactive, model: r.model, cwd: r.cwd, title: r.title,
+    ...(r.excerpt !== undefined ? { excerpt: r.excerpt } : {}), ...(isObj(n) ? { native: { available: n.available as boolean, archived: n.archived as boolean } } : {}), lastActivity: r.lastActivity, drift: r.drift, compressed: r.compressed, quarantined: r.quarantined,
     live, contextPct: r.contextPct as number | null, costUsd: r.costUsd as number | null, costCoverage: r.costCoverage, tokens: r.tokens as number | null, tokensComplete: r.tokensComplete };
 }
 
@@ -299,20 +427,23 @@ function parseRows(x: unknown): SessionRow[] | null {
 }
 
 function parseAgent(x: unknown): AgentStatus | null {
-  if (typeof x !== 'object' || x === null || Array.isArray(x)) return null;
-  const a = x as Msg;
+  if (!isObj(x)) return null;
+  const a = x;
   if (!text(a.agent) || !AGENT_ID.test(a.agent) || !text(a.name, 128) || !oneOf(['detected', 'not-detected'] as const, a.state)) return null;
   return a.version === null || text(a.version, 64) ? { agent: a.agent, name: a.name, state: a.state, version: a.version } : null;
 }
 
-const isObj = (x: unknown): x is Msg => typeof x === 'object' && x !== null && !Array.isArray(x);
 const finite = (x: unknown): x is number => Number.isFinite(x);
 const numOrNull = (x: unknown, ok: (n: number) => boolean) => x === null || (finite(x) && ok(x));
 const percentOk = (n: number) => n >= 0 && n <= 10_000; // the service's stored bound (spend above 100 % is kept)
-function parseHistoryCursor(x: unknown): HistoryCursor | null | undefined { // undefined = invalid
-  if (x === null) return null;
-  return isObj(x) && finite(x.measuredAt) && count(x.id) ? { measuredAt: x.measuredAt, id: x.id } : undefined;
-}
+/** A `{ <key>, id }` keyset cursor: null stays null, an invalid one is undefined; a fresh object, never `x` itself. */
+const keyset = <K extends string>(key: K, keyOk: (v: unknown) => v is number, idOk: (v: unknown) => v is number) =>
+  (x: unknown): ({ [P in K]: number } & { id: number }) | null | undefined => {
+    if (x === null) return null;
+    return isObj(x) && keyOk(x[key]) && idOk(x.id) ? ({ [key]: x[key], id: x.id } as { [P in K]: number } & { id: number }) : undefined;
+  };
+const safeInt = (x: unknown): x is number => Number.isSafeInteger(x);
+const parseHistoryCursor = keyset('measuredAt', finite, count);
 function parseCredits(x: unknown): Credits | null | undefined {
   if (x === null) return null;
   if (!isObj(x) || !boolOrNull(x.hasCredits) || !boolOrNull(x.unlimited) || !(x.balance === null || text(x.balance, 32))) return undefined;
@@ -344,21 +475,19 @@ const all = <T>(xs: unknown, max: number, parse: (x: unknown) => T | null): T[] 
 
 const positive = (x: unknown): x is number => count(x) && x > 0;
 const limitOk = (x: unknown): x is number => Number.isSafeInteger(x) && (x as number) >= 1;
-function parseTCursor(x: unknown): TCursor | null | undefined { // undefined = invalid
-  if (x === null) return null;
-  return isObj(x) && Number.isSafeInteger(x.seq) && positive(x.id) ? { seq: x.seq as number, id: x.id } : undefined;
-}
+const parseTCursor = keyset('seq', safeInt, positive);
 function parseAt(x: unknown): TranscriptAt | null {
   if (x === 'first' || x === 'latest') return x;
   if (!isObj(x) || Object.keys(x).length !== 1) return null;
-  const c = parseTCursor('after' in x ? x.after : x.before);
+  const after = Object.hasOwn(x, 'after');
+  const c = parseTCursor(after ? x.after : x.before);
   if (!c) return null;
-  return 'after' in x ? { after: c } : 'before' in x ? { before: c } : null;
+  return after ? { after: c } : Object.hasOwn(x, 'before') ? { before: c } : null;
 }
 function parseItem(x: unknown): TranscriptItem | null {
   if (!isObj(x) || !positive(x.event) || !Number.isSafeInteger(x.seq) || !timeOrNull(x.ts) || !oneOf(ITEM_KINDS, x.kind)) return null;
   if (!(x.preview === null || text(x.preview, PREVIEW_BYTES)) || !count(x.length) || typeof x.reasoning !== 'boolean') return null;
-  if (!(x.callId === null || (text(x.callId, MAX_CALL_ID) && x.callId !== ''))) return null;
+  if (!callIdOk(x.callId)) return null;
   return { event: x.event, seq: x.seq as number, ts: x.ts, kind: x.kind, preview: x.preview, length: x.length, reasoning: x.reasoning, callId: x.callId };
 }
 function parseDetail(x: unknown): SessionDetail | null | undefined { // undefined = invalid
@@ -367,11 +496,14 @@ function parseDetail(x: unknown): SessionDetail | null | undefined { // undefine
   const row = parseRow(x.row);
   const coverage = all(x.coverage, COVERAGE_CODES.length, (c) => (oneOf(COVERAGE_CODES, c) ? c : null));
   const context = x.context === null ? null : parseContext(x.context);
-  return row && coverage && context !== undefined ? { row, coverage, context } : undefined;
+  const expires = x.nativeExpiresAt;
+  // review L3: a time the renderer's Date can show (0 .. 8.64e15 ms)
+  if (expires !== undefined && !(expires === null || (typeof expires === 'number' && expires >= 0 && expires <= 8.64e15))) return undefined;
+  return row && coverage && context !== undefined ? { row, coverage, context, ...(expires !== undefined ? { nativeExpiresAt: expires } : {}) } : undefined;
 }
 const CONTEXT_KEYS = ['generation', 'used', 'window', 'basis', 'source', 'asOf', 'observedAt'];
 export function parseContext(x: unknown): ContextReading | undefined {
-  if (!isObj(x) || Object.keys(x).length !== CONTEXT_KEYS.length || !CONTEXT_KEYS.every((k) => k in x)) return undefined;
+  if (!exactKeys(x, CONTEXT_KEYS)) return undefined;
   if (!count(x.generation) || !(x.used === null || count(x.used)) || !(x.window === null || count(x.window))) return undefined;
   if (!oneOf(WINDOW_BASES, x.basis) || !oneOf(CONTEXT_SOURCES, x.source) || !timeOrNull(x.asOf) || !Number.isFinite(x.observedAt)) return undefined;
   if ((x.window === null) !== (x.basis === 'unavailable')) return undefined; // review M1: no meter for a window called unavailable
@@ -417,10 +549,7 @@ const idOrNull = (x: unknown): x is number | null => x === null || positive(x);
 const label = (x: unknown): x is string => text(x, MAX_LABEL) && x !== '';
 const labelOrNull = (x: unknown): x is string | null => x === null || label(x);
 const callIdOk = (x: unknown): x is string | null => x === null || (text(x, MAX_CALL_ID) && x !== '');
-function parseMCursor(x: unknown): MCursor | null | undefined { // undefined = invalid
-  if (x === null) return null;
-  return isObj(x) && Number.isSafeInteger(x.ts) && positive(x.id) ? { ts: x.ts as number, id: x.id } : undefined;
-}
+const parseMCursor = keyset('ts', safeInt, positive);
 function parseTool(x: unknown): ToolItem | null {
   if (!isObj(x) || !positive(x.call) || !callIdOk(x.callId) || !labelOrNull(x.tool) || !idOrNull(x.argsEvent) || !idOrNull(x.resultEvent)) return null;
   const s = x.sources;
@@ -442,8 +571,161 @@ function parseMarker(x: unknown): ModelMarker | null {
   return isObj(x) && positive(x.turn) && Number.isSafeInteger(x.ts) && label(x.model) ? { turn: x.turn, ts: x.ts as number, model: x.model } : null;
 }
 
+const pageLimit = (x: unknown): x is number => limitOk(x) && x <= MAX_ITEMS;
+function parseHistoryKey(x: unknown): HistoryKey | null | undefined { // undefined = invalid
+  if (x === null) return null;
+  return exactKeys(x, ['pinned', 'lastActivity', 'id']) && typeof x.pinned === 'boolean' && timeOrNull(x.lastActivity) && positive(x.id)
+    ? { pinned: x.pinned, lastActivity: x.lastActivity, id: x.id } : undefined;
+}
+function parseFilter(x: unknown): HistoryFilter | null {
+  const grouped = isObj(x) && Object.hasOwn(x, 'group');
+  if (!exactKeys(x, ['mode', 'agent', 'project', 'folder', ...(grouped ? ['group'] : [])]) || !oneOf(HISTORY_MODES, x.mode)) return null;
+  const group = grouped ? parseMapGroup(x.group) : undefined;
+  if (group === null || !((x.agent === null || agentOk(x.agent)) && idOrNull(x.project) && idOrNull(x.folder))) return null;
+  return { mode: x.mode, agent: x.agent, project: x.project, folder: x.folder, ...(group ? { group } : {}) };
+}
+const keyText = (x: unknown): x is string => text(x) && x !== '';
+/** Exact shapes only; a group with neither project nor place names nothing and is refused. */
+function parseMapGroup(x: unknown): MapGroup | null {
+  if (!exactKeys(x, ['project', 'at']) || !idOrNull(x.project)) return null;
+  const a = x.at;
+  let at: MapAt | null;
+  if (a === null) at = null;
+  else if (exactKeys(a, ['repo', 'worktree']) && keyText(a.repo) && (a.worktree === null || keyText(a.worktree))) at = { repo: a.repo, worktree: a.worktree };
+  else if (exactKeys(a, ['cwd']) && (a.cwd === null || keyText(a.cwd))) at = { cwd: a.cwd };
+  else return null;
+  return x.project === null && at === null ? null : { project: x.project, at };
+}
+const groupOrNull = (x: unknown): MapGroup | null | undefined => (x === null ? null : parseMapGroup(x) ?? undefined); // undefined = invalid
+function parseMapNode(x: unknown): MapNode | null {
+  if (!exactKeys(x, ['group', 'project', 'reasons', 'sessions', 'live', 'agents'])) return null;
+  const group = parseMapGroup(x.group), project = x.project === null ? null : parseNamed(x.project);
+  const reasons = all(x.reasons, REPO_REASONS.length + 1, (r) => (r === null ? { r } : oneOf(REPO_REASONS, r) ? { r } : null));
+  const agents = x.agents === null ? null : all(x.agents, 32, (a) => (agentOk(a) ? a : null));
+  if (!group || (x.project !== null && !project) || !reasons || (x.agents !== null && !agents)) return null;
+  if (!(x.sessions === null || count(x.sessions)) || !(x.live === null || count(x.live))) return null;
+  return { group, project, reasons: reasons.map((v) => v.r), sessions: x.sessions, live: x.live, agents };
+}
+const nameOk = (x: unknown): x is string => text(x, NAME_MAX);
+/** Exact shapes only: an extra key (e.g. a smuggled agent or native id) voids the op. */
+function parseOp(x: unknown): OverlayOp | null {
+  if (!isObj(x)) return null;
+  const keys = (...k: string[]) => exactKeys(x, ['kind', ...k]);
+  switch (x.kind) {
+    case 'pin': case 'archive': case 'trash': case 'keep': return keys('session', 'on') && positive(x.session) && typeof x.on === 'boolean' ? { kind: x.kind, session: x.session, on: x.on } : null;
+    case 'move': return keys('session', 'project', 'folder') && positive(x.session) && idOrNull(x.project) && idOrNull(x.folder)
+      ? { kind: 'move', session: x.session, project: x.project, folder: x.folder } : null;
+    case 'newProject': return keys('name') && nameOk(x.name) ? { kind: 'newProject', name: x.name } : null;
+    case 'newFolder': return keys('project', 'name') && positive(x.project) && nameOk(x.name) ? { kind: 'newFolder', project: x.project, name: x.name } : null;
+    case 'confirmLabel': return keys('session') && positive(x.session) ? { kind: 'confirmLabel', session: x.session } : null;
+    default: return null;
+  }
+}
+const parseNamed = (x: unknown): Named | null => (isObj(x) && positive(x.id) && nameOk(x.name) && x.name !== '' ? { id: x.id, name: x.name } : null);
+function parseHistoryRow(x: unknown): HistoryRow | null {
+  const row = parseRow(x);
+  if (!row || !isObj(x) || typeof x.pinned !== 'boolean' || !timeOrNull(x.archivedAt) || !timeOrNull(x.trashedAt) || !timeOrNull(x.trashPurgeAt)) return null;
+  if (typeof x.keep !== 'boolean' || !timeOrNull(x.purgeAt)) return null;
+  const project = x.project === null ? null : parseNamed(x.project), folder = x.folder === null ? null : parseNamed(x.folder);
+  return (x.project === null || project) && (x.folder === null || folder)
+    ? { ...row, project, folder, pinned: x.pinned, archivedAt: x.archivedAt, trashedAt: x.trashedAt, trashPurgeAt: x.trashPurgeAt, keep: x.keep, purgeAt: x.purgeAt } : null;
+}
+// XAIBO-PROD-527: strict shapes for the history tools (design review L1: finite numbers, safe-integer ids, hex keys)
+const KEY = /^[0-9a-f]{64}$/;
+const keyOk = (x: unknown): x is string => typeof x === 'string' && KEY.test(x);
+const parseSearchKey = (x: unknown): SearchKey | null | undefined => (x === null ? null
+  : exactKeys(x, ['rank', 'session', 'event']) && finite(x.rank) && count(x.session) && positive(x.event) ? { rank: x.rank, session: x.session, event: x.event } : undefined);
+const parseSuppressedCursor = (x: unknown): SuppressedCursor | null | undefined => (x === null ? null
+  : exactKeys(x, ['at', 'key']) && finite(x.at) && keyOk(x.key) ? { at: x.at, key: x.key } : undefined);
+export function parseRetentionSetting(x: unknown): RetentionSetting | null {
+  if (x === 'never') return 'never';
+  return exactKeys(x, ['days']) && Number.isInteger(x.days) && (x.days as number) >= 1 && (x.days as number) <= RETENTION_MAX ? { days: x.days as number } : null;
+}
+function parseSearchHit(x: unknown): SearchHit | null {
+  // review H1: the service caps a snippet in code points (an emoji is two UTF-16 units)
+  if (!exactKeys(x, ['row', 'event', 'snippet']) || !positive(x.event) || !text(x.snippet, 2 * SNIPPET_MAX) || [...x.snippet].length > SNIPPET_MAX) return null;
+  const row = parseHistoryRow(x.row);
+  return row ? { row, event: x.event, snippet: x.snippet } : null;
+}
+const parseSuppressedRow = (x: unknown): SuppressedRow | null => (exactKeys(x, ['key', 'agent', 'profile', 'reason', 'at', 'filesPending']) && keyOk(x.key)
+  && agentOk(x.agent) && text(x.profile, MAX_LABEL) && oneOf(['manual', 'retention'] as const, x.reason) && finite(x.at) && typeof x.filesPending === 'boolean'
+  ? { key: x.key, agent: x.agent, profile: x.profile, reason: x.reason, at: x.at, filesPending: x.filesPending } : null);
+const bytesOrNull = (x: unknown): x is number | null => x === null || count(x);
+function parseStorage(x: unknown): StorageReport | null | undefined {
+  if (x === null) return null;
+  if (!exactKeys(x, ['measuredAt', 'files', 'total', 'database']) || !finite(x.measuredAt) || !bytesOrNull(x.total)) return undefined;
+  const f = x.files;
+  if (!exactKeys(f, ['database', 'wal', 'contentChunks', 'spool', 'backups']) || !Object.values(f).every(bytesOrNull)) return undefined;
+  const d = x.database;
+  if (d !== null && !(exactKeys(d, ['bytes', 'categories']) && count(d.bytes) && exactKeys(d.categories, [...STORAGE_CATEGORIES])
+    && Object.values(d.categories).every(count))) return undefined;
+  return x as unknown as StorageReport;
+}
+// P5-T17a: the ledger. A month is YYYY-MM; observed false carries nulls only; observed true carries counts, and tokens and
+// cost unless no usage request was seen (review L7: no evidence is unavailable, not 0); total = the sum. The service
+// applies the same bounds before it replies (review M2), so agent-supplied values never make the whole reply unreadable.
+const MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
+const monthOk = (x: unknown): x is string => typeof x === 'string' && MONTH.test(x);
+const monthOrNull = (x: unknown): x is string | null => x === null || monthOk(x);
+export const MAX_MODEL = 256, MAX_LEDGER_AGENTS = 64, MAX_LEDGER_MODELS = 256, MAX_REVISIONS = 64, MAX_LEDGER_QUOTA = LEDGER_MONTHS * MAX_SCOPES;
+const modelOk = (x: unknown): x is string => text(x, MAX_MODEL);
+function parseLedgerFilter(x: unknown): LedgerFilter | null {
+  return exactKeys(x, ['agent', 'model']) && (x.agent === null || agentOk(x.agent)) && (x.model === null || modelOk(x.model)) ? { agent: x.agent, model: x.model } : null;
+}
+function parseLedgerMonth(x: unknown): LedgerMonth | null {
+  if (!exactKeys(x, ['month', 'monthToDate', 'detail', 'observed', 'sessions', 'turns', 'tokens', 'cost', 'priceRevisions'])) return null;
+  if (!monthOk(x.month) || typeof x.monthToDate !== 'boolean' || !oneOf(LEDGER_DETAIL, x.detail) || typeof x.observed !== 'boolean') return null;
+  const revisions = all(x.priceRevisions, MAX_REVISIONS, (r) => (positive(r) ? r : null));
+  if (!revisions) return null;
+  const base = { month: x.month, monthToDate: x.monthToDate, detail: x.detail };
+  if (!x.observed) return x.sessions === null && x.turns === null && x.tokens === null && x.cost === null && !revisions.length
+    ? { ...base, observed: false, sessions: null, turns: null, tokens: null, cost: null, priceRevisions: [] } : null;
+  const t = x.tokens, c = x.cost;
+  if (!count(x.sessions) || !count(x.turns)) return null;
+  let tokens: LedgerTokens | null = null, cost: LedgerCost | null = null;
+  if (t !== null) {
+    if (!exactKeys(t, ['uncachedInput', 'cacheRead', 'cacheWrite', 'output', 'total', 'gaps']) || ![t.uncachedInput, t.cacheRead, t.cacheWrite, t.output, t.total, t.gaps].every(count)) return null;
+    tokens = { uncachedInput: t.uncachedInput as number, cacheRead: t.cacheRead as number, cacheWrite: t.cacheWrite as number, output: t.output as number, total: t.total as number, gaps: t.gaps as number };
+    if (tokens.total !== tokens.uncachedInput + tokens.cacheRead + tokens.cacheWrite + tokens.output) return null;
+  }
+  if (c !== null) {
+    if (!exactKeys(c, ['usd', 'full', 'partial', 'none', 'pending']) || !usd(c.usd) || ![c.full, c.partial, c.none, c.pending].every(count)) return null;
+    cost = { usd: c.usd, full: c.full as number, partial: c.partial as number, none: c.none as number, pending: c.pending as number };
+  }
+  return { ...base, observed: true, sessions: x.sessions, turns: x.turns, tokens, cost, priceRevisions: revisions };
+}
+function parseLedgerQuota(x: unknown): LedgerQuota | null {
+  if (!exactKeys(x, ['month', 'scope', 'label', 'agent', 'limitId', 'windowMinutes', 'verified', 'peakPercent', 'observations'])) return null;
+  return monthOk(x.month) && positive(x.scope) && (x.label === null || label(x.label)) && (x.agent === null || agentOk(x.agent)) && text(x.limitId, MAX_STREAM) && x.limitId !== ''
+    && (x.windowMinutes === null || count(x.windowMinutes)) && typeof x.verified === 'boolean' && finite(x.peakPercent) && percentOk(x.peakPercent) && count(x.observations)
+    ? { month: x.month, scope: x.scope, label: x.label, agent: x.agent, limitId: x.limitId, windowMinutes: x.windowMinutes, verified: x.verified, peakPercent: x.peakPercent, observations: x.observations }
+    : null;
+}
+
+function parseResult(x: unknown): OverlayResult | null {
+  if (!isObj(x)) return null;
+  if (x.ok === true) return x.id === undefined ? { ok: true } : positive(x.id) ? { ok: true, id: x.id } : null;
+  return x.ok === false && oneOf(OVERLAY_ERRORS, x.error) ? { ok: false, error: x.error } : null;
+}
+
 export function parsePortRequest(x: unknown): PortRequest | null {
   const m = envelope(x);
+  if (m?.type === 'history') {
+    const filter = parseFilter(m.filter), cursor = parseHistoryKey(m.cursor);
+    return count(m.id) && filter && cursor !== undefined && pageLimit(m.limit) ? { v: 1, type: 'history', id: m.id, filter, cursor, limit: m.limit } : null;
+  }
+  if (m?.type === 'projects') return count(m.id) && idOrNull(m.cursor) && pageLimit(m.limit) ? { v: 1, type: 'projects', id: m.id, cursor: m.cursor, limit: m.limit } : null;
+  if (m?.type === 'folders') {
+    return count(m.id) && positive(m.project) && idOrNull(m.cursor) && pageLimit(m.limit) ? { v: 1, type: 'folders', id: m.id, project: m.project, cursor: m.cursor, limit: m.limit } : null;
+  }
+  if (m?.type === 'mapGroups') {
+    const parent = groupOrNull(m.parent), cursor = groupOrNull(m.cursor);
+    return count(m.id) && parent !== undefined && cursor !== undefined && pageLimit(m.limit) ? { v: 1, type: 'mapGroups', id: m.id, parent, cursor, limit: m.limit } : null;
+  }
+  if (m?.type === 'overlay') {
+    const op = parseOp(m.op);
+    return count(m.id) && op ? { v: 1, type: 'overlay', id: m.id, op } : null;
+  }
   if (m?.type === 'tools' || m?.type === 'subagents' || m?.type === 'files') {
     if (!count(m.id) || !positive(m.session) || !idOrNull(m.cursor) || !limitOk(m.limit)) return null;
     return { v: 1, type: m.type, id: m.id, session: m.session, cursor: m.cursor, limit: m.limit } as IdPage<typeof m.type> as PortRequest;
@@ -469,17 +751,65 @@ export function parsePortRequest(x: unknown): PortRequest | null {
   if (m?.type === 'usageHistory') {
     const cursor = parseHistoryCursor(m.cursor);
     if (!count(m.id) || !count(m.scope) || !text(m.stream, MAX_STREAM) || !m.stream || !finite(m.from) || !finite(m.to) || m.from > m.to) return null;
-    if (cursor === undefined || !Number.isSafeInteger(m.limit) || (m.limit as number) < 1) return null;
-    return { v: 1, type: 'usageHistory', id: m.id, scope: m.scope, stream: m.stream, from: m.from, to: m.to, cursor, limit: m.limit as number };
+    if (cursor === undefined || !limitOk(m.limit)) return null;
+    return { v: 1, type: 'usageHistory', id: m.id, scope: m.scope, stream: m.stream, from: m.from, to: m.to, cursor, limit: m.limit };
   }
-  if (!m || m.type !== 'listSessions' || !count(m.id) || !Number.isSafeInteger(m.limit) || (m.limit as number) < 1) return null;
+  if (m?.type === 'clearUsage') return count(m.id) ? { v: 1, type: 'clearUsage', id: m.id } : null;
+  if (m?.type === 'search') { // the query length first (design review L1)
+    if (!count(m.id) || typeof m.query !== 'string' || m.query.length < 1 || m.query.length > QUERY_MAX) return null;
+    const filter = parseFilter(m.filter), cursor = parseSearchKey(m.cursor);
+    return filter && cursor !== undefined && pageLimit(m.limit) ? { v: 1, type: 'search', id: m.id, query: m.query, filter, cursor, limit: m.limit } : null;
+  }
+  if (m?.type === 'purge') return count(m.id) && positive(m.session) ? { v: 1, type: 'purge', id: m.id, session: m.session } : null;
+  if (m?.type === 'historyRow') { // design review L4: exact keys
+    return exactKeys(m, ['v', 'type', 'id', 'session']) && count(m.id) && positive(m.session) ? { v: 1, type: 'historyRow', id: m.id, session: m.session } : null;
+  }
+  if (m?.type === 'suppressed') {
+    const cursor = parseSuppressedCursor(m.cursor);
+    return count(m.id) && cursor !== undefined && pageLimit(m.limit) ? { v: 1, type: 'suppressed', id: m.id, cursor, limit: m.limit } : null;
+  }
+  if (m?.type === 'reimport') return count(m.id) && keyOk(m.key) ? { v: 1, type: 'reimport', id: m.id, key: m.key } : null;
+  if (m?.type === 'retention') return count(m.id) ? { v: 1, type: 'retention', id: m.id } : null;
+  if (m?.type === 'setRetention') {
+    const value = parseRetentionSetting(m.value);
+    return count(m.id) && value ? { v: 1, type: 'setRetention', id: m.id, value } : null;
+  }
+  if (m?.type === 'storage') return count(m.id) && typeof m.refresh === 'boolean' ? { v: 1, type: 'storage', id: m.id, refresh: m.refresh } : null;
+  if (m?.type === 'monthly') {
+    const filter = parseLedgerFilter(m.filter);
+    return count(m.id) && filter && monthOrNull(m.end) && Number.isSafeInteger(m.limit) && (m.limit as number) >= 1 && (m.limit as number) <= LEDGER_MONTHS
+      ? { v: 1, type: 'monthly', id: m.id, filter, end: m.end, limit: m.limit as number } : null;
+  }
+  if (!m || m.type !== 'listSessions' || !count(m.id) || !limitOk(m.limit)) return null;
   const cursor = parseCursor(m.cursor);
-  return cursor === undefined ? null : { v: 1, type: 'listSessions', id: m.id, cursor, limit: m.limit as number };
+  return cursor === undefined ? null : { v: 1, type: 'listSessions', id: m.id, cursor, limit: m.limit };
 }
 
 export function parsePortMessage(x: unknown): PortMessage | null {
   const m = envelope(x);
   if (!m) return null;
+  // review L1: failed only where it is defined; a failed page carries nothing
+  const failedOf = (empty: boolean) => (m.failed === undefined ? {} : m.failed === true && empty ? { failed: true as const } : null);
+  if (m.type === 'history') { // Gate 5 G5b2-5: failed = the store could not answer (the renderer keeps its rows, Retry)
+    const rows = all(m.rows, MAX_ITEMS, parseHistoryRow), next = parseHistoryKey(m.next), failed = failedOf(rows !== null && rows.length === 0 && next === null);
+    return count(m.id) && rows && next !== undefined && failed ? { v: 1, type: 'history', id: m.id, rows, next, ...failed } : null;
+  }
+  if (m.type === 'projects' || m.type === 'folders') {
+    const list = all(m[m.type], MAX_ITEMS, parseNamed);
+    if (!count(m.id) || !list || !idOrNull(m.next)) return null;
+    const failed = failedOf(list.length === 0 && m.next === null);
+    if (!failed) return null;
+    return m.type === 'projects' ? { v: 1, type: 'projects', id: m.id, projects: list, next: m.next, ...failed } : { v: 1, type: 'folders', id: m.id, folders: list, next: m.next, ...failed };
+  }
+  if (m.type === 'mapGroups') {
+    const groups = all(m.groups, MAX_ITEMS, parseMapNode), next = groupOrNull(m.next);
+    if (m.failed !== undefined && m.failed !== true) return null;
+    return count(m.id) && groups && next !== undefined ? { v: 1, type: 'mapGroups', id: m.id, groups, next, ...(m.failed ? { failed: true as const } : {}) } : null;
+  }
+  if (m.type === 'overlay') {
+    const result = parseResult(m.result);
+    return count(m.id) && result ? { v: 1, type: 'overlay', id: m.id, result } : null;
+  }
   if (m.type === 'session') {
     const detail = parseDetail(m.detail);
     return count(m.id) && detail !== undefined ? { v: 1, type: 'session', id: m.id, detail } : null;
@@ -518,6 +848,43 @@ export function parsePortMessage(x: unknown): PortMessage | null {
     const rows = parseRows(m.rows);
     const next = parseCursor(m.next);
     return count(m.id) && rows && next !== undefined ? { v: 1, type: 'page', id: m.id, rows, next } : null;
+  }
+  if (m.type === 'clearUsage') return count(m.id) && oneOf(CLEAR_USAGE_RESULTS, m.result) ? { v: 1, type: 'clearUsage', id: m.id, result: m.result } : null;
+  if (m.type === 'search') {
+    const hits = all(m.hits, MAX_ITEMS, parseSearchHit), next = parseSearchKey(m.next), failed = failedOf(hits !== null && hits.length === 0 && next === null);
+    const capped = m.capped === undefined ? {} : m.capped === true ? { capped: true as const } : null;
+    return count(m.id) && hits && next !== undefined && failed && capped ? { v: 1, type: 'search', id: m.id, hits, next, ...failed, ...capped } : null;
+  }
+  if (m.type === 'suppressed') {
+    const rows = all(m.rows, MAX_ITEMS, parseSuppressedRow), next = parseSuppressedCursor(m.next), failed = failedOf(rows !== null && rows.length === 0 && next === null);
+    return count(m.id) && rows && next !== undefined && failed ? { v: 1, type: 'suppressed', id: m.id, rows, next, ...failed } : null;
+  }
+  if (m.type === 'purge') return count(m.id) && m.failed === undefined && oneOf(PURGE_RESULTS, m.result) ? { v: 1, type: 'purge', id: m.id, result: m.result } : null;
+  if (m.type === 'historyRow') { // design review L1: failed only with no row; a malformed row rejects, never reads as gone
+    const row = m.row === null ? null : parseHistoryRow(m.row), failed = failedOf(m.row === null);
+    const keys = ['v', 'type', 'id', 'row', ...(m.failed === undefined ? [] : ['failed'])];
+    return exactKeys(m, keys) && count(m.id) && (m.row === null || row) && failed ? { v: 1, type: 'historyRow', id: m.id, row, ...failed } : null;
+  }
+  if (m.type === 'reimport') return count(m.id) && m.failed === undefined && oneOf(REIMPORT_RESULTS, m.result) ? { v: 1, type: 'reimport', id: m.id, result: m.result } : null;
+  if (m.type === 'setRetention') return count(m.id) && m.failed === undefined && oneOf(SAVE_RESULTS, m.result) ? { v: 1, type: 'setRetention', id: m.id, result: m.result } : null;
+  if (m.type === 'retention') {
+    const setting = m.setting === null ? null : parseRetentionSetting(m.setting);
+    return count(m.id) && m.failed === undefined && (m.setting === null || setting) && timeOrNull(m.lastRunAt) ? { v: 1, type: 'retention', id: m.id, setting, lastRunAt: m.lastRunAt } : null;
+  }
+  if (m.type === 'storage') {
+    const report = parseStorage(m.report), failed = failedOf(true); // a failed refresh still carries the last report
+    return count(m.id) && report !== undefined && failed ? { v: 1, type: 'storage', id: m.id, report, ...failed } : null;
+  }
+  if (m.type === 'monthly') {
+    const months = all(m.months, LEDGER_MONTHS, parseLedgerMonth), quota = all(m.quota, MAX_LEDGER_QUOTA, parseLedgerQuota);
+    // review L10: unique ascending months, quota only for listed months, a failed reply carries nothing
+    if (months && months.some((x, i) => i > 0 && x.month <= months[i - 1]!.month)) return null;
+    if (months && quota && quota.some((x) => !months.some((y) => y.month === x.month))) return null;
+    if (m.failed === true && (months?.length || quota?.length || (m.agents as unknown[] | undefined)?.length || (m.models as unknown[] | undefined)?.length || m.older !== null || m.newer !== null)) return null;
+    const agents = all(m.agents, MAX_LEDGER_AGENTS, (a) => (agentOk(a) ? a : null)), models = all(m.models, MAX_LEDGER_MODELS, (x) => (modelOk(x) ? x : null));
+    if (m.failed !== undefined && m.failed !== true) return null;
+    return count(m.id) && months && quota && agents && models && monthOrNull(m.older) && monthOrNull(m.newer)
+      ? { v: 1, type: 'monthly', id: m.id, months, quota, older: m.older, newer: m.newer, agents, models, ...(m.failed ? { failed: true as const } : {}) } : null;
   }
   if (m.type === 'usage') {
     const scopes = all(m.scopes, MAX_SCOPES, parseScope);

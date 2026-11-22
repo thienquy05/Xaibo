@@ -14,7 +14,7 @@ import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { claudeProfile } from '../helpers/hook-socket.ts';
-import { close, environment, launch, query, serviceLog, sleep, stats, waitForEvent } from './app.ts';
+import { close, environment, launch, query, serviceLog, sleep, stats, until, waitForEvent } from './app.ts';
 import { installHelpers } from './emitter.ts';
 import type { ElectronApplication } from '@playwright/test';
 
@@ -171,14 +171,6 @@ export async function m16Probe(runs: number) {
     pass: ok, env };
 }
 
-async function until<T>(f: () => T | null | false, ms: number): Promise<T> {
-  const end = Date.now() + ms;
-  for (let v = f(); ; v = f()) {
-    if (v) return v;
-    if (Date.now() > end) throw new Error(`timed out after ${ms} ms`);
-    await sleep(50);
-  }
-}
 
 // ---------------------------------------------------------------------------------------------------------------
 export const M4_MB = 250;

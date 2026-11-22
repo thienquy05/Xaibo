@@ -4,16 +4,18 @@
 // (totals.ts, queue.ts, usage/presentation.ts); while the collector is not running every live label reads "Last known".
 // Service-supplied strings go through visible() (EC-55).
 import { useEffect, useReducer, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
-import type { AgentStatus, Banner, HistoryCursor, SessionRow, UsageRecord, UsageScope } from '../../shared/ipc.ts';
+import type { AgentStatus, Banner, HistoryCursor, LiveStatus, SessionRow, UsageRecord, UsageScope } from '../../shared/ipc.ts';
 import { LoadingLine, RetryNotice } from '../components/RetryNotice.tsx';
 import { VirtualList } from '../components/VirtualList.tsx';
 import { retryIdle, retryStep, type Retry } from '../retry.ts';
-import { nextFocus } from '../components/virtual-list-model.ts';
+import { rovingKey } from '../components/virtual-list-model.ts';
 import { Coverage } from '../Coverage.tsx';
+import { MonthlyChart, type MonthlyApi } from '../history/MonthlyChart.tsx';
 import { AgentStrip } from '../Health.tsx';
-import { capText, costText, findingBadges, formatTime, openSessionLabels, recordLabel, statusExtras, type LiveSetState } from '../model.ts';
+import { capText, clock, costText, formatTime, openSessionLabels, recordLabel, type LiveSetState } from '../model.ts';
 import { Record as SessionRecord } from '../SessionList.tsx';
-import { Icon, StatusBadge } from '../status/StatusBadge.tsx';
+import { lifecycleName } from '../status/presentation.ts';
+import { Icon, StatusLine } from '../status/StatusBadge.tsx';
 import { visible } from '../text.ts';
 import { dayRange, historyBounds, scopeBlocks, shiftDay, usageRefreshDue, usageView, usageWakeIn } from '../usage/presentation.ts';
 import { attentionQueue, attentionState, sinceText } from './queue.ts';
@@ -23,6 +25,8 @@ import { abbreviate, liveSetSummary, type Summary } from './totals.ts';
 export interface UsageApi {
   usage(): Promise<UsageScope[]>;
   history(scope: number, stream: string, from: number, to: number, cursor: HistoryCursor | null): Promise<{ records: UsageRecord[]; next: HistoryCursor | null }>;
+  /** P5-T17b: the monthly usage ledger (optional where a caller has no service, e.g. render tests). */
+  monthly?: MonthlyApi;
 }
 export type View = 'live' | 'attention' | 'usage';
 const VIEWS: View[] = ['live', 'attention', 'usage'];
@@ -60,12 +64,7 @@ export function Dashboard(p: {
     attention: p.live.loaded ? `Needs attention ${waiting}${p.live.more ? '+' : ''}${lastKnown ? ` · last known ${lastKnown}` : ''}` : 'Needs attention · count unavailable',
     usage: 'Usage and history',
   };
-  const onKey = (e: KeyboardEvent, i: number) => {
-    const n = nextFocus(i, e.key, VIEWS.length, 'horizontal');
-    if (n === null || n < 0) return;
-    e.preventDefault();
-    buttons.current[n]?.focus();
-  };
+  const onKey = (e: KeyboardEvent, i: number) => rovingKey(e, i, VIEWS.length, buttons.current);
   const showLive = () => { setView('live'); requestAnimationFrame(() => document.getElementById('view-live-heading')?.focus()); };
   return (
     <div className="x-dashboard">
@@ -92,7 +91,14 @@ export function Dashboard(p: {
         <section id={`view-${view}`} aria-labelledby={`view-${view}-heading`} className="x-view-body">
           {view === 'live' ? <LiveView live={p.live} lastKnown={lastKnown} focusId={p.focusId} onOpen={p.onOpen} />
             : view === 'attention' ? <AttentionView queue={queue} loaded={p.live.loaded} failed={p.liveFailed} lastKnown={lastKnown} name={name} onShowLive={showLive} onOpen={p.onOpen} />
-              : <UsageView api={p.api} tick={p.tick} name={name} lastKnown={lastKnown} />}
+              : <>
+                <UsageView api={p.api} tick={p.tick} name={name} lastKnown={lastKnown} />
+                {/* P5-T17b (design §6.1.1): the ledger lives in this view below usage scopes, at the view's full width */}
+                <section aria-labelledby="monthly-heading">
+                  <h2 id="monthly-heading">Monthly usage</h2>
+                  {p.api.monthly ? <MonthlyChart api={p.api.monthly} name={name} /> : <p>Monthly usage unavailable</p>}
+                </section>
+              </>}
         </section>
         {view === 'usage' ? <div className="x-dashboard-lower">
           <section className="x-panel" aria-labelledby="current-state-heading">
@@ -100,10 +106,6 @@ export function Dashboard(p: {
             {p.live.loaded ? <><p className="x-chart-caption">{p.live.more ? 'Loaded subset' : 'Loaded live-session set'}{lastKnown ? ` · ${lastKnown}` : ''}</p><StateCounts data={series.states} /></> : <p>Current state unavailable</p>}
           </section>
           <AgentStrip agents={p.agents} onSetPath={p.onSetPath} />
-          <section className="x-panel" aria-labelledby="monthly-heading">
-            <h2 id="monthly-heading">Monthly usage</h2>
-            <p>No observations yet — monthly totals are not available in this phase.</p>
-          </section>
         </div> : <AgentStrip agents={p.agents} onSetPath={p.onSetPath} />}
       </div>
     </div>
@@ -121,11 +123,11 @@ function LiveSummary({ s, rows, series, lastKnown }: { s: Summary; rows: Session
       <h2 id="summary-heading">{lastKnown ? `Last known live-session set · ${lastKnown}` : 'Live-session set'}</h2>
       <p>{`${lastKnown ? 'Last known live-session set' : 'Live-session set'}: ${s.sessions}${s.atLeast ? ' or more' : ''} currently tracked, non-ended sessions`}</p>
       <dl className="x-metrics">
-        <div><dt>Active agents</dt><dd data-field="active-agents">{s.activeAgents}</dd>
+        <div><dt>Active agents</dt><dd data-field="active-agents">{series.agents.length}</dd>
           <dd className="x-metric-chart"><Microchart title="Active sessions by agent" unit="sessions" data={series.agents} /></dd>
         </div>
         <div><dt>Sessions</dt><dd data-field="sessions">{s.sessions}{s.atLeast ? ' or more' : ''}</dd>
-          <dd className="x-metric-chart"><Microchart title="Sessions by live state" unit="sessions" data={series.states.map((d) => ({ ...d, label: stateName(d.label) }))} /></dd>
+          <dd className="x-metric-chart"><Microchart title="Sessions by live state" unit="sessions" data={series.states.map((d) => ({ ...d, label: lifecycleName(d.label as LiveStatus['lifecycle']) }))} /></dd>
         </div>
         <div>
           <dt>Observed tokens</dt>
@@ -143,7 +145,7 @@ function LiveSummary({ s, rows, series, lastKnown }: { s: Summary; rows: Session
         </div>
       </dl>
       <p className="x-chart-caption">{s.atLeast ? 'Loaded subset' : 'Loaded live-session set'} · {observed}. Categorical bars, not time trends. Session estimates retain service cost coverage; price provenance is unavailable in this view.</p>
-      <details className="x-micro-details"><summary>Session measurement coverage</summary><ul>{[...new Map(rows.map((r) => [r.id, r])).values()].map((r, i) => <li key={r.id}>
+      <details className="x-micro-details"><summary>Session measurement coverage</summary><ul>{rows.map((r, i) => <li key={r.id}>
         Session {i + 1}: tokens {r.tokens === null ? 'unavailable' : `${r.tokens.toLocaleString('en-US')} · ${r.tokensComplete ? 'complete' : 'known subtotal'}`} · estimated cost coverage {r.costCoverage} · {r.lastActivity === null ? 'Activity time unavailable' : `Activity ${formatTime(r.lastActivity)}`}
       </li>)}</ul></details>
     </section>
@@ -151,9 +153,8 @@ function LiveSummary({ s, rows, series, lastKnown }: { s: Summary; rows: Session
 }
 
 
-const stateName = (label: string) => label === 'waiting-for-permission' ? 'Waiting for permission' : label === 'needs-input' ? 'Needs input' : label.charAt(0).toUpperCase() + label.slice(1);
 function StateCounts({ data }: { data: Datum[] }) {
-  return <ul className="x-state-list">{data.map((d) => <li key={d.label}>{stateName(d.label)}: {d.value}</li>)}</ul>;
+  return <ul className="x-state-list">{data.map((d) => <li key={d.label}>{lifecycleName(d.label as LiveStatus['lifecycle'])}: {d.value}</li>)}</ul>;
 }
 function Microchart({ title, unit, data }: { title: string; unit: string; data: Datum[] }) {
   const bars = barGeometry(data.map((d) => d.value));
@@ -212,10 +213,7 @@ function AttentionView({ queue, loaded, failed, lastKnown, name, onShowLive, onO
               <li key={r.id} className="x-record">
                 <p className="x-record-head"><span data-field="agent">{name(r.agent)}</span><span data-field="project">Project</span></p>
                 <p className="x-record-status" data-field="status">
-                  {lastKnown ? <span>Last known: </span> : null}
-                  <StatusBadge status={r.live} />
-                  {r.live ? statusExtras(r.live).map((t) => <span key={t}> · {t}</span>) : null}
-                  {findingBadges(r.live).map((b) => <span key={b.text}> · {b.text}</span>)}
+                  <StatusLine status={r.live} lastKnown={!!lastKnown} />
                 </p>
                 <p data-field="since">{sinceText(r.live?.since ?? null, now)}</p>
                 {/* XAIBO-PROD-437 (design §6.2): each record opens its session */}
@@ -348,7 +346,7 @@ function History({ scope, stream, api, onClose }: { scope: number; stream: strin
   useEffect(() => { setRecords([]); setNext(null); load(null); }, [day]); // reload per day only
   const row = (r: UsageRecord): ReactNode => (
     <li key={r.id}>
-      {formatTime(r.measuredAt).slice(11)} · {r.usedPercent === null ? 'Utilization unavailable' : `${Math.round(r.usedPercent * 10) / 10}%`}
+      {clock(r.measuredAt)} · {r.usedPercent === null ? 'Utilization unavailable' : `${Math.round(r.usedPercent * 10) / 10}%`}
       {r.windowMinutes === null ? ' · Window unavailable' : ` · ${r.windowMinutes}-minute window`}
       {r.resetsAt !== null ? ` · Resets ${formatTime(r.resetsAt)}` : ' · Reset unavailable'}{r.kind === 'transition' ? ' · Window or reset changed' : ''}
       {r.sourceTimeKnown ? '' : ' · Source time unknown'}
@@ -388,7 +386,7 @@ function HistoryChart({ records }: { records: UsageRecord[] }) {
       })}
       {g.points.map((p) => <circle key={p.record.id} className="x-chart-point" cx={p.x} cy={p.y} r={3} />)}
     </svg> : <p>Utilization unavailable for loaded observations.</p>}
-    <p className="x-chart-scale"><span>{formatTime(g.from).slice(11)}</span><span>{formatTime(g.to).slice(11)}</span></p>
+    <p className="x-chart-scale"><span>{clock(g.from)}</span><span>{clock(g.to)}</span></p>
     <p className="x-chart-caption">Loaded range: {formatTime(g.from)} – {formatTime(g.to)}. Displayed scale 0–{g.maxPercent}%; values rounded to one decimal below. Straight joins show sequence only between adjacent observed minutes of the same known window/reset; no measured intermediate values. Missing minutes, unknown source time and transitions break the line and area. {records.length} loaded records.</p>
   </>;
 }

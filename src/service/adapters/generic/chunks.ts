@@ -8,9 +8,9 @@
 // frees it once that state is committed (G3d-1).
 // Names come only from a validated UUID and a hash, never from payload text. Same-uid swaps of these private dirs are the
 // same trust domain (accepted, review 872 #8). Each item dir holds its key (JSON) so the caller can free items that the
-// store already settled before a crash removed them; a write that fails removes what it wrote. ponytail: abandoned
-// pending items, and items of a revoked registration, keep their quota until removed; an age reaper when retention lands
-// (Phase 5).
+// store already settled before a crash removed them; a write that fails removes what it wrote. XAIBO-PROD-542 G5a-4:
+// items of a registration no longer registered, and pending items abandoned for CHUNK_ABANDON_MS, are reaped through the
+// live store (reap, run by retention), so their quota is freed.
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
@@ -29,9 +29,14 @@ export interface ChunkStore {
   remove(key: ChunkKey): void;
   /** Keys of the items on disk (pending, or left by a crash after their state was committed). */
   items(): ChunkKey[];
+  /** XAIBO-PROD-542 G5a-4: removes items whose registration is not in `registered()` (read after the items are listed) and
+   *  items whose newest chunk is older than CHUNK_ABANDON_MS; null (an unreadable registry) reaps nothing. Returns how many. */
+  reap(now: number, registered: () => ReadonlySet<string> | null): number;
 }
 
 export const CHUNK_LIMITS = { perRegistration: 64 << 20, global: 512 << 20, items: 256, files: 20_000 };
+/** A pending item none of whose chunks was written for this long is abandoned (a producer that never sent its final). */
+export const CHUNK_ABANDON_MS = 7 * 24 * 3600_000;
 const MAX_INDEX = 65_535;
 const OVERHEAD = 512; // per chunk file, so empty chunks still cost quota
 const CHUNK = /^\d{1,5}\.c$/;
@@ -60,6 +65,28 @@ function durable(file: string, data: string) {
     rmSync(file, { force: true });
     throw e;
   }
+}
+
+const ownDir = (p: string) => { try { const st = lstatSync(p); return st.isDirectory() && (process.getuid === undefined || st.uid === process.getuid()); } catch { return false; } };
+
+/** XAIBO-PROD-515 (P5-T07): removes every item (pending, interrupted or left by a crash) whose verified key matches;
+ *  returns how many. Only our own dirs with valid names and a key that hashes to its dir are touched; symlinks are never
+ *  followed. ponytail: a running report intake keeps counting the removed bytes against its quota until it reopens
+ *  (service restart); route this through its ChunkStore if purges of large pending items ever starve other sessions. */
+export function removeItems(root: string, match: (k: ChunkKey) => boolean): number {
+  if (!ownDir(root)) return 0;
+  let n = 0;
+  for (const reg of readdirSync(root).filter((x) => UUID.test(x) && ownDir(path.join(root, x)))) {
+    for (const h of readdirSync(path.join(root, reg)).filter((x) => HASH.test(x) && ownDir(path.join(root, reg, x)))) {
+      const dir = path.join(root, reg, h);
+      let key: ChunkKey | null = null;
+      try { if (lstatSync(path.join(dir, KEY)).isFile()) key = parseKey(readFileSync(path.join(dir, KEY), 'utf8')); } catch { /* no key file: not ours to judge */ }
+      if (!key || key.registration !== reg || hashOf(key) !== h || !match(key)) continue;
+      rmSync(dir, { recursive: true, force: true });
+      n++;
+    }
+  }
+  return n;
 }
 
 export function openChunks(root: string, limits: ChunkLimits = CHUNK_LIMITS): ChunkStore {
@@ -94,17 +121,36 @@ export function openChunks(root: string, limits: ChunkLimits = CHUNK_LIMITS): Ch
     if (!UUID.test(key.registration)) return;
     const a = accounts.get(key.registration);
     const h = hashOf(key);
+    rmSync(path.join(root, key.registration, h), { recursive: true, force: true }); // a throw keeps it counted (review M)
     const item = a?.items.get(h);
     if (a && item) {
       const cost = item.bytes + item.chunks * OVERHEAD;
       a.bytes -= cost; a.files -= item.chunks; total -= cost; a.items.delete(h);
     }
-    rmSync(path.join(root, key.registration, h), { recursive: true, force: true });
   };
 
+  const items = () => [...accounts.values()].flatMap((a) => [...a.items.values()].map((i) => i.key));
+  /** The newest mtime among an item's files: 0 when its dir is gone (nothing left to wait for); Infinity when it cannot be
+   *  read now (review M: EACCES, EMFILE... is no age; the item stays this run). */
+  const newest = (key: ChunkKey) => {
+    const dir = path.join(root, key.registration, hashOf(key));
+    try { return Math.max(0, ...readdirSync(dir).map((f) => lstatSync(path.join(dir, f)).mtimeMs)); }
+    catch (e) { return (e as NodeJS.ErrnoException).code === 'ENOENT' ? 0 : Infinity; }
+  };
   return {
     remove,
-    items: () => [...accounts.values()].flatMap((a) => [...a.items.values()].map((i) => i.key)),
+    items,
+    reap(now, registered) {
+      const listed = items();
+      const regs = registered();
+      if (!regs) return 0;
+      let n = 0;
+      for (const k of listed) {
+        if (regs.has(k.registration) && newest(k) >= now - CHUNK_ABANDON_MS) continue;
+        try { remove(k); n++; } catch { /* a dir that cannot be removed now: the next run tries again */ }
+      }
+      return n;
+    },
     put(key, index, final, content) {
       if (!Number.isSafeInteger(index) || index < 0 || index > MAX_INDEX) throw new RangeError('chunk index out of range');
       if (!UUID.test(key.registration)) throw new RangeError('registration id');

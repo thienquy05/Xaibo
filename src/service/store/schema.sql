@@ -71,6 +71,12 @@ CREATE TABLE events (
 );
 CREATE INDEX events_current_seq ON events (session_id, source, source_seq) WHERE revision_status = 'current';
 CREATE INDEX events_seq ON events (session_id, source_seq);
+CREATE TABLE folders (
+  id INTEGER PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 200),
+  UNIQUE (project_id, name)
+);
 CREATE TABLE hook_delivery (
   delivery_id TEXT PRIMARY KEY,
   agent TEXT NOT NULL,
@@ -96,6 +102,58 @@ CREATE TABLE kv (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+CREATE TABLE monthly_quota_peaks (
+  month TEXT NOT NULL,
+  scope_key TEXT NOT NULL,
+  limit_id TEXT NOT NULL,
+  window_minutes INTEGER NOT NULL, -- -1 = window length unknown
+  verified INTEGER NOT NULL CHECK (verified IN (0, 1)),
+  peak_percent REAL NOT NULL,
+  observations INTEGER NOT NULL, agent TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (month, scope_key, limit_id, window_minutes)
+) WITHOUT ROWID;
+CREATE TABLE monthly_sessions (
+  month TEXT NOT NULL,
+  agent TEXT NOT NULL,
+  profile_key TEXT NOT NULL,
+  sessions INTEGER NOT NULL DEFAULT 0, -- distinct sessions across models
+  PRIMARY KEY (month, agent, profile_key)
+) WITHOUT ROWID;
+CREATE TABLE monthly_usage (
+  month TEXT NOT NULL,
+  agent TEXT NOT NULL,
+  profile_key TEXT NOT NULL,
+  model_id TEXT NOT NULL,              -- '' = model unavailable
+  sessions INTEGER NOT NULL DEFAULT 0, -- sessions that used this model in the month
+  turns INTEGER NOT NULL DEFAULT 0,
+  requests INTEGER NOT NULL DEFAULT 0,
+  uncached_input INTEGER NOT NULL DEFAULT 0,
+  cache_read INTEGER NOT NULL DEFAULT 0,
+  cache_write INTEGER NOT NULL DEFAULT 0,
+  output INTEGER NOT NULL DEFAULT 0,
+  token_gaps INTEGER NOT NULL DEFAULT 0, -- requests with a missing component (known subtotal kept)
+  cost_micros INTEGER,                   -- known subtotal of per-request estimates in micro-USD (exact sums); NULL = none priced
+  cost_full INTEGER NOT NULL DEFAULT 0,
+  cost_partial INTEGER NOT NULL DEFAULT 0,
+  cost_none INTEGER NOT NULL DEFAULT 0,
+  cost_pending INTEGER NOT NULL DEFAULT 0,
+  price_revisions TEXT NOT NULL DEFAULT '[]', -- price revision ids that priced the subtotal
+  PRIMARY KEY (month, agent, profile_key, model_id)
+) WITHOUT ROWID;
+CREATE TABLE overlays (
+  agent TEXT NOT NULL,
+  profile_id TEXT NOT NULL,
+  native_session_id TEXT NOT NULL,
+  project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+  folder_id INTEGER REFERENCES folders(id) ON DELETE SET NULL,
+  pinned INTEGER NOT NULL DEFAULT 0 CHECK (pinned IN (0, 1)),
+  archived_at INTEGER,
+  trashed_at INTEGER,
+  keep INTEGER NOT NULL DEFAULT 0 CHECK (keep IN (0, 1)),
+  PRIMARY KEY (agent, profile_id, native_session_id)
+) WITHOUT ROWID;
+CREATE INDEX overlays_project ON overlays (project_id, folder_id);
+CREATE INDEX overlays_trashed ON overlays (trashed_at) WHERE trashed_at IS NOT NULL;
 CREATE TABLE price_revisions (
   id INTEGER PRIMARY KEY,
   schema_version INTEGER NOT NULL,
@@ -114,6 +172,11 @@ CREATE TABLE "profiles" (
   root TEXT NOT NULL,
   origin TEXT NOT NULL CHECK (origin IN ('default', 'env', 'manual', 'registration')),
   UNIQUE (agent, root)
+);
+CREATE TABLE projects (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE CHECK (length(name) BETWEEN 1 AND 200),
+  created_at INTEGER NOT NULL
 );
 CREATE TABLE quarantine (
   id INTEGER PRIMARY KEY,
@@ -187,10 +250,20 @@ CREATE TABLE sessions (
   record_count INTEGER NOT NULL DEFAULT 0,
   unknown_count INTEGER NOT NULL DEFAULT 0,
   quarantined_count INTEGER NOT NULL DEFAULT 0,
-  drift INTEGER NOT NULL DEFAULT 0, originator TEXT, source_kind TEXT, native_archived INTEGER NOT NULL DEFAULT 0, current_model TEXT, current_effort TEXT, current_model_ts INTEGER, account_epoch TEXT,
+  drift INTEGER NOT NULL DEFAULT 0, originator TEXT, source_kind TEXT, native_archived INTEGER NOT NULL DEFAULT 0, current_model TEXT, current_effort TEXT, current_model_ts INTEGER, account_epoch TEXT, repo_key TEXT, worktree TEXT, repo_reason TEXT, ai_title TEXT, excerpt TEXT,
   UNIQUE (agent, profile_id, native_session_id)
 );
 CREATE INDEX sessions_activity ON sessions (last_activity DESC, id);
+CREATE INDEX sessions_agent_activity ON sessions (agent, last_activity DESC, id);
+CREATE INDEX sessions_cwd ON sessions (repo_key, cwd);
+CREATE INDEX sessions_repo ON sessions (repo_key, worktree);
+CREATE TABLE settled_contributions (
+  key TEXT PRIMARY KEY,
+  month TEXT NOT NULL,
+  utc_offset INTEGER NOT NULL,
+  settled_at INTEGER NOT NULL,
+  cleared INTEGER NOT NULL DEFAULT 0 CHECK (cleared IN (0, 1))
+) WITHOUT ROWID;
 CREATE TABLE source_files (
   id INTEGER PRIMARY KEY,
   profile_id TEXT NOT NULL REFERENCES profiles(id),
@@ -204,7 +277,7 @@ CREATE TABLE source_files (
   offset INTEGER NOT NULL DEFAULT 0,
   head_hash TEXT,
   status TEXT NOT NULL DEFAULT 'ok' CHECK (status IN ('ok', 'compressed_not_imported', 'gone', 'oversized'))
-);
+, epoch INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE status_evidence (
   id INTEGER PRIMARY KEY,
   agent TEXT NOT NULL,
@@ -225,6 +298,16 @@ CREATE TABLE subagents (
   agent_type TEXT, model_id TEXT,
   UNIQUE (session_id, native_id)
 );
+CREATE TABLE suppressions (
+  agent TEXT NOT NULL,
+  profile_id TEXT NOT NULL,
+  native_session_id TEXT NOT NULL,
+  reason TEXT NOT NULL CHECK (reason IN ('manual', 'retention')),
+  at INTEGER NOT NULL,
+  pending TEXT, files TEXT, cleared_at INTEGER, purge_phase TEXT, fresh_at INTEGER, settle_cursor TEXT,
+  PRIMARY KEY (agent, profile_id, native_session_id)
+) WITHOUT ROWID;
+CREATE INDEX suppressions_pending ON suppressions (agent) WHERE pending IS NOT NULL;
 CREATE TABLE tool_calls (
   id INTEGER PRIMARY KEY,
   session_id INTEGER NOT NULL REFERENCES sessions(id),
@@ -249,9 +332,10 @@ CREATE TABLE turns (
   ended_at INTEGER,
   outcome TEXT,
   model_id TEXT,
-  effort TEXT,
+  effort TEXT, utc_offset INTEGER,
   UNIQUE (session_id, native_turn_id)
 );
+CREATE INDEX turns_session ON turns (session_id);
 CREATE INDEX turns_started ON turns (session_id, started_at);
 CREATE TABLE usage (
   id INTEGER PRIMARY KEY,
@@ -270,7 +354,7 @@ CREATE TABLE usage (
   output INTEGER,
   raw TEXT,
   completeness TEXT,
-  source_ts INTEGER,
+  source_ts INTEGER, utc_offset INTEGER,
   UNIQUE (session_id, source, scope, identity)
 );
 CREATE TABLE usage_history (
@@ -291,7 +375,7 @@ CREATE TABLE usage_history (
   measured_at INTEGER NOT NULL,
   source TEXT NOT NULL,
   source_locator TEXT NOT NULL
-);
+, utc_offset INTEGER);
 CREATE UNIQUE INDEX usage_history_minute ON usage_history (usage_scope_id, limit_id, kind, minute);
 CREATE INDEX usage_history_stream ON usage_history (usage_scope_id, limit_id, measured_at);
 CREATE TABLE usage_scopes (
@@ -303,6 +387,7 @@ CREATE TABLE usage_scopes (
   session_id INTEGER REFERENCES sessions(id),
   verified INTEGER NOT NULL CHECK (verified IN (0, 1))
 );
+CREATE INDEX usage_session ON usage (session_id);
 CREATE TABLE usage_snapshots (
   id INTEGER PRIMARY KEY,
   schema_version INTEGER NOT NULL,

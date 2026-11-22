@@ -11,8 +11,10 @@ import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import type { Envelope } from '../../shared/hook-protocol.ts';
 import { parseReport } from '../../shared/report/schema.ts';
-import { openChunks, type ChunkKey, type ChunkLimits } from '../adapters/generic/chunks.ts';
-import { isDiskFull, type Batch, type ReportDelivery, type Writer } from '../store/writer.ts';
+import { openChunks, type ChunkKey, type ChunkLimits, type ChunkStore } from '../adapters/generic/chunks.ts';
+import { isDiskFull } from '../store/db.ts';
+import { MARKER, refuses, type Marker } from '../history/suppression.ts';
+import type { Batch, ReportDelivery, Writer } from '../store/writer.ts';
 import type { Registration } from './registrations.ts';
 import type { IntakeResult } from './socket.ts';
 
@@ -32,6 +34,8 @@ export interface ReportIntake {
   deliver(reg: Registration, frame: unknown, receivedTs?: number): Promise<IntakeResult>;
   /** Counts a frame refused before intake (framing, size) as coverage for its registration. */
   rejected(reg: Registration, code: string): void;
+  /** XAIBO-PROD-542 G5a-4: the live chunk store (purge and the reaper remove items through it, freeing their quota). */
+  chunks: ChunkStore;
 }
 
 /** XAIBO-PROD-442/453: the producer's newest stored model-bearing sequence number for one session (partial index
@@ -44,6 +48,7 @@ export function createReportIntake(o: ReportIntakeOptions): ReportIntake {
   const chunks = openChunks(path.join(o.dataDir, 'content-chunks'), o.chunks);
   const profileOf = o.db.prepare('SELECT agent, origin FROM profiles WHERE id = ?');
   const stored = o.db.prepare('SELECT 1 FROM report_delivery WHERE registration_id = ? AND delivery_id = ?');
+  const marker = o.db.prepare(MARKER);
   const newestSeq = o.db.prepare(NEWEST_SEQ);
   const itemState = o.db.prepare('SELECT state FROM report_content WHERE registration_id = ? AND native_session_id = ? AND item_id = ? AND revision = ?');
   const putReject = o.db.prepare(`INSERT INTO report_rejects (registration_id, code, count, first_ts, last_ts) VALUES (?, ?, 1, ?, ?)
@@ -68,6 +73,13 @@ export function createReportIntake(o: ReportIntakeOptions): ReportIntake {
     if (stored.get(reg.id, x.delivery_id)) return { status: 'accepted', code: 'duplicate' };
     // A replayed frame keeps the helper's receive time, never later than now, so it orders and ages as it happened (G3c-3).
     const committed = now(), at = receivedTs === undefined ? committed : Math.min(receivedTs, committed);
+    // P5-T07 (FR-11, review H1): a purged session is refused before it is published or a chunk of it is written.
+    // P5-T08 (review M4 + diff review): judged by the frame's own event time, never later than its receive time, so history
+    // re-sent under fresh delivery ids, a frame spooled before the purge by a producer whose clock ran ahead, or a frame
+    // with no readable time never counts as new activity (and intake refuses at least what the writer refuses)
+    const m = marker.get(reg.agent, reg.profile_key, x.session_id) as Marker | undefined;
+    const eventTs = Date.parse(x.source_ts);
+    if (m && refuses(m, Number.isFinite(eventTs) ? Math.min(eventTs, at) : null)) return { status: 'accepted', code: 'suppressed' };
     const p = x.payload;
     const isContent = x.event === 'content.upsert';
     const lean = isContent ? { ...x, payload: { ...p, content: '' } } : x;
@@ -129,5 +141,5 @@ export function createReportIntake(o: ReportIntakeOptions): ReportIntake {
     return { status: 'accepted', code: (content?.state ?? settled) === 'incomplete' ? 'incomplete' : 'ok' };
   };
 
-  return { deliver, rejected };
+  return { deliver, rejected, chunks };
 }

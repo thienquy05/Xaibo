@@ -2,13 +2,21 @@
 // live batches are committed ahead of backfill; flush at the S12 bounds (100 rows, 1 MiB or 50 ms).
 import type { DatabaseSync } from 'node:sqlite';
 import { byRank, mergeToolCalls, type ToolCallObservation } from '../normalize.ts';
+import { resolveRepository, type Grouping } from '../history/repository.ts';
 import { cwdKey } from '../paths.ts';
+import { isDiskFull } from './db.ts';
+import { blocks, clear as clearMarker, MARKER, noteFile, refuses, type Marker } from '../history/suppression.ts';
 import { agyUsage, claudeUsage, codexRateLimits, codexStep, codexUsage, tokenRecordDrift, type Usage } from '../usage/tokens.ts';
 import { contextStep, type ContextObs, type Snapshot } from '../usage/context.ts';
 import { codexReadings, historyStep, scopeKey, sourceTime, type Reading, type Stored } from '../usage/snapshots.ts';
+import { LAST_RUN_KEY, QUOTA_MS } from '../retention/policy.ts';
+import { utcOffset } from '../usage/monthly.ts';
+import { computeExcerpt } from '../history/excerpt.ts';
 
 export const SCHEMA_VERSION = 1;
-const FTS_MAX_BYTES = 64 * 1024;
+// The FTS row of an event is its ftsPrefix; deletes (revisions, purge) must pass that same text, so changing this bound
+// leaves rows indexed under the old one undeletable (XAIBO-PROD-515 review M5).
+export const FTS_MAX_BYTES = 64 * 1024;
 /** P4-T08: model evidence relayed by Xaibo's own channels (not the agent's file) and the effort fill window. */
 const RELAYED = new Set(['hook', 'report', 'statusline']);
 const FILL_MS = 60_000;
@@ -16,9 +24,15 @@ const FILL_MS = 60_000;
 export interface SourceFileCheckpoint {
   path: string; kind: string; dev: number; ino: number; size: number; mtime: number; offset: number; headHash: string;
   status: 'ok' | 'compressed_not_imported' | 'gone' | 'oversized';
+  /** P5-T08: the stored epoch this checkpoint was read at; a re-import reset since then wins. Absent = unguarded. */
+  epoch?: number;
 }
 export interface SessionUpsert {
-  nativeSessionId: string; cwd?: string; cwdKey?: string; entrypoint?: string; interactive?: boolean; title?: string;
+  nativeSessionId: string; cwd?: string; cwdKey?: string; entrypoint?: string; interactive?: boolean;
+  /** The native title: Claude's rename (custom-title); aiTitle is Claude's generated title, kept apart (XAIBO-PROD-507). */
+  title?: string; aiTitle?: string;
+  /** XAIBO-PROD-508: only sets the title of an already stored session (Codex thread names); never inserts one. */
+  existing?: boolean;
   startedAt?: number; lastActivity?: number; originator?: string; nativeArchived?: boolean;
   /** P2-T11 (EC-81): false once the native conversation is verifiably gone; true again when it reappears. */
   nativeAvailable?: boolean;
@@ -69,6 +83,9 @@ export interface Batch {
   report?: ReportDelivery;
   /** P3-T13b2: the profile a custom agent's registration creates with this batch (never replaces an existing one). */
   profile?: { id: string; agent: string; root: string; origin: 'registration' };
+  /** Set by commitBatch only (XAIBO-PROD-542 G5f-1): the file's records were not committed (its checkpoint was reset, or
+   *  an earlier reset refused it); the ingester reads the file again from its stored checkpoint. */
+  reread?: true;
 }
 export interface ReportDelivery {
   registrationId: string; deliveryId: string; agent: string; profileKey: string; nativeSessionId: string; event: string;
@@ -113,23 +130,33 @@ function prepare(db: DatabaseSync) {
   return {
     // ponytail: native_archived only rises (a rollout seen under archived_sessions/); unarchiving needs a scan-level check.
     upsertSession: db.prepare(`INSERT INTO sessions (agent, profile_id, native_session_id, cwd, cwd_key, entrypoint, interactive, title, started_at, last_activity,
-        originator, native_archived, native_available, account_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, coalesce(?, 1), ?)
+        originator, native_archived, native_available, account_epoch, repo_key, worktree, repo_reason, ai_title)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, coalesce(?, 1), ?, ?, ?, ?, ?)
       ON CONFLICT (agent, profile_id, native_session_id) DO UPDATE SET
+        repo_key = CASE WHEN sessions.cwd IS NULL THEN excluded.repo_key ELSE sessions.repo_key END,
+        worktree = CASE WHEN sessions.cwd IS NULL THEN excluded.worktree ELSE sessions.worktree END,
+        repo_reason = CASE WHEN sessions.cwd IS NULL THEN excluded.repo_reason ELSE sessions.repo_reason END,
         account_epoch = coalesce(sessions.account_epoch, excluded.account_epoch),
         cwd = coalesce(sessions.cwd, excluded.cwd), cwd_key = coalesce(sessions.cwd_key, excluded.cwd_key),
         entrypoint = coalesce(sessions.entrypoint, excluded.entrypoint), interactive = coalesce(sessions.interactive, excluded.interactive),
         originator = coalesce(sessions.originator, excluded.originator), native_archived = max(sessions.native_archived, excluded.native_archived),
         native_available = coalesce(?, sessions.native_available),
-        title = coalesce(excluded.title, sessions.title),
+        title = coalesce(excluded.title, sessions.title), ai_title = coalesce(excluded.ai_title, sessions.ai_title),
         started_at = min(coalesce(sessions.started_at, excluded.started_at), coalesce(excluded.started_at, sessions.started_at)),
         last_activity = max(coalesce(sessions.last_activity, excluded.last_activity), coalesce(excluded.last_activity, sessions.last_activity))
       RETURNING id`),
+    // Gate 5 round 2 A: the stored excerpt and what decides whether a batch can change it
+    excerptOf: db.prepare('SELECT excerpt FROM sessions WHERE id = ?'),
+    setExcerpt: db.prepare('UPDATE sessions SET excerpt = ? WHERE id = ? AND excerpt IS NOT ?'),
+    lastSeq: db.prepare(`SELECT max(source_seq) AS m FROM events WHERE session_id = ? AND source = ? AND revision_status = 'current'`),
+    setTitle: db.prepare('UPDATE sessions SET title = ? WHERE agent = ? AND profile_id = ? AND native_session_id = ? AND title IS NOT ?'),
+    // P5-T08 (review H2): a checkpoint read before a re-import reset (older epoch) never moves the reset one; no epoch = unguarded
     upsertFile: db.prepare(`INSERT INTO source_files (profile_id, session_id, path, kind, dev, ino, size, mtime, offset, head_hash, status)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (path) DO UPDATE SET session_id = coalesce(excluded.session_id, source_files.session_id), kind = excluded.kind,
         dev = excluded.dev, ino = excluded.ino, size = excluded.size, mtime = excluded.mtime, offset = excluded.offset,
         head_hash = excluded.head_hash, status = excluded.status
+      WHERE ? IS NULL OR source_files.epoch = ?
       RETURNING id`),
     insertEvent: db.prepare(`INSERT INTO events (session_id, schema_version, source, confidence, native_id, parent_native_id, message_id,
         kind, role, subagent_native_id, file_id, byte_offset, source_seq, source_ts, file_mtime, received_ts, ingest_id, injected, content, raw)
@@ -146,6 +173,8 @@ function prepare(db: DatabaseSync) {
       ON CONFLICT DO UPDATE SET state = excluded.state, chunks = excluded.chunks, bytes = excluded.bytes, content = excluded.content,
         updated_ts = excluded.updated_ts WHERE report_content.state = 'pending'`),
     deleteFts: db.prepare("INSERT INTO event_fts (event_fts, rowid, content) VALUES ('delete', ?, ?)"),
+    freshAt: db.prepare(`UPDATE suppressions SET fresh_at = max(coalesce(fresh_at, ?1), ?1) WHERE agent = ? AND profile_id = ? AND native_session_id = ?
+      AND reason = 'retention' AND cleared_at IS NULL`),
     supersede: db.prepare(`UPDATE events SET revision_status = CASE WHEN source_seq = ? THEN 'superseded' ELSE 'rewound' END
       WHERE session_id = ? AND source = ? AND source_seq >= ? AND revision_status = 'current' AND native_id != ? RETURNING id, content`),
     replaced: db.prepare(`UPDATE events SET revision_status = 'superseded' WHERE session_id = ? AND source = ? AND source_seq = ? AND revision_status = 'rewound'
@@ -161,8 +190,9 @@ function prepare(db: DatabaseSync) {
     cwd: db.prepare(`INSERT INTO cwd_history (session_id, schema_version, source, cwd, cwd_key, first_seen) VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT (session_id, cwd) DO UPDATE SET
         first_seen = min(coalesce(cwd_history.first_seen, excluded.first_seen), coalesce(excluded.first_seen, cwd_history.first_seen))`),
-    turn: db.prepare(`INSERT INTO turns (session_id, schema_version, source, native_turn_id, started_at, ended_at, outcome) VALUES (?, ?, ?, ?, ?, ?, ?)
+    turn: db.prepare(`INSERT INTO turns (session_id, schema_version, source, native_turn_id, started_at, ended_at, outcome, utc_offset) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (session_id, native_turn_id) DO UPDATE SET -- P4-T08 review L5: the earliest start of any source
+        utc_offset = coalesce(turns.utc_offset, excluded.utc_offset),
         started_at = min(coalesce(turns.started_at, excluded.started_at), coalesce(excluded.started_at, turns.started_at)),
         ended_at = coalesce(turns.ended_at, excluded.ended_at), outcome = coalesce(turns.outcome, excluded.outcome)`),
     // P4-T08: ?1 = effort exposed. Unexposed effort keeps the same model's recorded effort; another model gets none.
@@ -192,8 +222,9 @@ function prepare(db: DatabaseSync) {
     setContext: db.prepare(`UPDATE context_snapshots SET source = ?, model_id = ?, used_tokens = ?, window_tokens = ?, window_basis = ?,
         percentage = ?, source_locator = ?, as_of = ?, observed_at = ? WHERE id = ?`),
     putUsage: db.prepare(`INSERT INTO usage (session_id, schema_version, source, identity, scope, segment, event_id, model_id, uncached_input,
-        cache_read, cache_write, cache_write_classes, output, raw, completeness, source_ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        cache_read, cache_write, cache_write_classes, output, raw, completeness, source_ts, utc_offset) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (session_id, source, scope, identity) DO UPDATE SET segment = excluded.segment, event_id = excluded.event_id,
+        utc_offset = coalesce(usage.utc_offset, excluded.utc_offset),
         model_id = coalesce(excluded.model_id, usage.model_id), uncached_input = excluded.uncached_input, cache_read = excluded.cache_read,
         cache_write = excluded.cache_write, cache_write_classes = excluded.cache_write_classes, output = excluded.output, raw = excluded.raw,
         completeness = excluded.completeness, source_ts = excluded.source_ts`),
@@ -217,8 +248,9 @@ function prepare(db: DatabaseSync) {
     prevHistory: db.prepare(`SELECT used_percent, window_minutes, resets_at, plan, credits, as_of, first_observed_at, measured_at FROM usage_history
       WHERE usage_scope_id = ? AND limit_id = ? AND measured_at <= ? ORDER BY measured_at DESC, id DESC LIMIT 1`),
     putHistory: db.prepare(`INSERT INTO usage_history (schema_version, usage_scope_id, limit_id, kind, minute, used_percent, window_minutes, resets_at,
-        plan, credits, as_of, first_observed_at, observed_at, measured_at, source, source_locator) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        plan, credits, as_of, first_observed_at, observed_at, measured_at, source, source_locator, utc_offset) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (usage_scope_id, limit_id, kind, minute) DO UPDATE SET used_percent = excluded.used_percent, window_minutes = excluded.window_minutes,
+        utc_offset = coalesce(usage_history.utc_offset, excluded.utc_offset),
         resets_at = excluded.resets_at, plan = excluded.plan, credits = excluded.credits, as_of = excluded.as_of,
         first_observed_at = excluded.first_observed_at, observed_at = excluded.observed_at, measured_at = excluded.measured_at,
         source = excluded.source, source_locator = excluded.source_locator
@@ -229,10 +261,52 @@ function prepare(db: DatabaseSync) {
       WHERE usage_scope_id = ? AND limit_id = ? AND measured_at < ? ORDER BY measured_at DESC, id DESC LIMIT 1`),
     // a clash with a row of that kind in the same minute keeps the old kind (the one-per-minute cap wins)
     setKind: db.prepare('UPDATE OR IGNORE usage_history SET kind = ? WHERE id = ?'),
+    kv: db.prepare('SELECT value FROM kv WHERE key = ?'),
     reportedCost: db.prepare(`INSERT INTO cost_estimates (session_id, schema_version, source, covered_scope, amount_usd, basis, coverage)
       VALUES (?, ?, ?, 'session:statusline', ?, 'agent_reported', '{"coverage":"full"}')
       ON CONFLICT (session_id, covered_scope) DO UPDATE SET amount_usd = excluded.amount_usd`),
+    marker: db.prepare(MARKER),
+    fileId: db.prepare('SELECT id FROM source_files WHERE path = ?'),
+    // as suppression.clear() resets a marker's files (XAIBO-PROD-542 G5f-1: the clearing batch's own file)
+    resetFile: db.prepare("UPDATE source_files SET offset = 0, size = -1, mtime = NULL, head_hash = '', epoch = epoch + 1 WHERE id = ? AND NOT (offset = 0 AND size = -1)"),
   };
+}
+
+/** XAIBO-PROD-515/516 (FR-11, EC-21/22, review M1): the batch without the sessions its markers keep out (suppression.ts
+ *  blocks): their events, subagent links and quarantine rows go too, and a dropped file session leaves the file's
+ *  checkpoint unattached (its quarantine dropped), so the checkpoint still advances and the other sessions of the file
+ *  still commit. `clear`: retention markers this batch's new native activity clears (re-import). */
+/** fresh: sessions kept out of this batch although it carries new native activity for them (time of the latest), a
+ *  retention marker's purge still under way or owing file work (G5Rr1-2). */
+function unsuppressed(st: ReturnType<typeof prepare>, batch: Batch): { batch: Batch; gone: Set<string>; clear: Set<string>; fresh: Map<string, number> } {
+  const ids = new Set([...batch.sessions.map((s) => s.nativeSessionId), ...(batch.fileSession !== undefined ? [batch.fileSession] : [])]);
+  const gone = new Set<string>(), clear = new Set<string>(), fresh = new Map<string, number>();
+  for (const id of ids) {
+    const m = st.marker.get(batch.agent, batch.profileId, id) as Marker | undefined;
+    if (!m || m.cleared_at !== null) continue;
+    const at = batch.events.filter((e) => e.nativeSessionId === id && e.sourceTs !== undefined && e.sourceTs > m.at && (e.fileMtime === undefined || e.fileMtime > m.at))
+      .reduce((t, e) => Math.max(t, e.sourceTs!), -Infinity);
+    const isFresh = at !== -Infinity;
+    if (!blocks(m, isFresh)) { clear.add(id); continue; }
+    gone.add(id);
+    if (isFresh && m.reason === 'retention') fresh.set(id, at);
+  }
+  if (!gone.size) return { batch, gone, clear, fresh };
+  const { fileSession, quarantine, subagents, ...rest } = batch;
+  const fileGone = fileSession !== undefined && gone.has(fileSession);
+  return { gone, clear, fresh, batch: {
+    ...rest, sessions: batch.sessions.filter((s) => !gone.has(s.nativeSessionId)), events: batch.events.filter((e) => !gone.has(e.nativeSessionId)),
+    ...(fileSession !== undefined && !fileGone ? { fileSession } : {}),
+    ...(quarantine ? { quarantine: fileGone ? [] : quarantine.filter((q) => q.nativeSessionId === undefined || !gone.has(q.nativeSessionId)) } : {}),
+    ...(subagents ? { subagents: subagents.filter((s) => !gone.has(s.nativeSessionId)) } : {}),
+  } };
+}
+
+/** Research L6: rolls back after a failure without replacing the caller's error (a throwing ROLLBACK is swallowed).
+ *  True when the connection is still inside a transaction afterwards. */
+export function rollback(db: DatabaseSync): boolean {
+  try { if (db.isTransaction) db.exec('ROLLBACK'); } catch { /* the original error is the one reported */ }
+  return db.isTransaction;
 }
 
 type HistRow = { used_percent: number | null; window_minutes: number | null; resets_at: number | null; plan: string | null; credits: string | null;
@@ -244,14 +318,20 @@ function history(st: ReturnType<typeof prepare>, batch: Batch, sid: number | big
   const epoch = batch.agent === 'codex' ? (st.sessionEpoch.get(sid) as { account_epoch: string | null } | undefined)?.account_epoch ?? null : null;
   const k = scopeKey({ profileId: batch.profileId, agent: batch.agent, epoch, nativeSessionId: e.nativeSessionId });
   const scope = (st.scope.get(k.key, batch.profileId, batch.agent, k.epoch, k.verified ? null : sid, k.verified ? 1 : 0) as { id: number }).id;
+  // P5-T11 (EC-99): an account-level reading the last retention run already expired is never stored again (a re-import or
+  // rescan of an old rollout); NaN (no run yet) keeps everything. Session-linked readings follow their session instead.
+  // Review M3: a last run later than the wall clock (stored while the clock was set ahead) is ignored, so new readings
+  // are never refused for the time it would take the corrected clock to catch up.
+  const lastRun = k.verified ? Number((st.kv.get(LAST_RUN_KEY) as { value: string } | undefined)?.value) : NaN;
+  const expiredUpTo = lastRun <= Date.now() ? lastRun - QUOTA_MS : NaN;
   for (const r of readings) {
     const p = st.prevHistory.get(scope, r.stream, sourceTime(r, e.receivedTs) ?? e.receivedTs) as HistRow | undefined;
     const prev: Stored | null = p ? { stream: r.stream, usedPercent: p.used_percent, windowMinutes: p.window_minutes, resetsAt: p.resets_at, plan: p.plan,
       credits: p.credits, asOf: p.as_of, firstObservedAt: p.first_observed_at, measuredAt: p.measured_at } : null;
     const step = historyStep(prev, r, e.receivedTs);
-    if (step.action === 'skip') continue;
+    if (step.action === 'skip' || step.measuredAt <= expiredUpTo) continue;
     st.putHistory.run(SCHEMA_VERSION, scope, r.stream, step.action, step.minute, r.usedPercent, r.windowMinutes, r.resetsAt, r.plan, r.credits,
-      sourceTime(r, e.receivedTs), step.firstObservedAt, e.receivedTs, step.measuredAt, e.source, e.nativeId);
+      sourceTime(r, e.receivedTs), step.firstObservedAt, e.receivedTs, step.measuredAt, e.source, e.nativeId, utcOffset(step.measuredAt));
     // Review M1: a backfilled older reading can change what the next row follows; reclassify it against its predecessor.
     type K = { window_minutes: number | null; resets_at: number | null; plan: string | null };
     const next = st.nextHistory.get(scope, r.stream, step.measuredAt) as (K & { id: number; kind: string; measured_at: number }) | undefined;
@@ -287,7 +367,7 @@ function usage(st: ReturnType<typeof prepare>, batch: Batch, sid: number | bigin
     const rawText = JSON.stringify(raw);
     st.putUsage.run(sid, SCHEMA_VERSION, e.source, identity, scope, segment, eventId, model ?? null, n?.uncachedInput ?? null, n?.cacheRead ?? null,
       n?.cacheWrite ?? null, n?.cacheWriteClasses ? JSON.stringify(n.cacheWriteClasses) : null, n?.output ?? null, rawText,
-      JSON.stringify(gap ?? n!.completeness), e.sourceTs ?? null);
+      JSON.stringify(gap ?? n!.completeness), e.sourceTs ?? null, utcOffset(e.sourceTs ?? e.receivedTs));
     // G2-2/G2-16: any change to the priced evidence (raw usage, including price qualifiers, or the model) re-prices it.
     if (before && (before.raw !== rawText || (model !== undefined && before.model_id !== model))) st.markDirty.run(sid, `usage:${e.source}:${identity}`);
   };
@@ -329,19 +409,47 @@ function context(st: ReturnType<typeof prepare>, sid: number | bigint, e: EventR
   }
 }
 
-export function commitBatch(db: DatabaseSync, batch: Batch): void {
+// XAIBO-PROD-506 (P5-T01b; FR-53): a session's repository grouping is resolved from its cwd before the transaction and
+// stored only with the cwd's first value (the upsert's CASE), so it is set once and never regrouped (Q24, EC-108).
+// ponytail: memoized per cwd for the process lifetime (capped, cleared when full; an unreadable answer is not kept, so a
+// mount that was not ready is tried again); a directory that becomes a repository later is seen as one after a restart.
+// Resolution is sync file metadata I/O on the writer path: a hung network mount above a cwd would stall the writer;
+// move it to a worker if that is ever seen.
+const GROUP_MEMO_MAX = 512;
+const groupMemo = new Map<string, Grouping>();
+function groupingOf(cwd: string): Grouping {
+  let g = groupMemo.get(cwd);
+  if (!g) {
+    if (groupMemo.size >= GROUP_MEMO_MAX) groupMemo.clear();
+    g = resolveRepository(cwd);
+    if (!(g.kind === 'cwd' && g.reason === 'unreadable')) groupMemo.set(cwd, g); // overlong cwds are unreadable: never kept
+  }
+  return g;
+}
+
+/** Commits one batch; returns what it committed (the batch without suppressed sessions, P5-T07). */
+export function commitBatch(db: DatabaseSync, input: Batch): Batch {
   const st = statements(db);
+  const groups = new Map(input.sessions.map((s) => [s, s.cwd ? groupingOf(s.cwd) : null])); // file metadata reads, outside the transaction
   db.exec('BEGIN IMMEDIATE');
   try {
-    const d = batch.delivery;
+    // read inside the transaction (keeps the session objects): a purge committed meanwhile is seen
+    const { batch, gone, clear, fresh } = unsuppressed(st, input);
+    const d = batch.delivery, r = batch.report;
+    // review: a delivery intake would refuse (a suppressed session, or one timed before its purge) commits nothing, not even its dedup row
+    const refused = (agent: string, profile: string, native: string, ts: number) => refuses(st.marker.get(agent, profile, native) as Marker | undefined, ts);
+    if ((d?.nativeSessionId && refused(d.agent, d.profileKey, d.nativeSessionId, Math.min(d.receivedTs, d.committedTs)))
+      || (r && refused(r.agent, r.profileKey, r.nativeSessionId, r.receivedTs))) {
+      db.exec('COMMIT');
+      return batch;
+    }
     if (d && !st.delivery.get(d.deliveryId, d.agent, d.profileKey, d.nativeSessionId, d.event, d.receivedTs, d.committedTs, d.unattributed)) {
       db.exec('COMMIT'); // already stored (spool replay of an acked delivery, or a retry)
-      return;
+      return batch;
     }
-    const r = batch.report;
     if (r) {
       if (!st.report.get(r.registrationId, r.deliveryId, r.agent, r.profileKey, r.nativeSessionId, r.event, r.producerId, r.producerSeq, r.receivedTs,
-        r.committedTs, r.unattributed, r.hasModel ? 1 : 0)) { db.exec('COMMIT'); return; }
+        r.committedTs, r.unattributed, r.hasModel ? 1 : 0)) { db.exec('COMMIT'); return batch; }
       const c = r.content;
       if (c) st.reportContent.run(r.registrationId, r.nativeSessionId, c.itemId, c.revision, c.role, c.kind, c.state, c.chunks, c.bytes, c.text, r.committedTs);
     }
@@ -349,9 +457,12 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
     if (np) st.newProfile.run(np.id, np.agent, np.root, np.origin);
     const ids = new Map<string, number | bigint>();
     for (const s of batch.sessions) {
+      if (s.existing) { if (s.title) st.setTitle.run(s.title, batch.agent, batch.profileId, s.nativeSessionId, s.title); continue; }
+      const g = groups.get(s) ?? null;
       const row = st.upsertSession.get(batch.agent, batch.profileId, s.nativeSessionId, s.cwd ?? null, s.cwdKey ?? null, s.entrypoint ?? null,
         b(s.interactive), s.title ?? null, s.startedAt ?? null, s.lastActivity ?? null, s.originator ?? null, s.nativeArchived ? 1 : 0,
-        b(s.nativeAvailable), s.accountEpoch ?? null, b(s.nativeAvailable)) as { id: number };
+        b(s.nativeAvailable), s.accountEpoch ?? null, g?.kind === 'repository' ? g.key : null, g?.kind === 'repository' ? g.worktree : null,
+        g?.kind === 'cwd' ? g.reason : null, s.aiTitle ?? null, b(s.nativeAvailable)) as { id: number };
       ids.set(s.nativeSessionId, row.id);
       for (const c of s.cwds ?? []) st.cwd.run(row.id, SCHEMA_VERSION, c.source, c.cwd, c.cwdKey, c.firstSeen ?? null);
     }
@@ -362,8 +473,40 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
     };
 
     const f = batch.file;
-    const file = f ? st.upsertFile.get(batch.profileId, batch.fileSession ? sessionId(batch.fileSession) : null, f.path, f.kind, f.dev, f.ino,
-      f.size, f.mtime, f.offset, f.headHash, f.status) as { id: number } : { id: null };
+    const upserted = f ? st.upsertFile.get(batch.profileId, batch.fileSession ? sessionId(batch.fileSession) : null, f.path, f.kind, f.dev, f.ino,
+      f.size, f.mtime, f.offset, f.headHash, f.status, f.epoch ?? null, f.epoch ?? null) as { id: number } | undefined : undefined;
+    const file = f ? (upserted ?? st.fileId.get(f.path)) as { id: number } : { id: null };
+    // P5-T08: re-import bookkeeping after this batch's own checkpoint. A file that held records of a session kept out joins
+    // its marker (review M2); a retention marker cleared by new activity resets its files for a whole re-import.
+    const who = (native: string) => ({ agent: batch.agent, profile: batch.profileId, native });
+    if (file.id !== null) {
+      for (const id of gone) if (input.fileSession === id || input.events.some((e) => e.nativeSessionId === id)) noteFile(db, who(id), file.id);
+      // G5Rr1-2: a refused file batch with new native activity is remembered (its checkpoint still advances); the marker
+      // clears once its purge owes nothing more (purge.ts finishFiles) and the session is re-imported from the start
+      for (const [id, at] of fresh) st.freshAt.run(at, batch.agent, batch.profileId, id);
+    }
+    for (const id of clear) clearMarker(db, who(id), Math.max(...batch.events.filter((e) => e.nativeSessionId === id).map((e) => e.receivedTs)));
+    // XAIBO-PROD-542 G5f-1: a file batch that clears a marker commits only the session rows, the clear and the reset of its
+    // own file too (the re-read from the start brings its records, account marker included); a file batch read at an
+    // epoch a reset has since replaced (the guard refused its checkpoint) commits no records either. Hook and report
+    // batches (no file) keep theirs.
+    if (f && file.id !== null && (clear.size || (f.epoch !== undefined && !upserted))) {
+      if (clear.size) st.resetFile.run(file.id);
+      db.exec('COMMIT');
+      return { ...batch, events: [], ...(batch.quarantine ? { quarantine: [] } : {}), ...(batch.subagents ? { subagents: [] } : {}), reread: true };
+    }
+
+    // Gate 5 round 2 A: sessions whose excerpt this batch can change: a visible user record or a revision. A pure append
+    // after every stored record never changes an excerpt already found. ponytail: a session with no prompt yet recomputes
+    // (one bounded query: the first PROMPT_SCAN user records) on each batch with a user record.
+    const excerpts = new Map<number | bigint, boolean>(); // session -> recompute
+    for (const e of batch.events) {
+      if ((e.source !== 'transcript' && e.source !== 'rollout') || !(e.revise || e.role === 'user' || e.kind === 'user')) continue;
+      const sid = sessionId(e.nativeSessionId);
+      if (excerpts.get(sid)) continue;
+      const before = Math.max(...['transcript', 'rollout'].map((src) => (st.lastSeq.get(sid, src) as { m: number | null }).m ?? -Infinity));
+      excerpts.set(sid, !!e.revise || e.sourceSeq <= before || (st.excerptOf.get(sid) as { excerpt: string | null } | undefined)?.excerpt == null);
+    }
 
     const added = new Map<number | bigint, [number, number, number]>();
     const bump = (id: number | bigint, i: 0 | 1 | 2) => { const c = added.get(id) ?? [0, 0, 0]; c[i]++; added.set(id, c); };
@@ -390,7 +533,8 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
       if (e.content) st.insertFts.run(row.id, ftsPrefix(e.content));
       if (e.turn) {
         const ts = e.sourceTs ?? null;
-        st.turn.run(sid, SCHEMA_VERSION, e.source, e.turn.id, e.turn.edge === 'start' ? ts : null, e.turn.edge === 'end' ? ts : null, e.turn.outcome ?? null);
+        st.turn.run(sid, SCHEMA_VERSION, e.source, e.turn.id, e.turn.edge === 'start' ? ts : null, e.turn.edge === 'end' ? ts : null, e.turn.outcome ?? null,
+          utcOffset(ts ?? e.receivedTs)); // G5b1-4: the offset its month is bucketed with
       }
       for (const c of e.toolCalls ?? []) {
         const o: ToolCallObservation = { source: e.source, callId: c.callId, ...(c.tool !== undefined ? { tool: c.tool } : {}) };
@@ -423,24 +567,21 @@ export function commitBatch(db: DatabaseSync, batch: Batch): void {
 
     for (const s of batch.subagents ?? []) st.link.run(sessionId(s.nativeSessionId), s.nativeId, file.id, s.agentType ?? null);
 
+    for (const [sid, recompute] of excerpts) if (recompute) { const x = computeExcerpt(db, batch.agent, sid); if (x !== undefined) st.setExcerpt.run(x, sid, x); } // undefined: unknown, kept
     for (const [id, [records, unknown, quarantined]] of added) {
       st.counts.run(records, unknown, quarantined, id);
       st.drift.run(id);
     }
     db.exec('COMMIT');
+    return batch;
   } catch (e) {
-    if (db.isTransaction) db.exec('ROLLBACK'); // SQLite already rolled back on SQLITE_FULL; keep that error, not ours
+    rollback(db); // SQLite already rolled back on SQLITE_FULL; keep that error, not ours
     throw e;
   }
 }
 
-/** SQLITE_FULL (primary code 13) or ENOSPC: the store cannot grow (EC-44). */
-export const isDiskFull = (e: unknown) => {
-  const x = e as { errcode?: unknown; code?: unknown } | null;
-  return (typeof x?.errcode === 'number' && (x.errcode & 0xff) === 13) || x?.code === 'ENOSPC';
-};
 
-interface Pending { batch: Batch; resolve: () => void; reject: (e: unknown) => void }
+interface Pending { batch: Batch; resolve: (committed: Batch) => void; reject: (e: unknown) => void }
 export interface WriterOptions {
   maxRows?: number; maxBytes?: number; maxDelayMs?: number;
   setTimer?: (fn: () => void, ms: number) => void;
@@ -449,8 +590,8 @@ export interface WriterOptions {
   onCommit?: (batch: Batch) => void;
   /** EC-44: called when the store becomes full and again when a commit succeeds after that, outside any transaction. */
   onDiskFull?: (full: boolean) => void;
-  /** Fault injection for tests (Q3-15); commitBatch otherwise. */
-  commit?: (db: DatabaseSync, batch: Batch) => void;
+  /** Fault injection for tests (Q3-15); commitBatch otherwise. Returns what it committed (void = the batch as given). */
+  commit?: (db: DatabaseSync, batch: Batch) => Batch | void;
 }
 
 const batchBytes = (b: Batch) => b.events.reduce((n, e) => n + (e.content?.length ?? 0) + (e.raw?.length ?? 0), 0);
@@ -460,6 +601,7 @@ export class Writer {
   readonly #db: DatabaseSync;
   readonly #o: Required<Omit<WriterOptions, 'onCommit' | 'onDiskFull'>> & Pick<WriterOptions, 'onCommit' | 'onDiskFull'>;
   #full = false;
+  #broken = false;
   #live: Pending[] = [];
   #backfill: Pending[] = [];
   #rows = 0;
@@ -481,24 +623,58 @@ export class Writer {
   get diskFull(): boolean { return this.#full; }
 
   /** A live hook delivery (OQ-A1): its own small transaction now, ahead of anything queued; throws on failure. */
-  commitLive(batch: Batch): void {
-    this.#commit(batch);
+  commitLive(batch: Batch): Batch {
+    return this.#commit(batch);
   }
 
-  #commit(batch: Batch): void {
+  /** Returns what was committed (P5-T07/T08: without the sessions a suppression marker kept out). */
+  #commit(batch: Batch): Batch {
     // ponytail: while full every commit still runs as the probe (SQLite fails fast without growing); a pause timer if
     // the retried file reads ever cost too much.
+    const done = this.#guard(() => this.#o.commit(this.#db, batch)) ?? batch;
+    this.#o.onCommit?.(done); // never a suppressed session
+    return done;
+  }
+
+  /** XAIBO-PROD-519 (P5-T12 re-review M1): announces sessions changed by a transact() as a committed batch, so open
+   *  windows refresh them (onCommit). Call only after the transaction committed. */
+  notify(batch: Batch): void { this.#o.onCommit?.(batch); }
+
+  /** XAIBO-PROD-515 (P5-T07, research L6): `fn` in one immediate transaction on the writer's connection, with the same
+   *  disk-full state as batches (purge, retention). Any throw rolls back and is rethrown as it was; the work is committed
+   *  only when this returns. */
+  transact<T>(fn: (db: DatabaseSync) => T): T {
+    return this.#guard(() => {
+      this.#db.exec('BEGIN IMMEDIATE');
+      try {
+        const r = fn(this.#db);
+        this.#db.exec('COMMIT');
+        return r;
+      } catch (e) {
+        rollback(this.#db);
+        throw e;
+      }
+    });
+  }
+
+  #guard<T>(run: () => T): T {
+    // ponytail: a connection left inside a transaction (a ROLLBACK that failed) is not reused; writes fail until the
+    // service restarts and opens a new one. Reopen in place if that is ever seen.
+    if (this.#broken) throw new Error('store connection left inside a transaction; restart required');
+    let r: T;
     try {
-      this.#o.commit(this.#db, batch);
+      r = run();
     } catch (e) {
+      if (this.#db.isTransaction) this.#broken = true;
       if (isDiskFull(e) && !this.#full) { this.#full = true; this.#o.onDiskFull?.(true); }
       throw e;
     }
     if (this.#full) { this.#full = false; this.#o.onDiskFull?.(false); }
-    this.#o.onCommit?.(batch);
+    return r;
   }
 
-  enqueue(batch: Batch, live: boolean): Promise<void> {
+  /** Resolves with what was committed (G5f-1: `reread` when the ingester must read the file again). */
+  enqueue(batch: Batch, live: boolean): Promise<Batch> {
     return new Promise((resolve, reject) => {
       (live ? this.#live : this.#backfill).push({ batch, resolve, reject });
       this.#since ??= this.#o.now();
@@ -521,8 +697,7 @@ export class Writer {
     this.#bytes = 0;
     for (const j of jobs) {
       try {
-        this.#commit(j.batch);
-        j.resolve();
+        j.resolve(this.#commit(j.batch));
       } catch (e) {
         j.reject(e);
       }

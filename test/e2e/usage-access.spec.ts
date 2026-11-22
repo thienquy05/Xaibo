@@ -6,9 +6,9 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import type { Locator, Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import { claudeProfile, deliver } from '../helpers/hook-socket.ts';
-import { expect, servicePid, test, type Run, type Xaibo } from './fixtures.ts';
+import { expect, servicePid, shot, tabTo, test, type Run, type Xaibo } from './fixtures.ts';
 
 const SID = '00000000-0000-4000-8000-0000000fa001';
 const CWD = '/tmp/xaibo-fixture/usage-access';
@@ -48,17 +48,7 @@ function codexRollout(home: string, at: number) {
   ].map((x) => JSON.stringify(x)).join('\n') + '\n');
 }
 
-/** XAIBO_SHOT=<dir>: screenshots of the states P4-T14 changed, for the visual check (off by default). */
-const shot = async (page: Page, name: string) => { if (process.env.XAIBO_SHOT) await page.screenshot({ path: path.join(process.env.XAIBO_SHOT, `${name}.png`) }); };
 
-/** Presses Tab until `target` has focus; fails if it is not reached within `max` presses (keyboard-only access). */
-async function tabTo(page: Page, target: Locator, max = 120) {
-  for (let i = 0; i < max; i++) {
-    if (await target.evaluate((el) => el === document.activeElement, undefined, { timeout: 2000 })) return; // a locator error fails loudly
-    await page.keyboard.press('Tab');
-  }
-  throw new Error(`not reachable by Tab: ${target.toString()}`);
-}
 
 async function start(xaibo: Xaibo, state: State, layout: keyof typeof LAYOUTS) {
   xaibo.touchStore(() => {

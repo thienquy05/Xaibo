@@ -106,3 +106,20 @@ test('filename session id', () => {
   assert.equal(filenameSessionId(`rollout-2026-01-01T00-00-00-${id}.jsonl`), id);
   assert.equal(filenameSessionId('notes.jsonl'), undefined);
 });
+
+// XAIBO-PROD-509 review M2: Codex 0.160.0 writes context fragments as user-role messages (its own fragment list:
+// environment context, AGENTS.md instructions, skills, user shell commands, turn aborted, subagent notifications,
+// context window guidance, rollout budget, realtime conversation). They are injected, never prompts.
+test('Codex context fragments in user messages are injected; a typed prompt is not', () => {
+  const msg = (text: string, role = 'user') => parseLine(Buffer.from(JSON.stringify({ timestamp: '2026-01-01T00:00:00.000Z', type: 'response_item',
+    payload: { type: 'message', role, content: [{ type: 'input_text', text }] } })), { offset: 0, fileIdentity: 'f', fileMtime: 0, receivedTs: 0 });
+  const injected = (text: string, role?: string) => { const r = msg(text, role); return r?.ok ? r.record.injected : undefined; };
+  for (const t of ['<environment_context>\n  <cwd>/tmp/xaibo-fixture</cwd>\n</environment_context>', '# AGENTS.md instructions for /tmp/xaibo-fixture\n\n<INSTRUCTIONS>x</INSTRUCTIONS>',
+    '  <skill>\nname: x\n</skill>', '<user_shell_command>ls</user_shell_command>', '<turn_aborted>x</turn_aborted>', '<subagent_notification>x</subagent_notification>',
+    '<context_window_guidance>x</context_window_guidance>', '<rollout_budget>x</rollout_budget>', '<realtime_conversation>x</realtime_conversation>']) {
+    assert.equal(injected(t), true, t.slice(0, 30));
+  }
+  assert.equal(injected('Fix the <environment_context> parsing bug'), false, 'a prompt that only mentions a tag is typed');
+  assert.equal(injected('synthetic prompt'), false);
+  assert.equal(injected('x', 'developer'), true);
+});

@@ -2,18 +2,13 @@
 // restart brings a new one). Every argument is forwarded as given, so slice's optional tool call selector reaches IPC.
 import type { Client } from '../client.ts';
 
-export type WorkspaceApi = Pick<Client, 'session' | 'transcript' | 'slice' | 'tools' | 'subagents' | 'files' | 'markers' | 'cost'>;
+const METHODS = ['session', 'transcript', 'slice', 'tools', 'subagents', 'files', 'markers', 'cost', 'historyRow', 'overlay', 'purge', 'projects', 'folders'] as const; // XAIBO-PROD-533/534/535: Keep, retention, Trash, Move
+export type WorkspaceApi = Pick<Client, (typeof METHODS)[number]>;
 
 export function workspaceApiOf(get: () => Client | null): WorkspaceApi {
-  const c = () => get() ?? (() => { throw new Error('no service'); })();
-  return {
-    session: async (...a) => c().session(...a),
-    transcript: async (...a) => c().transcript(...a),
-    slice: async (...a) => c().slice(...a),
-    tools: async (...a) => c().tools(...a),
-    subagents: async (...a) => c().subagents(...a),
-    files: async (...a) => c().files(...a),
-    markers: async (...a) => c().markers(...a),
-    cost: async (...a) => c().cost(...a),
-  };
+  return Object.fromEntries(METHODS.map((k) => [k, async (...a: unknown[]) => {
+    const c = get();
+    if (!c) throw new Error('no service');
+    return (c[k] as (...args: unknown[]) => Promise<unknown>)(...a);
+  }])) as WorkspaceApi;
 }

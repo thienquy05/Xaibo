@@ -2,6 +2,7 @@
 // connection starts with a hello {v, token}; then envelopes, each answered by an ack. Validation is strict (exact keys,
 // bounded strings) and failures are fixed codes, never field values or parser messages. Shared by the forwarder (P3-T03)
 // and the service socket; no `v - 1` path until a second version exists.
+import { isObj } from './ipc.ts';
 export const PROTOCOL_VERSION = 1;
 export const MAX_FRAME = 1 << 20;
 /** Report v1 frames (P3-T13b, PRD §5.10): each serialized frame is at most 256 KiB. */
@@ -80,23 +81,22 @@ export function createDecoder(limit: () => number = () => MAX_FRAME): (chunk: Bu
   };
 }
 
-const isObject = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
 const str = (x: unknown, max: number) => typeof x === 'string' && x.length > 0 && x.length <= max;
 const strOrNull = (x: unknown, max: number) => x === null || str(x, max);
 
 export function parseHello(x: unknown): Hello | null {
-  if (!isObject(x) || Object.keys(x).length !== 2 || x['v'] !== PROTOCOL_VERSION || !str(x['token'], MAX_TOKEN)) return null;
+  if (!isObj(x) || Object.keys(x).length !== 2 || x['v'] !== PROTOCOL_VERSION || !str(x['token'], MAX_TOKEN)) return null;
   return x as unknown as Hello;
 }
 
 /** Exactly {v, registration, token}: a hello with any other key is neither shape (security review 872 #5). */
 export function parseRegistrationHello(x: unknown): RegistrationHello | null {
-  if (!isObject(x) || Object.keys(x).length !== 3 || x['v'] !== PROTOCOL_VERSION) return null;
+  if (!isObj(x) || Object.keys(x).length !== 3 || x['v'] !== PROTOCOL_VERSION) return null;
   return typeof x['registration'] === 'string' && UUID.test(x['registration']) && str(x['token'], MAX_TOKEN) ? (x as unknown as RegistrationHello) : null;
 }
 
 export function parseEnvelope(x: unknown): { ok: true; envelope: Envelope } | { ok: false; code: 'version' | 'shape' } {
-  if (!isObject(x)) return { ok: false, code: 'shape' };
+  if (!isObj(x)) return { ok: false, code: 'shape' };
   if (x['v'] !== PROTOCOL_VERSION) return { ok: false, code: 'version' };
   const ok = Object.keys(x).every((k) => ENVELOPE_KEYS.has(k)) && REQUIRED.every((k) => Object.hasOwn(x, k))
     && typeof x['delivery_id'] === 'string' && UUID.test(x['delivery_id'])
@@ -104,13 +104,13 @@ export function parseEnvelope(x: unknown): { ok: true; envelope: Envelope } | { 
     && typeof x['profile_key'] === 'string' && PROFILE.test(x['profile_key']) && str(x['event'], MAX_KEY)
     && strOrNull(x['session_id'], MAX_SESSION) && strOrNull(x['cwd'], MAX_CWD)
     && typeof x['received_ts'] === 'number' && Number.isFinite(x['received_ts']) && x['received_ts'] >= 0
-    && (x['payload'] === null || isObject(x['payload']))
+    && (x['payload'] === null || isObj(x['payload']))
     && ['truncated', 'malformed'].every((k) => x[k] === undefined || typeof x[k] === 'boolean');
   return ok ? { ok: true, envelope: x as unknown as Envelope } : { ok: false, code: 'shape' };
 }
 
 export function parseAck(x: unknown): Ack | null {
-  if (!isObject(x) || Object.keys(x).length !== 4 || x['v'] !== PROTOCOL_VERSION) return null;
+  if (!isObj(x) || Object.keys(x).length !== 4 || x['v'] !== PROTOCOL_VERSION) return null;
   const id = x['delivery_id'];
   if (!(id === null || (typeof id === 'string' && UUID.test(id)))) return null;
   if (x['status'] !== 'accepted' && x['status'] !== 'rejected') return null;

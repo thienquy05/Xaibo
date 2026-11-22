@@ -2,14 +2,18 @@
 // file identity (the first complete line) + byte offset, so archive moves and copies add nothing (OQ-P2-02). The
 // session is the session_meta id; a different filename id is a coverage warning.
 import { createHash } from 'node:crypto';
-import type { Stats } from 'node:fs';
+import { constants, type Stats } from 'node:fs';
+import { open } from 'node:fs/promises';
+import path from 'node:path';
 import type { Readable } from 'node:stream';
+import { isObj } from '../../../shared/ipc.ts';
 import type { Line } from '../../lines.ts';
 import { cwdKey } from '../../paths.ts';
 import { noteCwd, type Batch, type EventRow, type QuarantineRow, type SessionUpsert, type SourceFileCheckpoint } from '../../store/writer.ts';
 import { readRange, readZstd } from '../../tail.ts';
 import { TailAdapter, type OversizedSink } from '../tail-adapter.ts';
 import { discover, type CodexFile } from './discover.ts';
+import { reconcileNative } from '../../history/native-availability.ts';
 import { parseLine, type CodexRecord } from './parse.ts';
 
 /** Hash of the first line (without its newline) and, when within `cap`, its bytes; undefined until the line is complete. */
@@ -72,10 +76,65 @@ const contextOf = (r: CodexRecord): EventRow['context'] => {
   return { kind: 'codex', model: null, used: n(last?.total_tokens), window: n(r.tokenInfo.model_context_window), at, locator: r.nativeId };
 };
 
+// XAIBO-PROD-508 (P5-T02b, D-P5-03): thread names from <CODEX_HOME>/session_index.jsonl, one {id, thread_name,
+// updated_at} per line (S9-C3); Codex 0.160.0 rewrites it through session_index.jsonl.tmp + rename and may append.
+// ponytail: an index above INDEX_MAX is skipped, and a name dropped from the index keeps the stored title.
+export const INDEX_MAX = 16 * 1024 * 1024;
+
+/** The last non-empty thread_name per id; malformed lines and a partial trailing line (a concurrent append) are skipped. */
+export function threadNames(text: string): Map<string, string> {
+  const out = new Map<string, string>();
+  const lines = text.split('\n');
+  if (!text.endsWith('\n')) lines.pop();
+  for (const l of lines) {
+    let r: unknown;
+    try { r = JSON.parse(l); } catch { continue; }
+    if (isObj(r) && typeof r.id === 'string' && typeof r.thread_name === 'string' && r.thread_name.trim()) out.set(r.id, r.thread_name);
+  }
+  return out;
+}
+
 export class CodexAdapter extends TailAdapter<CodexFile, CodexRecord> {
   readonly #files = new Map<string, { identity: string; sessionId: string }>(); // per path, from the first line
+  readonly #names = new Map<string, string>(); // thread names last read from the index
+  #indexSig = '';
 
-  protected discover(): Promise<CodexFile[]> { return discover(this.o.root); }
+  // Every scan lists rollouts here, so the index is checked first: rollouts ingested in this scan take their names.
+  protected async discover(): Promise<CodexFile[]> {
+    // A failed read or commit forgets everything read, so the next scan sends every name again (review M2).
+    await this.#threadNames().catch(() => { this.#indexSig = ''; this.#names.clear(); });
+    const files = await discover(this.o.root);
+    // P5-T12 (EC-24): native availability; a move to archived_sessions/ is listed under the same id, so never a deletion
+    await reconcileNative({ db: this.o.db, writer: this.o.writer, profileId: this.o.profileId, agent: 'codex', kinds: ['rollout'] }, files).catch(() => undefined);
+    return files;
+  }
+
+  /** Re-reads the index only when its signature changes (a rename changes the inode). One handle, never following a
+   *  symlink or blocking on a FIFO, read up to its fstat size (review M1). Changed names go to stored sessions as an
+   *  update-only batch, which never creates a session; the file is only read. */
+  async #threadNames(): Promise<void> {
+    let fh;
+    try { fh = await open(path.join(this.o.root, 'session_index.jsonl'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch { return; }
+    let sig: string;
+    let text: string;
+    try {
+      const st = await fh.stat();
+      sig = `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}`;
+      if (sig === this.#indexSig || !st.isFile() || st.size > INDEX_MAX) return;
+      const buf = Buffer.alloc(st.size);
+      text = buf.subarray(0, (await fh.read(buf, 0, st.size, 0)).bytesRead).toString('utf8');
+    } finally {
+      await fh.close();
+    }
+    const changed = [...threadNames(text)].filter(([id, n]) => this.#names.get(id) !== n);
+    // Names are taken before the commit, so a rollout batch built meanwhile carries them (review M2).
+    for (const [id, n] of changed) this.#names.set(id, n);
+    if (changed.length) {
+      await this.o.writer.enqueue({ profileId: this.o.profileId, agent: 'codex', events: [],
+        sessions: changed.map(([id, title]) => ({ nativeSessionId: id, title, existing: true })) }, false);
+    }
+    this.#indexSig = sig;
+  }
 
   // ponytail: the identity is cached per path and recomputed when the tail engine restarts a file from 0 (rotation,
   // truncation, a changed head); an in-place edit of the first line beyond its first 4 KiB is not noticed.
@@ -105,6 +164,8 @@ export class CodexAdapter extends TailAdapter<CodexFile, CodexRecord> {
   protected toBatch(file: CodexFile, cp: SourceFileCheckpoint, records: CodexRecord[], quarantine: QuarantineRow[]): Batch {
     const sid = this.fileSession(file);
     const s: SessionUpsert = { nativeSessionId: sid, nativeArchived: file.archived };
+    const title = this.#names.get(sid);
+    if (title) s.title = title;
     const events: EventRow[] = records.map((r) => {
       if (r.cwd && !s.cwd) { s.cwd = r.cwd; s.cwdKey = cwdKey(r.cwd); }
       if (r.cwd) noteCwd(s, r.cwd, r.sourceTs, 'rollout'); // session_meta and turn_context (EC-06)

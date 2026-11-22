@@ -3,9 +3,8 @@
 // window); this module only presents: abbreviated visible values, exact integers in accessible text, a meter only for
 // an in-range reading, Awaiting next usage after compaction, and unavailable (never 0) for anything not reported.
 import type { ContextReading } from '../../../shared/ipc.ts';
-import { formatTime } from '../../model.ts';
 import { abbreviate } from '../../overview/totals.ts';
-import { STALE_MS } from '../../usage/presentation.ts';
+import { readingLabels, STALE_MS } from '../../usage/presentation.ts';
 
 export interface ContextView {
   value: string; qualifier: string | null;
@@ -42,9 +41,7 @@ export function contextView(agent: string, live: boolean, r: ContextReading | nu
   const base = {
     qualifier: null, meter: null, meterNote: null, warning: null, unoccupied: null,
     source: `Source: ${SOURCE[r.source]}`,
-    freshness: r.asOf !== null ? `Measured ${formatTime(r.asOf)} · observed ${formatTime(r.observedAt)}` : `Source time unknown; observed ${formatTime(r.observedAt)}`,
-    stale: stale ? `Stale · ${formatTime(at)}` : null,
-    staleLabel: stale ? `Stale, last ${r.asOf !== null ? 'measurement' : 'observation'} ${formatTime(at)}` : null,
+    ...readingLabels(r.asOf, r.observedAt, at, stale),
     generation: `Generation ${r.generation + 1}`,
   };
   const est = r.basis === 'inferred' ? '~est ' : '';

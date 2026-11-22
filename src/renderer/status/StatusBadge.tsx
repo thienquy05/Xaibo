@@ -1,6 +1,7 @@
 // Status badge (design §3.1–§3.2, §4; P4-T01): lifecycle and evidence icons plus the spelled-out label, then reasons,
 // each in its semantic foreground on the neutral background behind it. Icons are aria-hidden: the text says it all.
 import type { LiveStatus } from '../../shared/ipc.ts';
+import { findingBadges, statusExtras } from '../model.ts';
 import { ICONS, type IconId } from './icons.ts';
 import { statusPresentation } from './presentation.ts';
 
@@ -24,5 +25,18 @@ export function StatusBadge({ status }: { status: LiveStatus | null }) {
       {p.reasons.map((r) => <span key={r.label} className={`x-status-item x-tone-${r.tone}`}> <Icon id={r.icon} /><span>{r.label}</span></span>)}
       {p.detail ? <span className="x-status-item x-tone-muted"> {p.detail}</span> : null}
     </span>
+  );
+}
+
+/** A record's status line (design §3.2): the last-known qualifier, the badge, health/last-turn words and §6.4 finding
+ *  badges. Workspace's compact list row has its own shorter form. */
+export function StatusLine({ status, lastKnown }: { status: LiveStatus | null; lastKnown: boolean }) {
+  return (
+    <>
+      {lastKnown ? <span>Last known: </span> : null}
+      <StatusBadge status={status} />
+      {status ? statusExtras(status).map((t) => <span key={t}> · {t}</span>) : null}
+      {findingBadges(status).map((t) => <span key={t}> <Icon id="finding" /> {t}</span>)}
+    </>
   );
 }

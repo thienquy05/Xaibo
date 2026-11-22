@@ -32,11 +32,13 @@
 
 ### 1a. Corrections from later approvals (documentation audit, 2026-11-13)
 
+Owner 2026-11-18 (D-P5-01): draft S-37 in Phase 5 and S14/S-38 in Phase 6 now. Draft S-39/S-40 at v1-A setup, S-44 at v1-B setup, S-41 at v1-E setup, S-43 at v1-F setup and S-42 at v2 setup, including their EC/metric/spike traceability (audit D2–D4, C14); these later items remain undrafted, not waived.
+
 Task text below that predates these decisions is read as corrected here (precedence rule above; audit ledger `docs/plans/docs_audit.md`). A phase that still has task text listed here folds the correction into that text at its phase setup task (Px-T00).
 
 | Audit ID | Plan text affected | What holds | Source |
 |---|---|---|---|
-| A14 | Phases 4/5: T2/T3 corpora, 50 concurrent sessions, EC-57, EC-87, plan-scale M13/M14 (P4-T11/T12/T17, P5-T00, Gate 4/5 checklists) | Gates 4/5 and the MVP Gate measure the personal profile **TP** (PRD §6.6). T2/T3, plan-scale M13/M14, EC-57 and EC-87 run only in the owner-started scale-up stage after v1, not at any MVP gate | D-P0-24, D-P0-26, D-P0-36; PRD §6.6, §9.3 |
+| A14 | Phase 4: T2 corpus, 50 concurrent sessions, EC-57, plan-scale M14 (P4-T11/T12/T17, Gate 4 checklist); Phase 5 correction folded below | Gates 4/5 and the MVP Gate measure the personal profile **TP** (PRD §6.6). T2/T3, plan-scale M13/M14, EC-57 and EC-87 run only in the owner-started scale-up stage after v1, not at any MVP gate | D-P0-24, D-P0-26, D-P0-36; PRD §6.6, §9.3 |
 | A16 | "`async: true` on every hook" (P3-T03 lint, P3-T05) and "async where supported" | Claude: `async: true` on every event except `Stop`, which is synchronous. Codex: the per-event S5 subset (`SessionEnd` sync). The hook lint checks that per-agent subset (as built in `src/service/adapters/claude/setup.ts`) | PRD §5.2, §5.3, §7.3; S3, S5 |
 | A18 | OQ-X3 default: keychain items "matching the agents' names" | The guard enumerates **every** generic-password item (SHA-256 of `svce`, SHA-256 of `acct`, `mdat`) as P0-T04 specifies and `spikes/shared/guard.ts` does; agent items are flagged by name, others still detected | P0-T04; review record §9b C2 |
 | A19 | `.cache/profiles/` (§3.2, P0-T05, OQ-X1, live-test layout) | Disposable profiles live outside the repo at `~/.xaibo-spike-profiles/<agent>-<slot>/` (0700) | D-P0-15 |
@@ -1733,24 +1735,42 @@ See §6: Q-4.1, Q-4.2, Q-4.4..Q-4.7 (Q-4.3 → OQ-X8, Q-4.8 → OQ-X11).
 
 ## Phase 5 — History and retention (Gate 5)
 
-**Goal.** History organization (projects/folders, move, pin, archive, Trash with Undo, restore); purge covering every derivative copy, with suppression and Re-import; FTS5 search, paged, with the coverage note; the retention job (session retention, 45-day account-usage expiry, Trash auto-empty); the storage meter; monthly usage settlement and chart (FR-52, US-20); large-history paging, search and maintenance meeting M13 on T3 incl. quota history and indexes.
+**Goal.** History organization (projects/folders, move, pin, archive, Trash with Undo, restore); verified repository/worktree grouping and the Agent Map tree (S-37); purge covering every derivative copy, with suppression and Re-import; FTS5 search, paged, with the coverage note; the retention job (session retention, 45-day account-usage expiry, Trash auto-empty); the storage meter; monthly usage settlement and chart (FR-52, US-20); paging, search and maintenance meeting M13 at TP incl. quota history and indexes. Plan-scale T3/EC-87 waits for the owner-started scale-up stage after v1.
 
 **Branch.** `feat/phase5-history-retention`, from `master` containing Gate 4.
 **Installs.** None (chart is hand-written SVG).
 
-**PRD mapping.** S-09, S-10, S-29 (large history), S-36; FR-10, FR-11, FR-12, FR-13, FR-52; §5.4 (Overlay, Suppression, MonthlyUsageTotal, MonthlyQuotaPeak, SettledContribution), §5.7 (64 KiB FTS coverage), §5.11 (retention/storage), §7.4 (`incremental_vacuum`, `PRAGMA optimize`, backups), P1; US-5, US-6, US-14, US-20; M13 (T3); regression M12 and T0/T1 smoke.
+**PRD mapping.** S-09, S-10, S-29 (large history), S-36, S-37; FR-10, FR-11, FR-12, FR-13, FR-52, FR-53; §5.4 (Overlay, Suppression, MonthlyUsageTotal, MonthlyQuotaPeak, SettledContribution), §5.7 (canonical paths, 64 KiB FTS coverage), §5.11 (retention/storage), §7.4 (`incremental_vacuum`, `PRAGMA optimize`, backups), P1; US-5, US-6, US-14, US-20, US-21; EC-106..108; Q24 (new sessions only); M13 (TP); regression M12 and T0/T1 smoke. Agent Map placement: D-PD-01/02, design §6.5/6.5.1.
 
-**Entry criteria.** Gate 4 passed; S1 engine and SQLite version, FTS5 delete strategy (`contentless_delete` availability) and DBSTAT availability recorded in `phase0_spikes.md`; Phase 3 usage history projection and Phase 2 cost estimates exist; ≥25 GiB free disk for T3 (Q-5.4).
+**Entry criteria.** Gate 4 passed; S1 engine and SQLite version, FTS5 delete strategy (`contentless_delete` availability) and DBSTAT availability recorded in `phase0_spikes.md`; Phase 3 usage history projection and Phase 2 cost estimates exist. The T3 disk precheck (Q-5.4) belongs to the owner-started scale-up stage.
 
 **Pipeline.** HP. Purge, suppression, retention, settlement and Clear usage history use `security-change` (permanent destruction, privacy); search and history UI `new-feature`. Expect risk prompts on "purge", "delete", "session", "token".
 
-**Loop.** As Phase 4; plus `npm test -- test/integration/<file>` and `npm run perf -- --tier=T3`.
+**Loop.** As Phase 4; run `npm test` bare and once, other checks separately. Gate 5 perf uses TP (§6.6); T3 runs only in the owner-started scale-up stage.
 
 ### Tasks
 
-**P5-T00 — Phase setup** — branch, base SHA, `/graphify`, progress section. Generate the T3 corpus once per seed into `.cache/perf/t3/`: extend `scripts/gen-perf-corpus.ts` for ≥10,000 sessions, a ≥10 GiB populated DB (content and index, no padding), 200 MB transcripts, 45-day minute-sampled quota streams with transitions, context projections, price provenance. Test first (U): `test/unit/scripts/gen-corpus.test.ts` — same seed → identical manifest hash; declared distribution met at small scale. Loop: `npm test -- test/unit/scripts/gen-corpus.test.ts && npm run perf -- --gen=T3`. Done: corpus manifest (row counts, table/index/WAL bytes), aggregates only. Owner: confirms disk location and budget.
+**P5-T00 — Phase setup** — branch, base SHA, `/graphify`, progress section; the Orca journal-recovery comparison (research L6, result in `docs/research/orca-lessons.md`), whose takeaways are folded into P5-T01 and P5-T07. All Phase 5 gate measurements use TP (PRD §6.6); the TP corpus gains its quota history in P5-T11; T3 generation moves to P5-T19 in the owner-started scale-up stage.
 
-**P5-T01 — Overlay: projects, folders, move, pin, archive (FR-10, US-5)** — forward-only migration with overlay tables keyed `(agent, profile, native_session_id)`; IPC actions; paged filtered history list (keyset on `(agent, last_activity)` and `(project_id)`); native files never touched; the "approved project label" confirm action used by notifications. Files: `src/service/store/migrations/<n>_overlay.sql`, `src/service/history/overlay.ts`, `src/main/ipc.ts`, `test/unit/service/overlay.test.ts`, `test/integration/overlay-migration.test.ts`. Test first: U — idempotent ops; a move keeps identity. I — backup taken by the recovery path; forward-only; native fixture checksum unchanged. Deps: P5-T00.
+**P5-T01 — Overlay: projects, folders, move, pin, archive (FR-10, US-5)** — forward-only migration with overlay tables keyed `(agent, profile, native_session_id)`; IPC actions; paged filtered history list (keyset on `(agent, last_activity)` and `(project_id)`); native files never touched; the "approved project label" confirm action used by notifications. Store open (research L6): read `user_version` before any pragma and open read-only with its own reason when it is newer than the latest migration; a migration that fails on disk space reports the space reason, not `migration-failed`. Files: `src/service/store/migrations/<n>_overlay.sql`, `src/service/history/overlay.ts`, `src/service/store/db.ts`, `src/main/ipc.ts`, `test/unit/service/overlay.test.ts`, `test/integration/overlay-migration.test.ts`. Test first: U — idempotent ops; a move keeps identity. I — backup taken by the recovery path; forward-only; native fixture checksum unchanged; a newer-schema DB opens read-only and is not written; SQLITE_FULL during a migration gives the space reason. Deps: P5-T00.
+
+**P5-T01a — Repository/worktree resolver (S-37, FR-53; EC-106/107)**
+- Build: pure resolution logic with an injected metadata reader; walk cwd ancestors to the first `.git`; handle a directory, `gitdir:` file, optional `commondir`, and linked-worktree `gitdir` back-pointer exactly per FR-53. Resolve relative pointers against their containing file, canonicalize every path per §5.7, and require the final common directory to contain `HEAD`, `objects` and `refs`. Read git metadata only; no git process or repository content. Return verified repository key, worktree attribute and cwd provenance, or cwd fallback with a reason.
+- Files: `src/service/history/repository.ts`, `src/service/paths.ts` (reuse canonicalization), `test/unit/service/repository.test.ts`.
+- Test first (U): temp-dir synthetic metadata for EC-106 linked/main worktrees, relative pointers and symlinks; EC-107 separate git dir without back-pointer, bare-repository worktrees, nearest nested repository/submodule, absent `.git`, unreadable/missing/inconsistent metadata, non-directory targets and failed back-pointer. Unsupported layouts never merge by guess.
+- Deps: P5-T00. Pipeline: HP `new-feature`; metadata access and no-spawn assertions included.
+
+**P5-T01b — Persist grouping on new sessions only (FR-53, Q24; EC-106/108)**
+- Build: forward-only migration adds repository key, worktree attribute and fallback provenance without regrouping existing rows. Adapters supply cwd evidence; resolve outside the writer transaction and persist through the shared session-creation path, including hook/report-created sessions. Later upserts/replays do not regroup existing sessions. P5-T01 manual moves override automatic grouping; native identity and files stay unchanged. Persisted grouping survives deletion of the worktree.
+- Files: `src/service/store/migrations/<n>_repository.sql`, `src/service/store/writer.ts`, `src/service/adapters/` session-creation callers, `src/service/history/overlay.ts`, `test/integration/repository-grouping.test.ts`.
+- Test first (I): EC-106 main/linked sessions share the verified repository; pre-migration rows and subsequent upserts retain their grouping; EC-108 manual move wins before/after replay, deleted worktree retains history, EC-06 relocation keeps `(agent, profile, native_session_id)` and cwd history. Native fixture checksums unchanged; migration recovery exercised.
+- Deps: P5-T01, T01a. Pipeline: HP `new-feature`.
+
+**P5-T01c — Paged repository/worktree history projection**
+- Build: repository/worktree filters and bounded branch queries over persisted grouping plus manual overlays; return provenance and exact unique session/live counts and distinct agent inventory, independently unavailable when incomplete. Match design §6.5.1 scopes: moved sessions appear/count once under Project override; retain cwd fallback and legacy grouping. Service aggregates cover the full filtered branch, never loaded-leaf sums. Feeds P5-T18/T18a.
+- Files: `src/service/history/` queries, shared IPC types and service/main/preload/client handlers, `test/integration/history-grouping.test.ts`.
+- Test first (I): cross-agent/profile shared worktree, duplicate folder labels, overrides, fallback and legacy rows; stable filtered cursors without duplicates; counts remain exact across pages and moves; query plans use indexes; enforce §6.5.1 page caps.
+- Deps: P5-T01b. Pipeline: HP `new-feature`.
 
 **P5-T02 — EC-66: missing title or project (U)**
 - **EC-66** Missing title / project — "Untitled" + first-prompt excerpt in-app only (never in notifications); default project = cwd basename in-app only; reaches notifications only after the user confirms it as the approved project label (FR-10) — **U**.
@@ -1773,7 +1793,7 @@ See §6: Q-4.1, Q-4.2, Q-4.4..Q-4.7 (Q-4.3 → OQ-X8, Q-4.8 → OQ-X11).
 - Test first (U): fixed-TZ fixtures (`TZ` per test process) around DST and month-end. Deps: P5-T04.
 
 **P5-T07 — Purge engine and suppression (FR-11), with purge acceptance**
-- Build: `purge(session)` in one DB transaction settles contributions (P5-T04), then deletes events, turns, tool calls, file touches, FTS rows (S1-version strategy: external-content `'delete'` with original text, or `contentless_delete`), attachments, session-linked ContextSnapshot/CostEstimate/UsageSnapshot provenance links, and writes the Suppression marker (manual or retention). After commit: remove complete and incomplete content/chunk files; rewrite closed spool files without the session's deliveries (atomic same-dir rename; active files rely on intake suppression and are rewritten once rotated); handle migration backups containing the session (Q-5.1); `incremental_vacuum` off the readiness path. Suppression filters rescans, spool replay and late hooks before insert. Native files never touched. UI copy: "not forensic secure erasure" (Q-5.2).
+- Build: `purge(session)` in one DB transaction settles contributions (P5-T04), then deletes events, turns, tool calls, file touches, FTS rows (S1-version strategy: external-content `'delete'` with original text, or `contentless_delete`), attachments, session-linked ContextSnapshot/CostEstimate/UsageSnapshot provenance links, and writes the Suppression marker (manual or retention). After commit: remove complete and incomplete content/chunk files; rewrite closed spool files without the session's deliveries (atomic same-dir rename; active files rely on intake suppression and are rewritten once rotated); handle migration backups containing the session (Q-5.1); `incremental_vacuum` off the readiness path. Suppression filters rescans, spool replay and late hooks before insert. Native files never touched. UI copy: "not forensic secure erasure" (Q-5.2). Failure safety (research L6): purge and retention run through the writer so the disk-full state applies; file deletions, spool rewrites and backup changes happen only after a confirmed COMMIT, and an unknown outcome deletes nothing; a ROLLBACK that throws keeps the original error and the connection is reopened before reuse; a purge that fails (e.g. SQLITE_FULL) leaves no Suppression marker and removes no files.
 - Files: `src/service/history/purge.ts`, `src/service/history/suppression.ts`, `src/service/ingest/*` (intake suppression check), `src/service/store/backup.ts`, `test/integration/purge-acceptance.test.ts`.
 - Test first (I, **purge acceptance**): one synthetic session with a unique canary across events, FTS, attachments, a complete chunked item, an interrupted chunk assembly, spool entries, a context/cost snapshot, a migration backup, plus an untouched second session. After purge: (a) all logical queries for canary and session ID return 0 rows incl. FTS `MATCH`; (b) byte search for the canary across content dirs, spool and backups finds 0 hits (main DB file excluded, FR-11 non-forensic, Q-5.2); (c) other session intact; (d) monthly totals unchanged; (e) native fixture checksum unchanged; (f) app-data permissions 0700/0600.
 - Loop: `npm test -- test/integration/purge-acceptance.test.ts`. Done: recorded as Gate 5 purge-acceptance evidence. Deps: P5-T03, P5-T04.
@@ -1790,9 +1810,10 @@ See §6: Q-4.1, Q-4.2, Q-4.4..Q-4.7 (Q-4.3 → OQ-X8, Q-4.8 → OQ-X11).
 - Files: `test/unit/service/retention-policy.test.ts`. Test first (U): fake clock and fake lifecycle table; EC-42 regression — a TZ/DST-transition fixture shows session retention and Trash expiry use elapsed N × 24 h. Deps: P5-T09.
 
 **P5-T11 — EC-99: 45-day quota expiry and large quota history (I + P)**
-- **EC-99** Forty-five-day quota expiry, Keep/Trash/purge, restart/replay, large quota history — independent quota and session retention; no resurrection or fabricated samples; bounded indexed queries; M13 holds with snapshot and index bytes in T3 — **I + P**.
-- Files: `test/integration/quota-retention.test.ts`, `test/perf/t3.ts` (quota-history queries).
-- Test first: I — account-level samples expire at 45 days even when the originating session has Keep; session-linked snapshots follow Keep, Trash and purge; restart with replay of expired samples does not re-insert them; no interpolated rows; EXPLAIN QUERY PLAN uses `(usage_scope_id, limit_id, as_of)`. P — paged quota-history queries on T3 (64,800 samples per stream plus transitions) bounded; M13 holds.
+- **EC-99** Forty-five-day quota expiry, Keep/Trash/purge, restart/replay, large quota history — independent quota and session retention; no resurrection or fabricated samples; bounded indexed queries; M13 holds with snapshot and index bytes at TP (T3 in the owner-started scale-up, P5-T19) — **I + P**.
+- Build: extend `scripts/gen-perf-corpus.ts` so the TP corpus carries 2 quota streams × 45 days, minute-sampled, with transitions, context projections and price provenance (PRD §6.6); same seed → identical manifest.
+- Files: `scripts/gen-perf-corpus.ts`, `test/integration/quota-retention.test.ts`, the TP perf run (quota-history queries).
+- Test first: I — account-level samples expire at 45 days even when the originating session has Keep; session-linked snapshots follow Keep, Trash and purge; restart with replay of expired samples does not re-insert them; no interpolated rows; EXPLAIN QUERY PLAN uses `(usage_scope_id, limit_id, as_of)`. P — paged quota-history queries on TP (64,800 samples per stream plus transitions) bounded; M13 holds.
 - Done: row counts and table/index bytes reported. Deps: P5-T09, P5-T00.
 
 **P5-T12 — EC-23 and EC-24: native availability (I)**
@@ -1824,16 +1845,22 @@ See §6: Q-4.1, Q-4.2, Q-4.4..Q-4.7 (Q-4.3 → OQ-X8, Q-4.8 → OQ-X11).
 
 **P5-T17 — Monthly usage chart UI (US-20, FR-52)** — hand-written SVG in the approved design: each month's value printed visibly; filters by agent and model (model filter excludes quota); metric switch sessions, tokens, `~$` (coverage and price-revision provenance), peak quota % per usage scope (default Q-5.7); labels "month to date", "some details expired", "details expired, totals only"; months before first observation absent, not zero; text/table equivalent; placement per the design (no new top-level workspace). Files: `src/renderer/history/MonthlyChart.tsx`, `src/renderer/history/monthly-view.ts`, `test/unit/renderer/monthly-view.test.ts`, `test/e2e/monthly-chart.spec.ts`. Test first: U — absent ≠ zero; `~` cost with known subtotal; quota separated per scope. E — synthetic multi-month data shows values, labels, filters; table reachable by keyboard. Done: Playwright MCP check. Deps: P5-T06.
 
-**P5-T18 — History UI and settings (US-5, US-6)** — screens per the design: projects/folders, move, pin, archive; Trash with Undo and restore; purge confirm with "not forensic secure erasure"; Re-import for manual suppression; search with coverage note; per-session Keep and purge date; retention settings (Never / N) persisted across restart; storage meter. Lists use Phase 4 `VirtualList` and paged IPC. Files: `src/renderer/history/*.tsx`, `src/renderer/settings/RetentionSettings.tsx`, `test/e2e/history.spec.ts`, `test/e2e/a11y-history.spec.ts`, `test/e2e/visual.spec.ts` (history screens). Test first (E): search, move/pin/archive/Trash/Undo/restore/purge, retention settings plus storage meter, persistence after restart, keyboard-only, focus restoration after confirm dialogs, narrow layouts, missing history baselines. Done: baselines accepted after Claude review; MCP check with 0 console errors. Deps: P5-T01..T17.
+**P5-T18 — History UI and settings (US-5, US-6)** — screens per the design: projects/folders, move, pin, archive; repository/worktree grouping and filters from P5-T01c; Trash with Undo and restore; purge confirm with "not forensic secure erasure"; Re-import for manual suppression; search with coverage note; per-session Keep and purge date; retention settings (Never / N) persisted across restart; storage meter. Lists use Phase 4 `VirtualList` and paged IPC. Files: `src/renderer/history/*.tsx`, `src/renderer/settings/RetentionSettings.tsx`, `test/e2e/history.spec.ts`, `test/e2e/a11y-history.spec.ts`, `test/e2e/visual.spec.ts` (history screens). Test first (E): repository/worktree filters preserve manual overrides and legacy rows; search, move/pin/archive/Trash/Undo/restore/purge, retention settings plus storage meter, persistence after restart, keyboard-only, focus restoration after confirm dialogs, narrow layouts, missing history baselines. Done: baselines accepted after Claude review; MCP check with 0 console errors. Deps: P5-T01..T17, T01c.
 
-**P5-T19 — EC-87: 10,000 sessions / ≥10 GiB DB, M13 on T3 (I + P)**
+**P5-T18a — Agent Map tree and navigation (S-37, US-21)**
+- Build: Agent Map nav link in `main.tsx` replaces its deferred-area note; repository → worktree → sessions tree and provenance detail per design §6.5/6.5.1, including cwd fallback, Project override and unchanged legacy groups. Reuse `VirtualList` and P5-T01c. Enforce 10-root/20-branch/50-leaf pages (service leaf cap 100), three resident pages per node and four expanded paths; exact service counts or unavailable, no recursive fetch. Implement semantic tree keys, focus/return restoration, stale/retry states and responsive decorative connectors. Agents mode/list, integration panel and Add agent arrive in Phase 6; expose no empty controls for them now.
+- Files: `src/renderer/main.tsx`, `src/renderer/agent-map/{tree.ts,AgentMap.tsx}`, `test/unit/renderer/agent-map-tree.test.ts`, `test/e2e/agent-map.spec.ts`, `test/e2e/a11y-agent-map.spec.ts`, `test/e2e/visual.spec.ts`.
+- Test first: U — bounded expansion/eviction and focus math, including refusal to evict focus/ancestors. E — shared-worktree agents, override counted once, fallback/legacy groups, paging/retry, tree keyboard/typeahead, Session return after move/deletion, stale state, narrow layout and wide connectors. A11Y and visual baselines per design §8.
+- Deps: P5-T01c, T18. Pipeline: HP `new-feature`; node:test RED on `tree.ts` before TSX (§3.6), then E2E and connected-browser visual check; baselines reviewed by Claude.
+
+**P5-T19 — Deferred scale-up: EC-87, 10,000 sessions / ≥10 GiB DB, M13 on T3 (I + P)** — runs only when the owner starts the scale-up stage after v1 (D-P0-24/26/36), never as Gate 5/MVP acceptance. Generate T3 once per seed using the existing generator; deterministic manifest/distribution U check first. Owner confirms disk location/budget and ≥25 GiB free disk (Q-5.4) before generation.
 - **EC-87** 10,000 sessions / ≥10 GiB DB, WAL growth and query pressure — M13; bounded memory, handles and queues; maintenance and query work do not stall live dispatch — **I + P**.
 - Build: keyset list and search plans verified with EXPLAIN; `PRAGMA optimize` and `incremental_vacuum` as bounded jobs off readiness; bounded WAL checkpoints; short read transactions.
 - Files: `test/integration/large-history.test.ts`, `test/perf/t3.ts`.
 - Test first: I — with a light T2 stream live, a concurrent retention batch, `optimize` and `incremental_vacuum` keep dispatch lag and queue age within M14 bounds; every list/search plan uses an index. P — T3: indexed selection → first bounded page p95 ≤300 ms incl. the 200 MB transcript; search → first page p95 ≤500 ms filtered and unfiltered; warm and cold application cache (app restart; OS cache not dropped, Q-5.11); memory bounded.
 - Loop: `npm run dist:mac && npm run perf -- --tier=T3`. Done: T3 report (hardware, versions, seed, DB/FTS/index/WAL and snapshot bytes, p95, per-hop). Deps: P5-T11, T14, T18. Owner: miss acceptance.
 
-**P5-T20 — Gate 5** — GS with `npm run perf -- --tier=T0,T1,T3`, rerun of T0/T1 smoke and M12 (schema/migrations changed), M6 = 0 across Phase 5 E2E, repo unchanged, native fixture checksums unchanged; `.handoff/gate5-review.md`. Owner: **Gate 5 stop**.
+**P5-T20 — Gate 5** — GS; measure M13 and EC-99 at TP (PRD §6.6), including snapshot/index bytes and concurrent retention/maintenance; rerun T0/T1 smoke and M12 (schema/migrations changed). Deps: P5-T01..T18, T01a..T01c, T18a; P5-T19 is deferred, not a prerequisite. EC-106..108, history/Agent Map E2E, A11Y and visual checks; M6 = 0 across Phase 5 E2E, repo unchanged, native fixture checksums unchanged; `.handoff/gate5-review.md`. Owner: **Gate 5 stop**.
 
 ### EC rows assigned to Gate 5
 
@@ -1846,34 +1873,36 @@ See §6: Q-4.1, Q-4.2, Q-4.4..Q-4.7 (Q-4.3 → OQ-X8, Q-4.8 → OQ-X11).
 | EC-58 | CJK / emoji search | `unicode61` baseline; CJK limitation documented | U | P5-T14 |
 | EC-66 | Missing title / project | "Untitled" + excerpt and basename in-app only; notifications only after label confirmed | U | P5-T02 |
 | EC-71 | Session moved/deleted while tailed | Clean close; state updated; no crash loop | I | P5-T13 |
-| EC-87 | 10,000 sessions / ≥10 GiB DB | M13; bounded resources; maintenance doesn't stall dispatch | I + P | P5-T19 |
 | EC-99 | 45-day quota expiry, large history | Independent retention; no resurrection/fabrication; indexed queries; M13 with snapshot bytes | I + P | P5-T11 |
 | EC-103 | Settlement accounting | One transaction; deltas; once per bucket; totals stable across expiry; keys block double count | U + I | P5-T05 |
 | EC-104 | Month and quota semantics | Local month + offset; "month to date"; absent not zero; quota max per scope; model filter excludes quota | U | P5-T06 |
 | EC-105 | Deletion paths, clearing, cost coverage, privacy | Trash/restore no change; settle before deletion; cleared never reappear; frozen revision; opaque keys only | U + I + E | P5-T16 |
+| EC-106 | Linked/main worktrees, relative pointers, symlinks | Verified common-directory grouping; cwd/worktree retained; no git process | U + I | P5-T01a, T01b |
+| EC-107 | Separate/bare/nested/submodule layouts; invalid metadata | Valid layouts verified; every unsupported/inconsistent step keeps cwd grouping | U | P5-T01a |
+| EC-108 | Manual move, deleted worktree, relocation | Manual move wins; persisted history grouping; identity unchanged | I | P5-T01b |
 
 ### Metrics at Gate 5
-- **M13 (T3):** selection → first bounded page p95 ≤300 ms incl. 200 MB transcript; search → first page p95 ≤500 ms; warm and cold (app restart) on ≥10,000 sessions / ≥10 GiB with quota history and indexes; actual DB/index/WAL/snapshot bytes (P5-T19, P5-T11).
-- **Regression:** M12 and T0/T1 smoke after migrations; M1/M2 dispatch lag during retention/maintenance (EC-87).
+- **M13 (TP):** selection → first bounded page p95 ≤300 ms; search → first page p95 ≤500 ms; warm and cold (app restart) at PRD §6.6 TP, with quota history and actual DB/index/WAL/snapshot bytes (P5-T20, P5-T11). Plan-scale M13, the 200 MB transcript and EC-87 remain P5-T19 in the owner-started scale-up stage.
+- **Regression:** M12 and T0/T1 smoke after migrations; M1/M2 dispatch lag during retention/maintenance at TP.
 
 ### Gate 5 checklist
-- [ ] Purge acceptance (P5-T07) GREEN.
-- [ ] EC-21, 22, 23, 24, 58, 66, 71, 87, 99, 103, 104, 105 pass.
-- [ ] EC-42 regression (P5-T10 DST fixture): retention and Trash expiry use elapsed N × 24 h.
-- [ ] History E2E flows pass (search, move/pin/archive/Trash/Undo/restore/purge, Re-import, retention settings plus storage meter, settings persistence); monthly chart E2E (US-20).
-- [ ] A11Y and visual baselines for history and chart screens; MCP check 0 console errors.
-- [ ] M13 (T3) measured with quota history; regression reruns reported.
-- [ ] Native fixture stores byte-identical; app data 0700/0600; repo unchanged; M6 = 0.
-- [ ] Monthly tables contain only opaque keys.
-- [ ] Pipeline evidence per unit (`security-change` for purge, retention, settlement, clear).
-- [ ] GS: Codex review, Claude second review, owner stop.
+- [x] Purge acceptance (P5-T07) GREEN. *`gates/gate5.md`: test:electron on `829e51f`.*
+- [x] EC-21, 22, 23, 24, 58, 66, 71, 99, 103, 104, 105, 106, 107, 108 pass; Q24 existing rows unchanged. EC-87 is deferred to owner-started scale-up, not a gate pass. *`gates/gate5.md`: npm test, test:electron and E2E on `829e51f`.*
+- [x] EC-42 regression (P5-T10 DST fixture): retention and Trash expiry use elapsed N × 24 h. *`gates/gate5.md`.*
+- [x] History E2E flows pass (repository/worktree filters, search, move/pin/archive/Trash/Undo/restore/purge, Re-import, retention settings plus storage meter, settings persistence); monthly chart E2E (US-20); Agent Map tree/nav E2E (US-21, P5-T18a). *`gates/gate5.md`: E2E 75/75; the §6.4 filters not yet built are deferred (D-P5-17).*
+- [x] A11Y and visual baselines for history, chart and Agent Map tree; connected-browser visual check, 0 console errors. *`gates/gate5.md`: E2E baselines and the connected-browser check on the gate build.*
+- [x] M13 (TP) measured with quota history and snapshot/index bytes; regression reruns reported. *`gates/gate5.md`; TP usage with the real disk-full: D-P5-20, D-P5-22.*
+- [x] Native fixture stores byte-identical; app data 0700/0600; repo unchanged; M6 = 0. *`gates/gate5.md`: packaged audit.*
+- [x] Monthly tables contain only opaque keys. *`gates/gate5.md`.*
+- [x] Pipeline evidence per unit (`security-change` for purge, retention, settlement, clear). *Settlement and Clear ran `new-feature` with security reviews (D-P5-21).*
+- [x] GS: Codex review, Claude second review, owner stop. *Approved 2026-11-22 on `6991582` (`gates/gate5.md`).*
 
 ### Risks (Phase 5)
 - **FTS5 deletion** needs original indexed text or `contentless_delete` (SQLite ≥3.43, version from S1); a mismatch leaves orphans.
 - **Leftover bytes** in WAL/freed pages; FR-11 makes purge non-forensic; UI copy says so; the byte scan excludes the main DB (Q-5.2).
-- **Long settlement transactions** stall the single writer → bounded batches behind live batches; verified by EC-87.
+- **Long settlement transactions** stall the single writer → bounded batches behind live batches; verify at TP now and EC-87 in owner-started scale-up.
 - **Backups** containing a purged session must be deleted or rewritten (Q-5.1); deletion removes a recovery point.
-- **T3 corpus cost** → generate once per seed; delete only on owner request.
+- **Deferred T3 corpus cost** → generate once per seed only in owner-started scale-up; delete only on owner request.
 - **Time-zone bugs** → fixed-TZ matrix (EC-104).
 - **Spool rewrite race** with an appending forwarder → rewrite only closed files; active files rely on intake suppression.
 
@@ -1894,6 +1923,18 @@ See §6: Q-5.1..Q-5.11.
 ### Ordered tasks
 
 **P6-T01 — Phase setup** — branch, `/graphify`, baseline, progress section; inventory the Phase 3 engine API (plan, preview, apply, verify, manifest) so Phase 6 builds only UI and plan builders on top.
+
+**P6-S14-T1 — Sign-in signal spike (S14, FR-54)**
+- Build: owner-started live session after Gate 3, before Phase 6 detection work; may run during Phase 5 when the owner has time. Follow §3.2 SG isolation/guard/approved synthetic-prompt budget. Owner signs into disposable profiles using each available method; API-key profiles require an owner-provided disposable key, entered by the owner and never exposed to model context, fixtures, logs or reports. Xaibo makes no network/model/usage request.
+- Files: `spikes/s14/`, `docs/plans/phase0_spikes.md` S14 section; verified field/method mappings and unknown coverage land as validated catalog data, never a `src/` import from spikes.
+- Test first (S): synthetic allowlisted field-to-method checks, including absent/ambiguous signals. Report numberless per-agent/version field names, evidence semantics and unavailable methods only. Negative result narrows that agent to Unknown/owner declaration; no inference from model, cost, credits or missing fields.
+- Deps: Gate 3, §3.2 owner-started SG session. Pipeline: spike procedure (§3.1); catalog production changes use HP. Done: S14 disposition recorded before dependent detection.
+
+**P6-T01a — Sign-in method evidence and profile state (S-38, FR-54; EC-109/110)** — `security-change`.
+- Build: consume only S14-catalogued fields in already-ingested agent output; persist method/source/time per profile, plus owner declaration and any conflicting output evidence with both times. Declaration wins until changed/cleared; absent evidence/declaration is Unknown. Never infer from model/cost/credits/absence, merge profiles/scopes, or create an epoch without an evidenced/declared method change. This detector never opens/parses/stats credentials, auth/config files or keychain items, or reads process environments.
+- Files: `src/service/usage/sign-in.ts`, profile-state migration under `src/service/store/migrations/`, existing usage/adapters/writer and IPC paths, `integrations/` catalog data/schema, `test/unit/service/sign-in.test.ts`, `test/integration/sign-in.test.ts`, `test/integration/sign-in-access.test.ts`.
+- Test first: U + I — EC-109 subscription/API key/cloud provider/gateway/mixed/no signal, per-profile declaration override/conflict/clear, restart, method changes and replay; epochs change only on evidenced/declared change. EC-110 — isolated synthetic credential/auth/config files and fake keychain entries with canaries; trace file/metadata/keychain access and environment reads through detector execution: none accessed, no canary persisted/logged/shown.
+- Deps: P6-T01, P6-S14-T1, P6-T07. Pipeline: HP `security-change`; no live credentials or real agent stores in tests.
 
 **P6-T02 — Retention offers in the Connect plan (EC-73, EC-90)** — `security-change`.
 - **EC-73** `cleanupPeriodDays` already set (higher, lower, managed policy) — preview a default-selected increase to `max(effective value, 45)`; deselectable; never lowers; managed policy wins and is shown; Disconnect restores the prior value (or removes the key if it was absent) only if the Xaibo-owned value is unchanged, else conflict — **U**.
@@ -1925,18 +1966,24 @@ See §6: Q-5.1..Q-5.11.
 - **EC-78** Invalid/imported catalog; duplicate bundled ID; executable probe — reject invalid or shadowing entries; no execution before a grant; a valid data-only synthetic agent passes M15 — **U + I**.
 - Build: validation against `integrations/agents.catalog.schema.json` (catalog schema v1 seeded from S11-T8) with the Gate 0 validator (OQ-X6); unknown fields and unsupported operations fail; import stores entries under app data with IDs that cannot shadow bundled IDs; an executable probe of an imported entry requires an explicit grant (FR-01, SEC5); file references limited to approved profile roots and regular files (escaping symlinks and special files rejected).
 - Files: `src/service/catalog/{validate,import}.ts`, `test/unit/catalog/validate.test.ts`, `test/integration/catalog/import.test.ts`, `test/fixtures/synthetic/catalog/{invalid,shadow,probe,symlink-escape}/` (S11-T8 negatives moved here).
-- Test first: U — each invalid fixture rejected with a specific reason. I — an import with a probe declaration triggers no spawn before the grant (fake spawner called 0 times, then 1 after, no shell, 3 s timeout). Deps: P6-T01.
+- Test first: U — each invalid fixture rejected with a specific reason; S14 method mappings validate as data, unsupported agent/version signals remain Unknown. I — an import with a probe declaration triggers no spawn before the grant (fake spawner called 0 times, then 1 after, no shell, 3 s timeout). Deps: P6-T01, P6-S14-T1.
 
 **P6-T08 — Add agent flow and rescan (EC-79)**
 - **EC-79** Newly installed agent; missing auth; blocked hooks — rescan without restart; installation, auth and connection shown separately; setup steps and actual coverage shown — **I + E**.
-- Build: Add agent screen in the approved design: rescan on open (FR-01); detected candidates first; FR-06 states (Detected, Setup required, Awaiting trust, Connected, Partial coverage, Unsupported version, Not detected); copy-only install hints; previewed config change through P6-T03; a receipt test before claiming Connected; blocked hooks as "hooks blocked by policy" (EC-49 detection); auth shown per OQ-P6-3. Gate 0 compatibility-matrix results (S6-T6/S7-T7) carried as catalog capability data per agent version and surface (visible, resumable, attach, ownership; verified/unverified/unsupported), rendered as text in Add agent/Integrations and as a reason string in the session view (e.g. "VS Code history visibility: unverified for <version>"; §2.2, US-8, §9.3).
+- Build: Add agent inside Agent Map's selected integration panel (D-PD-01/02, design §6.5.2): rescan on open (FR-01); detected candidates first; FR-06 states (Detected, Setup required, Awaiting trust, Connected, Partial coverage, Unsupported version, Not detected); copy-only install hints; previewed config change through P6-T03; a receipt test before claiming Connected; blocked hooks as "hooks blocked by policy" (EC-49 detection). Sign-in method uses P6-T01a, separately from installation/connection state. Gate 0 compatibility-matrix results (S6-T6/S7-T7) carried as catalog capability data per agent version and surface (visible, resumable, attach, ownership; verified/unverified/unsupported), rendered as text in Add agent/integration panel and as a reason string in the session view (e.g. "VS Code history visibility: unverified for <version>"; §2.2, US-8, §9.3).
 - Files: `src/renderer/` Add agent view, `src/service/catalog/detect.ts` (rescan IPC), `src/service/catalog/capabilities.ts`, `test/unit/capabilities.test.ts` (capability-to-label mapping), `test/integration/catalog/rescan.test.ts`, `test/e2e/add-agent.spec.ts`.
 - Test first: I — a synthetic executable added to the temp PATH after startup is detected by rescan without restart. U — each matrix state maps to its label; an unverified surface never renders as supported. E — hooks-blocked fixture → Partial coverage; no events → "Connected" only after a synthetic receipt; an unverified surface shows its coverage-limit text; keyboard only.
-- Loop: `node --test test/integration/catalog/rescan.test.ts && npm run test:e2e -- test/e2e/add-agent.spec.ts`, MCP visual check. Deps: P6-T03, P6-T07.
+- Loop: `npm test` bare and once; E2E and connected-browser visual check separately. Deps: P6-T03, P6-T07, P6-T01a, P6-T10.
 
 **P6-T09 — M15 synthetic fourth agent** — no `src/` change; only a catalog entry, report-v1 events and the test. Files: `test/fixtures/synthetic/catalog/fourth-agent/` (entry and event stream, seeded from S11-T8), `test/integration/catalog/m15-fourth-agent.test.ts`. Test first (I): import, detect, preview and apply setup in a temp profile, send report events via `xaibo-report` (lifecycle, `content.upsert` chunks, `usage.snapshot`); detection, setup, full-content storage and status all pass; fails if core paths hard-code agent IDs (that fix is a separate HP unit first; M15 counts only once the final fixture diff touches `test/` alone). Done: green, unit diff lists only `test/` paths (`git diff --name-only` in the progress file). Deps: P6-T07, T08.
 
-**P6-T10 — Integrations page UI** — per-agent Connect/Disconnect with diff preview incl. default-selected, deselectable retention rows; separate default-off tee toggle with its own preview; Uninstall; coverage and trust guidance; conflict display; start-at-login opt-in (Electron `app.setLoginItemSettings`, default off); approved design and A11Y. Files: `src/renderer/` Integrations view, `test/e2e/integrations.spec.ts`. Test first (E, §9.3 "Integrations connect/disconnect with diff preview"): preview shown; deselecting retention removes that row from the applied change; Disconnect restores; conflict shown; start-at-login toggles and persists; keyboard only, focus restored after the dialog, narrow layout. Loop: `npm run test:e2e -- test/e2e/integrations.spec.ts`, MCP check, baselines. Deps: P6-T03.
+**P6-T10 — Agent Map Agents list and integration panel UI** — extend P5-T18a per D-PD-01/02 and design §6.5/6.5.2: Repositories/Agents mode controls, bounded per-agent/profile list with FR-06 state, separate Lifecycle receipt/Content coverage and Open integration; selected scoped panel and Add agent live inside Agent Map, no separate Integrations area. Per-profile Connect/Disconnect with diff preview incl. default-selected, deselectable retention rows; separate default-off tee toggle with its own preview; Uninstall; coverage and trust guidance; conflict display; start-at-login opt-in (Electron `app.setLoginItemSettings`, default off). Files: `src/renderer/agent-map/` mode/panel state `.ts` and UI, `test/unit/renderer/agent-map-integrations.test.ts`, `test/e2e/integrations.spec.ts`, A11Y/visual suites. Test first: U — bounded mode/selection/focus restoration (§3.6 RED before TSX). E — preview shown; deselecting retention removes that row from the applied change; Disconnect restores; conflict shown; start-at-login persists; per-profile state isolation, list bounds, mode switching, Dashboard/Map return paths, Back to map, keyboard/focus and narrow layout per design. Done: E2E, connected-browser visual check and reviewed baselines. Deps: P6-T03, P5-T18a.
+
+**P6-T10a — Sign-in declaration and usage presentation (S-38, US-22)**
+- Build: profile-scoped owner declaration/change/clear in Settings and Agent Map integration panel; show method, evidence source/time and conflicts from P6-T01a. Usage views follow PRD §6.9: subscription leads with quota windows; API key/cloud provider/gateway with `~$` estimated cost and observed tokens; mixed shows both without summing; Unknown shows available values without a lead. Do not fabricate missing values. The synthetic presentation originally assigned to Phase 4 in PRD §10 moves here with detection; completed Phase 4 stays closed.
+- Files: `src/renderer/usage/presentation.ts` and existing usage views, `src/renderer/settings/` and `src/renderer/agent-map/` declaration UI/state, `test/unit/renderer/sign-in-view.test.ts`, `test/e2e/sign-in-usage.spec.ts`, A11Y/visual suites.
+- Test first: U — all EC-109 methods, missing values, lead selection and mixed non-summing; declaration/conflict labels. E — declare/change/clear per profile in both locations, restart persistence, output disagreement and method/epoch change reflected in usage; keyboard, focus, narrow layout and canary absence.
+- Deps: P6-T01a, T10. Pipeline: HP `new-feature`; node:test RED before TSX, E2E and connected-browser visual check; reviewed baselines.
 
 **P6-T11 — Price-override access in Settings** — reveal (`shell.showItemInFolder`, on the SEC1 reveal allowlist), validate and reload `<appdata>/models.override.json`; invalid edit shows the error and keeps the last valid revision (Gate 2 engine; EC-96 is gated there). Files: `src/renderer/` Settings, `src/main/` reveal handler, `test/e2e/settings-prices.spec.ts`. Test first (E): invalid override + Reload → error, revision unchanged; valid → new revision and "Prices as of" shown. Deps: P6-T01.
 
@@ -1955,12 +2002,15 @@ See §6: Q-5.1..Q-5.11.
 | EC-78 | Invalid/imported catalog; duplicate ID; executable probe | Reject invalid/shadowing; no execution before grant; synthetic agent passes M15 | U + I | P6-T07 |
 | EC-79 | Newly installed agent; missing auth; blocked hooks | Rescan without restart; install/auth/connection separate; coverage shown | I + E | P6-T08 |
 | EC-90 | Gemini `maxAge` cases | Disabled → no offer; else max(effective, 45d) preview; never lowers; policy wins; conditional restore | U | P6-T02 |
+| EC-109 | Sign-in output signals, declaration, method change | Correct method/Unknown; declaration wins with source/time/conflict shown; correct usage lead; mixed never summed; epoch only on evidenced/declared change | U + I | P6-T01a, T10a |
+| EC-110 | Canary credential/auth/config files and keychain entries | Access trace: detector opens/stats none, reads no process environment; no canary persisted/logged/shown | U + I | P6-T01a |
 
 ### Gate 6 checklist
-- [ ] EC-26 (I), EC-27 (I), EC-72 (I), EC-73 (U), EC-78 (U + I), EC-79 (I + E), EC-90 (U) pass, each with RED output recorded.
+- [ ] EC-26 (I), EC-27 (I), EC-72 (I), EC-73 (U), EC-78 (U + I), EC-79 (I + E), EC-90 (U), EC-109 (U + I), EC-110 (U + I, access trace and canary absence) pass, each with RED output recorded.
 - [ ] Config round trip byte-identical where Xaibo-owned values are unchanged, across the full matrix incl. the tee; changed values conflict, never overwrite.
 - [ ] M15 measured: fourth agent passes detection, setup, full-content storage and status with a `test/`-only diff.
-- [ ] Integrations, Add agent and Settings price E2E green; visual baselines from the approved design; A11Y keyboard/focus/narrow checks pass.
+- [ ] Agent Map Agents list/integration panel/Add agent, Settings price and sign-in declaration/usage E2E green; visual baselines from the approved design; A11Y keyboard/focus/narrow checks pass.
+- [ ] S14 disposition and validated per-agent/version catalog mappings recorded; negative/unavailable signals remain Unknown/owner declaration; no credential inspection or usage request.
 - [ ] M6 clean in every E2E run; M7 config lint: no prompt/agent hook types in any generated config.
 - [ ] Native fixture files unmodified (checksums).
 - [ ] Temp profiles: owner decision recorded (retire now with logout, deletion and temp keychain items removed after confirmation, or keep for the later SG spikes, §3.2).
@@ -2049,6 +2099,7 @@ See §6: Q-5.1..Q-5.11.
 
 *PRD §9.3 acceptance checklist*
 - [ ] All MVP §9.2 rows pass or have owner-approved waivers, re-confirmed by gate — Gate 1: EC-01, 03, 04, 08, 13, 14, 15, 16, 18, 19, 33, 35, 38, 39, 45, 47, 55, 60, 61, 62; Gate 2: EC-05, 06, 07, 10, 50, 51, 53, 54, 74, 80, 81, 93, 94, 95, 96, 101; Gate 3: EC-02, 09, 11, 12, 25, 28, 32, 40, 41, 42, 43, 44, 46, 48, 49, 52, 59, 63, 64, 70, 82, 83, 91, 92; Gate 4: EC-56, 57, 86, 97, 100, 102; Gate 5: EC-21, 22, 23, 24, 58, 66, 71, 87, 99, 103, 104, 105; Gate 6: EC-26, 27, 72, 73, 78, 79, 90; Gate 7: EC-20, 67, 76, 84, 85.
+- [ ] Added MVP rows: EC-106..108 at Gate 5 and EC-109..110 at Gate 6 pass or have owner-approved waivers. EC-57/87 and plan-scale M13/M14 in the preceding checklist remain deferred to owner-started scale-up (§1a), not MVP acceptance.
 - [ ] All shipped §1.5 metrics measured and reported incl. M11–M16 (M10 when MCP ships); misses need explicit owner acceptance; unrun tests are not passes.
 - [ ] Add agent and custom reporter, Gemini folding/content/cleanup, launch grants and all assigned perf tiers pass; content coverage and unverified capabilities visible (P6-T08 capability UI).
 - [ ] Fixture replay meets §6.7 with B1/B2 reported.
@@ -2324,7 +2375,7 @@ See §6: Q-5.1..Q-5.11.
 
 ## 5. Traceability appendix
 
-### 5.1 Edge-case catalog (EC-01..EC-105) → gate → task
+### 5.1 Edge-case catalog (EC-01..EC-110 drafted here; later deltas per §1a) → gate → task
 
 Gate assignment fixed by PRD §10. Test type copied from PRD §9.2. Phase 0 spike inputs are listed in §0.18.
 
@@ -2416,7 +2467,7 @@ Gate assignment fixed by PRD §10. Test type copied from PRD §9.2. Phase 0 spik
 | EC-84 | Changed executable/script/args/env; shell string | U + I | 7 | P7-T03 |
 | EC-85 | Provisional launch row, binding, immediate Stop | E + P | 7 | P7-T04 |
 | EC-86 | Cold start, hidden tray window, 200 MB session | E + P | 4 | P4-T13 |
-| EC-87 | 10,000 sessions / ≥10 GiB DB | I + P | 5 | P5-T19 |
+| EC-87 | 10,000 sessions / ≥10 GiB DB | I + P | Owner-started scale-up after v1 | P5-T19 |
 | EC-88 | ACP missing capability, permission, replay | I, v1-A | v1-A | V1A-T06 |
 | EC-89 | Generic GenAI telemetry without identity | I, v1-B | v1-B | V1B-T05 |
 | EC-90 | Gemini `maxAge` cases | U | 6 | P6-T02 |
@@ -2435,8 +2486,13 @@ Gate assignment fixed by PRD §10. Test type copied from PRD §9.2. Phase 0 spik
 | EC-103 | Settlement accounting | U + I | 5 | P5-T05 |
 | EC-104 | Month and quota semantics | U | 5 | P5-T06 |
 | EC-105 | Deletion paths, clearing, cost coverage, privacy | U + I + E | 5 | P5-T16 |
+| EC-106 | Linked/main worktrees, relative pointers, symlinks | U + I | 5 | P5-T01a, P5-T01b |
+| EC-107 | Separate/bare/nested/submodule layouts; invalid metadata | U | 5 | P5-T01a |
+| EC-108 | Manual move, deleted worktree, relocation | I | 5 | P5-T01b |
+| EC-109 | Sign-in methods, declaration, change and usage lead | U + I | 6 | P6-T01a, P6-T10a |
+| EC-110 | Sign-in detector credential-access trace and canaries | U + I | 6 | P6-T01a |
 
-Counts: Gate 1 = 20, Gate 2 = 16, Gate 3 = 24, Gate 4 = 6, Gate 5 = 12, Gate 6 = 7, Gate 7 = 5, v1-A = 3, v1-B = 6, v1-C = 5, v1-D = 1; total 105. Gate 0 and Gate D own none.
+Drafted catalog assignments: Gate 1 = 20, Gate 2 = 16, Gate 3 = 24, Gate 4 = 6 (EC-57 scale deferred per §1a), Gate 5 = 14, Gate 6 = 9, Gate 7 = 5, owner-started scale-up = 1 (EC-87), v1-A = 3, v1-B = 6, v1-C = 5, v1-D = 1; total 110. Gate 0 and Gate D own none. Later PRD EC additions are drafted at their phase setup (§1a).
 
 ### 5.2 Metrics (M1–M16) → gate → measuring task
 
@@ -2454,12 +2510,12 @@ Counts: Gate 1 = 20, Gate 2 = 16, Gate 3 = 24, Gate 4 = 6, Gate 5 = 12, Gate 6 =
 | M10 | MCP footprint | — | v1-C | V1C-T05, V1C-T11 | — |
 | M11 | Startup visibility (launch and ingestion portions) | — | Gate 3 (ingestion), Gate 7 (launch) | P3-T16, P7-T04 | V1A-T08 |
 | M12 | Readiness: cold → list p95 ≤1.5 s; tray → window ≤300 ms | P0-S12-T3 (DB portion) | Gate 4 | P4-T13 | P5-T20, P7-T12 |
-| M13 | Selection ≤300 ms; search ≤500 ms (T3) | P0-S12-T3 | Gate 5 (T0 portion at Gate 4) | P5-T19, P5-T11; P4-T13 (T0) | P7-T12 |
+| M13 | Selection ≤300 ms; search ≤500 ms | P0-S12-T3 | Gate 5 at TP; plan-scale T3 only in owner-started scale-up (T0 portion at Gate 4) | P5-T20, P5-T11 (TP); P5-T19 (deferred T3); P4-T13 (T0) | P7-T12 (TP) |
 | M14 | 50 sessions, 200 events/s, 10 min | P0-S12-T4 | Gate 4 | P4-T11, P4-T12 | V1A-T08, V1B-T11, P7-T12 |
 | M15 | Synthetic fourth agent via data only | P0-S11-T8 | Gate 6 | P6-T09 | — |
 | M16 | Agent interference ≤100 ms | P0-S3-T1, S13-T5, S11-T2 | Gate 3 | P3-T16 | P4-T12, P6-T13, P7-T12 |
 
-### 5.3 Spikes (S1–S13) → phase → decision produced
+### 5.3 Spikes (S1–S14 drafted here; later deltas per §1a) → phase → decision produced
 
 | Spike | Phase | Tasks | Decision produced |
 |---|---|---|---|
@@ -2476,6 +2532,7 @@ Counts: Gate 1 = 20, Gate 2 = 16, Gate 3 = 24, Gate 4 = 6, Gate 5 = 12, Gate 6 =
 | S11 Gemini/catalog | 0 | P0-S11-T1..T10 | Gemini observation/retention/launch facts and narrowings; catalog schema draft; JSON Schema validator selection; Q18; App. E #16, #17, #24 (Gemini) |
 | S12 Capacity/latency | 0 | P0-S12-T1..T7 | Minimum architecture, batch bounds, watcher strategy, **watch reconciliation interval default** (Q8/FR-02), Q19 status; App. E #20, #26 |
 | S13 Passive usage/context/cost | 0 | P0-S13-T1..T9 | **Tee feasibility and account-scope decision**, snapshot schemas, context-change rules, price-component mapping; App. E #22–#25 |
+| S14 Sign-in signals | Owner-started after Gate 3, before Phase 6 detection; may run during Phase 5 | P6-S14-T1 | Verified per-agent/version output-field mappings in catalog data; unavailable methods stay Unknown/owner declaration; API-key profile only with owner-provided disposable key; numberless SG report |
 
 ## 6. Consolidated open questions and plan risks
 

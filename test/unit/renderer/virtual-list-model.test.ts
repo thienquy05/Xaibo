@@ -126,3 +126,16 @@ test('scrollerClipped: the scroller extends past the window bottom or above the 
   assert.equal(scrollerClipped({ top: 30, bottom: 500 }, 768, 64), true, 'under the sticky frame');
   assert.equal(scrollerClipped({ top: 120, bottom: 620 }, 768, 64), false, 'fits (Session area)');
 });
+
+// XAIBO-PROD-530 (D-P5-11): a keyboard-focused record whose top sits above the reveal port (under the sticky top band or
+// its scroller's top) is shown from its start; one whose top is in view, or below the port, is left to the browser.
+test('startHidden: the focused element starts above the reveal port top', async () => {
+  const { startHidden } = await import('../../../src/renderer/components/virtual-list-model.ts');
+  assert.equal(startHidden({ top: 87 }, { top: 139 }, true), true, 'a 200 % text record under the band (D-P5-11)');
+  assert.equal(startHidden({ top: 139 }, { top: 139 }, true), false, 'at the port top');
+  assert.equal(startHidden({ top: 138.5 }, { top: 139 }, true), false, 'sub-pixel rounding');
+  assert.equal(startHidden({ top: 400 }, { top: 139 }, true), false, 'in view');
+  assert.equal(startHidden({ top: 900 }, { top: 139 }, true), false, 'below: the browser brings it up');
+  // review M1: the window regaining focus (no element focus moved from) never undoes the user's own scrolling
+  assert.equal(startHidden({ top: 87 }, { top: 139 }, false), false, 'window refocus');
+});

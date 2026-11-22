@@ -9,6 +9,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { ModelList, Rates } from './models.ts';
 import { ratesFor, type PriceRates, type Prices } from './prices.ts';
 import type { Completeness } from './tokens.ts';
+import { notPurging } from '../history/suppression.ts';
 
 export interface UsageIn {
   uncachedInput: number | null; cacheRead: number | null; cacheWrite: number | null; cacheWriteClasses: Record<string, number> | null; output: number | null;
@@ -103,7 +104,7 @@ export function priceUsage(db: DatabaseSync, prices: Prices, o: { afterUsageId?:
     FROM usage u JOIN sessions s ON s.id = u.session_id LEFT JOIN events ev ON ev.id = u.event_id
     LEFT JOIN cost_estimates e ON e.session_id = u.session_id AND e.covered_scope = 'usage:' || u.source || ':' || u.identity
     WHERE u.scope = 'message' AND (e.id IS NULL OR (e.amount_usd IS NULL AND e.price_revision_id IS NOT ?))
-      AND u.id > ? ORDER BY u.id LIMIT ?`).all(rev, after, limit) as (UsageRow & { id: number })[];
+      AND u.id > ? AND ${notPurging(db)} ORDER BY u.id LIMIT ?`).all(rev, after, limit) as (UsageRow & { id: number })[]; // G5-N1: not a purging session
   const lastId = rows.at(-1)?.id ?? after;
   // G2-2: estimates marked dirty (their evidence changed after pricing) are re-priced with their own revision.
   const dirty = db.prepare(`SELECT u.session_id AS sid, s.agent, u.source, u.identity, u.model_id, u.uncached_input, u.cache_read, u.cache_write,
@@ -111,7 +112,7 @@ export function priceUsage(db: DatabaseSync, prices: Prices, o: { afterUsageId?:
     FROM cost_estimates e CROSS JOIN usage u ON u.session_id = e.session_id AND u.source = e.source AND u.scope = 'message'
       AND 'usage:' || u.source || ':' || u.identity = e.covered_scope -- G2-17: CROSS JOIN keeps the dirty partial index as the outer loop
     JOIN sessions s ON s.id = u.session_id LEFT JOIN events ev ON ev.id = u.event_id
-    WHERE e.dirty = 1 LIMIT ?`).all(limit) as (UsageRow & { ownRev: number | null })[];
+    WHERE e.dirty = 1 LIMIT ?`).all(limit) as (UsageRow & { ownRev: number | null })[]; // a purging session's estimates are settled and go with it
   const more = limit >= 0 && (rows.length === limit || dirty.length === limit);
   const all: UsageRow[] = rows;
   const seen = new Set(rows.map((u) => `${u.sid}\0${u.source}\0${u.identity}`));

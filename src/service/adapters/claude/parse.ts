@@ -1,10 +1,13 @@
 // Claude Code transcript parser (P1-T09): one raw JSONL line + file context -> normalized record, or a malformed
 // outcome for quarantine. Pure and tolerant. Known types, injected prefixes: S9 facts for Claude 2.1.319.
 import { createHash } from 'node:crypto';
+import { isObj } from '../../../shared/ipc.ts';
 import { utcMs } from '../../time.ts';
 
 // S9 2.6: the 2.1.319 observations plus the record type names from the owner's real-store audit. The audit kept
-// names only, so field shapes of those types (e.g. ai-title) are unverified and nothing is read from them yet.
+// names only, so field shapes of those types are unverified and nothing is read from them, except the two title
+// records (XAIBO-PROD-507): {type:'custom-title', customTitle, sessionId} and {type:'ai-title', aiTitle, sessionId},
+// shapes read from the Claude Code 2.1.325 program code.
 export const KNOWN_TYPES = new Set(['api-request', 'api-request-blob', 'api-request-shape', 'assistant', 'atis-latch', 'attachment',
   'cost-state', 'last-prompt', 'mode', 'queue-operation', 'session-owner', 'system', 'tools-used', 'user',
   'agent-color', 'agent-name', 'ai-title', 'artifact-autoreact-ledger', 'artifact-comment-monitor', 'bridge-session', 'custom-title',
@@ -42,11 +45,12 @@ export interface ClaudeRecord {
   toolCalls?: { callId: string; part: 'args' | 'result'; tool?: string }[];
   /** P2-T07: a `system` `compact_boundary` record (S9); postTokens null when not a number. */
   compact?: { postTokens: number | null };
+  /** XAIBO-PROD-507: the user's rename (custom) or the generated title (ai); absent for empty or non-string text. */
+  title?: { kind: 'custom' | 'ai'; text: string };
 }
 export type ParseResult = { ok: true; record: ClaudeRecord } | { ok: false; reason: 'malformed' };
 
 type Obj = Record<string, unknown>;
-const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
 const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
 const joined = (parts: (string | undefined)[]) => parts.filter((p) => p).join('\n') || undefined;
 
@@ -97,6 +101,7 @@ export function parseLine(bytes: Buffer, ctx: ParseContext): ParseResult | null 
   const role = str(msg?.role);
   const ts = utcMs(r.timestamp);
   const calls = toolCalls(msg?.content);
+  const titleText = str(type === 'custom-title' ? r.customTitle : type === 'ai-title' ? r.aiTitle : undefined);
   return {
     ok: true,
     record: {
@@ -124,6 +129,7 @@ export function parseLine(bytes: Buffer, ctx: ParseContext): ParseResult | null 
       ...(calls.length ? { toolCalls: calls } : {}),
       ...(type === 'system' && r.subtype === 'compact_boundary'
         ? { compact: { postTokens: isObj(r.compactMetadata) && typeof r.compactMetadata.postTokens === 'number' ? r.compactMetadata.postTokens : null } } : {}),
+      ...(titleText?.trim() ? { title: { kind: type === 'custom-title' ? 'custom' as const : 'ai' as const, text: titleText } } : {}),
     },
   };
 }

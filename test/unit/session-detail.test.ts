@@ -3,9 +3,10 @@
 // the normalized status evidence, a subagent's model from its own records. Unknown stays null or absent.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { callApprovals, callDuration, claudeMessageParts, subagentModel } from '../../src/service/session-detail.ts';
+import { callApprovals, callDuration, claudeMessagePartsOf, message } from '../../src/service/session-detail.ts';
 import type { Ev } from '../../src/service/status/engine.ts';
 
+const claudeMessageParts = (raw: string) => claudeMessagePartsOf(message(raw));
 const msg = (content: unknown, extra: Record<string, unknown> = {}) => JSON.stringify({ type: 'assistant', message: { role: 'assistant', content, ...extra } });
 
 test('claudeMessageParts: text and thinking apart; tool blocks excluded; absent parts null', () => {
@@ -112,13 +113,6 @@ test('review M2: linear work on a large adversarial stream', () => {
   const m = callApprovals(evs);
   assert.equal(m.size, n);
   assert.ok(performance.now() - t < 1000, 'callApprovals must stay near-linear');
-});
-
-test('subagentModel: latest reported model in the subagent records, else null', () => {
-  assert.equal(subagentModel([msg([], { model: 'model-a' }), '{bad', msg([], { model: 'model-b' }), msg([])]), 'model-b');
-  assert.equal(subagentModel([msg([]), JSON.stringify({ type: 'user' })]), null);
-  assert.equal(subagentModel([msg([], { model: '' }), msg([], { model: 'x'.repeat(201) }), msg([], { model: 7 })]), null);
-  assert.equal(subagentModel([]), null);
 });
 
 // XAIBO-PROD-455 (G4a-2 follow-up): as the status engine (CONFIRMED_ONLY), inferred request and resolve evidence never

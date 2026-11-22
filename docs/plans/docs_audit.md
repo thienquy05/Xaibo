@@ -108,7 +108,7 @@ plan/progress after Phase 3 merges), **Codex design** (needs a design decision, 
 | C11 | EC-50, agy facts, Codex compaction still "unverified" after evidence | should | fixed (audit fix 1) (EC-50); fixed 2026-11-13 on the Phase 3 branch (progress P2-T00, P2-T02 rows) |
 | C12 | Old ledger rows still say pending after later resolution | should | fixed 2026-11-13 on the Phase 3 branch (progress P0-G-T2, P0-T09, P1-T12, P1-T14, Gate 1 review, P2-T00, S11 rows) |
 | C13 | Orca auxiliary docs keep answered questions open | should | fixed (audit fix 1) |
-| C14 | Traceability and roadmap stop at EC-105 / v1-D | should | after Gate 3: Codex drafts the plan tasks (D-P3-15) |
+| C14 | Traceability and roadmap stop at EC-105 / v1-D | should | partly fixed 2026-11-18: EC-106..110 and S14 traced (plan §5.1, §5.3; D-P5-02); later rows drafted at each v1 phase setup (D-P5-01) |
 | C15 | Plan metadata revision and spec-ID prefix stale | should | fixed 2026-11-13 on the Phase 3 branch (plan header) |
 | C16 | Consolidated defaults list superseded values | should | fixed 2026-11-13 on the Phase 3 branch (plan §1a) |
 | C17 | Hook wire protocol described in different partial forms | blocker | Codex design |
@@ -118,9 +118,9 @@ plan/progress after Phase 3 merges), **Codex design** (needs a design decision, 
 | ID | Issue (short) | Sev. | Status |
 |---|---|---|---|
 | D1 | No precedence rule between PRD, approved decisions in progress, plan and drafts | blocker | fixed: owner chose "newest approval wins"; PRD header and AGENTS.md |
-| D2 | S-37/S-38 have no plan tasks | blocker | after Gate 3: Codex drafts the plan tasks (D-P3-15) |
-| D3 | v1-A lacks S-39/S-40 tasks | blocker | after Gate 3: Codex drafts the plan tasks (D-P3-15) |
-| D4 | Broker, orchestrator, guard, metrics lack plan tasks | blocker | after Gate 3: Codex drafts the plan tasks (D-P3-15) |
+| D2 | S-37/S-38 have no plan tasks | blocker | fixed 2026-11-18: Codex drafted, Claude reviewed, owner approved (plan P5-T01a..c, P5-T18a, P6-S14-T1, P6-T01a, P6-T10a; D-P5-02) |
+| D3 | v1-A lacks S-39/S-40 tasks | blocker | deferred by the owner 2026-11-18: drafted at each phase's setup task (plan §1a; D-P5-01) |
+| D4 | Broker, orchestrator, guard, metrics lack plan tasks | blocker | deferred by the owner 2026-11-18: drafted at each phase's setup task (plan §1a; D-P5-01) |
 | D5 | Bare-repository wording and "outside its root" undefined | blocker | fixed (audit fix 1) |
 | D6 | Worktree ignored-file enumeration, traversal, symlinks, races undefined | blocker | Codex design |
 | D7 | Sign-in evidence vs owner declaration precedence | blocker | fixed (audit fix 1) |

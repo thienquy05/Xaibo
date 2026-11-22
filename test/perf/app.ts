@@ -13,6 +13,19 @@ import { FIRST_PAGE_MARK, LONG_FRAME } from '../../src/renderer/perf-marks.ts';
 export const REPO = path.resolve(import.meta.dirname, '..', '..');
 const PACKAGED = path.join(REPO, 'release', 'mac-arm64', 'Xaibo.app', 'Contents', 'MacOS', 'Xaibo');
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** Polls `f` every `every` ms until it returns a truthy value; throws after `ms`. */
+export async function until<T>(f: () => T | null | false | undefined, ms: number, every = 50): Promise<T> {
+  const end = Date.now() + ms;
+  for (let v = f(); ; v = f()) {
+    if (v) return v;
+    if (Date.now() > end) throw new Error(`timed out after ${ms} ms`);
+    await sleep(every);
+  }
+}
+/** A synthetic session UUID: a 4-digit prefix and an 8-digit index. */
+export const sidOf = (prefix: number, i: number) => `00000000-0000-4000-8000-${String(prefix).padStart(4, '0')}${String(i).padStart(8, '0')}`;
+/** The Antigravity CLI root inside a synthetic home. */
+export const agyRoot = (home: string) => path.join(home, '.gemini', 'antigravity-cli');
 
 export interface Launched { app: ElectronApplication; page: Page; dataDir: string; root: string; created: number }
 
@@ -95,6 +108,42 @@ export function query<T>(dataDir: string, sql: string, ...params: (string | numb
 }
 
 export const fileBytes = (f: string) => (existsSync(f) ? statSync(f).size : 0);
+
+/** G5-N1: Settings > Session retention > Never > Save (as test/e2e/settings-retention.spec.ts), then back to the Session
+ *  area. The app's own retention run (10 min after each backfill, real clock) would otherwise purge a corpus dated early
+ *  2026 mid-measurement (t1mix: 1,000 sessions in ~533 s); with Never it only expires quota history older than 45 days. */
+export async function retentionNever(l: Launched): Promise<void> {
+  const areas = l.page.getByRole('navigation', { name: 'Areas' });
+  await areas.getByRole('link', { name: 'Settings' }).click();
+  const section = l.page.getByRole('region', { name: 'Session retention' });
+  await section.getByRole('radio', { name: 'Never' }).check({ timeout: 60_000 }); // enabled once the stored setting is read
+  await section.getByRole('button', { name: 'Save' }).click();
+  await section.getByText('Saved.').waitFor({ timeout: 60_000 });
+  await areas.getByRole('link', { name: 'Session', exact: true }).click();
+}
+
+/** The app's own retention runs logged since `since` (ms): when each ended (at, ms; atS after `since`) and what it purged or
+ *  expired (retention_run is logged at the end of a run). */
+export const retentionRuns = (dataDir: string, since: number) => serviceLog(dataDir)
+  .filter((e) => e.event === 'retention_run' && Date.parse(e.t) >= since)
+  .map((e) => {
+    const x = e as { t: string; sessions?: number; trash?: number; quota?: number };
+    const at = Date.parse(x.t);
+    return { at, atS: Math.round((at - since) / 1000), sessions: x.sessions ?? 0, trash: x.trash ?? 0, quota: x.quota ?? 0 };
+  });
+
+/** G5e-1: PRD §6.6 TP is a ~1,500-session corpus with a ~2.6 GiB DB; a smaller import measures a smaller history. */
+export const TP_MIN = { sessions: 1450, dbBytes: 2.4 * 2 ** 30 };
+export function tpWorkload(dataDir: string): { sessions: number; dbBytes: number } {
+  const sessions = Number(query<number>(dataDir, 'SELECT count(*) FROM sessions'));
+  // Gate 5 second review L3: the logical size (used pages, WAL frames included once), not file + WAL (a high-water mark)
+  const dbBytes = Number(query<number>(dataDir, 'SELECT (page_count - freelist_count) * page_size FROM pragma_page_count(), pragma_freelist_count(), pragma_page_size()'));
+  if (sessions < TP_MIN.sessions || dbBytes < TP_MIN.dbBytes) {
+    throw new Error(`TP workload too small: ${sessions} sessions and ${(dbBytes / 2 ** 30).toFixed(2)} GiB DB imported; PRD §6.6 TP needs `
+      + `>= ${TP_MIN.sessions} sessions and >= ~2.4 GiB. Regenerate: node scripts/gen-perf-corpus.ts --case tp`);
+  }
+  return { sessions, dbBytes };
+}
 
 export { stats } from './stats.ts'; // P4-T11: in its own module, so the pure t2 analysis loads without Playwright
 

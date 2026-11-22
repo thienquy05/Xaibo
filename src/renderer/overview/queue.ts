@@ -1,7 +1,7 @@
 // Attention queue (P4-T04b2; design §6.2, §7.1): one record per session in fixed groups, oldest onset first with an
 // unknown onset last and the service id as tie-break. Heuristic waits are their own group, never confirmed requests.
 import type { SessionRow } from '../../shared/ipc.ts';
-import { formatTime } from '../model.ts';
+import { DAY as D, formatTime, HOUR as H, MIN as M, SEC as S, shortTime } from '../model.ts';
 
 export const GROUPS = ['Confirmed requests', 'Errors', 'Unconfirmed requests', 'Probably waiting', 'Findings'] as const;
 export type GroupName = typeof GROUPS[number];
@@ -23,7 +23,7 @@ const bySince = (a: SessionRow, b: SessionRow) => {
 /** Confirmed requests list permission waits before input waits (§6.2); every group is oldest first. */
 export function attentionQueue(rows: SessionRow[]): Group[] {
   const groups = new Map<GroupName, SessionRow[]>();
-  for (const r of new Map(rows.map((x) => [x.id, x])).values()) {
+  for (const r of rows) {
     const g = groupOf(r);
     if (g) groups.set(g, [...(groups.get(g) ?? []), r]);
   }
@@ -39,7 +39,6 @@ export function attentionQueue(rows: SessionRow[]): Group[] {
 export const attentionState = (loaded: boolean, failed: boolean, groups: number): 'loading' | 'failed' | 'empty' | 'queue' =>
   !loaded ? (failed ? 'failed' : 'loading') : groups ? 'queue' : 'empty';
 
-const S = 1000, M = 60 * S, H = 60 * M, D = 24 * H;
 /** §7.1 duration: floor units. */
 export function durationText(ms: number): string {
   if (ms < S) return '<1 s';
@@ -49,13 +48,11 @@ export function durationText(ms: number): string {
   return `${Math.floor(ms / D)} d ${Math.floor((ms % D) / H)} h`;
 }
 
-const sameDay = (a: number, b: number) => new Date(a).toDateString() === new Date(b).toDateString();
 /** §6.2/§7.1 queue Since: clock (date when another day) plus elapsed duration; a future onset is never negative. */
 export function sinceText(since: number | null, now: number): string {
   if (since === null) return 'Since Unknown';
   if (since > now) return `Source clock ahead · ${formatTime(since)}`;
-  const clock = sameDay(since, now) ? formatTime(since).slice(11) : formatTime(since);
-  return `Since ${clock} · ${durationText(now - since)}`;
+  return `Since ${shortTime(since, now)} · ${durationText(now - since)}`;
 }
 
 /** XAIBO-PROD-437 review M1: the session ids in the order a Dashboard view lists their Open session buttons (from data,

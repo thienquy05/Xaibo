@@ -5,10 +5,10 @@
 // The renderer interception count (`request_blocked` in the app log) is supporting evidence only. P3-T16c: hooks sent through
 // the packaged forwarder (`hook()`) run under the same profile, and teardown audits each one.
 import { _electron, expect, test as base } from '@playwright/test';
-import type { ElectronApplication, Page } from '@playwright/test';
+import type { ElectronApplication, Locator, Page } from '@playwright/test';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -214,6 +214,28 @@ export const test = base.extend<{ xaibo: Xaibo }>({
 /** P4-T04c: the full session list lives in the Session area; the app opens on the Dashboard (design §6.0). */
 export async function openSessions(page: Page): Promise<void> {
   await page.getByRole('navigation', { name: 'Areas' }).getByRole('link', { name: 'Session', exact: true }).click();
+}
+
+/** XAIBO_SHOT=<dir>: screenshots for the visual check (off by default). */
+export const shot = async (page: Page, name: string) => { if (process.env.XAIBO_SHOT) await page.screenshot({ path: path.join(process.env.XAIBO_SHOT, `${name}.png`) }); };
+
+/** Presses Tab until `target` has focus; fails if it is not reached within `max` presses (keyboard-only access). */
+export async function tabTo(page: Page, target: Locator, max = 120) {
+  for (let i = 0; i < max; i++) {
+    if (await target.evaluate((el) => el === document.activeElement, undefined, { timeout: 2000 })) return; // a locator error fails loudly
+    await page.keyboard.press('Tab');
+  }
+  throw new Error(`not reachable by Tab: ${target.toString()}`);
+}
+
+/** The synthetic Codex simple-turn rollout and agy brain fixtures, copied into `home`. */
+export function seedCodexAgy(home: string) {
+  const codex = path.join(home, '.codex', 'sessions', '2026', '01', '01');
+  mkdirSync(codex, { recursive: true });
+  const fixture = path.join(REPO, 'test', 'fixtures', 'synthetic', 'codex', '0.160.0', 'simple-turn');
+  const name = readdirSync(fixture).find((f) => f.startsWith('rollout-'))!;
+  copyFileSync(path.join(fixture, name), path.join(codex, name));
+  cpSync(path.join(REPO, 'test', 'fixtures', 'synthetic', 'agy', '1.5.6', 'basic', 'brain'), path.join(home, '.gemini', 'antigravity-cli', 'brain'), { recursive: true });
 }
 
 export { expect };

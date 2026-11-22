@@ -14,6 +14,7 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import { isObj } from '../../shared/ipc.ts';
 import { atomicWrite, fsyncDir, privateDir, writeExclusive } from '../fs-private.ts';
 
 export type Route = 'claude-plugin' | 'claude-settings-fallback' | 'claude-tee' | 'codex-hooks' | 'agy-hooks';
@@ -63,7 +64,6 @@ const INDEX = /^(0|[1-9]\d*)$/;
 const fail = (code: Code): never => { throw new ConfigError(code); };
 const sha256 = (b: Buffer | string) => createHash('sha256').update(b).digest('hex');
 const uid = () => process.getuid?.();
-const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 export function within(p: string, root: string): boolean {
   const rel = path.relative(root, p);
@@ -142,7 +142,7 @@ function decode(bytes: Buffer): { doc: Record<string, unknown>; style: Style } {
   if (text.startsWith('﻿')) fail('bom');
   let doc: unknown;
   try { doc = JSON.parse(text); } catch { return fail('invalid-json'); } // V8's message can quote content
-  if (!isObject(doc)) fail('not-object');
+  if (!isObj(doc)) fail('not-object');
   const eol = text.includes('\r\n') ? '\r\n' : '\n';
   // ponytail: re-serialization keeps indent/EOL/trailing newline (Q3-3), not inline layout; numbers beyond float64
   // precision would be rounded. Text-splice edits if Gate 6 round-trip tests need them.
@@ -164,7 +164,7 @@ const join = (segs: string[]) => segs.map((s) => `/${s.replaceAll('~', '~0').rep
 
 function child(node: unknown, key: string): unknown {
   if (Array.isArray(node)) return INDEX.test(key) ? node[Number(key)] : undefined;
-  return isObject(node) && Object.hasOwn(node, key) ? node[key] : undefined;
+  return isObj(node) && Object.hasOwn(node, key) ? node[key] : undefined;
 }
 const get = (doc: unknown, segs: string[]) => segs.reduce<unknown>((n, k) => child(n, k), doc);
 
@@ -177,7 +177,7 @@ function parentFor(doc: Record<string, unknown>, segs: string[], created: string
       created.push(join(segs.slice(0, i + 1)));
     }
     const next = node[k];
-    if (!isObject(next)) fail('pointer');
+    if (!isObj(next)) fail('pointer');
     node = next as Record<string, unknown>;
   });
   return node;
@@ -187,7 +187,7 @@ function remove(doc: unknown, segs: string[]) {
   const parent = get(doc, segs.slice(0, -1));
   const key = segs.at(-1)!;
   if (Array.isArray(parent)) parent.splice(Number(key), 1);
-  else if (isObject(parent)) delete parent[key];
+  else if (isObj(parent)) delete parent[key];
 }
 
 /** Undo owned values on a copy: unchanged ones are removed (or their replaced foreign value restored), changed ones
@@ -206,7 +206,7 @@ function strip(doc: Record<string, unknown>, owned: Owned[], created: string[], 
   }
   for (const c of [...created].reverse()) {
     const v = get(out, segments(c));
-    if ((Array.isArray(v) && !v.length) || (isObject(v) && !Object.keys(v).length)) remove(out, segments(c));
+    if ((Array.isArray(v) && !v.length) || (isObj(v) && !Object.keys(v).length)) remove(out, segments(c));
   }
   return { doc: out, conflicts };
 }
@@ -215,13 +215,13 @@ function strip(doc: Record<string, unknown>, owned: Owned[], created: string[], 
 
 function walk(v: unknown, visit: (o: Record<string, unknown>) => void) {
   if (Array.isArray(v)) v.forEach((x) => walk(x, visit));
-  else if (isObject(v)) { visit(v); Object.values(v).forEach((x) => walk(x, visit)); }
+  else if (isObj(v)) { visit(v); Object.values(v).forEach((x) => walk(x, visit)); }
 }
 
 function checkHooks(route: Route, segs: string[], value: unknown) {
   walk(value, (o) => { if (FORBIDDEN_HOOK_TYPES.has(o['type'] as string)) fail('forbidden-hook-type'); });
   if (!route.startsWith('claude-') || segs[0] !== 'hooks') return; // both Claude routes write the same settings.json
-  const byEvent: Array<[string, unknown]> = segs.length >= 2 ? [[segs[1]!, value]] : Object.entries(isObject(value) ? value : {});
+  const byEvent: Array<[string, unknown]> = segs.length >= 2 ? [[segs[1]!, value]] : Object.entries(isObj(value) ? value : {});
   for (const [event, v] of byEvent) {
     if (SYNC_CLAUDE_EVENTS.has(event)) continue;
     walk(v, (o) => { if (o['type'] === 'command' && o['async'] !== true) fail('async-required'); });
@@ -232,7 +232,7 @@ function checkHooks(route: Route, segs: string[], value: unknown) {
 export function validateOps(x: unknown): Op[] {
   if (!Array.isArray(x) || !x.length) return fail('ops');
   return x.map((o: unknown) => {
-    if (!isObject(o) || (o['op'] !== 'set' && o['op'] !== 'append') || typeof o['pointer'] !== 'string' || !('value' in o)
+    if (!isObj(o) || (o['op'] !== 'set' && o['op'] !== 'append') || typeof o['pointer'] !== 'string' || !('value' in o)
       || Object.keys(o).length !== 3) fail('ops');
     return o as Op;
   });
@@ -285,7 +285,7 @@ export function readManifest(dataDir: string): ManifestEntry[] {
   if (cur.mode & 0o077) fail('manifest');
   let m: unknown;
   try { m = JSON.parse(cur.bytes.toString('utf8')); } catch { return fail('manifest'); }
-  if (!isObject(m) || m['v'] !== MANIFEST_VERSION || !Array.isArray(m['entries'])) return fail('manifest');
+  if (!isObj(m) || m['v'] !== MANIFEST_VERSION || !Array.isArray(m['entries'])) return fail('manifest');
   return m['entries'] as ManifestEntry[];
 }
 

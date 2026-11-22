@@ -1,14 +1,13 @@
 // XAIBO-PROD-410 (P4-T05b1; design §5.2, §6.3): a stored record becomes a workspace transcript item or is skipped.
-// Claude text and available reasoning come apart through claudeMessageParts; tool records carry their stored text for
+// Claude text and available reasoning come apart through claudeMessagePartsOf; tool records carry their stored text for
 // on-demand slices. utf8Slice cuts bounded UTF-8 slices from a code-unit offset without splitting a code point.
-import type { ItemKind } from '../shared/ipc.ts';
+import { isObj, type ItemKind } from '../shared/ipc.ts';
 import { claudeMessagePartsOf } from './session-detail.ts';
 
 export interface StoredRecord { agent: string; kind: string; role: string | null; injected: boolean; content: string | null; raw: string | null }
 export interface Item { kind: ItemKind; text: string | null; reasoning: string | null }
 
 type Obj = Record<string, unknown>;
-const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
 const filled = (s: string | null): s is string => typeof s === 'string' && s !== '';
 const item = (kind: ItemKind, text: string | null = null, reasoning: string | null = null): Item => ({ kind, text, reasoning });
 

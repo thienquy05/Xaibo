@@ -3,6 +3,7 @@
 // run. A restarted service numbers its deltas from 1 again, so a delta is the first one carrying the id at or after its
 // commit, and a paint the first with that number at or after the delta. Samples emitted inside the restart window are
 // reported apart; an event never painted is a miss (Infinity) in its bucket. IDs and timings only.
+import type { DatabaseSync } from 'node:sqlite';
 import { stats } from './stats.ts';
 
 export type TraceLine = { ev: string; ids?: string[]; delta?: number; t: string; writerQueueAgeMs?: number; deltaResyncs?: number };
@@ -11,6 +12,28 @@ export interface Emitted { kind: 'hook' | 'file'; id: string | null; t0: bigint;
 export interface Window { from: bigint; to: bigint }
 
 const ms = (a: bigint, b: bigint) => Number(b - a) / 1e6;
+
+/** Gate 5 disk-full: a hook's own stored delivery, by the synthetic key the emitter makes unique (session, event,
+ *  tool_use_id), read from the hook event's stored envelope. null while it is not stored (or never: rejected while the
+ *  disk was full); never another hook's row, which the old rowid-order match handed out after ENOSPC holes. */
+export function hookLookup(db: DatabaseSync) {
+  // the session row once per native id (the unique index only narrows by agent), then that session's hook events by index
+  const session = db.prepare('SELECT id FROM sessions WHERE agent = ? AND native_session_id = ?');
+  const q = db.prepare(`SELECT native_id AS id FROM events WHERE session_id = ? AND source = 'hook'
+    AND json_extract(raw, '$.event') = ? AND json_extract(raw, '$.payload.tool_use_id') = ?`);
+  const ids = new Map<string, number>();
+  return (agent: string, sid: string, event: string, toolUseId: string): string | null => {
+    let id = ids.get(`${agent}\0${sid}`);
+    if (id === undefined) {
+      const s = session.get(agent, sid) as { id: number } | undefined;
+      if (!s) return null; // not stored yet: looked up again next time
+      ids.set(`${agent}\0${sid}`, id = s.id);
+    }
+    const rows = q.all(id, event, toolUseId) as { id: string }[];
+    if (rows.length > 1) throw new Error(`hook key matches ${rows.length} deliveries`);
+    return rows[0]?.id ?? null;
+  };
+}
 
 /** `faults` (P4-T12b): further windows (disk full) kept apart like the restart window; their samples join its bucket. */
 /** G4f-2: events a full profile run emits (steady rate plus the bursts' extra), so an underloaded run cannot pass. */
@@ -61,6 +84,7 @@ export function analyze(o: { emitted: Emitted[]; service: TraceLine[]; main: Tra
   const inRestart = (e: Emitted) => windows.some((w) => e.t0 >= w.from && e.t0 <= w.to);
   const buckets = { m1: { steady: [] as number[], restartWindow: [] as number[] }, m2: { steady: [] as number[], restartWindow: [] as number[] } };
   const hops = { dispatch: [] as number[], toCommit: [] as number[], commitToDelta: [] as number[], deltaToPaint: [] as number[] };
+  const fileHops = { toCommit: [] as number[], commitToDelta: [] as number[], deltaToPaint: [] as number[] }; // Gate 5: where M2 waits
   const unpainted = { steady: 0, restart: 0 };
   // emit -> commit, steady painted events: the time a change waits to be stored (a committed but unpainted event is a miss
   // in M1/M2 and in drain, so leaving it out here never lets a run pass; review L2)
@@ -82,6 +106,8 @@ export function analyze(o: { emitted: Emitted[]; service: TraceLine[]; main: Tra
     if (e.kind === 'hook') {
       if (e.exit !== undefined) hops.dispatch.push(ms(e.t0, e.exit));
       hops.toCommit.push(ms(e.t0, j.commit)); hops.commitToDelta.push(ms(j.commit, j.delta)); hops.deltaToPaint.push(ms(j.delta, j.paint));
+    } else {
+      fileHops.toCommit.push(ms(e.t0, j.commit)); fileHops.commitToDelta.push(ms(j.commit, j.delta)); fileHops.deltaToPaint.push(ms(j.delta, j.paint));
     }
   }
   const p95 = (xs: number[]) => stats(xs).p95;
@@ -96,7 +122,8 @@ export function analyze(o: { emitted: Emitted[]; service: TraceLine[]; main: Tra
   return {
     m1: { steady: stats(buckets.m1.steady), restartWindow: stats(buckets.m1.restartWindow) },
     m2: { steady: stats(buckets.m2.steady), restartWindow: stats(buckets.m2.restartWindow) },
-    hops: { m1: { dispatch: p95(hops.dispatch), toCommit: p95(hops.toCommit), commitToDelta: p95(hops.commitToDelta), deltaToPaint: p95(hops.deltaToPaint) } },
+    hops: { m1: { dispatch: p95(hops.dispatch), toCommit: p95(hops.toCommit), commitToDelta: p95(hops.commitToDelta), deltaToPaint: p95(hops.deltaToPaint) },
+      m2: { toCommit: p95(fileHops.toCommit), commitToDelta: p95(fileHops.commitToDelta), deltaToPaint: p95(fileHops.deltaToPaint) } },
     unpainted, steadyMisses,
     drainMs: missing ? Number.POSITIVE_INFINITY : lastPaint === null ? 0 : Math.max(0, ms(o.loadEnd, lastPaint)),
     ingestLagMs: stats(ingestLag),

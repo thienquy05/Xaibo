@@ -5,7 +5,7 @@
 // (3) no renderer frame > 100 ms: long frames over the first-list windows and over the whole timed import.
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { close, environment, fileBytes, firstPage, launch, longFramesOf, query, sleep, stats, waitForEvent } from './app.ts';
+import { agyRoot, close, environment, fileBytes, firstPage, launch, longFramesOf, query, sleep, stats, waitForEvent } from './app.ts';
 
 const IMPORT_TARGET_MS = 120_000;
 const LIST_TARGET_MS = 1_500;
@@ -14,7 +14,7 @@ export async function m3Full(corpus: string, runs: number) {
   const summary = JSON.parse(readFileSync(path.join(corpus, 'summary.json'), 'utf8')) as { case: string; files: number };
   if (summary.case !== 't1mix') throw new Error('m3-full needs the mixed corpus: node scripts/gen-perf-corpus.ts --case t1mix');
   const home = path.join(corpus, 'home');
-  const roots = { codex: path.join(home, '.codex'), agy: path.join(home, '.gemini', 'antigravity-cli') };
+  const roots = { codex: path.join(home, '.codex'), agy: agyRoot(home) };
   const claude = path.join(home, '.claude');
   const times: number[] = [];
   const longFrames: number[] = [];

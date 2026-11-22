@@ -2,6 +2,7 @@
 // status map. The version is checked first and nothing else is read for any other version. Event names outside the v1
 // list are kept (the caller warns about coverage); unknown fields and malformed values are rejected with fixed codes
 // that name a field, never a value. Identity (agent, profile) is not here: the approved registration binds it.
+import { isObj } from '../ipc.ts';
 export const REPORT_EVENTS = ['session.start', 'session.end', 'turn.start', 'turn.end', 'turn.error', 'permission.request', 'permission.resolve',
   'input.request', 'input.resolve', 'tool.start', 'tool.end', 'content.upsert', 'usage.snapshot'] as const;
 
@@ -19,7 +20,6 @@ const REQUIRED = ['v', 'delivery_id', 'session_id', 'producer_id', 'producer_seq
 const KEYS = new Set([...REQUIRED, ...Object.keys(OPTIONAL), 'model']);
 const EVENT = /^[a-z][a-z0-9_]{0,31}(?:\.[a-z][a-z0-9_]{0,31}){0,3}$/;
 
-const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
 // Well-formed only (P3-T13b, security review 872): JSON can carry lone surrogates, which would collide once stored as UTF-8.
 const str = (x: unknown, max: number): x is string => typeof x === 'string' && x.length > 0 && x.length <= max && x.isWellFormed();
 const count = (x: unknown, min = 0) => Number.isSafeInteger(x) && (x as number) >= min;

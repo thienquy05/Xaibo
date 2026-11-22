@@ -9,6 +9,7 @@
 import { createHash } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import type { Envelope } from '../../shared/hook-protocol.ts';
+import { isObj } from '../../shared/ipc.ts';
 import { agyFileEvidence } from '../adapters/agy/status-map.ts';
 import { claudeEvidence } from '../adapters/claude/status-map.ts';
 import { codexEvidence } from '../adapters/codex/status-map.ts';
@@ -117,6 +118,14 @@ const MAX_SESSIONS = 500;
 const MAX_EVS = 256;
 /** Evidence a file record may never produce: only a hook or report confirms these (§6.1-§6.3). */
 const TURN_ENDS = new Set<Ev['k']>(['turn.end', 'turn.idle', 'turn.error', 'interrupt', 'session.end']);
+/** A stored evidence row: a JSON array of objects with a string `k`; null for anything else (never throws). */
+export function parseEvidence(ev: string): Ev[] | null {
+  try {
+    const a: unknown = JSON.parse(ev);
+    return Array.isArray(a) && a.every((e) => isObj(e) && typeof e.k === 'string') ? (a as Ev[]) : null;
+  } catch { return null; }
+}
+
 export const CONFIRMED_ONLY = new Set<Ev['k']>(['session.start', 'session.end', 'request', 'resolve', 'turn.error', 'interrupt']);
 
 /** pid/pseq: a report's producer_id and producer_seq; the last sort key, so a late report placed at its successor's
@@ -324,9 +333,9 @@ export function createEngine(o: EngineOptions): StatusEngine {
     for (const r of rows) {
       s.dedup.add(r.dedup);
       try {
-        const evs: unknown = JSON.parse(r.ev);
-        if (!Array.isArray(evs) || !evs.every((e) => e && typeof e === 'object' && typeof e.k === 'string')) throw new Error('shape');
-        const x: Entry = { ts: r.ts, rank: r.rank, seq: r.seq, conf: r.confidence, evs: evs as Ev[], ...(r.pid !== null && r.pseq !== null ? { pid: r.pid, pseq: r.pseq } : {}) };
+        const evs = parseEvidence(r.ev);
+        if (!evs) throw new Error('shape');
+        const x: Entry = { ts: r.ts, rank: r.rank, seq: r.seq, conf: r.confidence, evs, ...(r.pid !== null && r.pseq !== null ? { pid: r.pid, pseq: r.pseq } : {}) };
         step(s.fold, x, rules); s.entries.push(x);
         if (x.pid !== undefined) raise(s, x);
       } catch { o.log('status_row_skipped'); } // one corrupt row never stops a load

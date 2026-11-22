@@ -1,7 +1,8 @@
 // Read-only session list API (P1-T12, S-29, FR-09): keyset pages over (last_activity DESC with unknown last, id),
 // default 50 rows, hard cap 100; rows by session key for the coalesced deltas the service pushes after commits.
+import { nativeExpiresAt } from './history/native-availability.ts';
 import type { DatabaseSync } from 'node:sqlite';
-import { IPC_VERSION } from '../shared/ipc.ts';
+import { IPC_VERSION, isObj } from '../shared/ipc.ts';
 import type { ContextReading, CoverageCode, Credits, Cursor, HistoryCursor, LiveStatus, Page, PortMessage, PortRequest, SessionRow, TCursor, TranscriptItem, UsageRecord, UsageScope } from '../shared/ipc.ts';
 import { COST_CODE, COST_COMPONENTS, MAX_COST_CODES, MAX_COST_GROUPS, MAX_ITEMS, MAX_RECORDS, MAX_REFERENCES, MAX_SCOPES, parseContext, parseCost, PREVIEW_BYTES,
   REFERENCE_MAX, SLICE_BYTES } from '../shared/ipc.ts';
@@ -9,13 +10,15 @@ import type { CostDetail, CostGroup, PriceRevisionInfo } from '../shared/ipc.ts'
 import type { FileItem, MCursor, ModelMarker, SubagentItem, ToolItem } from '../shared/ipc.ts';
 import { classifyItem, utf8Slice, type StoredRecord } from './transcript.ts';
 import { blockText } from './adapters/claude/parse.ts';
-import { callApprovals, callDuration, claudeCallError, MAX_MODEL, type ConfEv } from './session-detail.ts';
+import { callApprovals, callDuration, claudeCallError, MAX_MODEL, message, type ConfEv } from './session-detail.ts';
 import { deriveFileTouches, FILE_TOOLS } from './filetouch.ts';
-import type { Confidence, Ev } from './status/engine.ts';
+import { parseEvidence, type Confidence } from './status/engine.ts';
 import type { SessionKind } from './catalog/validate.ts';
 import { sessionKind } from './resume.ts';
 import { LIVE_WINDOW_MS } from './status/feed.ts'; // D-P3-09 feed eligibility
 import { sessionCost } from './usage/cost.ts';
+import { notPurging } from './history/suppression.ts';
+import { VISIBLE } from './history/excerpt.ts';
 import { displayName, modelLabel, type ModelEntry, type ModelList } from './usage/models.ts';
 
 export const PAGE_DEFAULT = 50;
@@ -27,7 +30,20 @@ export const DISPLAY_MAX = 4096;
 
 export interface SessionKey { agent: string; profileId: string; nativeSessionId: string }
 
-const ROW = `SELECT s.id, s.agent, s.profile_id, s.native_session_id, s.entrypoint, s.originator, s.current_model, s.current_effort, s.cwd, s.title, s.last_activity, s.drift, s.quarantined_count,
+const titles = new WeakMap<DatabaseSync, string>();
+/** Gate 5 G5b2-1 (EC-45): a store left read-only before migration 016 has no ai_title column; checked once per
+ *  connection (a connection never migrates after its first read). */
+function titleOf(db: DatabaseSync): string {
+  let t = titles.get(db);
+  if (t === undefined) {
+    const has = (c: string) => db.prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = ?").get(c) !== undefined;
+    // Gate 5 round 2 A: likewise the stored excerpt (migration 025)
+    titles.set(db, t = `${has('ai_title') ? 'coalesce(s.title, s.ai_title)' : 's.title'} AS title, ${has('excerpt') ? 's.excerpt' : 'NULL'} AS excerpt`);
+  }
+  return t;
+}
+/** The session row query for this connection's schema. */
+export const ROW = (db: DatabaseSync) => `SELECT s.id, s.agent, s.profile_id, s.native_session_id, s.entrypoint, s.originator, s.current_model, s.current_effort, s.cwd, ${titleOf(db)}, s.last_activity, s.drift, s.quarantined_count, s.native_available, s.native_archived,
   EXISTS (SELECT 1 FROM source_files f WHERE f.session_id = s.id AND f.status = 'compressed_not_imported') AS compressed,
   (SELECT c.percentage FROM context_snapshots c WHERE c.session_id = s.id ORDER BY c.generation DESC, c.id DESC LIMIT 1) AS context_pct,
   (SELECT CASE WHEN COUNT(u.uncached_input) + COUNT(u.cache_read) + COUNT(u.cache_write) + COUNT(u.output) = 0 THEN NULL
@@ -41,17 +57,20 @@ const ORDER = 'ORDER BY s.last_activity DESC, s.id LIMIT ?';
 
 /** The status engine's view of a session by agent and native id (P3-T10); null when it has no evidence. */
 export type LiveOf = (agent: string, nativeSessionId: string, profileId: string) => LiveStatus | null;
-interface Raw { tokens: number | null; tokens_gap: number; id: number; agent: string; profile_id: string; native_session_id: string; context_pct: number | null; entrypoint: string | null; originator: string | null; current_model: string | null; current_effort: string | null; cwd: string | null; title: string | null; last_activity: number | null; drift: number; quarantined_count: number; compressed: number }
-const display = (s: string | null): string | null => {
-  if (s === null || s.length <= DISPLAY_MAX) return s;
-  const c = s.charCodeAt(DISPLAY_MAX - 1);
-  return `${s.slice(0, c >= 0xd800 && c < 0xdc00 ? DISPLAY_MAX - 1 : DISPLAY_MAX)}…`; // never ends inside a surrogate pair
-};
+export interface Raw { tokens: number | null; tokens_gap: number; id: number; agent: string; profile_id: string; native_session_id: string; context_pct: number | null; entrypoint: string | null; originator: string | null; current_model: string | null; current_effort: string | null; cwd: string | null; title: string | null; excerpt?: string | null; last_activity: number | null; drift: number; quarantined_count: number; compressed: number;
+  native_available: number | null; native_archived: number }
+/** At most `max` UTF-16 units, ending in "…" when cut; never ends inside a surrogate pair. */
+export const cut = (s: string, max: number) => (s.length <= max ? s : `${s.slice(0, (s.charCodeAt(max - 2) & 0xfc00) === 0xd800 ? max - 2 : max - 1)}…`);
+const display = (s: string | null): string | null => (s === null ? null : cut(s, DISPLAY_MAX + 1));
 // Origin badge and interactive flag come from the catalog kind (P2-T04); an unknown kind leaves both null. The model
 // label is "<display name> · <effort>", the raw id when unlisted, "Model unavailable" without evidence (P2-T08).
 // P3-T10: live status from the engine, the latest context percentage (clamped to the 0–100 the IPC accepts) and the
 // session ~$ estimate (Phase 2 selection; an unreadable estimate is unavailable, never zero).
-const toRow = (db: DatabaseSync, kinds: SessionKind[], models: ModelEntry[], live?: LiveOf) => (r: Raw): SessionRow => {
+// XAIBO-PROD-509 (P5-T02c, EC-66): an untitled session's first prompt, in-app only. Gate 5 round 2 A: stored on the
+// session by the writer (history/excerpt.ts); a read never walks events for it.
+export { EXCERPT_MAX } from './history/excerpt.ts';
+
+export const toRow = (db: DatabaseSync, kinds: SessionKind[], models: ModelEntry[], live?: LiveOf) => (r: Raw): SessionRow => {
   const k = sessionKind(kinds, r);
   let cost: { amountUsd: number | null; coverage: SessionRow['costCoverage'] };
   try { cost = sessionCost(db, r.id); } catch { cost = { amountUsd: null, coverage: 'unavailable' }; }
@@ -59,8 +78,9 @@ const toRow = (db: DatabaseSync, kinds: SessionKind[], models: ModelEntry[], liv
   const usable = cost.amountUsd !== null && Number.isFinite(cost.amountUsd) && cost.amountUsd >= 0;
   return {
     id: r.id, agent: r.agent, entrypoint: display(r.entrypoint), origin: k?.badge ?? null, interactive: k?.interactive ?? null,
-    model: display(modelLabel(displayName(models, r.current_model), r.current_effort))!, cwd: display(r.cwd), title: display(r.title), lastActivity: r.last_activity,
+    model: display(modelLabel(displayName(models, r.current_model), r.current_effort))!, cwd: display(r.cwd), title: display(r.title), excerpt: r.title === null ? r.excerpt ?? null : null, lastActivity: r.last_activity,
     drift: r.drift === 1, compressed: r.compressed === 1, quarantined: r.quarantined_count,
+    native: { available: r.native_available !== 0, archived: r.native_archived === 1 }, // P5-T12: false only when confirmed gone
     live: live?.(r.agent, r.native_session_id, r.profile_id) ?? null,
     contextPct: pct === null || !Number.isFinite(pct) ? null : Math.min(100, Math.max(0, pct)),
     costUsd: usable ? cost.amountUsd : null,
@@ -72,13 +92,22 @@ const toRow = (db: DatabaseSync, kinds: SessionKind[], models: ModelEntry[], liv
   };
 };
 
+/** P5-T03 (FR-11, design §6.1/§6.4): trashed sessions leave All sessions, the live set and deltas. A store without the
+ *  overlay tables (a read-only older schema) has no Trash. */
+function shown(db: DatabaseSync): string {
+  return (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'overlays'").get() === undefined ? '1'
+    : 'NOT EXISTS (SELECT 1 FROM overlays o WHERE o.agent = s.agent AND o.profile_id = s.profile_id AND o.native_session_id = s.native_session_id AND o.trashed_at IS NOT NULL)')
+    + ` AND ${notPurging(db)}`; // XAIBO-PROD-542 G5-N1: a session being purged is hidden
+}
+
 export function listSessions(db: DatabaseSync, cursor: Cursor | null, limit: number, kinds: SessionKind[] = [], models: ModelEntry[] = [], live?: LiveOf): Page {
   const n = Math.min(Number.isSafeInteger(limit) && limit > 0 ? limit : PAGE_DEFAULT, PAGE_MAX);
+  const t = shown(db);
   let raw: Raw[];
-  if (!cursor) raw = db.prepare(`${ROW} ${ORDER}`).all(n) as unknown as Raw[];
-  else if (cursor.lastActivity === null) raw = db.prepare(`${ROW} WHERE s.last_activity IS NULL AND s.id > ? ${ORDER}`).all(cursor.id, n) as unknown as Raw[];
+  if (!cursor) raw = db.prepare(`${ROW(db)} WHERE ${t} ${ORDER}`).all(n) as unknown as Raw[];
+  else if (cursor.lastActivity === null) raw = db.prepare(`${ROW(db)} WHERE s.last_activity IS NULL AND s.id > ? AND ${t} ${ORDER}`).all(cursor.id, n) as unknown as Raw[];
   else {
-    raw = db.prepare(`${ROW} WHERE s.last_activity < ? OR s.last_activity IS NULL OR (s.last_activity = ? AND s.id > ?) ${ORDER}`)
+    raw = db.prepare(`${ROW(db)} WHERE (s.last_activity < ? OR s.last_activity IS NULL OR (s.last_activity = ? AND s.id > ?)) AND ${t} ${ORDER}`)
       .all(cursor.lastActivity, cursor.lastActivity, cursor.id, n) as unknown as Raw[];
   }
   const rows = raw.map(toRow(db, kinds, models, live));
@@ -87,7 +116,7 @@ export function listSessions(db: DatabaseSync, cursor: Cursor | null, limit: num
 }
 
 export function sessionsByKey(db: DatabaseSync, keys: SessionKey[], kinds: SessionKind[] = [], models: ModelEntry[] = [], live?: LiveOf): SessionRow[] {
-  const one = db.prepare(`${ROW} WHERE s.agent = ? AND s.profile_id = ? AND s.native_session_id = ?`);
+  const one = db.prepare(`${ROW(db)} WHERE s.agent = ? AND s.profile_id = ? AND s.native_session_id = ? AND ${shown(db)}`);
   return keys.flatMap((k) => (one.all(k.agent, k.profileId, k.nativeSessionId) as unknown as Raw[]).map(toRow(db, kinds, models, live)));
 }
 
@@ -107,9 +136,9 @@ export function answerLiveSet(db: DatabaseSync, req: PortRequest & { type: 'live
   let more = false;
   try {
     const build = toRow(db, kinds, models, live);
-    const one = db.prepare(`${ROW} WHERE s.id = ?`);
+    const one = db.prepare(`${ROW(db)} WHERE s.id = ?`);
     // Review M1: membership from the bare key columns; the per-session subqueries run for members only.
-    for (const k of db.prepare('SELECT s.id, s.agent, s.profile_id, s.native_session_id FROM sessions s WHERE s.last_activity >= ? ORDER BY s.last_activity DESC, s.id')
+    for (const k of db.prepare(`SELECT s.id, s.agent, s.profile_id, s.native_session_id FROM sessions s WHERE s.last_activity >= ? AND ${shown(db)} ORDER BY s.last_activity DESC, s.id`)
       .iterate(now - LIVE_WINDOW_MS) as Iterable<Pick<Raw, 'id' | 'agent' | 'profile_id' | 'native_session_id'>>) {
       const st = live?.(k.agent, k.native_session_id, k.profile_id);
       if (!st || st.lifecycle === 'ended') continue;
@@ -144,13 +173,15 @@ type Latest = { scope: number; agent: string; verified: number; limit_id: string
  *  scope and stream (raw: state is derived at render time against the local clock), else one no-observation row.
  *  ponytail: streams found by a scan of the history index, as usageStatusList; capped at MAX_SCOPES rows. */
 export function usageScopes(db: DatabaseSync, home: string): UsageScope[] {
-  const latest = db.prepare(`SELECT s.id AS scope, s.agent, s.verified, s.profile_id, h.limit_id, h.used_percent, h.window_minutes, h.resets_at, h.plan, h.credits,
+  // XAIBO-PROD-542: a purging session's own (unverified) scope leaves Usage with it
+  const latest = db.prepare(`SELECT sc.id AS scope, sc.agent, sc.verified, sc.profile_id, h.limit_id, h.used_percent, h.window_minutes, h.resets_at, h.plan, h.credits,
       h.as_of, h.first_observed_at, h.measured_at
     FROM (SELECT DISTINCT usage_scope_id, limit_id FROM usage_history) k
     JOIN usage_history h ON h.id = (SELECT id FROM usage_history x WHERE x.usage_scope_id = k.usage_scope_id AND x.limit_id = k.limit_id
       ORDER BY x.measured_at DESC, x.id DESC LIMIT 1)
-    JOIN usage_scopes s ON s.id = h.usage_scope_id
-    ORDER BY s.id, h.limit_id`).all() as Latest[];
+    JOIN usage_scopes sc ON sc.id = h.usage_scope_id
+    WHERE sc.session_id IS NULL OR EXISTS (SELECT 1 FROM sessions s WHERE s.id = sc.session_id AND ${notPurging(db)})
+    ORDER BY sc.id, h.limit_id`).all() as Latest[];
   const blank = { scope: null, verified: null, stream: null, windowMinutes: null, usedPercent: null, resetsAt: null, plan: null, credits: null, asOf: null, firstObservedAt: null, measuredAt: null };
   const out: UsageScope[] = [];
   for (const p of db.prepare('SELECT id, agent, root, origin FROM profiles ORDER BY agent, id').all() as { id: string; agent: string; root: string; origin: string }[]) {
@@ -174,16 +205,26 @@ export function answerUsage(db: DatabaseSync, req: PortRequest & { type: 'usage'
 }
 
 export const HISTORY_MAX = MAX_RECORDS;
+/** Parameters: scope, stream, lower bound, to, cursor measuredAt (null = first page) twice, cursor id, limit. */
+export const USAGE_HISTORY_PAGE = `SELECT id, kind, measured_at, used_percent, window_minutes, resets_at, as_of FROM usage_history
+  WHERE usage_scope_id = ? AND limit_id = ? AND measured_at >= ? AND measured_at < ? AND (? IS NULL OR measured_at > ? OR id > ?)
+  ORDER BY measured_at, id LIMIT ?`;
 /** P4-T04b1: one scope+stream's stored observations with measured time in [from, to), oldest first; keyset
  *  (measured_at, id) on the usage_history_stream index. Nothing interpolated: absent minutes are absent. */
 export function answerUsageHistory(db: DatabaseSync, req: PortRequest & { type: 'usageHistory' }): PortMessage & { type: 'usageHistory' } {
   const n = Math.min(req.limit, HISTORY_MAX);
   const c = req.cursor;
+  const empty = { v: IPC_VERSION, type: 'usageHistory', id: req.id, records: [], next: null } as const;
+  // G5Rr1-5: a session's own scope while its purge runs or a marker keeps it out answers like an empty scope (as
+  // usageScopes hides it); account scopes stay. A store older than suppressions has neither.
+  try {
+    if (!db.prepare(`SELECT 1 FROM usage_scopes sc WHERE sc.id = ? AND (sc.session_id IS NULL OR EXISTS (SELECT 1 FROM sessions s WHERE s.id = sc.session_id
+      AND ${notPurging(db)} AND NOT EXISTS (SELECT 1 FROM suppressions x WHERE x.agent = s.agent AND x.profile_id = s.profile_id
+        AND x.native_session_id = s.native_session_id AND x.cleared_at IS NULL)))`).get(req.scope)) return { ...empty, records: [] };
+  } catch { /* an older schema: no purge, no marker */ }
   try {
     // Review L: the cursor is the index lower bound, so later pages seek instead of rescanning the window.
-    const raw = db.prepare(`SELECT id, kind, measured_at, used_percent, window_minutes, resets_at, as_of FROM usage_history
-      WHERE usage_scope_id = ? AND limit_id = ? AND measured_at >= ? AND measured_at < ? AND (? IS NULL OR measured_at > ? OR id > ?)
-      ORDER BY measured_at, id LIMIT ?`).all(req.scope, req.stream, Math.max(req.from, c?.measuredAt ?? req.from), req.to, c?.measuredAt ?? null, c?.measuredAt ?? null, c?.id ?? null, n) as
+    const raw = db.prepare(USAGE_HISTORY_PAGE).all(req.scope, req.stream, Math.max(req.from, c?.measuredAt ?? req.from), req.to, c?.measuredAt ?? null, c?.measuredAt ?? null, c?.id ?? null, n) as
       { id: number; kind: UsageRecord['kind']; measured_at: number; used_percent: number | null; window_minutes: number | null; resets_at: number | null; as_of: number | null }[];
     const records: UsageRecord[] = raw.map((r) => ({ id: r.id, kind: r.kind, measuredAt: r.measured_at, usedPercent: finiteOrNull(r.used_percent), windowMinutes: r.window_minutes,
       resetsAt: r.resets_at, sourceTimeKnown: r.as_of !== null }));
@@ -202,8 +243,7 @@ export const RAW_BUDGET = 32 * 1024 * 1024; // characters of stored record text 
 /** Rows the last transcript request loaded (tests check the budget bounds loading). */
 export const transcriptStats = { rowsRead: 0 };
 // P4-T09a: chunk rows of an oversized line (EC-15) are storage, not records: never paged, counted or sliced on their own.
-const VISIBLE = `e.session_id = ? AND e.source IN ('transcript', 'rollout') AND e.subagent_native_id IS NULL AND e.revision_status = 'current' AND e.injected = 0
-  AND e.kind NOT IN ('content-chunk', 'raw-chunk')`;
+
 const TR_COLS = 'e.id, e.kind, e.role, e.content, e.raw, e.source_seq AS seq, e.source_ts AS ts, e.ingest_id AS ingest';
 interface TrRow { id: number; kind: string; role: string | null; content: string | null; raw: string | null; seq: number; ts: number | null; ingest: string | null }
 
@@ -241,9 +281,10 @@ function largeSlice(db: DatabaseSync, session: number, key: string, offset: numb
 }
 const stored = (agent: string, r: Pick<TrRow, 'kind' | 'role' | 'content' | 'raw'>): StoredRecord => ({ agent, kind: r.kind, role: r.role, injected: false, content: r.content, raw: r.raw });
 
-export function answerSession(db: DatabaseSync, req: PortRequest & { type: 'session' }, kinds: SessionKind[] = [], models: ModelEntry[] = [], live?: LiveOf): PortMessage & { type: 'session' } {
+export function answerSession(db: DatabaseSync, req: PortRequest & { type: 'session' }, kinds: SessionKind[] = [], models: ModelEntry[] = [], live?: LiveOf,
+  managedDir?: string): PortMessage & { type: 'session' } {
   try {
-    const r = db.prepare(`${ROW} WHERE s.id = ?`).get(req.session) as Raw | undefined;
+    const r = db.prepare(`${ROW(db)} WHERE s.id = ? AND ${notPurging(db)}`).get(req.session) as Raw | undefined;
     if (!r) return { v: IPC_VERSION, type: 'session', id: req.id, detail: null };
     const row = toRow(db, kinds, models, live)(r);
     const coverage: CoverageCode[] = [];
@@ -261,14 +302,16 @@ export function answerSession(db: DatabaseSync, req: PortRequest & { type: 'sess
         observed_at AS observedAt FROM context_snapshots WHERE session_id = ? ORDER BY generation DESC, id DESC LIMIT 1`).get(r.id);
       context = ctx ? parseContext({ ...ctx }) ?? null : null;
     } catch { context = null; }
-    return { v: IPC_VERSION, type: 'session', id: req.id, detail: { row, coverage, context } };
+    let nativeExpires: number | null = null; // P5-T12 (EC-23): an estimate; unreadable settings give none
+    try { nativeExpires = nativeExpiresAt(db, r, managedDir); } catch { nativeExpires = null; }
+    return { v: IPC_VERSION, type: 'session', id: req.id, detail: { row, coverage, context, nativeExpiresAt: nativeExpires } };
   } catch { return { v: IPC_VERSION, type: 'session', id: req.id, detail: null }; }
 }
 
 export function answerTranscript(db: DatabaseSync, req: PortRequest & { type: 'transcript' }): PortMessage & { type: 'transcript' } {
   const empty = (): PortMessage & { type: 'transcript' } => ({ v: IPC_VERSION, type: 'transcript', id: req.id, items: [], prev: null, next: null });
   try {
-    const s = db.prepare('SELECT agent FROM sessions WHERE id = ?').get(req.session) as { agent: string } | undefined;
+    const s = db.prepare(`SELECT agent FROM sessions s WHERE id = ? AND ${notPurging(db)}`).get(req.session) as { agent: string } | undefined;
     if (!s) return empty();
     const n = Math.min(req.limit, TRANSCRIPT_MAX);
     const at = req.at;
@@ -322,7 +365,7 @@ export function answerTranscript(db: DatabaseSync, req: PortRequest & { type: 't
     for (const k of consumed) {
       if (!k.item) continue;
       const callId = k.item.kind === 'tool-call' || k.item.kind === 'tool-result' ? ((call.get(req.session, k.id, k.id) as { id: string | null } | undefined)?.id ?? null) : null;
-      items.push({ event: k.id, seq: k.seq, ts: k.ts, ...k.item, callId: callId !== null && callId !== '' && callId.length <= 256 ? callId : null });
+      items.push({ event: k.id, seq: k.seq, ts: k.ts, ...k.item, callId: callIdOf(callId) });
     }
     return {
       v: IPC_VERSION, type: 'transcript', id: req.id, items,
@@ -336,8 +379,7 @@ export function answerTranscript(db: DatabaseSync, req: PortRequest & { type: 't
  *  (or for reasoning, which no tool block has). */
 function claudeCallText(raw: string | null, call: string, part: 'text' | 'reasoning'): string | null {
   if (part !== 'text' || raw === null) return null;
-  let content: unknown;
-  try { const r: unknown = JSON.parse(raw); content = isObj(r) && isObj(r.message) ? r.message.content : undefined; } catch { return null; }
+  const content = message(raw)?.content;
   const b: unknown = Array.isArray(content)
     ? content.find((x) => isObj(x) && ((x.type === 'tool_use' && x.id === call) || (x.type === 'tool_result' && x.tool_use_id === call))) : undefined;
   return blockText(b) ?? null;
@@ -350,7 +392,9 @@ export function answerSlice(db: DatabaseSync, req: PortRequest & { type: 'slice'
   const empty = (): PortMessage & { type: 'slice' } => ({ v: IPC_VERSION, type: 'slice', id: req.id, text: '', next: null });
   try {
     // One visibility check that also tells a large head apart; octet_length reads no raw text (review L5).
-    const head = db.prepare(`SELECT coalesce(octet_length(e.raw), 0) = 0 AS bare, e.ingest_id AS ingest FROM events e WHERE e.id = ? AND ${VISIBLE}`)
+    // XAIBO-PROD-542 (review M): checked before the cache, so a purging session is never served from it
+    const head = db.prepare(`SELECT coalesce(octet_length(e.raw), 0) = 0 AS bare, e.ingest_id AS ingest FROM events e WHERE e.id = ? AND ${VISIBLE}
+      AND EXISTS (SELECT 1 FROM sessions s WHERE s.id = e.session_id AND ${notPurging(db)})`)
       .get(req.event, req.session) as { bare: number; ingest: string | null } | undefined;
     if (!head) return empty();
     const large = largeKey(head.bare === 1, head.ingest);
@@ -385,15 +429,14 @@ const SAFE = 9007199254740991; // node:sqlite throws on integers past 2^53; such
 const safeTs = (col: string) => `CASE WHEN ${col} BETWEEN -${SAFE} AND ${SAFE} THEN ${col} END`; // re-review: abs() raises on -2^63
 type Sess = { agent: string; profile_id: string; native_session_id: string; last_activity: number | null };
 const sessionOf = (db: DatabaseSync, id: number) =>
-  db.prepare(`SELECT agent, profile_id, native_session_id, ${safeTs('last_activity')} AS last_activity FROM sessions WHERE id = ?`).get(id) as Sess | undefined;
+  db.prepare(`SELECT agent, profile_id, native_session_id, ${safeTs('last_activity')} AS last_activity FROM sessions s WHERE id = ? AND ${notPurging(db)}`).get(id) as Sess | undefined;
 /** Review M4: a pending state (approval requested, subagent running) is current only while the session is live: tracked,
  *  not ended and active within the live window (as the live set). Otherwise its outcome is unknown. */
 const isLive = (s: Sess, live: LiveOf | undefined, now: number) => {
   const st = live?.(s.agent, s.native_session_id, s.profile_id);
   return !!st && st.lifecycle !== 'ended' && s.last_activity !== null && s.last_activity >= now - LIVE_WINDOW_MS;
 };
-const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
-const callIdOf = (id: string) => (id !== '' && id.length <= 256 ? id : null);
+const callIdOf = (id: string | null) => (id !== null && id !== '' && id.length <= 256 ? id : null);
 /** The session's status evidence in the engine's order, or null past EVIDENCE_MAX rows or RAW_BUDGET characters: a cut
  *  history could show a stale state (e.g. `requested` whose answer lies beyond the cut), so callers report unknown.
  *  Review M2: the size is checked before the sorted read, so an oversized history is never sorted.
@@ -408,11 +451,8 @@ function sessionEvidence(db: DatabaseSync, s: Sess): ConfEv[] | null {
   for (const r of db.prepare(`SELECT ev, confidence FROM status_evidence WHERE ${WHERE} ORDER BY ts, rank, seq, coalesce(producer_seq, 0), id`)
     .iterate(s.agent, s.profile_id, s.native_session_id) as Iterable<{ ev: string; confidence: Confidence }>) {
     if (++rows > EVIDENCE_MAX || (read += r.ev.length) > RAW_BUDGET) return null; // rows added since the size check
-    try {
-      const a: unknown = JSON.parse(r.ev);
-      // a malformed row is skipped, as the engine does; XAIBO-PROD-444: each keeps its row's confidence
-      if (Array.isArray(a) && a.every((e) => isObj(e) && typeof e.k === 'string')) for (const e of a as Ev[]) evs.push({ ...e, conf: r.confidence });
-    } catch { /* corrupt row skipped */ }
+    // a malformed row is skipped, as the engine does; XAIBO-PROD-444: each keeps its row's confidence
+    for (const e of parseEvidence(r.ev) ?? []) evs.push({ ...e, conf: r.confidence });
   }
   return evs;
 }
@@ -498,7 +538,7 @@ export function answerSubagents(db: DatabaseSync, req: PortRequest & { type: 'su
       GROUP BY subagent_native_id`).all(req.session, JSON.stringify(subs.map((x) => x.nativeId))) as Span[]).map((x) => [x.sub, x]));
     // The subagent's own reported model, read in SQLite so a long record never enters JS; never the parent's. Review M3:
     // the record sizes count against RAW_BUDGET (octet_length reads no content); past it the model is unknown.
-    // ponytail: the latest assistant record only (subagentModel's rule over one record); scan earlier ones if a record without a model shows up.
+    // ponytail: the latest assistant record only (a non-empty model of at most MAX_MODEL); scan earlier ones if a record without a model shows up.
     const size = db.prepare('SELECT octet_length(raw) AS n FROM events WHERE id = ?');
     const modelOf = db.prepare(`SELECT CASE WHEN json_valid(raw) THEN CASE WHEN json_type(raw, '$.message.model') = 'text' THEN json_extract(raw, '$.message.model') END END AS m
       FROM events WHERE id = ?`);
@@ -549,6 +589,7 @@ export function answerMarkers(db: DatabaseSync, req: PortRequest & { type: 'mark
   // XAIBO-PROD-454: a store error is a failure the renderer shows with Retry, never a successful empty page
   const failed = (): PortMessage & { type: 'markers' } => ({ v: IPC_VERSION, type: 'markers', id: req.id, markers: [], next: null, failed: true });
   try {
+    if (!sessionOf(db, req.session)) return { v: IPC_VERSION, type: 'markers', id: req.id, markers: [], next: null }; // none, or being purged
     const n = Math.min(req.limit, MAX_ITEMS);
     const TIMED = `session_id = ? AND typeof(started_at) = 'integer' AND started_at BETWEEN -${SAFE} AND ${SAFE} AND model_id IS NOT NULL`;
     // Review L5: the bare range term lets turns_started seek to the cursor instead of walking from the session's start.
@@ -637,14 +678,13 @@ const COST_GROUPS_SQL = `SELECT json_extract(e.coverage, '$.model') AS model, e.
     AND u.identity = substr(e.covered_scope, length(e.source) + 8)
   WHERE e.session_id = ? AND e.basis <> 'agent_reported' AND e.covered_scope = 'usage:' || e.source || ':' || u.identity
   GROUP BY 1, 2, 3 ORDER BY MIN(e.as_of) IS NULL, MIN(e.as_of), rev, model LIMIT ${MAX_COST_GROUPS + 1}`;
-const clip = (s: string, max: number) => (s.length <= max ? s : `${s.slice(0, (s.charCodeAt(max - 2) & 0xfc00) === 0xd800 ? max - 2 : max - 1)}…`);
 const safeCount = (x: unknown): number | null => (Number.isSafeInteger(x) && (x as number) >= 0 ? (x as number) : null);
 const finiteUsd = (x: unknown): number | null => (typeof x === 'number' && Number.isFinite(x) && x >= 0 ? x : null);
 
 export function answerCost(db: DatabaseSync, req: PortRequest & { type: 'cost' }, models: ModelEntry[] = []): PortMessage & { type: 'cost' } {
   const reply = (cost: CostDetail | null): PortMessage & { type: 'cost' } => ({ v: IPC_VERSION, type: 'cost', id: req.id, cost });
   let s: { agent: string } | undefined;
-  try { s = db.prepare('SELECT agent FROM sessions WHERE id = ?').get(req.session) as { agent: string } | undefined; } catch { return reply(null); }
+  try { s = db.prepare(`SELECT agent FROM sessions s WHERE id = ? AND ${notPurging(db)}`).get(req.session) as { agent: string } | undefined; } catch { return reply(null); }
   if (!s) return reply(null); // null means only "no such session"
   // Review M2: an unreadable estimate row (malformed JSON, an integer node:sqlite cannot read, overflow) degrades the
   // reply to what was read plus 'breakdown-unavailable'; it never nulls a known session.
@@ -702,9 +742,9 @@ export function answerCost(db: DatabaseSync, req: PortRequest & { type: 'cost' }
         if (g.basis === 'owner_fallback') { refs.add('Owner-set fallback'); continue; }
         const m = listed.find((x) => x?.id === g.model);
         const src = m && sources.find((x) => x?.id === m.source);
-        if (src) refs.add(clip(`${String(src.id)}: ${String(src.url)} (retrieved ${String(src.retrieved)})`, REFERENCE_MAX));
+        if (src) refs.add(cut(`${String(src.id)}: ${String(src.url)} (retrieved ${String(src.retrieved)})`, REFERENCE_MAX));
       }
-      revisions.push({ id, label: clip(String(p.revision), REFERENCE_MAX), pricesAsOf: p.asOf === null ? null : clip(String(p.asOf), 64), source: p.source,
+      revisions.push({ id, label: cut(String(p.revision), REFERENCE_MAX), pricesAsOf: p.asOf === null ? null : cut(String(p.asOf), 64), source: p.source,
         references: [...refs].slice(0, MAX_REFERENCES) });
     }
     const full = parseCost({ ...out, groups, more: rows.length > MAX_COST_GROUPS, revisions });

@@ -2,9 +2,9 @@
 // Claude without a statusLine window keeps its used tokens and no percentage; Claude after compaction shows Awaiting
 // next usage and no meter; Codex shows its reported window with a meter; agy is unavailable. Category tables are
 // always present and unavailable with the v1-B explanation.
-import { copyFileSync, cpSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { REPO, expect, openSessions, test } from './fixtures.ts';
+import { expect, openSessions, seedCodexAgy, test } from './fixtures.ts';
 import type { Page } from '@playwright/test';
 
 const PLAIN = { sid: '00000000-0000-4000-8000-00000000e000', cwd: '/tmp/xaibo-fixture/ctx-plain' };
@@ -27,12 +27,7 @@ function seed(home: string) {
     mkdirSync(project, { recursive: true });
     writeFileSync(path.join(project, `${s.sid}.jsonl`), lines.join('\n') + '\n');
   }
-  const codex = path.join(home, '.codex', 'sessions', '2026', '01', '01');
-  mkdirSync(codex, { recursive: true });
-  const fixture = path.join(REPO, 'test', 'fixtures', 'synthetic', 'codex', '0.160.0', 'simple-turn');
-  const name = readdirSync(fixture).find((f) => f.startsWith('rollout-'))!;
-  copyFileSync(path.join(fixture, name), path.join(codex, name));
-  cpSync(path.join(REPO, 'test', 'fixtures', 'synthetic', 'agy', '1.5.6', 'basic', 'brain'), path.join(home, '.gemini', 'antigravity-cli', 'brain'), { recursive: true });
+  seedCodexAgy(home);
 }
 
 const list = (page: Page) => page.getByRole('list', { name: 'Sessions' });

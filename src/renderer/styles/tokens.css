@@ -132,6 +132,7 @@ body {
   max-height: 70vh;
   overflow-y: auto;
   overscroll-behavior: contain;
+  overflow-anchor: none; /* VirtualList keeps its own scroll anchor; the browser's would adjust it a second time */
 }
 .x-vlist-items {
   position: relative;
@@ -227,6 +228,52 @@ body {
 .x-main section { min-width: 0; }
 .x-main > section > h1 { margin-bottom: var(--x-space-4); }
 .x-dashboard { display: grid; gap: var(--x-space-6); }
+/* XAIBO-PROD-525 (P5-T16; design §6.6): Settings, ruled sections, 240 px leading column at >= 800 px; §4.x dialog */
+.x-settings { display: grid; gap: var(--x-space-6); max-width: 880px; }
+.x-settings-section { display: grid; gap: var(--x-space-4); padding-top: var(--x-space-4); border-top: 1px solid var(--x-divider); }
+.x-settings-section h2, .x-dialog h2 { margin: 0 0 var(--x-space-2); font-size: var(--x-text-section); line-height: var(--x-leading-section); font-weight: var(--x-weight-strong); }
+.x-settings-section p, .x-dialog p { margin: 0 0 var(--x-space-2); }
+.x-settings-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--x-space-3); align-self: start; }
+@media (min-width: 800px) { .x-settings-section { grid-template-columns: 240px minmax(0, 1fr); } }
+/* XAIBO-PROD-528 (P5-T18 part 2; D-P5-09): retention radios, validation error, storage parts as shares (never capacity) */
+.x-hint { color: var(--x-muted); font-size: var(--x-text-small); line-height: var(--x-leading-small); }
+.x-settings-controls.x-stack { display: grid; justify-items: start; gap: var(--x-space-2); min-width: 0; }
+.x-settings-controls.x-stack > p { margin: 0; }
+.x-input { min-height: var(--x-control-height); padding: 0 var(--x-space-3); font: inherit; color: var(--x-ink); background: var(--x-surface); border: var(--x-border); border-radius: var(--x-radius-control); }
+.x-input[aria-invalid="true"] { border-color: var(--x-danger); }
+.x-radios { display: grid; gap: var(--x-space-2); margin: 0; padding: 0; border: 0; min-width: 0; }
+.x-radios legend { padding: 0; margin-bottom: var(--x-space-2); color: var(--x-muted); font-size: var(--x-text-small); }
+.x-radio { display: flex; align-items: center; gap: var(--x-space-2); min-height: var(--x-target-min); }
+.x-radio input { width: 16px; height: 16px; margin: 0; accent-color: var(--x-accent); }
+.x-other { display: flex; align-items: center; gap: var(--x-space-2); padding-left: var(--x-space-6); }
+.x-other .x-input { width: 96px; font-variant-numeric: tabular-nums; }
+.x-main .x-error { margin: 0; min-height: var(--x-leading-body); color: var(--x-danger); } /* a reserved line: nothing below moves */
+.x-save-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--x-space-3); margin-top: var(--x-space-2); }
+.x-storage { width: 100%; min-width: 0; display: grid; gap: var(--x-space-4); }
+.x-main .x-storage p { margin: 0; }
+.x-storage-total { font-size: var(--x-text-value); line-height: var(--x-leading-value); font-weight: var(--x-weight-strong); font-variant-numeric: tabular-nums; }
+.x-storage-when { display: flex; flex-wrap: wrap; align-items: center; gap: var(--x-space-2); }
+.x-storage table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: var(--x-text-small); line-height: var(--x-leading-small); }
+.x-storage caption { text-align: left; font-weight: var(--x-weight-strong); padding-bottom: var(--x-space-1); }
+.x-storage th { width: 40%; text-align: left; font-weight: var(--x-weight-normal); padding: 6px 0; border-top: 1px solid var(--x-divider); overflow-wrap: anywhere; }
+.x-storage td { padding: 6px 0 6px var(--x-space-3); border-top: 1px solid var(--x-divider); text-align: right; font-variant-numeric: tabular-nums; }
+.x-storage td.x-bar-cell { width: 40%; }
+.x-storage .x-meter { display: block; height: 8px; max-width: none; }
+.x-storage .x-un { color: var(--x-muted); }
+@media (max-width: 479px) { .x-storage th { width: 55%; } .x-storage td.x-bar-cell { width: 15%; } }
+.x-dialog { max-width: min(560px, calc(100vw - 32px)); padding: var(--x-space-5); color: var(--x-ink); background: var(--x-surface); border: 1px solid var(--x-line); border-radius: var(--x-radius-panel); }
+.x-dialog::backdrop { background: transparent; }
+.x-dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--x-space-3); margin-top: var(--x-space-4); }
+/* XAIBO-PROD-535 (P5-T18 part 3b-6; D-P5-09): the Move dialog's fields, each label above its full-width control */
+.x-move { width: min(480px, calc(100vw - 32px)); }
+.x-move-form { display: grid; gap: var(--x-space-2); }
+.x-move-form > p { margin: 0; }
+.x-move-form label { display: grid; gap: 2px; color: var(--x-muted); font-size: var(--x-text-small); }
+.x-move-form select { min-height: var(--x-control-height); font: inherit; font-size: var(--x-text-body); color: var(--x-ink); background: var(--x-surface); border: var(--x-border); border-radius: var(--x-radius-control); padding: 0 var(--x-space-2); }
+.x-move-form .x-input { font-size: var(--x-text-body); }
+/* XAIBO-PROD-536 (P5-T18 part 3b-7; D-P5-09): the suppressed record's metadata pane */
+.x-supp-body { display: grid; justify-items: start; gap: var(--x-space-3); padding: 0 var(--x-space-4) var(--x-space-4); }
+.x-supp-body p { margin: 0; }
 .x-dashboard-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--x-space-4); }
 .x-views { display: flex; flex-wrap: wrap; gap: var(--x-space-2); padding: var(--x-space-1); }
 .x-view { font-family: var(--x-font-ui); }
@@ -322,6 +369,22 @@ body {
 .x-micro { display: block; width: 100%; height: 46px; margin-top: var(--x-space-4); fill: var(--x-chart); }
 .x-chart-caption, .x-micro-details { font-size: var(--x-text-small); line-height: var(--x-leading-small); color: var(--x-muted); }
 .x-micro-details { margin-top: var(--x-space-2); }
+/* P5-T17b monthly usage ledger (design §6.1.1): bars in the chart color on the canvas, numbers above, months below. */
+.x-monthly { display: grid; gap: var(--x-space-4); min-width: 0; }
+.x-monthly-controls, .x-monthly-paging, .x-monthly-months { display: flex; flex-wrap: wrap; align-items: end; gap: var(--x-space-3); }
+.x-monthly-controls label { display: grid; gap: var(--x-space-1); color: var(--x-muted); font-size: var(--x-text-small); }
+.x-monthly-controls select { min-height: var(--x-control-height); padding: var(--x-space-2); color: var(--x-ink); background: var(--x-surface); border: var(--x-border); border-radius: var(--x-radius-control); font: inherit; }
+.x-monthly-chart { display: block; width: 100%; height: auto; max-height: 260px; }
+.x-monthly-bar { fill: var(--x-chart); }
+.x-monthly-value, .x-monthly-month { fill: var(--x-ink); font-size: 12px; font-variant-numeric: tabular-nums; }
+.x-monthly-month { fill: var(--x-muted); }
+.x-monthly-detail { padding: var(--x-space-4); background: var(--x-inset); border-radius: var(--x-radius-control); }
+.x-monthly-detail dl { display: grid; gap: var(--x-space-2); margin: 0; }
+.x-monthly-detail dd { margin: 0; overflow-wrap: anywhere; }
+.x-monthly-table, .x-monthly-quota .x-table { max-width: none; }
+.x-monthly-scroll { max-width: 100%; overflow-x: auto; padding: var(--x-space-1); }
+.x-monthly-table th[scope="row"] { white-space: normal; }
+.x-monthly-controls select { max-width: 100%; }
 summary { min-height: var(--x-control-height); padding: var(--x-space-2) var(--x-space-1); color: var(--x-accent); cursor: pointer; border-radius: var(--x-radius-control); }
 summary:hover { background: var(--x-tint); }
 .x-state-list { margin: 0; padding-left: var(--x-space-5); }
@@ -355,7 +418,7 @@ summary:hover { background: var(--x-tint); }
 .x-btn-quiet { color: var(--x-muted); background: transparent; border: 1px solid transparent; font-weight: var(--x-weight-normal); }
 .x-btn-quiet:hover { color: var(--x-ink); background: var(--x-tint); }
 .x-btn-quiet[aria-expanded="true"] { color: var(--x-accent); background: var(--x-selected); }
-.x-btn[aria-disabled="true"] { cursor: not-allowed; filter: none; opacity: 1; color: var(--x-muted); border-color: var(--x-line); background: var(--x-tint); }
+.x-btn[aria-disabled="true"], .x-btn:disabled { cursor: not-allowed; filter: none; opacity: 1; color: var(--x-muted); border-color: var(--x-line); background: var(--x-tint); }
 .x-icon-btn { width: var(--x-target-min); padding: 0; justify-content: center; }
 .x-record-open { margin-top: var(--x-space-3); }
 
@@ -377,13 +440,105 @@ summary:hover { background: var(--x-tint); }
 .x-srow:hover { background: var(--x-tint); }
 .x-srow[aria-current="true"] { background: var(--x-selected); box-shadow: inset 2px 0 0 var(--x-accent); }
 .x-s-title { font-weight: var(--x-weight-strong); overflow-wrap: anywhere; }
+/* XAIBO-PROD-509 (EC-66): the first-prompt excerpt after "Untitled" reads as secondary text */
+.x-excerpt { color: var(--x-muted); font-weight: var(--x-weight-normal); font-size: var(--x-text-body); }
 .x-s-meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--x-space-1) var(--x-space-2); color: var(--x-muted); font-size: var(--x-text-small); line-height: var(--x-leading-small); }
 .x-s-path { font-family: var(--x-font-mono); font-size: var(--x-text-small); line-height: var(--x-leading-small); color: var(--x-muted); overflow-wrap: anywhere; }
+/* XAIBO-PROD-532 (P5-T18 part 3b-3; design §5.1, §6.4): the record's More actions beside its primary control; one
+   popover menu in the top layer at its trigger (implicit popover anchor), flipped above when the room below is short;
+   the Undo notice fixed at the bottom trailing edge */
+.x-srow-wrap { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: var(--x-space-1); }
+.x-srow-more { margin-top: var(--x-space-1); }
+.x-menu { inset: auto; margin: var(--x-space-1) 0; position-area: block-end span-inline-start; position-try-fallbacks: flip-block; min-width: 12rem;
+  max-width: calc(100vw - 32px); max-height: 320px; overflow-y: auto; padding: var(--x-space-1); color: var(--x-ink); background: var(--x-surface);
+  border: var(--x-border); border-radius: var(--x-radius-control); }
+.x-menu > .x-hint { margin: 0; padding: var(--x-space-2) var(--x-space-3); }
+.x-menu-item { display: flex; align-items: center; gap: var(--x-space-2); width: 100%; min-height: 32px; padding: var(--x-space-1) var(--x-space-3) var(--x-space-1) var(--x-space-2);
+  font: inherit; text-align: left; color: var(--x-ink); background: transparent; border: 0; border-radius: var(--x-radius-badge); cursor: pointer; }
+.x-menu-item:hover { background: var(--x-tint); }
+.x-menu-check { display: inline-flex; width: 16px; flex: none; }
+.x-action-note { margin: 0; padding: 0 var(--x-space-4); font-size: var(--x-text-small); }
+.x-undo { position: fixed; right: var(--x-space-4); bottom: var(--x-space-4); z-index: var(--x-z-toast); width: min(360px, calc(100vw - 32px)); display: grid; gap: var(--x-space-2);
+  padding: var(--x-space-3) var(--x-space-4); color: var(--x-ink); background: var(--x-surface); border: var(--x-border); border-radius: var(--x-radius-panel); }
+.x-undo p { margin: 0; }
+/* XAIBO-PROD-533 (design §6.3): the open session's retention line and Keep toggle below its chips */
+.x-retention { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: var(--x-space-1) var(--x-space-2); color: var(--x-muted); font-size: var(--x-text-small); }
+.x-retention .x-action-note { padding: 0; }
+.x-keep[aria-pressed="true"] { color: var(--x-accent); background: var(--x-selected); }
+/* XAIBO-PROD-534 (design §5.1, §6.4; D-P5-09): Purge as the danger outline button; Trash records' Restore and Purge;
+   the open session's Trash banner (surface, 2 px line border, 4 px leading warning rule, 20 px glyph) */
+.x-btn-danger { color: var(--x-danger); background: var(--x-surface); border: 1px solid var(--x-danger); }
+.x-btn-danger:hover { background: var(--x-tint); }
+.x-srow-trash { grid-column: 1 / -1; padding: 0 var(--x-space-3) var(--x-space-2); }
+.x-banner { grid-column: 1 / -1; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--x-space-3); padding: var(--x-space-3) var(--x-space-4);
+  background: var(--x-surface); border: 2px solid var(--x-line); border-left: 4px solid var(--x-warning); border-radius: var(--x-radius-control); }
+.x-banner > .x-icon { width: 20px; height: 20px; color: var(--x-warning); }
+.x-main .x-banner h3 { margin: 0 0 var(--x-space-1); font-size: var(--x-text-body); }
+.x-banner p { margin: 0 0 var(--x-space-2); }
+.x-banner .x-action-note { display: block; padding: 0; margin-top: var(--x-space-1); }
 .x-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--x-line); }
 .x-dot-ok { background: var(--x-success); }
 .x-dot-busy { background: var(--x-accent); }
 .x-dot-warn { background: var(--x-warning); }
 .x-dot-bad { background: var(--x-danger); }
+
+/* XAIBO-PROD-529 (P5-T18 part 3a; design §6.4; D-P5-09): the Session list as a history browser */
+.x-list-slot { display: flex; min-width: 0; min-height: 0; }
+.x-list-slot > .x-pane { flex: 1; }
+/* design §6.4: the controls keep their natural height and the named result scrollport keeps its 288 px minimum; in a
+   short window the pane scrolls as a whole ("form growth"), and focus moving into a record scrolls the pane as well */
+.x-list-pane > .x-browse { flex: none; padding-bottom: var(--x-space-1); }
+.x-list-pane > .x-section-list { flex: 1 0 auto; }
+.x-list-pane .x-section-list > .x-vlist { flex: 1 0 18rem; } /* 288 px at default text; grows with text scaling so a record fits */
+.x-browse { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--x-space-2); padding: var(--x-space-3) var(--x-space-3) 0; }
+.x-modes { display: flex; flex-wrap: wrap; gap: var(--x-space-1); }
+.x-mode { min-height: var(--x-target-min); padding: 0 10px; font: inherit; font-size: var(--x-text-small); color: var(--x-muted); background: transparent; border: 1px solid var(--x-line); border-radius: 999px; cursor: pointer; }
+.x-mode:hover { color: var(--x-ink); background: var(--x-tint); }
+.x-mode[aria-pressed="true"] { color: var(--x-accent); background: var(--x-selected); border-color: var(--x-accent); font-weight: var(--x-weight-strong); }
+.x-main .x-browse-note { margin: 0; }
+.x-browse-tools { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--x-space-2); }
+.x-main .x-tree-root > .x-hint { margin: 0 0 var(--x-space-1); }
+.x-search { display: flex; gap: var(--x-space-2); }
+.x-search-field { position: relative; flex: 1; min-width: 0; display: flex; }
+.x-search-field .x-icon { position: absolute; left: 10px; top: 50%; translate: 0 -50%; color: var(--x-muted); pointer-events: none; }
+.x-search-field .x-input { flex: 1; min-width: 0; padding-left: 32px; }
+.x-clear { justify-self: start; }
+.x-discl > details { border-bottom: 1px solid var(--x-divider); }
+.x-discl summary { display: flex; align-items: center; gap: var(--x-space-2); list-style: none; color: var(--x-ink); font-weight: var(--x-weight-strong); font-size: var(--x-text-small); padding: var(--x-space-1); }
+.x-discl summary::-webkit-details-marker { display: none; }
+.x-discl summary .x-icon { width: 14px; height: 14px; color: var(--x-muted); }
+.x-discl details[open] > summary > .x-icon:first-child { transform: rotate(90deg); }
+.x-sum-val { margin-left: auto; min-width: 0; overflow-wrap: anywhere; text-align: right; color: var(--x-muted); font-weight: var(--x-weight-normal); }
+.x-filters { display: grid; gap: var(--x-space-2); padding: 0 var(--x-space-1) var(--x-space-3); font-size: var(--x-text-small); }
+.x-filters label { display: grid; gap: 2px; color: var(--x-muted); }
+.x-filters select { min-height: var(--x-control-height); font: inherit; color: var(--x-ink); background: var(--x-surface); border: var(--x-border); border-radius: var(--x-radius-control); padding: 0 var(--x-space-2); }
+.x-acts { display: flex; flex-wrap: wrap; gap: var(--x-space-2); }
+.x-tree-root { padding-bottom: var(--x-space-2); font-size: var(--x-text-small); }
+.x-tree { list-style: none; margin: 0; padding: 0; }
+.x-tree .x-tree { padding-left: var(--x-space-5); }
+.x-tree-row { display: flex; align-items: center; }
+.x-tree-toggle, .x-tree-spacer { flex: none; width: 24px; }
+.x-tree-toggle { min-height: var(--x-target-min); display: inline-flex; align-items: center; justify-content: center; padding: 0; color: var(--x-muted); background: transparent; border: 0; border-radius: var(--x-radius-control); cursor: pointer; }
+.x-tree-toggle:hover { background: var(--x-tint); }
+.x-tree-toggle .x-icon { width: 14px; height: 14px; }
+.x-tree-toggle[aria-expanded="true"] .x-icon { transform: rotate(90deg); }
+.x-tree-pick { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; min-height: var(--x-target-min); padding: 0 var(--x-space-2); font: inherit; color: var(--x-ink); text-align: left; background: transparent; border: 0; border-radius: var(--x-radius-control); cursor: pointer; }
+.x-tree-pick:hover { background: var(--x-tint); }
+.x-tree-pick[aria-pressed="true"] { color: var(--x-accent); background: var(--x-selected); box-shadow: inset 2px 0 0 var(--x-accent); }
+.x-tree-pick .x-icon { width: 14px; height: 14px; color: var(--x-muted); }
+.x-tree-all { width: 100%; }
+.x-tree-label { min-width: 0; overflow-wrap: anywhere; }
+.x-n { margin-left: auto; color: var(--x-muted); font-variant-numeric: tabular-nums; }
+.x-note { display: block; padding: 0 var(--x-space-2) var(--x-space-1) 30px; color: var(--x-muted); }
+.x-tree .x-hint { padding: var(--x-space-1) var(--x-space-2); }
+.x-results-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px var(--x-space-2); padding: var(--x-space-3) var(--x-space-4) var(--x-space-1); }
+.x-main .x-results-head h3 { margin: 0; font-size: var(--x-text-small); }
+.x-results-head > span { color: var(--x-muted); font-size: var(--x-text-small); }
+.x-pin .x-icon { width: 14px; height: 14px; vertical-align: -2px; margin-right: 4px; color: var(--x-accent); }
+.x-snippet { font-size: var(--x-text-small); line-height: var(--x-leading-small); background: var(--x-inset); border-radius: var(--x-radius-badge); padding: var(--x-space-1) var(--x-space-2); margin-top: 2px; overflow-wrap: anywhere; }
+.x-snippet mark { color: var(--x-accent); background: transparent; font-weight: var(--x-weight-strong); }
+.x-flags { display: flex; flex-wrap: wrap; gap: 2px var(--x-space-2); font-size: var(--x-text-small); line-height: var(--x-leading-small); color: var(--x-muted); }
+.x-main .x-list-foot { margin: 0; padding: var(--x-space-2) var(--x-space-4) var(--x-space-3); color: var(--x-muted); font-size: var(--x-text-small); border-top: 1px solid var(--x-divider); }
 
 /* Open session */
 .x-open { position: relative; }
@@ -489,7 +644,7 @@ summary:hover { background: var(--x-tint); }
 @media (max-width: 1199px) { .x-workspace { grid-template-columns: 260px minmax(0, 1fr); } }
 @media (max-width: 799px) {
   .x-workspace, .x-workspace.x-no-list { grid-template-columns: minmax(0, 1fr); }
-  .x-workspace.x-has-open > .x-list-pane, .x-workspace:not(.x-has-open) > .x-choose { display: none; }
+  .x-workspace.x-has-open > .x-list-slot, .x-workspace:not(.x-has-open) > .x-choose { display: none; }
   .x-narrow-only { display: inline-flex; }
   .x-wide-only { display: none; }
   .x-step-arg { display: none; }
@@ -536,3 +691,45 @@ html, .x-shell.x-fixed { scroll-padding-top: var(--x-frame-pad, 8px); } /* clear
 /* the open session's footer actions wrap (and their words) before they overflow the pane at 320 CSS px */
 .x-foot-right { flex-wrap: wrap; min-width: 0; }
 .x-foot .x-btn { white-space: normal; }
+/* XAIBO-PROD-538 (P5-T18a part 2a; design §6.5–6.5.1, D-P5-13): Agent Map. Tree 2fr and Details 1fr at >=1200 px,
+   stacked below; rounded nodes indented 16 px per level (12 px narrow, at most 32 px for the fixed three levels). */
+.x-map-area { display: grid; gap: var(--x-space-4); }
+.x-map { display: grid; gap: var(--x-space-6); }
+@media (min-width: 1200px) { .x-map { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); align-items: start; } }
+.x-map-tree .x-vlist { min-height: 18rem; }
+.x-map-note { margin: 0; padding: var(--x-space-4); }
+.x-map-node { display: flex; align-items: flex-start; min-width: 0; cursor: pointer; }
+.x-map-cell { flex: 1; display: flex; align-items: flex-start; gap: var(--x-space-1); min-width: 0; }
+.x-map-notice { margin: 0; }
+/* XAIBO-PROD-539 (DD2-04): at >=1200 px rows fan out by level into three columns (root leading, worktree central, session
+   leaves trailing), the chevron after its box so connectors meet clear edges; decorative links in the 40 px gaps */
+.x-map-host { position: relative; }
+.x-map-links { position: absolute; pointer-events: none; overflow: hidden; }
+.x-map-links path { fill: none; stroke: var(--x-line); stroke-width: 1.5; stroke-linecap: round; }
+@media (min-width: 1200px) {
+  .x-map-node { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); column-gap: 40px; }
+  .x-map-node.x-map-l2, .x-map-node.x-map-l3 { padding-inline-start: 0; }
+  .x-map-l1 > .x-map-cell { grid-column: 1; }
+  .x-map-l2 > .x-map-cell { grid-column: 2; }
+  .x-map-l3 > .x-map-cell { grid-column: 3; }
+  .x-map-cell > .x-map-chev { order: 2; }
+  .x-map-cell > .x-map-chev:empty { display: none; }
+}
+.x-map-l2 { padding-inline-start: 16px; }
+.x-map-l3 { padding-inline-start: 32px; }
+@media (max-width: 799px) { .x-map-l2 { padding-inline-start: 12px; } .x-map-l3 { padding-inline-start: 24px; } }
+.x-map-chev { flex: none; width: 24px; min-height: var(--x-target-min); display: inline-flex; align-items: center; justify-content: center; color: var(--x-muted); border-radius: var(--x-radius-control); }
+.x-map-chev:not(:empty):hover { background: var(--x-tint); }
+.x-map-chev[data-open] svg { transform: rotate(90deg); }
+.x-map-box { flex: 1; min-width: 0; display: grid; gap: 2px; padding: var(--x-space-2) var(--x-space-3); background: var(--x-surface); border: 1px solid var(--x-divider); border-radius: 10px; overflow-wrap: anywhere; }
+.x-map-box[data-kind="repo"], .x-map-box[data-kind="project"] { border-radius: 12px; }
+.x-map-label { display: inline-flex; align-items: center; gap: var(--x-space-2); font-weight: var(--x-weight-strong); min-width: 0; }
+.x-map-sub, .x-map-count { color: var(--x-muted); font-size: var(--x-text-small); line-height: var(--x-leading-small); }
+.x-map-count { justify-self: start; padding: 0 var(--x-space-2); background: var(--x-tint); border-radius: var(--x-radius-badge); color: var(--x-ink); }
+.x-map-more { border-style: dashed; color: var(--x-accent); }
+.x-vlist-item[aria-selected="true"] .x-map-box { border-color: var(--x-accent); background: var(--x-tint); }
+.x-map-detail-body { padding: var(--x-space-4); display: grid; gap: var(--x-space-3); justify-items: start; }
+.x-map-detail-body h3 { margin: 0; font-size: var(--x-text-section); line-height: var(--x-leading-section); }
+.x-map-dl { margin: 0; display: grid; gap: var(--x-space-2); }
+.x-map-dl dt { color: var(--x-muted); font-size: var(--x-text-small); }
+.x-map-dl dd { margin: 0; overflow-wrap: anywhere; }

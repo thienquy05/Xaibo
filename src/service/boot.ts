@@ -5,7 +5,7 @@
 // listens and the spool replays, before the file backfill; a full disk is logged and its hook-only gap written on recovery.
 import { statSync } from 'node:fs';
 import path from 'node:path';
-import { OUTCOMES, REASONS, RULES, type AgentStatus, type Banner, type LiveStatus, type NotifyState, type ServiceMetrics } from '../shared/ipc.ts';
+import { OUTCOMES, REASONS, RULES, type AgentStatus, type Banner, type ClearUsageResult, type PURGE_RESULTS, type REIMPORT_RESULTS, type RetentionSetting, type SAVE_RESULTS, type LiveStatus, type NotifyState, type ServiceMetrics } from '../shared/ipc.ts';
 import type { Logger } from '../shared/log.ts';
 import { AgyAdapter } from './adapters/agy/index.ts';
 import { ClaudeAdapter } from './adapters/claude/index.ts';
@@ -21,10 +21,17 @@ import type { ModelEntry } from './usage/models.ts';
 import { priceUsage } from './usage/cost.ts';
 import { loadPrices, type Prices } from './usage/prices.ts';
 import { errorCode } from '../shared/crash.ts';
+import { approvedLabel } from './history/overlay.ts';
+import { holdDeletes, resumePurges, spoolResumeDelay } from './history/purge.ts';
+import { retentionScheduler, runRetention, type RetentionResult } from './retention/job.ts';
+import { isActive } from './retention/policy.ts';
+import { loadInstallSecret } from '../shared/log.ts';
 import { openStore, type Store } from './store/db.ts';
 import { startHooks, type Hooks } from './receivers/intake.ts';
 import { Writer, type Batch } from './store/writer.ts';
 import { loadScopeSalt } from './usage/snapshots.ts';
+import { applyClear, clearWatermarks, keysInWorker } from './usage/clear.ts';
+import { PurgeLimit, purgeManual, reimportKey, rerunner, saveRetention } from './history/tools.ts';
 
 export interface BootOptions {
   dataDir: string; home: string; shell?: string | undefined; catalog?: Catalog; intervalMs?: number; log?: Logger;
@@ -39,6 +46,11 @@ export interface BootOptions {
   /** XAIBO-PROD-445: a pricing job that ran in more than one slice, or had a rerun queued, finished: commits it overlapped
    *  went out before their usage was priced, so open rows need one re-read. */
   onPriced?: () => void;
+  /** XAIBO-PROD-542 G5b2-2: sessions, Trash or usage history were removed (a retention run, or a manual purge's session
+   *  hidden): open windows resync and the monthly ledger recomputes. */
+  onRemoved?: () => void;
+  /** P5-T09: wait after the backfill before the first retention run (default 10 min); then daily. */
+  retentionDelayMs?: number;
 }
 export interface Service {
   store: Store;
@@ -71,11 +83,34 @@ export interface Service {
   suspend(at?: number): void;
   /** Resumes the status engine now, then reconciles every adapter at once (FR-02, bounded scans). */
   wake(): Promise<void>;
+  /** P5-T09: one retention run now (joins a run in progress); null for a read-only or stopped store. */
+  retention(): Promise<RetentionResult | null>;
+  /** P5-T16 (FR-52, Q-5.8): Clear usage history in one writer transaction; read-only when the store refuses writes. */
+  clearUsage(): Promise<ClearUsageResult>;
+  /** XAIBO-PROD-527 (P5-T18 part 1): a confirmed manual purge (capped per minute), Re-import by opaque key (sets Keep,
+   *  then reconciles), and the retention setting saved through the writer. */
+  purge(session: number): Promise<PurgeResult>;
+  reimport(key: string): ReimportOutcome;
+  saveRetention(value: RetentionSetting): SaveOutcome;
   stop(): void;
 }
 
+type PurgeResult = (typeof PURGE_RESULTS)[number];
+type ReimportOutcome = (typeof REIMPORT_RESULTS)[number];
+type SaveOutcome = (typeof SAVE_RESULTS)[number];
+
 /** The turn-settle interval (PRD §6.2/§6.3, Q8 default; a setting with the Settings screen after Gate D, Q3-14). */
 const SETTLE_MS = 4000;
+/** P5-T09: the first retention run waits this long after the backfill, off readiness and behind start-up work. */
+const RETENTION_DELAY_MS = 10 * 60_000;
+/** Gate 5 (perf probes): XAIBO_RETENTION_DELAY_MS overrides that wait, only under XAIBO_PERF_TRACE=1 (test only) and only
+ *  as a positive integer of milliseconds up to 2^31 - 1; anything else keeps the default. */
+export function retentionDelayFromEnv(env: Record<string, string | undefined>): number | undefined {
+  const v = env.XAIBO_RETENTION_DELAY_MS;
+  if (env.XAIBO_PERF_TRACE !== '1' || v === undefined || !/^[1-9]\d*$/.test(v)) return undefined;
+  const n = Number(v);
+  return n <= 2_147_483_647 ? n : undefined; // review L: setTimeout clamps a larger delay to 1 ms
+}
 
 // P4-T10c2 parse lag: commit time minus a file's last write (its mtime at sync), for files written within LIVE_LAG_MS;
 // older files are history import and a future mtime is clock skew, so neither is lag. ponytail: mtime has the file
@@ -135,9 +170,9 @@ export async function boot(o: BootOptions): Promise<Service> {
   let hooks: Hooks | undefined;
   // P3-T10: the status engine (P3-T08/T09) over durable hook deliveries and live-window file records.
   const clock = o.now ?? Date.now;
-  // P3-T11: the approved project label is always null until the Phase 5 overlay can store one (FR-10, Q3-6, D-P3-10).
-  const onWait = (agent: string, _profile: string, _sid: string, state: NotifyState) =>
-    o.onNotify?.({ agent: catalog?.agents.find((a) => a.id === agent)?.displayName ?? agent, label: null, state });
+  // P3-T11: the approved project label (FR-10, D-P3-10): the session's overlay project name (XAIBO-PROD-504), else null.
+  const onWait = (agent: string, profile: string, sid: string, state: NotifyState) =>
+    o.onNotify?.({ agent: catalog?.agents.find((a) => a.id === agent)?.displayName ?? agent, label: approvedLabel(db, agent, profile, sid), state });
   const engine: StatusEngine | null = readOnly ? null : createEngine({ db, now: clock, settleMs: SETTLE_MS, log: (l) => o.log?.log(l.split(' ')[0]!), onWait });
   const read = (agent: string, profile: string, sid: string): LiveStatus | null => {
     const s = engine?.status(agent, profile, sid);
@@ -216,7 +251,8 @@ export async function boot(o: BootOptions): Promise<Service> {
       if (lag !== null) parseLag = Math.max(parseLag, lag);
       price(); feed(b); o.onCommit?.(b);
     },
-    onDiskFull: (full) => { o.log?.log('disk_full', { full }); if (!full) hooks?.intake.recovered(); },
+    // PROD-549: on recovery the remembered gaps are written and the spool is replayed now, not at the backed-off interval
+    onDiskFull: (full) => { o.log?.log('disk_full', { full }); if (!full) { hooks?.intake.recovered(); hooks?.replayNow(); } },
   });
   const detections: Detection[] = [];
   const reloadPrices = (explicit = true) => {
@@ -273,6 +309,10 @@ export async function boot(o: BootOptions): Promise<Service> {
       },
     });
     if (stopped) { void hooks.close(); return; }
+    // P5-T07 (review H3): row and file work a purge committed but did not finish (a crash, a stop, a busy backup) is
+    // redone off readiness (review M: ingest never waits for its row batches); G5a-2: again shortly after each UTC
+    // midnight (today's spool file a purge still owes)
+    void resume();
     const Adapters: Record<string, typeof ClaudeAdapter | typeof CodexAdapter | typeof AgyAdapter> = { claude: ClaudeAdapter, codex: CodexAdapter, agy: AgyAdapter };
     // P3-T15: the account-marker salt (created on first boot; review L1); null = no marker, Codex scopes stay unverified
     const salt = loadScopeSalt(o.dataDir, o.log);
@@ -290,7 +330,56 @@ export async function boot(o: BootOptions): Promise<Service> {
       await a.backfill();
     }
     o.log?.log('backfill_done', { profiles: profiles.length });
+    if (!stopped) scheduler.start();
   };
+
+  // P5-T09 (FR-12): retention after the backfill (review H1: a session continued while Xaibo was off has its new records
+  // first), then daily; a run whose wall clock ran more than 1 h ahead of the monotonic clock is skipped (review H3).
+  let retentionRun: Promise<RetentionResult | null> | null = null;
+  let clearing: Promise<ClearUsageResult> | null = null; // XAIBO-PROD-526: Clear usage history in progress
+  const purgeLimit = new PurgeLimit(() => performance.now()); // XAIBO-PROD-527 (D-P5-07); review L2: a monotonic clock
+  // re-review M1: after a Re-import every adapter backfills against the reset checkpoints, one adapter and one sweep at a
+  // time (as the boot backfill, P3-T16e); Re-imports during a sweep merge into one more. ponytail: every adapter, not only
+  // the re-imported session's profile; narrow it if many profiles make sweeps slow.
+  const resync = rerunner(async () => {
+    for (const a of adapters) {
+      if (stopped) return;
+      try { await a.backfill(); } catch (e) { o.log?.log('reimport_sync_failed', { error: errorCode(e) }); }
+    }
+  });
+  const purgeLog = (event: string, fields?: Record<string, string | number>) => o.log?.log(event, fields);
+  // review M: a purge stops between batches once the service stops (the store closes right after); resume finishes it
+  // G5Rr1-2: a retention marker cleared by native activity seen during its purge: the adapters re-read its files
+  const onReimport = () => { void resync(); };
+  const files = () => ({ dataDir: o.dataDir, backupDir: path.join(o.dataDir, 'backups'), secret: loadInstallSecret(o.dataDir), now: clock(), chunks: hooks?.chunks(),
+    stopped: () => stopped, log: purgeLog, onReimport });
+  let nightly: NodeJS.Timeout | undefined;
+  const resume = async () => {
+    try {
+      // the secret: a purge stopped while settling finishes it; round 2 review: an unreadable secret stops only that (a
+      // purge still settling stays owed), row phases and file work still resume
+      let secret: Buffer | undefined;
+      try { secret = loadInstallSecret(o.dataDir); } catch { secret = undefined; }
+      const resumed = await resumePurges(writer, { dataDir: o.dataDir, backupDir: path.join(o.dataDir, 'backups'), secret, now: clock(), chunks: hooks?.chunks(),
+        stopped: () => stopped, log: purgeLog, onReimport });
+      if (resumed) o.log?.log('purge_resumed', { count: resumed });
+    } catch (e) { o.log?.log('purge_resume_failed', { error: errorCode(e) }); }
+    if (!stopped) nightly = setTimeout(() => { void resume(); }, spoolResumeDelay(clock())).unref();
+  };
+  const retention = (): Promise<RetentionResult | null> => {
+    if (readOnly || stopped || !db.isOpen) return Promise.resolve(null);
+    // diff review M1: everything, the secret's read included, inside the chain: a failure is a logged rejection
+    retentionRun ??= Promise.resolve().then(() => runRetention(writer, db, { dataDir: o.dataDir, backupDir: path.join(o.dataDir, 'backups'),
+      secret: loadInstallSecret(o.dataDir), now: clock(), active: (agent, profile, sid) => isActive(engine?.status(agent, profile, sid)?.lifecycle ?? null),
+      stopped: () => stopped, chunks: hooks?.chunks(), onReimport, ...(o.log ? { log: (event: string, fields?: Record<string, string | number>) => o.log!.log(event, fields) } : {}) }))
+      .then((r) => { if (r.sessions || r.trash || r.quota) o.onRemoved?.(); return r; }) // G5b2-2
+      .catch((e: unknown) => { o.log?.log('retention_failed', { error: errorCode(e) }); return null; })
+      .finally(() => { retentionRun = null; });
+    return retentionRun;
+  };
+  const scheduler = retentionScheduler({ run: () => { if (!stopped) void retention(); }, delayMs: o.retentionDelayMs ?? RETENTION_DELAY_MS,
+    wall: Date.now, mono: () => performance.now(), setTimer: (fn, ms) => setTimeout(fn, ms).unref(), clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
+    ...(o.log ? { log: (event: string, fields?: Record<string, string | number>) => o.log!.log(event, fields) } : {}) });
 
   const done = start();
   done.catch(() => undefined); // callers observe it; this only keeps an early failure from being unhandled meanwhile
@@ -326,10 +415,57 @@ export async function boot(o: BootOptions): Promise<Service> {
       return true;
     },
     suspend: (at) => engine?.suspend(at ?? clock()),
-    wake: async () => { engine?.resume(clock()); await Promise.all(adapters.map((a) => a.wake())); },
+    wake: async () => { scheduler.wake(); engine?.resume(clock()); await Promise.all(adapters.map((a) => a.wake())); }, // sleep is no clock jump
+    retention,
+    // XAIBO-PROD-526 review L2: overlapping calls (a second window, a retry) share the run in progress.
+    // ponytail: a stop mid-clear does not terminate the worker; its result is dropped (the store is closed).
+    clearUsage: () => clearing ??= (async (): Promise<ClearUsageResult> => {
+      if (readOnly) return 'read-only';
+      if (stopped || !db.isOpen) return 'failed';
+      // XAIBO-PROD-542 G5b1-3: what was stored when the request arrived; row deletions wait until the clear is applied,
+      // so nothing stored meanwhile takes a watermarked rowid
+      const release = holdDeletes(writer);
+      try { // the scan in a worker, then one writer transaction; review L5: the event only, no count
+        const watermarks = clearWatermarks(db);
+        const marks = await keysInWorker({ file: path.join(o.dataDir, 'xaibo.db'), secret: loadInstallSecret(o.dataDir), watermarks });
+        if (stopped || !db.isOpen) return 'failed';
+        writer.transact((t) => applyClear(t, marks, clock()));
+        o.log?.log('usage_cleared', {});
+        return 'cleared';
+      }
+      catch (e) { o.log?.log('clear_usage_failed', { error: errorCode(e) }); return 'failed'; }
+      finally { release(); }
+    })().finally(() => { clearing = null; }),
+    // XAIBO-PROD-527: fixed codes and result enums only in the log (design review L6)
+    // review L3: anything that throws (the secret's read included) still answers failed
+    purge: async (session) => {
+      let result: PurgeResult = 'failed';
+      try {
+        result = readOnly ? 'read-only' : stopped || !db.isOpen ? 'failed'
+          : await purgeManual(writer, session, { ...files(), limit: purgeLimit, hidden: () => o.onRemoved?.() }); // design review M6: resync once hidden
+      } catch (e) { o.log?.log('purge_failed', { error: errorCode(e) }); }
+      o.log?.log('purge_manual', { result });
+      return result;
+    },
+    reimport: (key) => {
+      let result: ReimportOutcome = 'failed';
+      try { result = readOnly ? 'read-only' : stopped || !db.isOpen ? 'failed' : reimportKey(writer, db, key, files()); } catch (e) { o.log?.log('reimport_failed', { error: errorCode(e) }); }
+      o.log?.log('reimport', { result });
+      // review H2: backfill syncs against the stored checkpoints (reset by the Re-import); a scan only sees changed files
+      if (result === 'ok') resync();
+      return result;
+    },
+    saveRetention: (value) => {
+      let result: SaveOutcome = 'failed';
+      try { result = readOnly ? 'read-only' : stopped || !db.isOpen ? 'failed' : saveRetention(writer, value); } catch (e) { o.log?.log('retention_set_failed', { error: errorCode(e) }); }
+      o.log?.log('retention_set', { result });
+      return result;
+    },
     stop: () => {
       stopped = true;
       if (due) clearTimeout(due.timer);
+      scheduler.stop();
+      clearTimeout(nightly);
       void hooks?.close();
       for (const a of adapters) a.stop();
       engine?.close();

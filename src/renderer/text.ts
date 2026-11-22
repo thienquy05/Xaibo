@@ -8,6 +8,8 @@ const hex = (c: string, width: number) => c.charCodeAt(0).toString(16).toUpperCa
 
 export const visible = (s: string): string =>
   s.replace(CONTROL, (c) => `\\x${hex(c, 2)}`).replace(BIDI, (c) => `\\u${hex(c, 4)}`);
+/** A field shown as visible text, or its fallback when null or empty. */
+export const show = (s: string | null, fallback: string) => (s ? visible(s) : fallback);
 
 // P4-T09b (design §5.2): in a pre-wrap content block, newline and tab stay layout whitespace; every other control
 // (CR, NUL, ESC, C1, DEL) and bidi mark is escaped exactly as by visible().

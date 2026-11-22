@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { Locator, Page } from '@playwright/test';
 import { claudeProfile, deliver } from '../helpers/hook-socket.ts';
-import { expect, test, type Xaibo } from './fixtures.ts';
+import { expect, shot, tabTo, test, type Xaibo } from './fixtures.ts';
 
 const SID = '00000000-0000-4000-8000-0000000fa151';
 const OTHER = '00000000-0000-4000-8000-0000000fa152';
@@ -28,17 +28,7 @@ function transcript(home: string, sid: string, cwd: string) {
   ].map((x) => JSON.stringify(x)).join('\n') + '\n');
 }
 
-/** XAIBO_SHOT=<dir>: screenshots for the visual check (off by default). */
-const shot = async (page: Page, name: string) => { if (process.env.XAIBO_SHOT) await page.screenshot({ path: path.join(process.env.XAIBO_SHOT, `${name}.png`) }); };
 
-/** Presses Tab until `target` has focus; fails if it is not reached within `max` presses (keyboard-only access). */
-async function tabTo(page: Page, target: Locator, max = 120) {
-  for (let i = 0; i < max; i++) {
-    if (await target.evaluate((el) => el === document.activeElement, undefined, { timeout: 2000 })) return;
-    await page.keyboard.press('Tab');
-  }
-  throw new Error(`not reachable by Tab: ${target.toString()}`);
-}
 
 /** Design §2.3/§5.1: focus shows a 2 px solid outline in the focus token with a 2 px offset (on the element or, for a
  *  virtual-list item, its first child). */
@@ -295,11 +285,38 @@ async function focusProblems(page: Page, where: string, max = 60): Promise<strin
       const outside = (c: { left: number; top: number; right: number; bottom: number }) =>
         (need.right - need.left <= c.right - c.left && (need.left < c.left || need.right > c.right))
         || (need.bottom - need.top <= c.bottom - c.top && (need.top < c.top || need.bottom > c.bottom));
-      if (outside({ left: 0, top: 0, right: innerWidth, bottom: innerHeight })) return { key, problem: `${key}: focus ring within 4 px of the window edge` };
+      // XAIBO-PROD-509: the same skip for the window when a clipping ancestor is already smaller than the ring box in that
+      // dimension (a record taller than its list scroller at 200 % text): the ring is cut there whatever the window shows
+      const clips: DOMRect[] = [];
+      for (let a = ring.parentElement; a; a = a.parentElement) {
+        const s = getComputedStyle(a);
+        if (s.overflowX !== 'visible' || s.overflowY !== 'visible') clips.push(a.getBoundingClientRect());
+      }
+      // XAIBO-PROD-525: the same for a record taller than the window below the sticky top band (frame-pad scroll padding
+      // and 8 px scroll margin above, 8 px below): no scroll position shows its whole ring (a 466 px row at 200 % text
+      // under a wrapped navigation band). The leading rail (>= 1200 px) is not a top band.
+      const band = document.querySelector('.x-frame')!.getBoundingClientRect();
+      const under = band.width >= innerWidth - 1 ? innerHeight - band.bottom - 16 : innerHeight;
+      const tooWide = clips.some((c) => need.right - need.left > c.width), tooTall = need.bottom - need.top > under || clips.some((c) => need.bottom - need.top > c.height);
+      const win = { left: tooWide ? need.left : 0, top: tooTall ? need.top : 0, right: tooWide ? need.right : innerWidth, bottom: tooTall ? need.bottom : innerHeight };
+      if (outside(win)) return { key, problem: `${key}: focus ring within 4 px of the window edge` };
+      // review M1: in a skipped dimension the control must still be in view (overlap the window and every clipping box)
+      const vis = clips.reduce((v, c) => ({ left: Math.max(v.left, c.left), top: Math.max(v.top, c.top), right: Math.min(v.right, c.right), bottom: Math.min(v.bottom, c.bottom) }),
+        { left: 0, top: 0, right: innerWidth, bottom: innerHeight });
+      if ((tooTall && (need.bottom <= vis.top || need.top >= vis.bottom)) || (tooWide && (need.right <= vis.left || need.left >= vis.right))) {
+        return { key, problem: `${key}: focused control out of view` };
+      }
       for (let a = ring.parentElement; a; a = a.parentElement) {
         const s = getComputedStyle(a);
         if (s.overflowX === 'visible' && s.overflowY === 'visible') continue;
-        if (outside(a.getBoundingClientRect())) return { key, problem: `${key}: focus ring clipped by ${desc(a)}` };
+        // a skipped dimension is skipped for a clipping box only when the ring cannot fit in its part visible below the top
+        // band either (re-review LOW-1: a box with room still catches a cut ring, e.g. lost scroll padding)
+        const c = a.getBoundingClientRect();
+        const room = Math.min(c.bottom, innerHeight) - Math.max(c.top, band.width >= innerWidth - 1 ? band.bottom + 8 : 0);
+        const skipY = tooTall && need.bottom - need.top > room;
+        if (outside({ left: tooWide ? need.left : c.left, right: tooWide ? need.right : c.right, top: skipY ? need.top : c.top, bottom: skipY ? need.bottom : c.bottom })) {
+          return { key, problem: `${key}: focus ring clipped by ${desc(a)}` };
+        }
       }
       // covered: something else is drawn over the control itself (an outline cannot be hit-tested, its box can)
       const box = el.getBoundingClientRect();
@@ -399,7 +416,7 @@ test('T15b: aria snapshots of Live sessions and Usage and history (Observed hist
     - region "Live sessions":
       - heading "Live sessions" [level=2]
       - list "Live sessions":
-        - listitem /^Untitled · claude · \\/tmp\\/xaibo-fixture\\/a11y/:
+        - listitem /^Untitled · Summarize the notes · claude · \\/tmp\\/xaibo-fixture\\/a11y/:
           - article:
             - button /^Open session. claude · \\/tmp\\/xaibo-fixture\\/a11y/
   `);

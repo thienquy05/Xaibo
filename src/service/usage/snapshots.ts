@@ -6,13 +6,13 @@ import { createHmac, randomBytes } from 'node:crypto';
 import { closeSync, constants, fstatSync, fsyncSync, linkSync, openSync, readSync, unlinkSync, writeSync } from 'node:fs';
 import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
+import { isObj } from '../../shared/ipc.ts';
 import type { Logger } from '../../shared/log.ts';
 import { utcMs } from '../time.ts';
 import type { ContextObs } from './context.ts';
 import { codexRateLimits } from './tokens.ts';
 
 type Obj = Record<string, unknown>;
-const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
 const MIN = 60_000;
 export const STALE_MS = 15 * MIN;
 const SKEW_MS = 5 * MIN; // review L3: a source time this far after its observation is not trusted

@@ -5,15 +5,20 @@
 // session's workspace open; the service is killed at mid-run and restarts. Every event is joined to its paint after the
 // run (t2-analysis.ts). Checks: M1 p95 <= 250 ms and M2 p95 <= 1 s outside the restart window, writer queue age
 // p95 <= 1 s, drain <= 5 s after load, every record and hook stored exactly once. IDs and timings only leave this process.
+// G5-N1: session retention is set to Never through Settings at the start (the corpus is dated early 2026; a run 10 min
+// after a backfill would purge it mid-run); retention runs that still happen are reported and none may purge a session.
+// G5g-1 (--retention, its own run): retention stays at the default 45 days and the first run starts RETENTION_START_MS
+// after the backfill (XAIBO_RETENTION_DELAY_MS, perf trace only), so it purges the t1mix sessions while the live load
+// runs; no service kill. M1/M2 of the events emitted while a run is under way are checked against the same budgets.
 import { createHash, randomUUID } from 'node:crypto';
 import { appendFileSync, constants, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statfsSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { claudeProfile } from '../helpers/hook-socket.ts';
-import { close, environment, launch, serviceLog, sleep, stats, tornLogLines, type Launched } from './app.ts';
+import { agyRoot, close, environment, launch, retentionNever, retentionRuns, serviceLog, sidOf, sleep, stats, tornLogLines, until, type Launched } from './app.ts';
 import { emit, installHelpers, now } from './emitter.ts';
-import { analyze, loadQualifies, type Emitted, type TraceLine, type Window } from './t2-analysis.ts';
+import { analyze, hookLookup, loadQualifies, type Emitted, type TraceLine, type Window } from './t2-analysis.ts';
 import { footprintMiB, psTree } from './m16.ts';
 import { codexTokenCount, fillVolume, FRAME_MS, frame, installTee, MALFORMED_EVERY, malformed, ORIGINAL, sh, teeMatches, timed, volume, type Timed } from './t2-usage.ts';
 
@@ -27,13 +32,18 @@ const HOOK_SHARE = 0.25; // of a Claude session's events (S12 OQ-A9 mix: 75% fil
 const RESTART_SETTLE_MS = 5000; // after the restarted service is ready: spool replay and rescan
 const IN_FLIGHT_MS = 1000; // before the kill: events still between emit and paint ack
 const B = { m1: 250, m2: 1000, queueAge: 1000, drain: 5000, m16: 100, m5MB: 450 };
-// P4-T12b (--usage): the disk fills at a quarter of the run (the kill stays at half) and stays full this long.
+// P4-T12b (--usage): the disk fills FAULT_AT_MS into the load (the kill stays at half) and stays full this long.
 const FULL_HOLD_MS = 20_000;
+// Gate 5 round 3: early, while the t1mix backfill still runs (~145-175 s after launch at TP), so the store must grow while
+// full. At the old quarter mark the backfill could be done, and the live stream alone fit the store's free pages and WAL
+// for the whole hold: no write failed and no banner was due (a 6bf1b7e run). The check requires both conditions.
+const FAULT_AT_MS = 60_000;
 const VOLUME_GIB = 4; // the data dir's sparse image: room for the t1mix import and the live stream
 const TOKEN_EVERY = 5; // a Codex session's every 5th record is a token_count, every 50th of those malformed
+const RETENTION_START_MS = 1000; // --retention: the first run this long after the backfill
+const RETENTION_MIN = { m1: 20, m2: 100 }; // --retention: samples emitted during the run, at least
 const PROHIBITED = /(^|\s)(-p|--print|exec)(\s|$)|\/context|count_tokens/; // FR-44, as the P4-T12a runtime audit
 export const CWD = '/tmp/xaibo-fixture/perf-live';
-const sidOf = (prefix: number, i: number) => `00000000-0000-4000-8000-${String(prefix).padStart(4, '0')}${String(i).padStart(8, '0')}`;
 
 function mulberry32(a: number) {
   return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
@@ -77,21 +87,14 @@ export function seedSessions(home: string, count: number, codexShare: number) {
   });
 }
 
-async function until<T>(f: () => T | null | false | undefined, ms: number): Promise<T> {
-  const end = Date.now() + ms;
-  for (let v = f(); ; v = f()) {
-    if (v) return v;
-    if (Date.now() > end) throw new Error(`timed out after ${ms} ms`);
-    await sleep(50);
-  }
-}
 
 /** usage: P4-T12b frames and checks; diskFull (with usage): the data dir on its own volume, filled once (off: the
  *  attribution run that tells the volume's write cost from the usage work). */
-export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, seconds?: number, usage = false, withDiskFull = true) {
+export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, seconds?: number, usage = false, withDiskFull = true, withRetention = false) {
   const p = { ...PROFILES[tier], ...(seconds ? { seconds } : {}) };
-  // review M7: the fault (quarter mark, fill, 20 s hold, <= 15 s clear, 5 s settle) must end before the kill at half
+  // review M7: the fault (FAULT_AT_MS or the quarter mark, fill, 20 s hold, <= 15 s clear, 5 s settle) must end before the kill at half
   if (usage && withDiskFull && p.seconds < 240) throw new Error('--usage with the disk-full fault needs --seconds >= 240 (or --no-disk-full)');
+  if (usage && withRetention) throw new Error('--retention runs on its own (without --usage)');
   const summary = JSON.parse(readFileSync(path.join(corpus, 'summary.json'), 'utf8')) as { case: string };
   if (summary.case !== 't1mix') throw new Error('needs the mixed corpus: node scripts/gen-perf-corpus.ts --case t1mix');
   const rand = mulberry32(seed);
@@ -118,7 +121,8 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
     // --usage: the data dir on its own volume, so the disk-full fault fills the store's disk and nothing else
     let ownDataDir: string | undefined;
     if (usage && withDiskFull) { vol = volume(root, VOLUME_GIB); process.once('SIGINT', onSigint); ownDataDir = path.join(vol.mount, 'data'); mkdirSync(ownDataDir, { mode: 0o700 }); }
-    l = await launch(claude, { codex, agy: path.join(home, '.gemini', 'antigravity-cli'), env: { XAIBO_PERF_TRACE: '1' }, ...(ownDataDir ? { dataDir: ownDataDir } : {}) });
+    l = await launch(claude, { codex, agy: agyRoot(home), env: { XAIBO_PERF_TRACE: '1', ...(withRetention ? { XAIBO_RETENTION_DELAY_MS: String(RETENTION_START_MS) } : {}) },
+      ...(ownDataDir ? { dataDir: ownDataDir } : {}) });
     const launched = l;
     const dataDir = launched.dataDir;
     // P4-T12b: renderer health, so a window that stops painting says why (main logs no renderer crash or hang)
@@ -138,30 +142,25 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
       launched.app.evaluate(() => (globalThis as unknown as { xaiboPerfRenderer?: string[] }).xaiboPerfRenderer ?? []),
       sleep(5000).then(() => ['main-unreachable']),
     ]).catch(() => ['main-unreachable']);
+    if (!withRetention) await retentionNever(launched);
     const profile = await until(() => claudeProfile(dataDir), 30_000);
     await until(() => existsSync(path.join(dataDir, 'run', 'token')), 30_000);
     const shim = installHelpers(dataDir);
     const teeCmd = usage ? installTee(dataDir, profile) : null;
     db = new DatabaseSync(path.join(dataDir, 'xaibo.db'), { readOnly: true });
     const reader = db;
-    // A spooled hook replayed later gets a newer rowid, so a delivery id is never given to two emits (review M2).
-    const deliveryAfter = reader.prepare('SELECT delivery_id AS id FROM hook_delivery WHERE rowid > ? AND native_session_id = ? AND event = ? ORDER BY rowid LIMIT 8');
-    const usedDeliveries = new Set<string>();
-    const resolve = (top: number, sid: string, event: string) => {
-      const id = (deliveryAfter.all(top, sid, event) as { id: string }[]).map((x) => x.id).find((x) => !usedDeliveries.has(x)) ?? null;
-      if (id) usedDeliveries.add(id);
-      return id;
-    };
-    const unresolved: { index: number; top: number; sid: string; event: string }[] = [];
+    // Gate 5 disk-full: each hook resolves to its own delivery by its unique (session, event, tool_use_id) key, so a hook
+    // rejected while the disk was full stays unresolved instead of taking a later hook's row (t2-analysis hookLookup).
+    const resolve = hookLookup(reader);
+    const unresolved: { index: number; sid: string; event: string; tool: string }[] = [];
     let lateResolved = 0;
     const resolveLate = () => {
       for (const u of unresolved) {
         if (emitted[u.index]!.id !== null) continue;
-        const id = resolve(u.top, u.sid, u.event);
+        const id = resolve('claude', u.sid, u.event, u.tool);
         if (id) { emitted[u.index]!.id = id; lateResolved++; }
       }
     };
-    const topRow = reader.prepare('SELECT coalesce(max(rowid), 0) AS n FROM hook_delivery');
     const imported = () => serviceLog(dataDir).find((e) => e.event === 'backfill_done');
 
     const emitted: Emitted[] = [];
@@ -171,6 +170,8 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
     const fileIds: string[] = [];
     let hooksSent = 0;
     const start = Date.now();
+    const hrAtStart = now(); // wall clock (service log) to the hrtime of emits and trace lines
+    const hrOf = (wall: number) => hrAtStart + BigInt(Math.round((wall - start) * 1e6));
     const loadEndAt = start + p.seconds * 1000;
     const rateAt = (t: number) => (p.burstEverySec && ((t - start) / 1000) % p.burstEverySec < p.burstSec ? p.burstRate : p.rate);
     const pidOf = () => launched.app.evaluate(({ app: a }) => a.getAppMetrics().find((m) => m.name === 'xaibo-service')?.pid ?? null);
@@ -195,16 +196,16 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
         next += interval;
         if (s.agent === 'claude' && rand() < HOOK_SHARE) {
           const event = tool % 2 ? 'PostToolUse' : 'PreToolUse';
-          const top = Number((topRow.get() as { n: number }).n);
+          const toolUseId = `t${Math.floor(tool / 2)}`; // unique per session and event: the hook's identity in the store
           if (usage && hooksSent % 4 === 0) { const b = await timed('/usr/bin/true', [], '{}'); hookBaseline.push({ t0: b.t0, ms: b.ms }); } // M16 under load: spawn alone
           const e = await emit(shim, 'claude', profile, { hook_event_name: event, session_id: s.sid, cwd: `${CWD}-${s.sid}`, tool_name: 'Bash',
-            tool_use_id: `t${Math.floor(tool / 2)}`, tool_input: { command: 'echo 1' }, ...(event === 'PostToolUse' ? { tool_response: { stdout: '1' } } : {}) });
+            tool_use_id: toolUseId, tool_input: { command: 'echo 1' }, ...(event === 'PostToolUse' ? { tool_response: { stdout: '1' } } : {}) });
           tool++;
           hooksSent++;
-          // none yet: the forwarder gave up at its deadline (the delivery may still land late, or only by the spool replay
-          // at the next service start); resolved again after the load, from the same snapshot
-          const id = resolve(top, s.sid, event);
-          if (id === null) unresolved.push({ index: emitted.length, top, sid: s.sid, event });
+          // none yet: the forwarder gave up at its deadline (the delivery may still land live, or only by the spool replay);
+          // resolved again after the load by the same key
+          const id = resolve('claude', s.sid, event, toolUseId);
+          if (id === null) unresolved.push({ index: emitted.length, sid: s.sid, event, tool: toolUseId });
           emitted.push({ kind: 'hook', id, t0: e.t0, exit: e.exit });
           continue;
         }
@@ -249,18 +250,20 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
         if (!bad) lastValidCost.set(s.sid, (JSON.parse(stdin) as { cost: { total_cost_usd: number } }).cost.total_cost_usd);
       }
     };
-    // Disk full at a quarter of the run: the volume filled to the byte, held, then freed. The window opens IN_FLIGHT_MS
+    // Disk full at FAULT_AT_MS (while the backfill runs): the volume filled to the byte, held, then freed. The window opens IN_FLIGHT_MS
     // before the fill (as the kill's) and closes RESTART_SETTLE_MS after the free.
     const banner = () => launched.page.getByText('Disk full: collection paused').first().isVisible().catch(() => false);
     let full: Window | null = null;
-    const diskFull = { fillMs: null as number | null, bannerShown: false, bannerCleared: null as boolean | null, workspaceReopened: null as boolean | null, reopenMs: null as number | null,
+    let fillAt = 0;
+    const diskFull = { fillMs: null as number | null, backfillRunning: null as boolean | null, storeFull: null as boolean | null, bannerShown: false, bannerCleared: null as boolean | null, workspaceReopened: null as boolean | null, reopenMs: null as number | null,
       skipped: !vol }; // review L11: --no-disk-full passes diskFullFaulted by skipping it
     const fillFile = vol ? path.join(vol.mount, 'fill.bin') : '';
     const fault = async () => {
-      await sleep((p.seconds * 1000) / 4);
+      await sleep(Math.min(FAULT_AT_MS, (p.seconds * 1000) / 4));
       if (stopped) return; // review M7: another step failed; do not fill the disk on the way to cleanup
       const from = now() - BigInt(IN_FLIGHT_MS * 1e6);
-      const t = Date.now();
+      const t = fillAt = Date.now();
+      diskFull.backfillRunning = imported() === undefined;
       if (!fillVolume(fillFile)) throw new Error('could not fill the data volume');
       diskFull.fillMs = Date.now() - t;
       // the Coverage banner renders on the Dashboard only (P4-T14 carry-over): shown there while full, then back to Session
@@ -270,6 +273,9 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
       unlinkSync(fillFile);
       for (const end = Date.now() + 15_000; Date.now() < end && await banner();) await sleep(250);
       diskFull.bannerCleared = !(await banner());
+      // the store itself hit the full disk, not only the banner: read after the free (round 3 review M2), since the
+      // full:true line is usually lost to ENOSPC; full:false is logged only on leaving a full state (boot.ts onDiskFull)
+      diskFull.storeFull = serviceLog(dataDir).some((e) => e.event === 'disk_full' && Date.parse(e.t) >= fillAt);
       // review H1: back in the Session area with the workspace open again before the window can close
       // G4f-4: the fault window ends at the clear plus settle, so a slow reopen is measured, not hidden; the reopen counts
       // only when the open session's section group shows, and it is a diskFullFaulted condition
@@ -314,12 +320,17 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
       .then(() => launched.page.getByRole('group', { name: 'Session section' }).waitFor({ timeout: 10_000 })).then(() => true, () => false);
 
     const stopOnFail = (e: unknown) => { stopped = true; throw e; };
-    const settled = await Promise.allSettled([...sessions.map(run), kill().catch(stopOnFail),
+    const settled = await Promise.allSettled([...sessions.map(run), ...(withRetention ? [] : [kill().catch(stopOnFail)]),
       ...(usage ? [...sessions.filter((s) => s.agent === 'claude').map(frameLoop), memLoop()] : []), ...(vol ? [fault().catch(stopOnFail)] : [])]);
     const failed = settled.find((x) => x.status === 'rejected');
     if (failed) throw failed.reason; // every loop has stopped: cleanup below never races a writer
     // The end of load is the last emit, not the end of a slow restart (review M5).
     const loadEnd = emitted.reduce((m, e) => (e.t0 > m ? e.t0 : m), 0n);
+    // run 179 / G5Su-2: --retention qualifies on purges finished during the load, so they are counted here, before the drain
+    // waits: retention markers whose rows are gone (a fresh data dir per probe)
+    const purgedDone = withRetention ? Number((reader.prepare("SELECT count(*) AS n FROM suppressions WHERE reason = 'retention' AND purge_phase IS NULL").get() as { n: number }).n) : 0;
+    // G5C2s-3: and the purges still in their rows phase at the same moment (pending only falls later, so a later read is laxer)
+    const purgePending = withRetention ? Number((reader.prepare('SELECT count(*) AS n FROM suppressions WHERE purge_phase IS NOT NULL').get() as { n: number }).n) : 0;
     const backfillDone = imported();
 
     // Drain: wait until every event is painted (or 30 s), then judge drain from the trace.
@@ -345,6 +356,27 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
     const hooksAccounted = () => stored.hooks.rows + stored.hooks.diskFullGaps >= stored.hooks.sent;
     for (const end = Date.now() + 30_000; (stored.records.ids < stored.records.sent || !hooksAccounted()) && Date.now() < end;) { await sleep(1000); stored = storedOnce(); }
     const u = usage ? await usageResult() : null;
+    const retention = retentionRuns(dataDir, launched.created).map(({ atS, sessions: n, trash, quota }) => ({ atS, sessions: n, trash, quota }));
+    // --retention: each run's window, from RETENTION_START_MS after its service's backfill_done to its retention_run (or the
+    // end of load while still running); M1/M2 of the events emitted inside one
+    const runs = retentionRuns(dataDir, launched.created);
+    const windows = serviceLog(dataDir).filter((e) => e.event === 'backfill_done' && Date.parse(e.t) >= launched.created).map((e) => {
+      const from = Date.parse(e.t) + RETENTION_START_MS;
+      const end = runs.find((x) => x.at >= from);
+      return { from, to: end?.at ?? null, sessions: end?.sessions ?? 0 };
+    });
+    const during = withRetention ? (() => {
+      const inRun = (e: Emitted) => windows.some((w) => e.t0 >= hrOf(w.from) && (w.to === null ? e.t0 <= loadEnd : e.t0 <= hrOf(w.to)));
+      const x = analyze({ emitted: emitted.filter(inRun), service: traceFile('perf-trace-service.jsonl'), main: traceFile('perf-trace-main.jsonl'), restart: null, loadEnd });
+      // Gate 5 round 3 G5St-1: a purge whose row work failed still counts in retention_run (purgeSession returns purged with
+      // the rows owed), so the run qualifies only when no purge but the one running is in its rows phase (purgePending, at load end)
+      // run 179: a paced first retention run on t1mix outlasts the load (retention_run is logged at its end), so the run
+      // qualifies on purges finished inside the load (purgedDone, counted at load end above)
+      // and none failed and was finished later by a resume before this read (round 4 review L5)
+      const rowsFailed = serviceLog(dataDir).filter((e) => e.event === 'purge_rows_failed' && Date.parse(e.t) >= launched.created).length;
+      return { windows: windows.map((w) => ({ fromS: (w.from - start) / 1000, toS: w.to === null ? null : (w.to - start) / 1000, sessions: w.sessions })),
+        purgePending, purgedDone, rowsFailed, m1: x.m1.steady, m2: x.m2.steady, unpainted: x.unpainted.steady };
+    })() : null;
 
     const w = restart as { from: bigint; to: bigint } | null;
     const checks = {
@@ -355,13 +387,20 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
       recordsOnce: stored.records.rows === stored.records.sent && stored.records.ids === stored.records.sent,
       // without faults other than the kill every hook is stored once; with the disk-full fault, stored or a disk-full gap
       hooksOnce: usage ? stored.hooks.rows <= stored.hooks.sent && hooksAccounted() : stored.hooks.rows === stored.hooks.sent,
-      restarted: w !== null,
+      restarted: withRetention || w !== null, // --retention runs without the kill
       // review M1: the load ran while the T1 corpus was still importing, with one session's workspace open
       backfillDuringLoad: backfillDone !== undefined && Date.parse(backfillDone.t) > start,
       workspaceOpen,
       // G4f-2: a qualifying run is the full profile at its traffic; a shortened --seconds run is a wiring run and fails
       fullProfile: p.seconds === PROFILES[tier].seconds,
       loadRate: loadQualifies(emitted.length, p),
+      ...(during ? {
+        // the run purged the t1mix sessions while the load ran, and the live events emitted meanwhile met the budgets
+        // purges finished during the load, none failed, and at most the one in progress (retention purges one at a time)
+        retentionPurged: during.purgedDone > 0 && during.purgePending <= 1 && during.rowsFailed === 0,
+        retentionM1: during.m1.n >= RETENTION_MIN.m1 && during.m1.p95 <= B.m1,
+        retentionM2: during.m2.n >= RETENTION_MIN.m2 && during.m2.p95 <= B.m2,
+      } : { corpusKept: retention.every((x) => x.sessions === 0 && x.trash === 0) }),
       ...(u ? u.checks : {}),
     };
     const sorted = [...sizes].sort((a, b) => a - b);
@@ -369,15 +408,19 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
       metric: 'live-load', profile: tier, profileSpec: p, seed, budgetsMs: B,
       load: { events: emitted.length, hooks: hooksSent, records: fileIds.length, eventsPerSecond: Math.round(emitted.length / p.seconds), seconds: p.seconds },
       recordBytes: { ...stats(sizes), p99: sorted[Math.max(0, Math.ceil(0.99 * sorted.length) - 1)] ?? null },
-      m1: r.m1, m2: r.m2, m1Hops: r.hops.m1, unpainted: r.unpainted, steadyMisses: r.steadyMisses,
-      // seconds late = delivered live after the forwarder gave up; minutes = only by the spool replay at the restart
+      m1: r.m1, m2: r.m2, m1Hops: r.hops.m1, m2Hops: r.hops.m2, unpainted: r.unpainted, steadyMisses: r.steadyMisses,
+      // hooks not stored when their forwarder exited, steady ones only (restart and fault windows kept apart as in M1):
+      // seconds late = delivered live after the forwarder gave up; minutes = only by a spool replay
       hooksPastForwarderDeadline: { count: unresolved.length, resolvedAfterLoad: lateResolved,
-        emitToPaintMs: analyze({ emitted: unresolved.map((u) => emitted[u.index]!), service: traceFile('perf-trace-service.jsonl'), main: traceFile('perf-trace-main.jsonl'), restart: null, loadEnd }).m1.steady },
+        emitToPaintMs: analyze({ emitted: unresolved.map((u) => emitted[u.index]!), service: traceFile('perf-trace-service.jsonl'), main: traceFile('perf-trace-main.jsonl'), restart, faults: faults(), loadEnd }).m1.steady },
+      ...(full ? { faultWindowS: { from: Number((full as Window).from - (emitted[0]?.t0 ?? 0n)) / 1e9, to: Number((full as Window).to - (emitted[0]?.t0 ?? 0n)) / 1e9 } } : {}),
       killAtMs: w ? Math.round(Number(w.from - (emitted[0]?.t0 ?? w.from)) / 1e6) + IN_FLIGHT_MS : null, drainMs: r.drainMs, ingestLagMs: r.ingestLagMs, writerQueueAgeMs: r.queueAgeMs, deltaResyncs: r.deltaResyncs,
       restart: w ? { windowMs: Number(w.to - w.from) / 1e6 } : null,
       stored, backfill: { corpus: summary.case, doneMs: backfillDone ? Date.parse(backfillDone.t) - launched.created : null }, workspaceOpen,
+      retentionRan: retention.length > 0, retentionRuns: retention, ...(during ? { duringRetention: during } : {}),
       notes: 'M1/M2 checks use events emitted outside the restart window (kill to restarted-ready + 5 s); restart-window samples are reported apart. '
-        + 'A miss (never painted, or a hook spooled at the deadline) is timed as Infinity, which JSON prints as null. Queue age is checked as ingest lag '
+        + 'M1 is emit -> the hook\'s own paint, also when its live delivery lands after the forwarder\'s deadline; a miss (never painted by the end of the drain) '
+        + 'is timed as Infinity, which JSON prints as null. Hooks are matched to deliveries by (session, event, tool_use_id). Queue age is checked as ingest lag '
         + '(emit -> commit, steady events): file syncs flush the writer right after they enqueue, so the writer\'s own 5 s queue-age peaks stay ~0. Drain counts steady events. '
         + 'Paint ack = flushSync + 2 rAF, an upper bound.',
       ...(u ? { usage: u.report } : {}),
@@ -449,7 +492,8 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
         // Claude quota from the tee goes to usage_history (source statusline); context per session
         claudeUsage: report.statuslineQuotaHistory > 0 && sessions.every((s, i) => s.agent !== 'claude' || report.perSession.contextSnapshots[i]! > 0),
         livePriced: usageRows > 0 && left === 0,
-        diskFullFaulted: !vol || (full !== null && diskFull.bannerShown && diskFull.bannerCleared === true && diskFull.workspaceReopened === true),
+        diskFullFaulted: !vol || (full !== null && diskFull.backfillRunning === true && diskFull.storeFull === true && diskFull.bannerShown && diskFull.bannerCleared === true
+          && diskFull.workspaceReopened === true),
         // the kill restarts the service once; a disk-full or malformed-snapshot crash would add starts
         noCrash: readies() === 2,
         m5UnderLoad: fp !== null && fp.max <= B.m5MB * 1e6 / 2 ** 20,

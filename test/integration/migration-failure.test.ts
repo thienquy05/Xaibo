@@ -1,10 +1,11 @@
 // XAIBO-PROD-105 (P1-T07), EC-45: a failed or refused migration never loses data.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readdirSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync } from 'node:sqlite';
 import { loadMigrations, openStore } from '../../src/service/store/db.ts';
 
 const one = (db: DatabaseSync, sql: string) => Object.values(db.prepare(sql).get() ?? {})[0];
@@ -71,6 +72,46 @@ test('EC-45: insufficient space refuses the migration with the same outcome', as
   assert.equal(one(s.db, 'PRAGMA user_version'), next - 1);
   assert.equal(one(s.db, "SELECT value FROM kv WHERE key = 'k'"), 'v');
   assert.equal(existsSync(join(dir, 'backups')) ? readdirSync(join(dir, 'backups')).length : 0, 0);
+});
+
+// XAIBO-PROD-503 (P5-T01, research L6): a database from a newer Xaibo opens read-only before any pragma touches it.
+test('L6: a newer-schema database opens read-only, unmigrated and unwritten', async () => {
+  const { opts } = await seeded();
+  const raw = new DatabaseSync(opts.file);
+  raw.exec(`PRAGMA user_version = ${next + 5}`);
+  raw.close();
+  const before = createHash('sha256').update(readFileSync(opts.file)).digest('hex');
+  const s = await openStore(opts);
+  assert.equal(s.readOnly, true);
+  assert.equal(s.reason, 'newer-schema');
+  assert.equal(one(s.db, 'PRAGMA user_version'), next + 5);
+  assert.equal(one(s.db, "SELECT value FROM kv WHERE key = 'k'"), 'v');
+  assert.throws(() => s.db.prepare("INSERT INTO kv(key, value) VALUES ('x', 'y')").run(), /readonly/i);
+  s.db.close();
+  assert.equal(createHash('sha256').update(readFileSync(opts.file)).digest('hex'), before, 'the file is not written');
+});
+
+// Review of XAIBO-PROD-503: a file that is not a database is refused as before, and the read-only probe is closed.
+test('L6: a non-SQLite file is refused without leaving the probe connection open', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'xmig-'));
+  const file = join(dir, 'xaibo.db');
+  writeFileSync(file, 'not a database, just text that is long enough to have a header'.repeat(4));
+  const fds = () => readdirSync('/dev/fd').length;
+  const before = fds();
+  await assert.rejects(openStore({ file, backupDir: join(dir, 'backups') }), /not a database/);
+  assert.equal(fds(), before, 'no file descriptor left open');
+});
+
+// L6: a migration that runs out of space is a space problem the owner can fix, not a failed migration.
+test('L6: SQLITE_FULL during a migration reads as insufficient space; nothing committed', async () => {
+  const { opts } = await seeded();
+  const full = { version: next, name: 'full', sql: 'PRAGMA max_page_count = 1; CREATE TABLE big(x); INSERT INTO big VALUES (zeroblob(1000000));' };
+  const s = await openStore({ ...opts, migrations: [...loadMigrations(), full] });
+  assert.equal(s.readOnly, true);
+  assert.equal(s.reason, 'insufficient-space');
+  assert.equal(one(s.db, 'PRAGMA user_version'), next - 1);
+  assert.equal(one(s.db, "SELECT count(*) FROM sqlite_master WHERE name = 'big'"), 0);
+  assert.equal(one(s.db, "SELECT value FROM kv WHERE key = 'k'"), 'v');
 });
 
 test('only the latest backup is kept', async () => {

@@ -7,14 +7,18 @@
 // as an exact hook-only gap, one per delivery_id, written once a commit succeeds again and dropped when that delivery is
 // later accepted (a retry or the spool replay; G3b-2).
 import type { DatabaseSync } from 'node:sqlite';
+import { isObj } from '../../shared/ipc.ts';
 import { errorCode } from '../../shared/crash.ts';
 import type { Envelope } from '../../shared/hook-protocol.ts';
 import type { Logger } from '../../shared/log.ts';
 import { isStatusline, lastSnapshots, statuslineRecord } from '../adapters/claude/statusline.ts';
 import { claudeReadings, statuslineContext, statuslineCost } from '../usage/snapshots.ts';
-import { isDiskFull, type Batch, type EventRow, type Writer } from '../store/writer.ts';
+import { isDiskFull } from '../store/db.ts';
+import { MARKER, refuses, type Marker } from '../history/suppression.ts';
+import type { Batch, EventRow, Writer } from '../store/writer.ts';
 import { openRegistry } from './registrations.ts';
 import { createReportIntake, type ReportIntake } from './report.ts';
+import type { ChunkStore } from '../adapters/generic/chunks.ts';
 import { SocketError, startSocketServer, type IntakeResult, type SocketOptions, type SocketServer } from './socket.ts';
 import { replaySpool, type ReplayResult } from './spool-replay.ts';
 
@@ -32,7 +36,6 @@ export interface Intake {
 }
 
 type Obj = Record<string, unknown>;
-const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
 const text = (v: unknown, max: number) => (typeof v === 'string' && v !== '' && v.length <= max && v.isWellFormed() ? v : null);
 const idOf = (v: unknown, key: string, max: number) => text(v, max) ?? (isObj(v) ? text(v[key], max) : null);
 
@@ -55,6 +58,7 @@ export function createIntake(o: IntakeOptions): Intake {
   // A report registration's profile belongs to that registration's token, never to the install token (P3-T13b2 review).
   const profile = o.db.prepare("SELECT 1 FROM profiles WHERE id = ? AND agent = ? AND origin <> 'registration'");
   const stored = o.db.prepare('SELECT 1 FROM hook_delivery WHERE delivery_id = ?');
+  const marker = o.db.prepare(MARKER);
   const putGap = o.db.prepare(`INSERT INTO hook_gaps (reason, agent, native_session_id, from_ts, to_ts, count, locator, recorded_at)
     VALUES ('disk-full', ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (locator) DO NOTHING`);
   const dropGap = o.db.prepare('DELETE FROM hook_gaps WHERE locator = ?');
@@ -108,19 +112,30 @@ export function createIntake(o: IntakeOptions): Intake {
     if (!snapshots.differs(e.profile_key, s.session, raw)) return { status: 'accepted', code: 'unchanged' };
     const at = now(); // the service clock, never the sender's (review L7); no source time: statusLine stdin has none (S13)
     const m = hookModel({ model: s.record['model'], effort: s.record['effort'] }); // P4-T08: model.id, effort.level, ordered by `at`
+    let stored;
     try {
-      o.writer.commitLive({ profileId: e.profile_key, agent: e.agent, sessions: [{ nativeSessionId: s.session }],
+      stored = o.writer.commitLive({ profileId: e.profile_key, agent: e.agent, sessions: [{ nativeSessionId: s.session }],
         events: [{ nativeSessionId: s.session, source: 'statusline', confidence: 'confirmed', nativeId: e.delivery_id, kind: 'statusline',
           sourceSeq: at, receivedTs: at, raw, ...usageOf(s.record, e.delivery_id), ...(m ? { model: { ...m, ts: at } } : {}) }] });
     } catch (err) {
       return { status: 'rejected', code: isDiskFull(err) ? 'disk-full' : 'store' };
     }
+    // P5-T08 (review): a snapshot the writer kept out (a suppressed session; it carries no time, so it is no new activity) is
+    // not remembered as stored, so the same snapshot is stored once the marker clears
+    if (!stored.events.length) return { status: 'accepted', code: 'suppressed' };
     snapshots.kept(e.profile_key, s.session, raw);
     return { status: 'accepted', code: 'ok' };
   };
 
   const deliver = async (e: Envelope): Promise<IntakeResult> => {
+    // P5-T07 (FR-11, review H1): a purged session is refused before it is published (status engine) or stored; accepted,
+    // so the forwarder does not spool it and the replay drops it. The writer's filter is the backstop.
+    // P5-T08 (EC-21/22, review L3): judged at the time the writer will see (the sender's clock, never later than now): a
+    // live hook after a retention purge passes and clears it; a spooled one from before the purge stays refused.
+    // A statusLine snapshot is stamped by the service clock and never spooled: the writer alone decides on it.
     if (isStatusline(e)) return statusline(e);
+    const m = e.session_id === null ? undefined : marker.get(e.agent, e.profile_key, e.session_id) as Marker | undefined;
+    if (m && refuses(m, Math.min(Math.trunc(e.received_ts), now()))) return { status: 'accepted', code: 'suppressed' }; // the clock only when needed
     if (stored.get(e.delivery_id)) { // stored, so never missing: a commit that landed but reported disk full (G3b-2)
       if (!gaps.delete(e.delivery_id)) try { dropGap.run(`disk-full:${e.delivery_id}`); } catch { /* the gap row stays */ }
       return { status: 'accepted', code: 'duplicate' };
@@ -173,18 +188,33 @@ export interface HooksOptions extends IntakeOptions {
   customAgent?: (agent: string) => boolean;
   /** XAIBO-PROD-431: wait before retrying a listen that failed (default SOCKET_RETRY_MS). */
   socketRetryMs?: number;
+  /** Gate 5 (hooksOnce): interval between spool replays while the service runs (default REPLAY_INTERVAL_MS). */
+  replayIntervalMs?: number;
+  /** PROD-549: least time between pass starts when replayNow brings one forward (default REPLAY_NOW_MIN_MS). */
+  replayNowMinMs?: number;
 }
 /** socket: the listening server, null while none listens (a failed listen is retried). */
-export interface Hooks { intake: Intake; readonly socket: SocketServer | null; replay: Promise<ReplayResult>; close(): Promise<void> }
+export interface Hooks { intake: Intake; readonly socket: SocketServer | null; replay: Promise<ReplayResult>; close(): Promise<void>;
+  /** XAIBO-PROD-542 G5a-4: the report intake's live chunk store; undefined while it cannot open. */
+  chunks(): ChunkStore | undefined;
+  /** PROD-549: the store recovered from disk full; replay the spool now instead of at the backed-off interval. */
+  replayNow(): void }
 
 // ponytail: a fixed retry interval while the socket cannot listen (a full disk cannot create it); back off if a long
 // outage ever shows the retries costing anything.
 const SOCKET_RETRY_MS = 5000;
+// Gate 5 (hooksOnce, perf finding): a hook the forwarder spooled during a short stall (past its ~50 ms deadline) while the
+// socket listens is replayed while the service runs, not only at the next start. ponytail: a fixed interval, doubling up
+// to REPLAY_BACKOFF_MAX_MS while a replay cannot finish (disk full, store errors); a spooled hook waits up to ~interval.
+// The store's recovery from disk full brings the next pass forward (replayNow, at most one per REPLAY_NOW_MIN_MS; PROD-549).
+// Watch the spool dir if the interval is ever too slow.
+const REPLAY_INTERVAL_MS = 10_000, REPLAY_BACKOFF_MAX_MS = 5 * 60_000, REPLAY_NOW_MIN_MS = 2_000;
 
 /** Service start (and each (re)listen): listen first, so hooks fired meanwhile are acked instead of spooling behind the
  *  replay, then replay the spool in the background (its cleanup waits a grace). A socket that cannot listen is logged
  *  once and retried until it listens or the service closes (XAIBO-PROD-431); the replay still runs, and runs again
- *  after a late listen (after the first one ends) for the hooks the forwarder spooled meanwhile. */
+ *  after a late listen (after the first one ends) for the hooks the forwarder spooled meanwhile, and on an interval while
+ *  the service runs (Gate 5, hooksOnce). */
 export async function startHooks(o: HooksOptions): Promise<Hooks> {
   const intake = createIntake(o);
   // XAIBO-PROD-443: a chunk dir that cannot be opened (not ours, a full disk) holds report intake only, and only until a
@@ -203,7 +233,7 @@ export async function startHooks(o: HooksOptions): Promise<Hooks> {
       failed = true;
       return undefined;
     }
-    if (failed) { failed = false; o.log?.log('report_intake_ready'); void lastReplay.then(runReplay, runReplay); }
+    if (failed) { failed = false; o.log?.log('report_intake_ready'); void runReplay(); }
     return live;
   };
   open();
@@ -219,16 +249,42 @@ export async function startHooks(o: HooksOptions): Promise<Hooks> {
     const reg = reports.registry.current(id); // identity from the registry, never the record (P3-T13c)
     return reg ? reports.intake.deliver(reg, frame, receivedTs) : Promise.resolve({ status: 'rejected', code: 'auth' });
   };
-  const runReplay = () => {
-    const r = replaySpool({ dataDir: o.dataDir, db: o.db, deliver: intake.deliver, stopped: () => stopped, ...(o.now ? { now: o.now } : {}),
-      deliverReport }).then((x) => {
-      o.log?.log('spool_replay', { delivered: x.delivered, torn: x.torn, skipped: x.skipped, deferred: x.deferred, dropped: x.dropped, complete: x.complete ? 1 : 0 });
+  /** One replay after the latest one settled (single flight: start, late listen, report recovery and interval replays).
+   *  interval: only a replay that did something is logged. */
+  const runReplay = (interval = false): Promise<ReplayResult> => {
+    const r = lastReplay.catch(() => undefined).then(() => replaySpool({ dataDir: o.dataDir, db: o.db, deliver: intake.deliver, stopped: () => stopped,
+      ...(o.now ? { now: o.now } : {}), deliverReport })).then((x) => {
+      if (!interval || x.delivered || x.torn || x.skipped || x.dropped || !x.complete) {
+        o.log?.log('spool_replay', { delivered: x.delivered, torn: x.torn, skipped: x.skipped, deferred: x.deferred, dropped: x.dropped, complete: x.complete ? 1 : 0 });
+      }
       return x;
     });
     r.catch((e: unknown) => o.log?.log('spool_replay_failed', { error: errorCode(e) }));
     lastReplay = r;
     return r;
   };
+  const every = o.replayIntervalMs ?? REPLAY_INTERVAL_MS;
+  const floor = o.replayNowMinMs ?? REPLAY_NOW_MIN_MS;
+  let wait = every;
+  let timer: NodeJS.Timeout | undefined; // the one pending pass (interval or brought forward)
+  let running = false, again = false, lastStart = 0;
+  const arm = () => { if (!stopped) timer = setTimeout(tick, wait).unref(); };
+  // PROD-549 (R183-1): only a complete pass resets the backoff; a pass brought forward starts no sooner than `floor`
+  // after the last start, through the same timer slot, so a store hovering near full cannot drive back-to-back passes.
+  // ponytail: soon() replaces a pending interval timer even when that one is due earlier; only an interval below the
+  // floor (tests) can see it. Keep the earlier due time if the interval is ever configured under REPLAY_NOW_MIN_MS.
+  const soon = () => { if (stopped) return; clearTimeout(timer); timer = setTimeout(tick, Math.max(0, lastStart + floor - Date.now())).unref(); };
+  const tick = () => {
+    if (stopped) return;
+    clearTimeout(timer); running = true; lastStart = Date.now();
+    runReplay(true).then((x) => { wait = x.complete ? every : Math.min(wait * 2, REPLAY_BACKOFF_MAX_MS); },
+      () => { wait = Math.min(wait * 2, REPLAY_BACKOFF_MAX_MS); }).finally(() => {
+      running = false;
+      if (again) { again = false; soon(); } else arm();
+    });
+  };
+  /** The store recovered (disk full -> healthy): the next pass now, not at the backed-off interval; coalesced. */
+  const replayNow = () => { if (stopped) return; if (running) { again = true; return; } soon(); };
   const listen = async (): Promise<boolean> => {
     try {
       const s = await startSocketServer({ dataDir: o.dataDir, onEnvelope: intake.deliver, ...(o.log ? { log: o.log } : {}), reports });
@@ -238,11 +294,13 @@ export async function startHooks(o: HooksOptions): Promise<Hooks> {
       return true;
     } catch (e) {
       if (!down) { down = true; o.log?.log('hook_socket_failed', { error: e instanceof SocketError ? e.code : errorCode(e) }); }
-      if (!stopped) retry = setTimeout(() => { void listen().then((ok) => { if (ok) void replay.then(runReplay, runReplay); }); }, o.socketRetryMs ?? SOCKET_RETRY_MS);
+      if (!stopped) retry = setTimeout(() => { void listen().then((ok) => { if (ok) void runReplay(); }); }, o.socketRetryMs ?? SOCKET_RETRY_MS);
       return false;
     }
   };
   await listen();
   const replay = runReplay();
-  return { intake, get socket() { return socket; }, replay, close: async () => { stopped = true; clearTimeout(retry); await socket?.close(); } };
+  arm();
+  return { intake, get socket() { return socket; }, replay, close: async () => { stopped = true; clearTimeout(retry); clearTimeout(timer); await socket?.close(); },
+    chunks: () => open()?.chunks, replayNow };
 }

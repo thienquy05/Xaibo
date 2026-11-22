@@ -126,3 +126,25 @@ test('G3b-2 (fix re-review 2): a stored delivery\'s leftover disk-full gap is re
   assert.equal(count(h.db, `SELECT count(*) FROM hook_gaps WHERE locator = 'disk-full:${a.delivery_id}'`), 0, 'the stored delivery is no longer missing');
   assert.equal(count(h.db, "SELECT sum(count) FROM hook_gaps WHERE reason = 'disk-full'"), 2, 'an unstored delivery and the overflow bucket stay');
 });
+
+// Gate 5 round 3 (TP live-load disk-full fault, diagnosis guard): a live batch whose user record makes the writer
+// recompute the stored excerpt inside the transaction (round 2 A) still surfaces SQLITE_FULL and reports disk full: the
+// excerpt read swallows only its own read errors, never a failing write of the batch.
+test('round 3: a live batch with a user record (excerpt recompute) on a full store rejects with SQLITE_FULL; the writer reports it', async () => {
+  const h = await hookStore();
+  const writer = new Writer(h.db);
+  const userBatch = (seq: number): Batch => ({
+    profileId: 'p1', agent: 'claude', fileSession: 'u1',
+    file: { path: join(h.dir, 'u1.jsonl'), kind: 'transcript', dev: 1, ino: 2, size: seq, mtime: T0, offset: seq, headHash: 'h', status: 'ok' },
+    sessions: [{ nativeSessionId: 'u1' }],
+    events: [{ nativeSessionId: 'u1', source: 'transcript', confidence: 'confirmed', nativeId: `u${seq}`, kind: 'user', role: 'user', sourceSeq: seq, receivedTs: T0 + seq,
+      content: `synthetic prompt ${seq} ${'z'.repeat(3000)}` }],
+  });
+  await writer.enqueue(userBatch(1), true);
+  h.db.exec(`PRAGMA max_page_count = ${count(h.db, 'PRAGMA page_count')}`);
+  let err: unknown;
+  for (let seq = 2; seq < 50 && err === undefined; seq++) await writer.enqueue(userBatch(seq), true).catch((e: unknown) => { err = e; });
+  assert.equal((err as { errcode?: number } | undefined)?.errcode, 13, 'SQLITE_FULL reaches the caller');
+  assert.equal(writer.diskFull, true);
+  assert.equal(integrity(h.db), 'ok');
+});

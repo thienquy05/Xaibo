@@ -3,11 +3,11 @@
 // prompt or agent hook (they add tokens), and async wherever the agent supports it (Stop stays synchronous, S3).
 // Entries are found by shape: any object with a `type` is a hook; its event is the nearest array-valued key that is
 // not `hooks` (Claude/Codex `{hooks: {Event: [{hooks: [...]}]}}`, agy `{group: {Event: [... ]}}`).
+import { isObj } from '../../shared/ipc.ts';
 export type HookLintCode = 'forbidden-type' | 'not-command' | 'not-shim' | 'async-required' | 'empty';
 export interface HookLintOptions { shim: string; asyncRequired: boolean; syncEvents?: readonly string[] }
 
 const FORBIDDEN_TYPES = new Set(['prompt', 'agent']);
-const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 export function lintHooks(value: unknown, o: HookLintOptions): HookLintCode[] {
@@ -25,7 +25,7 @@ export function lintHooks(value: unknown, o: HookLintOptions): HookLintCode[] {
   };
   const walk = (v: unknown, event: string) => {
     if (Array.isArray(v)) { v.forEach((x) => walk(x, event)); return; }
-    if (!isObject(v)) return;
+    if (!isObj(v)) return;
     if ('type' in v) { check(v, event); return; }
     for (const [k, x] of Object.entries(v)) walk(x, Array.isArray(x) && k !== 'hooks' ? k : event);
   };

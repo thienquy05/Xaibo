@@ -13,6 +13,14 @@ export function nextFocus(index: number, key: string, count: number, axis: 'vert
   return Math.min(count - 1, Math.max(0, index + (key === forward ? 1 : -1)));
 }
 
+/** A horizontal roving group (Dashboard views, Session sections): Left/Right/Home/End move focus among `count` refs. */
+export function rovingKey(e: { key: string; preventDefault(): void }, index: number, count: number, refs: readonly ({ focus(): void } | null | undefined)[]): void {
+  const n = nextFocus(index, e.key, count, 'horizontal');
+  if (n === null || n < 0) return;
+  e.preventDefault();
+  refs[n]?.focus();
+}
+
 /** ArrowDown on the last loaded record with more available asks for the next page once per edge (End only jumps). */
 export function createEdgeFetch() {
   let firedAt = -1;
@@ -88,6 +96,12 @@ export function revealDue(prevSig: string, sig: string, now: number, until: numb
  *  sticky top frame's padding (`padTop`, from --x-frame-pad). */
 export const revealPort = (scroller: { top: number; bottom: number }, windowHeight: number, padTop: number): { top: number; bottom: number } =>
   ({ top: Math.max(scroller.top, padTop), bottom: Math.min(scroller.bottom, windowHeight) });
+
+/** XAIBO-PROD-530 (D-P5-11): a focused element starting above the reveal port (under the sticky top band). A record
+ *  taller than the room there keeps its top hidden under the browser's nearest-edge focus scroll; it is shown from its
+ *  start instead. Half a pixel of rounding is not hidden. `moved`: focus came from another element; the window
+ *  regaining focus (review M1) never undoes the user's own scrolling. */
+export const startHidden = (el: { top: number }, port: { top: number }, moved: boolean): boolean => moved && el.top < port.top - 0.5;
 
 /** XAIBO-PROD-439: whether the window (or the sticky frame's padding) clips a list's scroller; only then does arrow-key
  *  focus also move the page, otherwise the virtualizer's own scroll is left alone. */

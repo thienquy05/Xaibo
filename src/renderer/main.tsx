@@ -16,7 +16,11 @@ import { framePad } from './frame-pad.ts';
 import { openOrder } from './overview/queue.ts';
 import { retryIdle, retryStep } from './retry.ts';
 import { firstUsablePage, LONG_FRAME, watchLongFrames } from './perf-marks.ts';
-import { Workspace, type SessionChanges } from './workspace/Workspace.tsx';
+import { Settings, type SettingsApi } from './settings/Settings.tsx';
+import type { BrowseApi } from './history/SessionBrowser.tsx';
+import { AgentMap, type MapSnapshot } from './agent-map/AgentMap.tsx';
+import { Workspace } from './workspace/Workspace.tsx';
+import type { SessionChanges } from './workspace/view.ts';
 import type { WorkspaceApi } from './workspace/OpenSession.tsx';
 import { workspaceApiOf } from './workspace/workspace-api.ts';
 import './styles/tokens.css';
@@ -30,14 +34,16 @@ const DELTA_MAX = 1000;
 const onListCommit = firstUsablePage({ raf: (cb) => requestAnimationFrame(cb), mark: (n) => performance.mark(n) });
 watchLongFrames((start, duration) => performance.measure(LONG_FRAME, { start, duration }), globalThis.PerformanceObserver);
 
+type Area = 'dashboard' | 'session' | 'map' | 'settings';
+const HEADING: Record<Area, string> = { dashboard: 'dashboard-heading', session: 'sessions-heading', map: 'agent-map-heading', settings: 'settings-heading' };
+
 function App() {
   const [health, setHealth] = useState<Health | null>(null);
   const [agents, setAgents] = useState<AgentStatus[] | null>(null);
   const [list, setList] = useState<ListState>(emptyList);
   const [banners, setBanners] = useState<Banner[]>([]);
-  const [loading, setLoading] = useState(false);
   const [liveSet, setLiveSet] = useState<LiveSetState>(emptyLiveSet);
-  const [area, setArea] = useState<'dashboard' | 'session'>('dashboard');
+  const [area, setArea] = useState<Area>('dashboard');
   const [tick, setTick] = useState(0); // session activity: the usage view refreshes on it (throttled there)
   const [collector, setCollector] = useState(emptyCollector); // the Last known qualifier (design §6.0)
   const [liveFailed, setLiveFailed] = useState(false); // the live set could not be loaded: Retry
@@ -101,7 +107,6 @@ function App() {
         client.current?.close();
         const c = createClient(e.ports[0] as unknown as PortLike, { sessions, agents: setAgents, coverage: setBanners, resync });
         client.current = c;
-        setLoading(false);
         if (!visible()) c.setLive(false);
         // An invalid first page leaves the list empty; deltas and the next restart still fill it.
         reload(c);
@@ -130,21 +135,41 @@ function App() {
     return () => { o.disconnect(); removeEventListener('resize', set); };
   }, []);
 
-  const loadMore = () => {
-    const c = client.current;
-    if (!c || !list.next || loading) return;
-    setLoading(true);
-    c.listSessions(list.next, PAGE).then((page) => {
-      if (client.current !== c) return;
-      setList((s) => applyPage(s, page, true));
-      setLoading(false);
-    }, () => { if (client.current === c) setLoading(false); }); // an invalid page: "Load more" works again
-  };
+  // XAIBO-PROD-529 (P5-T18 part 3a): the Session list pages the history itself; this feed keeps the open row current
+  const browseApi = useMemo<BrowseApi>(() => {
+    const none = () => Promise.reject(new Error('no service connection'));
+    return {
+      history: (filter, cursor, limit) => client.current?.history(filter, cursor, limit) ?? none(),
+      search: (query, filter, cursor, limit) => client.current?.search(query, filter, cursor, limit) ?? none(),
+      mapGroups: (parent, cursor, limit) => client.current?.mapGroups(parent, cursor, limit) ?? none(),
+      // XAIBO-PROD-532: row actions; without a connection nothing is sent, so nothing changed
+      overlay: (op) => client.current?.overlay(op) ?? Promise.resolve({ ok: false as const, error: 'store' as const }),
+      historyRow: (session) => client.current?.historyRow(session) ?? none(),
+      purge: (session) => client.current?.purge(session) ?? Promise.resolve('failed' as const), // XAIBO-PROD-534: nothing sent, nothing purged
+      projects: (cursor, limit) => client.current?.projects(cursor, limit) ?? none(), // XAIBO-PROD-535: the Move dialog's lists
+      folders: (project, cursor, limit) => client.current?.folders(project, cursor, limit) ?? none(),
+      // XAIBO-PROD-536: Suppressed; without a connection nothing is sent, so nothing was re-imported
+      suppressed: (cursor, limit) => client.current?.suppressed(cursor, limit) ?? none(),
+      reimport: (key) => client.current?.reimport(key) ?? Promise.resolve('failed' as const),
+    };
+  }, []);
 
   const api = useMemo<UsageApi>(() => ({
     usage: () => client.current?.usage() ?? Promise.reject(new Error('no service')),
     history: (scope, stream, from, to, cursor) => client.current?.usageHistory(scope, stream, from, to, cursor, PAGE) ?? Promise.reject(new Error('no service')),
+    monthly: (filter, end, limit) => client.current?.monthly(filter, end, limit) ?? Promise.reject(new Error('no service')),
   }), []);
+  // review L5: with no service connection nothing is sent, so the outcome is known: not cleared
+  const settingsApi = useMemo<SettingsApi>(() => {
+    const none = () => Promise.reject(new Error('no service connection'));
+    return {
+      clearUsage: () => client.current?.clearUsage() ?? Promise.resolve('failed' as const),
+      // XAIBO-PROD-528 (P5-T18 part 2): retention and storage; without a connection the sections say unavailable
+      retention: () => client.current?.retention() ?? none(),
+      setRetention: (v) => client.current?.setRetention(v) ?? Promise.resolve('failed' as const),
+      storage: (refresh) => client.current?.storage(refresh) ?? none(),
+    };
+  }, []);
   // P4-T05d: the Session workspace's page requests go to the current client (a restart brings a new one).
   const workspaceApi = useMemo<WorkspaceApi>(() => workspaceApiOf(() => client.current), []);
   const clearRequest = useCallback(() => setRequest(null), []);
@@ -153,6 +178,10 @@ function App() {
   const [dashView, setDashView] = useState<View>('live');
   const origin = useRef<{ id: number; view: View; order: number[] } | null>(null);
   const [returnFor, setReturnFor] = useState<number | null>(null);
+  // XAIBO-PROD-539: a session opened from an Agent Map leaf returns there, to the map as it was left
+  const [returnTo, setReturnTo] = useState<'Dashboard' | 'Agent Map'>('Dashboard');
+  const mapSaved = useRef<MapSnapshot | null>(null);
+  const [mapReturn, setMapReturn] = useState<number | null>(null);
   const [focusId, setFocusId] = useState<number | null>(null);
   const liveRows = useRef(liveSet.rows);
   liveRows.current = liveSet.rows;
@@ -160,6 +189,7 @@ function App() {
   const openSession = (row: SessionRow) => {
     origin.current = { id: row.id, view: dashView, order: openOrder(dashView, liveRows.current) };
     setReturnFor(row.id);
+    setReturnTo('Dashboard');
     setRequest(row);
     setArea('session');
   };
@@ -182,18 +212,21 @@ function App() {
   useLayoutEffect(() => { setCollector((c) => collectorStep(c, band, Date.now())); }, [band]);
   const lastKnown = lastKnownLabel(collector, band);
   const retryLive = () => {
-    const c = client.current;
-    if (!c) return;
+    if (!client.current) return;
     liveRetryDo({ type: 'start' }); // the notice stays, its Retry disabled until the answer (D-P4-10)
-    void loadLive(c);
+    void liveRefresh(); // joins a refill already in flight rather than sending a second request
   };
   // review L3: leaving through the Areas links or opening from the Session list ends the Dashboard's Return
   const clearReturn = useCallback(() => { origin.current = null; setReturnFor(null); setFocusId(null); }, []);
-  const go = (to: 'dashboard' | 'session') => (e: MouseEvent) => {
+  // XAIBO-PROD-538/539: a session leaf opens in Session (design §6.5.1) with Return to Agent Map
+  const openFromMap = (row: SessionRow) => { clearReturn(); setReturnFor(row.id); setReturnTo('Agent Map'); setRequest(row); setArea('session'); };
+  const returnToMap = () => { const id = returnFor; clearReturn(); setMapReturn(id); setArea('map'); };
+  const go = (to: Area) => (e: MouseEvent) => {
     e.preventDefault();
     clearReturn();
+    if (to === 'map') setMapReturn(null); // Gate 5 G5d-2: the nav link keeps the map as left (refreshed on entry), no Return target
     setArea(to);
-    requestAnimationFrame(() => document.getElementById(to === 'dashboard' ? 'dashboard-heading' : 'sessions-heading')?.focus());
+    requestAnimationFrame(() => document.getElementById(HEADING[to])?.focus());
   };
   return (
     <div className={`x-shell${area === 'session' ? ' x-fixed' : ''}`}>
@@ -239,18 +272,22 @@ function App() {
             </svg>
             Xaibo
           </span>
-          {/* ponytail: Agent Map and Settings links arrive with their areas (Phases 5–6); no placeholder links now. */}
           <a href="#dashboard" aria-current={area === 'dashboard' ? 'page' : undefined} onClick={go('dashboard')}><Icon id="dashboard" />Dashboard</a>
           <a href="#session" aria-current={area === 'session' ? 'page' : undefined} onClick={go('session')}><Icon id="session" />Session</a>
+          <a href="#agent-map" aria-current={area === 'map' ? 'page' : undefined} onClick={go('map')}><Icon id="branch" />Agent Map</a>
+          <a href="#settings" aria-current={area === 'settings' ? 'page' : undefined} onClick={go('settings')}><Icon id="settings" />Settings</a>
         </nav>
       </header>
       <div className="x-health"><HealthStatus health={health} banners={banners} /></div>
       <main id="main" className="x-main" tabIndex={-1}>
-        {area === 'dashboard'
+        {area === 'settings' ? <Settings api={settingsApi} readOnly={!!health?.readOnly} />
+          : area === 'map' ? <AgentMap api={browseApi} agents={agents ?? []} lastKnown={lastKnown} tick={tick} onOpen={openFromMap}
+            saved={mapSaved.current} restoreId={mapReturn} onSave={(m) => { mapSaved.current = m; }} />
+          : area === 'dashboard'
           ? <Dashboard live={liveSet} liveFailed={liveFailed} liveRetry={liveRetry} onRetryLive={retryLive} lastKnown={lastKnown} agents={agents} banners={banners} api={api} tick={tick}
             onSetPath={(agent) => window.xaibo?.setAgentPath(agent)} onOpen={openSession} view={dashView} onView={setDashView} focusId={focusId} />
-          : <Workspace list={list} changes={changes} loading={loading} onLoadMore={loadMore} lastKnown={lastKnown !== null} api={workspaceApi} request={request} onRequestDone={clearRequest}
-            returnFor={returnFor} onReturn={returnToDashboard} onListOpen={clearReturn} />}
+          : <Workspace list={list} changes={changes} browse={browseApi} agents={agents ?? []} live={{ rows: liveSet.rows, loaded: liveSet.loaded, failed: liveFailed, more: liveSet.more }} lastKnown={lastKnown !== null} api={workspaceApi} request={request} onRequestDone={clearRequest}
+            returnFor={returnFor} onReturn={returnTo === 'Agent Map' ? returnToMap : returnToDashboard} returnTo={returnTo} onListOpen={clearReturn} />}
       </main>
     </div>
   );

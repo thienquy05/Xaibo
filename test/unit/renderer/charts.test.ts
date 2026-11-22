@@ -10,9 +10,9 @@ const row = (id: number, extra: Partial<SessionRow> = {}): SessionRow => ({ id, 
 const sample = (id: number, minute: number, extra: Partial<UsageRecord> = {}): UsageRecord => ({ id, kind: 'sample', measuredAt: minute * 60_000,
   usedPercent: 20 + minute, windowMinutes: 300, resetsAt: 50 * 60_000, sourceTimeKnown: true, ...extra });
 
-test('microseries deduplicate like totals, count only active agents, include all supplied states and retain nulls', () => {
+test('microseries count only active agents (distinct agents with busy or waiting sessions), include all supplied states and retain nulls', () => {
   const live = (lifecycle: NonNullable<SessionRow['live']>['lifecycle']) => ({ lifecycle, confidence: 'confirmed' as const, health: 'connected' as const, reason: null, outcome: null, findings: [], since: null });
-  const series = tileSeries([row(1, { tokens: 5 }), row(1, { tokens: 7, costUsd: 2, costCoverage: 'full', live: live('busy') }),
+  const series = tileSeries([row(1, { tokens: 7, costUsd: 2, costCoverage: 'full', live: live('busy') }),
     row(2, { agent: 'codex', live: live('idle') }), row(3, { agent: 'agy', costUsd: 9, live: live('error') }), row(4, { live: live('needs-input'), tokens: 0 }), row(5)], (id) => id);
   assert.deepEqual(series.agents, [{ label: 'claude', value: 2 }]);
   assert.equal(series.states.find((s) => s.label === 'unknown')?.value, 1);

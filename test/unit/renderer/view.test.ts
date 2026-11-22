@@ -2,7 +2,8 @@
 // never claim success without evidence; a live session opens on its latest page; coverage codes name what is missing.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { argFor, clock, compactStatus, countText, incompleteReasons, initialAt, isoTime, liveAction, openChange, sizeText, toolMeta, toolTone, trimWindow, appendLive, WINDOW_MAX, reloadPlan, loadPages, RELOAD_MAX, MARKER_PAGES } from '../../../src/renderer/workspace/view.ts';
+import { clock } from '../../../src/renderer/model.ts';
+import { argFor, compactStatus, countText, incompleteReasons, initialAt, isoTime, liveAction, openChange, sizeText, toolMeta, toolTone, trimWindow, appendLive, WINDOW_MAX, reloadPlan, loadPages, RELOAD_MAX, MARKER_PAGES } from '../../../src/renderer/workspace/view.ts';
 import type { FileItem, LiveStatus, ModelMarker, SessionRow, SubagentItem, ToolItem, TranscriptItem } from '../../../src/shared/ipc.ts';
 import type { SessionChanges } from '../../../src/renderer/workspace/view.ts';
 

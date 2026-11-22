@@ -114,6 +114,27 @@ from a rolled-back one are not built on, and replays saved records on open
 (`src/main/native-chat/agent-session-journal/`). Compare its recovery and schema-version handling with Xaibo's store
 migrations and disk-full recovery before Phase 5.
 
+**Result (2026-11-18, P5-T00; Orca read from its default branch, ideas only).** Orca checks `user_version` on a probe
+connection before any pragma and opens read-only when the schema is newer than the build; a failed ROLLBACK marks the
+connection "stranded" and is retried before the next use; batch failures are classed not-dispatched, rolled-back or
+indeterminate, and an indeterminate one blocks writes; ENOSPC, EDQUOT and SQLITE_FULL count as capacity errors. Xaibo
+already has forward-only single-transaction migrations with a free-space check and a renamed online backup, a
+read-only store on migration failure or low space, and a disk-full flag that holds checkpoints until a commit succeeds.
+Takeaways for Phase 5 (Claude verified 1 and 2 in `src/service/store/db.ts` and `writer.ts`):
+
+1. Newer-schema guard: a database whose `user_version` is above the latest migration opens read-write today. Read the
+   version before any pragma and open read-only with its own reason (P5-T01; matters for P5-T08 restart from a backup).
+2. A ROLLBACK that throws replaces the original error and can leave the connection in a transaction; keep the original
+   error and treat the connection as unusable until reopened (P5-T07 purge/settle, P5-T09 retention batches).
+3. File deletions, spool rewrites and backup changes only after a confirmed COMMIT; an unknown outcome deletes nothing
+   (P5-T07).
+4. Purge and retention go through the writer, so the disk-full flag applies; a purge that fails on SQLITE_FULL leaves
+   no Suppression marker and removes no files (P5-T07, P5-T09).
+5. A migration that fails on disk space is reported as a space problem, not `migration-failed` (P5-T01; minor).
+
+UNVERIFIED: what Orca's transaction counter is used for (only its declaration and comment were found), and whether Orca
+backs up before migrating.
+
 ## 4. Not taking
 
 Revised by the owner on 2026-11-13 (PRD v1.3 draft): usage APIs, orchestration, blocking and telemetry return in a

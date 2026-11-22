@@ -4,7 +4,8 @@
 // figures; an unpainted event is a miss, never dropped; drain is the last paint after the end of load.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { analyze, type Emitted, type TraceLine } from '../perf/t2-analysis.ts';
+import { DatabaseSync } from 'node:sqlite';
+import { analyze, hookLookup, type Emitted, type TraceLine } from '../perf/t2-analysis.ts';
 
 const T = (ms: number) => BigInt(Math.round(ms * 1e6));
 const t = (ms: number) => T(ms).toString();
@@ -108,6 +109,37 @@ test('P4-T12b: events in a fault window (disk full) are kept apart like the rest
   assert.deepEqual([r.m2.steady.n, r.m2.steady.max], [2, 100], 'the 1.6 s disk-full wait is not a steady sample');
   assert.deepEqual([r.m2.restartWindow.n, r.m1.restartWindow.n, r.unpainted.restart], [1, 1, 1], 'a hook lost while full is a fault-window miss');
   assert.equal(r.drainMs, 100);
+});
+
+test('Gate 5 disk-full: a hook resolves to its own stored delivery by (session, event, tool_use_id), never a later one', () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`CREATE TABLE sessions (id INTEGER PRIMARY KEY, agent TEXT, native_session_id TEXT);
+    CREATE TABLE events (id INTEGER PRIMARY KEY, session_id INTEGER, source TEXT, native_id TEXT, raw TEXT, UNIQUE (session_id, source, native_id))`);
+  db.exec("INSERT INTO sessions VALUES (1, 'claude', 's1'), (2, 'claude', 's2')");
+  const put = db.prepare("INSERT INTO events (session_id, source, native_id, raw) VALUES (?, 'hook', ?, ?)");
+  const raw = (event: string, tool: string) => JSON.stringify({ event, payload: { tool_use_id: tool } });
+  // t0 was rejected while the disk was full (no row); ten later PreToolUse hooks of s1 are stored, past the old LIMIT 8
+  for (let i = 1; i <= 10; i++) put.run(1, `d${i}`, raw('PreToolUse', `t${i}`));
+  put.run(1, 'post1', raw('PostToolUse', 't1'));
+  put.run(2, 'other', raw('PreToolUse', 't0'));
+  const find = hookLookup(db);
+  assert.equal(find('claude', 's1', 'PreToolUse', 't0'), null, 'a rejected hook never borrows a later delivery');
+  assert.equal(find('claude', 's1', 'PreToolUse', 't10'), 'd10', 'found beyond eight earlier rows');
+  assert.equal(find('claude', 's1', 'PostToolUse', 't1'), 'post1');
+  assert.equal(find('claude', 's2', 'PreToolUse', 't0'), 'other', 'scoped to the session');
+  put.run(1, 'dup', raw('PreToolUse', 't3'));
+  assert.throws(() => find('claude', 's1', 'PreToolUse', 't3'), /2 deliveries/, 'an ambiguous key is an error, not a guess');
+});
+
+test('Gate 5 disk-full: M1 is emit -> own paint even when the forwarder gave up first; M2 reports its hops', () => {
+  const r = analyze({
+    emitted: [hook('late', 0, 100), file('f1', 10)],
+    service: [commit(150, 'late'), delta(200, 1, 'late'), commit(60, 'f1'), delta(80, 2, 'f1')],
+    main: [paint(220, 1), paint(110, 2)],
+    restart: null, loadEnd: T(20),
+  });
+  assert.equal(r.m1.steady.max, 220, 'delivered live after the 100 ms deadline: a 220 ms sample, not a miss');
+  assert.deepEqual(r.hops.m2, { toCommit: 50, commitToDelta: 20, deltaToPaint: 30 });
 });
 
 test('G4f-2: a full TP run emits 13,500 events; a run under 95 % of the profile does not qualify', async () => {

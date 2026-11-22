@@ -10,6 +10,9 @@ import type { Batch, QuarantineRow, SourceFileCheckpoint, Writer } from '../stor
 import { headHash, HEAD_BYTES, readRange, readZstd, startOffset, zstdAvailable, type Checkpoint } from '../tail.ts';
 import { Watcher, type WatchFn } from '../watch.ts';
 
+/** Thrown out of a read when a commit asks for the file to be read again (G5f-1). */
+const REREAD = Symbol('reread');
+
 export interface TailFile { path: string; kind: string; sessionId: string; compressed: boolean }
 export interface TailRecord { content?: string; raw: string }
 export type LineResult<R> = { ok: true; record: R } | { ok: false; reason: 'malformed' } | null;
@@ -36,7 +39,7 @@ export interface TailAdapterOptions {
   now?: () => number;
 }
 
-type Stored = Checkpoint & { status: SourceFileCheckpoint['status'] };
+type Stored = Checkpoint & { status: SourceFileCheckpoint['status']; epoch: number };
 /** What boot holds of any adapter: its public lifecycle. */
 export type Ingester = Pick<TailAdapter<TailFile, TailRecord>, 'start' | 'watch' | 'backfill' | 'stop' | 'wake' | 'reads' | 'watched'>;
 
@@ -112,16 +115,29 @@ export abstract class TailAdapter<F extends TailFile, R extends TailRecord> {
   }
 
   #checkpoint(path: string): Stored | undefined {
-    const r = this.o.db.prepare('SELECT dev, ino, size, mtime, offset, head_hash, status FROM source_files WHERE path = ?').get(path) as
-      { dev: number; ino: number; size: number; mtime: number; offset: number; head_hash: string; status: Stored['status'] } | undefined;
-    return r && { dev: r.dev, ino: r.ino, size: r.size, mtime: r.mtime, offset: r.offset, headHash: r.head_hash, status: r.status };
+    const r = this.o.db.prepare('SELECT dev, ino, size, mtime, offset, head_hash, status, epoch FROM source_files WHERE path = ?').get(path) as
+      { dev: number; ino: number; size: number; mtime: number; offset: number; head_hash: string; status: Stored['status']; epoch: number } | undefined;
+    return r && { dev: r.dev, ino: r.ino, size: r.size, mtime: r.mtime, offset: r.offset, headHash: r.head_hash, status: r.status, epoch: r.epoch };
   }
 
-  async #sync(file: F, live: boolean): Promise<void> {
+  /** `again`: how many times this sync already read the file again after a commit asked for it (G5f-1). */
+  async #sync(file: F, live: boolean, again = 0): Promise<void> {
+    try { await this.#read(file, live); } catch (e) {
+      // XAIBO-PROD-542 G5f-1: a commit reset the checkpoint (a cleared marker) or refused a stale one: read the file again
+      // now from the stored checkpoint, so the re-import does not wait for the next native write. ponytail: twice per sync
+      // at most; a further reset is left to the next change or scan.
+      if (e !== REREAD || again >= 2) throw e;
+      await this.#sync(file, live, again + 1);
+    }
+  }
+
+  async #read(file: F, live: boolean): Promise<void> {
     let st;
     try { st = await stat(file.path); } catch { return; } // gone between discovery and sync
     const cp = this.#checkpoint(file.path);
-    const base = { path: file.path, kind: file.kind, dev: st.dev, ino: st.ino, size: st.size, mtime: st.mtimeMs };
+    // P5-T08 (review H2): every checkpoint this sync commits carries the epoch it read, so a re-import reset made
+    // meanwhile is never overwritten by this (older) read
+    const base = { path: file.path, kind: file.kind, dev: st.dev, ino: st.ino, size: st.size, mtime: st.mtimeMs, epoch: cp?.epoch ?? 0 };
     if (file.compressed) {
       if (cp && cp.dev === st.dev && cp.ino === st.ino && cp.size === st.size && cp.mtime === st.mtimeMs) return;
       if (!this.o.zstd) {
@@ -162,7 +178,7 @@ export abstract class TailAdapter<F extends TailFile, R extends TailRecord> {
       quarantine = [];
       bytes = 0;
       this.o.writer.flush(); // a full (or final) batch is its own transaction; no reason to wait for the coalescing timer
-      await committed;
+      if ((await committed).reread) throw REREAD; // the rest of this read would be refused too
       // P3-T16e: a macrotask turn after each commit; the parse-commit loop over one read chunk is otherwise a chain of
       // microtasks that keeps socket acks and watch callbacks waiting for the whole chunk.
       await new Promise<void>((resolve) => setImmediate(resolve));

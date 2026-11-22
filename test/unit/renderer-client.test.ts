@@ -77,6 +77,18 @@ test('H3: an invalid reply to a request settles it with an error instead of leav
   assert.equal(c.dropped, 1);
 });
 
+// XAIBO-PROD-502: an invalid message with an id but no type, for an id nothing waits on, is only counted.
+test('an invalid typeless message with an unknown id is dropped without touching pending requests', async () => {
+  const f = fakePort();
+  const c = createClient(f.port, { sessions() {}, agents() {} });
+  const p = c.listSessions(null, 50);
+  f.deliver({ id: 99 });
+  f.deliver({ id: 1 });
+  assert.equal(c.dropped, 2);
+  f.deliver({ v: 1, type: 'page', id: 1, rows: [], next: null });
+  assert.deepEqual(await p, { rows: [], next: null });
+});
+
 // XAIBO-PROD-404 review M2: the live-set request has its own pending map; an invalid reply rejects it; a page reply
 // never settles it.
 test('liveSet resolves with its own reply, ignores a page reply with its id, and rejects on an invalid reply', async () => {
@@ -201,4 +213,50 @@ test('markers: a failed reply rejects; an ok reply without the flag resolves', a
   const odd = c.markers(9, null, 50);
   f.deliver({ v: 1, type: 'markers', id: 3, markers: [], next: null, failed: 'yes' });
   await assert.rejects(odd, /invalid reply/);
+});
+
+// Gate 5 G5b2-5: a history, projects or folders reply that says failed rejects, so the Session list keeps its loaded rows
+// and shows the failure note with Retry (as search, map groups and markers do), never an empty page read as the end.
+test('history, projects, folders: a failed reply rejects; an ok reply without the flag resolves', async () => {
+  const f = fakePort();
+  const c = createClient(f.port, { sessions() {}, agents() {} });
+  const filter = { mode: 'all' as const, agent: null, project: null, folder: null };
+  const history = c.history(filter, null, 50);
+  f.deliver({ v: 1, type: 'history', id: 1, rows: [], next: null, failed: true });
+  await assert.rejects(history, /unavailable/);
+  const projects = c.projects(null, 50);
+  f.deliver({ v: 1, type: 'projects', id: 2, projects: [], next: null, failed: true });
+  await assert.rejects(projects, /unavailable/);
+  const folders = c.folders(3, null, 50);
+  f.deliver({ v: 1, type: 'folders', id: 3, folders: [], next: null, failed: true });
+  await assert.rejects(folders, /unavailable/);
+  const ok = c.history(filter, null, 50);
+  f.deliver({ v: 1, type: 'history', id: 4, rows: [], next: null });
+  assert.deepEqual(await ok, { rows: [], next: null });
+});
+
+// XAIBO-PROD-531 (P5-T18 part 3b-2): one session's history row; failed rejects (the caller keeps its record and offers
+// Retry), null resolves (gone); design security review L2: a row for another session than the one asked for rejects.
+test('historyRow: its own row or null; failed rejects; a row for another session rejects', async () => {
+  const f = fakePort();
+  const c = createClient(f.port, { sessions() {}, agents() {} });
+  const h = { ...row, id: 7, project: null, folder: null, pinned: false, archivedAt: null, trashedAt: null, trashPurgeAt: null, keep: true, purgeAt: null };
+  const ok = c.historyRow(7);
+  assert.deepEqual(f.sent.at(-1), { v: 1, type: 'historyRow', id: 1, session: 7 });
+  f.deliver({ v: 1, type: 'historyRow', id: 1, row: h });
+  assert.deepEqual(await ok, h);
+  const gone = c.historyRow(8);
+  f.deliver({ v: 1, type: 'historyRow', id: 2, row: null });
+  assert.equal(await gone, null);
+  const failed = c.historyRow(7);
+  f.deliver({ v: 1, type: 'historyRow', id: 3, row: null, failed: true });
+  await assert.rejects(failed, /history row unavailable/);
+  const other = c.historyRow(9);
+  f.deliver({ v: 1, type: 'historyRow', id: 4, row: h });
+  await assert.rejects(other, /another session/);
+  for (const [i, bad] of [{ row: null, failed: false }, { row: null, failed: 1 }, { row: h, failed: true }, { row: null, extra: 1 }, { row: { ...h, purgeAt: 'x' } }].entries()) {
+    const p = c.historyRow(7);
+    f.deliver({ v: 1, type: 'historyRow', id: 5 + i, ...bad });
+    await assert.rejects(p, /invalid reply/, JSON.stringify(bad));
+  }
 });

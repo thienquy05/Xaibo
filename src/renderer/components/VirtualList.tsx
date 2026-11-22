@@ -5,7 +5,7 @@
 // it in place. Offsets are CSSOM style properties, which the CSP allows (no inline style blocks).
 import { defaultRangeExtractor, useVirtualizer, type Range } from '@tanstack/react-virtual';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
-import { anchorShift, createEdgeFetch, focusIndex, layoutSignature, nextFocus, pageAnnouncement, pickAnchor, revealDelta, revealDue, revealPort, scrollerClipped, shouldReveal } from './virtual-list-model.ts';
+import { anchorShift, createEdgeFetch, focusIndex, layoutSignature, nextFocus, pageAnnouncement, pickAnchor, revealDelta, revealDue, revealPort, scrollerClipped, shouldReveal, startHidden } from './virtual-list-model.ts';
 
 type Key = string | number; // our keys; the library's own key type also allows bigint
 
@@ -25,6 +25,11 @@ export interface VirtualListProps<T> {
   /** XAIBO-PROD-450 (G4d-2; design §6.3): a request to show the first or last item; each new `n` scrolls once, after
    *  the items it came with render (a list mounted with a request applies it once it has items). */
   anchor?: { to: 'start' | 'end'; n: number } | null;
+  /** XAIBO-PROD-538 (P5-T18a part 2a; design §6.5.1): an ARIA tree instead of a list. Items take the caller's attributes
+   *  (level, expanded, selected, position in its level); the caller's keys replace the list keys (a number = handled, focus that
+   *  index; null = not handled); each new `focus.n` moves the tab stop and focus to that key (collapse, eviction). Its
+   *  paging items live inside the tree, so no list continuation is shown. */
+  tree?: { attrs: (item: T) => Record<string, string | number | boolean | undefined>; onKey: (e: KeyboardEvent<HTMLUListElement>, index: number) => number | null; focus: { key: Key; n: number } | null };
 }
 
 const OVERSCAN = 3;
@@ -35,7 +40,17 @@ function outOfView(el: HTMLElement, scroller: HTMLElement): boolean {
   return revealDelta(el.getBoundingClientRect(), revealPort(scroller.getBoundingClientRect(), innerHeight, framePadPx())) !== 0;
 }
 
-export function VirtualList<T>({ items, getKey, render, label, itemLabel, initialFocusKey = null, estimateSize, hasMore, loading, onLoadMore, anchor = null }: VirtualListProps<T>) {
+/** XAIBO-PROD-530 (D-P5-11): keyboard focus on something in the list whose top is hidden shows it from its start, every
+ *  scroller's scroll padding included (a 200 % text record taller than the room below the top band). Synchronous, so the
+ *  browser's own nearest-edge focus scroll, before or after it, keeps that start. Mouse focus never scrolls; nor does
+ *  the window regaining focus (no related target). */
+function showStart(el: Element, from: EventTarget | null) {
+  const sc = el.closest('.x-vlist');
+  if (!(el instanceof HTMLElement) || !sc || !el.matches(':focus-visible')) return;
+  if (startHidden(el.getBoundingClientRect(), revealPort(sc.getBoundingClientRect(), innerHeight, framePadPx()), from !== null)) el.scrollIntoView({ block: 'start' });
+}
+
+export function VirtualList<T>({ items, getKey, render, label, itemLabel, initialFocusKey = null, estimateSize, hasMore, loading, onLoadMore, anchor = null, tree }: VirtualListProps<T>) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
   const endRef = useRef<HTMLParagraphElement>(null);
@@ -44,11 +59,12 @@ export function VirtualList<T>({ items, getKey, render, label, itemLabel, initia
 
   // Focus follows its record by key (review M1); a removed record hands focus to its neighbour (L1).
   const [focusedKey, setFocusedKey] = useState<Key | null>(initialFocusKey);
+  const pendingFocus = useRef<Key | null>(null);
+  const seenFocus = useRef<number | null>(null); // XAIBO-PROD-538: the last tree focus request taken (in the effect below)
   const lastIndex = useRef(-1);
   const focused = focusIndex(keys, focusedKey, lastIndex.current);
   lastIndex.current = focused;
   const listHadFocus = useRef(false);
-  const pendingFocus = useRef<Key | null>(null);
   const tabStop = focused >= 0 ? focused : count > 0 ? 0 : -1;
   const edge = useMemo(createEdgeFetch, []);
 
@@ -110,9 +126,19 @@ export function VirtualList<T>({ items, getKey, render, label, itemLabel, initia
     anchored.current = anchor.n;
     v.scrollToIndex(anchor.to === 'end' ? count - 1 : 0, { align: anchor.to });
   }, [anchor?.n, count]);
+  useLayoutEffect(() => { // XAIBO-PROD-538: a tree's focus request brings its record into view
+    const i = tree?.focus ? keys.indexOf(tree.focus.key) : -1;
+    if (i >= 0) v.scrollToIndex(i, { align: 'auto' });
+  }, [tree?.focus?.n]);
   useEffect(() => {
     record();
-    if (focusedKey !== null && !keys.includes(focusedKey) && focused >= 0 && listHadFocus.current) { // L1: neighbour
+    // XAIBO-PROD-538 review L3: a tree's focus request is taken in a committed render only, ahead of the removed-record
+    // neighbour rule (collapse hands focus to the ancestor, not to whatever took the old index)
+    if (tree?.focus && tree.focus.n !== seenFocus.current) {
+      seenFocus.current = tree.focus.n;
+      pendingFocus.current = tree.focus.key;
+      if (focusedKey !== tree.focus.key) setFocusedKey(tree.focus.key);
+    } else if (focusedKey !== null && !keys.includes(focusedKey) && focused >= 0 && listHadFocus.current) { // L1: neighbour
       pendingFocus.current = keys[focused]!;
       setFocusedKey(keys[focused]!);
     }
@@ -134,6 +160,16 @@ export function VirtualList<T>({ items, getKey, render, label, itemLabel, initia
   const onKeyDown = (e: KeyboardEvent<HTMLUListElement>) => {
     // Only the list's own records, unmodified keys (L4): nested controls keep their keys.
     if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || (e.target as Element).parentElement !== listRef.current) return;
+    if (tree) {
+      const t = tree.onKey(e, focused);
+      if (t === null) return;
+      e.preventDefault();
+      if (t === focused || t < 0 || t >= count) return; // review L4
+      pendingFocus.current = keys[t]!;
+      setFocusedKey(keys[t]!);
+      v.scrollToIndex(t, { align: 'auto' });
+      return;
+    }
     const n = nextFocus(focused, e.key, count);
     if (n === null) return;
     e.preventDefault();
@@ -162,14 +198,15 @@ export function VirtualList<T>({ items, getKey, render, label, itemLabel, initia
     <>
       <div className="x-vlist" ref={scrollRef} onScroll={record}>
         <ul
-          className="x-vlist-items" ref={listRef} aria-label={label} data-count={count} onKeyDown={onKeyDown}
-          onFocus={() => { listHadFocus.current = true; }} onBlur={(e) => { if (!listRef.current?.contains(e.relatedTarget as Node | null)) listHadFocus.current = false; }}
+          className="x-vlist-items" ref={listRef} role={tree ? 'tree' : undefined} aria-label={label} data-count={count} onKeyDown={onKeyDown}
+          onFocus={(e) => { listHadFocus.current = true; showStart(e.target, e.relatedTarget); }} onBlur={(e) => { if (!listRef.current?.contains(e.relatedTarget as Node | null)) listHadFocus.current = false; }}
           style={{ height: `${v.getTotalSize()}px` }}
         >
           {v.getVirtualItems().map((vi) => (
             <li
               key={vi.key} data-index={vi.index} ref={v.measureElement} className="x-vlist-item"
               tabIndex={vi.index === tabStop ? 0 : -1} aria-posinset={vi.index + 1} aria-setsize={hasMore ? -1 : count} aria-label={itemLabel(items[vi.index]!)}
+              {...(tree ? { role: 'treeitem', 'aria-posinset': undefined, 'aria-setsize': undefined, ...tree.attrs(items[vi.index]!) } : {})}
               onFocus={() => setFocusedKey(keys[vi.index]!)} style={{ transform: `translateY(${vi.start}px)` }}
             >
               {render(items[vi.index]!, vi.index)}
@@ -186,7 +223,7 @@ export function VirtualList<T>({ items, getKey, render, label, itemLabel, initia
             onFocus={() => { moreFocused.current = true; }} onBlur={(e) => { if (e.relatedTarget) moreFocused.current = false; }} // removal blurs with no target
           >{loading ? 'Loading next page' : 'Load more'}</button>
         </p>
-      ) : count > 0 ? <p className="x-vlist-end" ref={endRef} tabIndex={-1}>End of available records</p> : null}
+      ) : count > 0 && !tree ? <p className="x-vlist-end" ref={endRef} tabIndex={-1}>End of available records</p> : null}
       <p className="x-sr-only" aria-live="polite">{announce}</p>{/* polite, without taking the page's status role (health) */}
     </>
   );

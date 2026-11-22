@@ -7,6 +7,9 @@
 //     Codex and agy (closer byte shares); ~5% of rollouts under archived_sessions/; agy with a history.jsonl
 //   node scripts/gen-perf-corpus.ts --seed 1 --case ec15  20 MB file; 200 MB file with a 6 MiB and an 80 MiB record
 //     (below and above the 8 MiB parse cap, D-P1-13) and 120 small, newer sessions imported first, so paging overlaps the import
+//   node scripts/gen-perf-corpus.ts --seed 1 --case tp  P5-T11/G5e-1 (EC-99, PRD §6.6 TP: ~1,500 sessions, ~2.6 GiB DB, 50 MB
+//     largest): the t1mix agent mix over 1,455 sessions (median ~290 KB, ~1.0 GB, 15 files of 5-20 MB, largest 50 MB) plus 2 Codex
+//     quota streams x 45 days (45 sessions), one token_count per minute of one synthetic account, in one rollout per day
 import { closeSync, mkdirSync, openSync, rmSync, utimesSync, writeFileSync, writeSync } from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
@@ -71,20 +74,28 @@ function writeTranscript(file: string, sessionId: string, size: number, start: n
 
 const quantile = (xs: number[], q: number) => { const s = [...xs].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.ceil(q * s.length) - 1)] ?? 0; };
 
-/** T1 sizes (§6.6): log-normal around ~170 KB, ten 5-20 MB files (~p99), one 200 MB file at index 0. */
-function t1Sizes(n: number) {
-  const sizes = Array.from({ length: n }, () => Math.min(8 * MiB, Math.max(8 * 1024, Math.round(170 * 1024 * Math.exp(0.9 * normal())))));
+/** Session sizes: log-normal around `median`, `big` files of 5-20 MB (~p99), the largest (`max`) at index 0. */
+interface Shape { n: number; median: number; big: number; max: number }
+/** T1 (§6.6): ~1,000 sessions, ~170 KB median, ten 5-20 MB files, one 200 MB file. */
+const T1: Shape = { n: 1000, median: 170 * 1024, big: 10, max: 200 * MiB };
+/** G5e-1, PRD §6.6 TP: 1,455 sessions (+45 quota rollouts = 1,500), 15 files of 5-20 MB (1%), largest 50 MB. The median is
+ *  raised so the import lands at ~2.6 GiB: the store holds ~3.1 bytes per importable source byte (pre-freeze tp: ~606 MB under
+ *  the 8 MiB parse cap -> ~1.75 GiB of transcript tables, + ~0.11 GiB quota tables = 1.86 GiB), so seed 1's ~1.02 GB (~0.89 GB
+ *  importable; 15 records above the cap are skipped) gives ~2.65 GiB. ponytail: the ratio is estimated; m13/quota assert it. */
+const TP: Shape = { n: 1455, median: 280 * 1024, big: 15, max: 50 * MiB };
+function t1Sizes({ n, median, big, max }: Shape = T1) {
+  const sizes = Array.from({ length: n }, () => Math.min(8 * MiB, Math.max(8 * 1024, Math.round(median * Math.exp(0.9 * normal())))));
   const p99 = new Set<number>();
-  for (let i = 0; i < 10; i++) { const at = 1 + Math.floor(rand() * (n - 1)); sizes[at] = Math.round((5 + rand() * 15) * MiB); p99.add(at); }
-  sizes[0] = 200 * MiB; // the largest transcript
+  for (let i = 0; i < big; i++) { const at = 1 + Math.floor(rand() * (n - 1)); sizes[at] = Math.round((5 + rand() * 15) * MiB); p99.add(at); }
+  sizes[0] = max; // the largest transcript
   return { sizes, p99 };
 }
 
 function t1() {
   const dir = path.join(ROOT, `t1-${seed}`);
   const claude = path.join(dir, '.claude', 'projects');
-  const n = 1000;
-  const { sizes } = t1Sizes(n);
+  const n = T1.n;
+  const { sizes } = t1Sizes();
   const files: number[] = [];
   let subagents = 0;
   let hugeRecords = 0;
@@ -152,14 +163,13 @@ function writeAgy(file: string, size: number, start: number): number {
   return w.close(t);
 }
 
-function t1mix() {
-  const dir = path.join(ROOT, `t1mix-${seed}`);
+function t1mix(name = 't1mix', shape = T1) {
+  const dir = path.join(ROOT, `${name}-${seed}`);
   const home = path.join(dir, 'home');
   const claude = path.join(home, '.claude', 'projects');
   const codex = path.join(home, '.codex');
   const agy = path.join(home, '.gemini', 'antigravity-cli');
-  const n = 1000;
-  const { sizes, p99 } = t1Sizes(n);
+  const { sizes, p99 } = t1Sizes(shape);
   const big = [...p99].sort((a, b) => a - b);
   const files: number[] = [];
   const bytes = { claude: 0, codex: 0, agy: 0 };
@@ -171,7 +181,7 @@ function t1mix() {
   sizes.forEach((size, i) => {
     const huge = i % 97 === 5 ? [8 * MiB] : [];
     const r = i % 20;
-    const agent = i === 0 || huge.length ? 'claude' : p99.has(i) ? (big.indexOf(i) < 7 ? 'codex' : 'agy') : r < 10 ? 'claude' : r < 17 ? 'codex' : 'agy';
+    const agent = i === 0 || huge.length ? 'claude' : p99.has(i) ? (big.indexOf(i) < 0.7 * big.length ? 'codex' : 'agy') : r < 10 ? 'claude' : r < 17 ? 'codex' : 'agy';
     const sid = uuid(0x10000 + i);
     const start = BASE + i * 3_600_000;
     let b: number;
@@ -202,9 +212,61 @@ function t1mix() {
   writeFileSync(path.join(agy, 'history.jsonl'), `${history.join('\n')}\n`);
   const totalBytes = files.reduce((a, c) => a + c, 0);
   const share = (x: number) => Math.round((1000 * x) / totalBytes) / 10;
-  return { dir, summary: { case: 't1mix', seed, sessions, files: files.length, subagents, hugeRecords, codexArchived: archived, bytes,
+  return { dir, summary: { case: name, seed, sessions, files: files.length, subagents, hugeRecords, codexArchived: archived, bytes,
     bytePercent: { claude: share(bytes.claude), codex: share(bytes.codex), agy: share(bytes.agy) }, totalBytes,
     medianBytes: quantile(files, 0.5), p99Bytes: quantile(files, 0.99), maxBytes: Math.max(...files) } };
+}
+
+/** P5-T11 (EC-99, PRD §6.6 TP): quota history at the personal profile. One Codex rollout per day for 45 days, all of one
+ *  synthetic account (one account-level scope), one token_count per minute carrying a 5 h primary and a 7 d secondary
+ *  window: 2 streams x 64,800 readings; each reset is a transition. The token usage carries the model and context window
+ *  (context projections, priced requests with their price revision). Percentages ramp through each window. */
+function quota(codex: string) {
+  const DAYS = 45, MIN = 60_000, PRIMARY = 300 * MIN, SECONDARY = 7 * 24 * 60 * MIN;
+  const resets = { primary: new Set<number>(), secondary: new Set<number>() };
+  let bytes = 0, readings = 0;
+  for (let d = 0; d < DAYS; d++) {
+    const start = BASE + d * 24 * 60 * MIN;
+    const date = stamp(start).slice(0, 10);
+    const [y, m, day] = date.split('-') as [string, string, string];
+    const sid = uuid(0x70000 + d);
+    const w = lineWriter(path.join(codex, 'sessions', y, m, day, `rollout-${date}T00-00-00-${sid}.jsonl`));
+    const line = (t: number, type: string, payload: object) => w.line({ timestamp: stamp(t), type, payload });
+    const cwd = '/tmp/xaibo-fixture/quota';
+    line(start, 'session_meta', { id: sid, timestamp: stamp(start), cwd, originator: 'codex-tui', cli_version: '0.160.0', source: 'cli', creator_account_id: 'synthetic-account-tp' });
+    const turnId = uuid(ids++);
+    line(start, 'turn_context', { turn_id: turnId, root_turn_id: turnId, cwd, current_date: date, approval_policy: 'synthetic-policy', sandbox_policy: { type: 'danger-full-access' },
+      model: 'gpt-6.1-sol', collaboration_mode: { mode: 'default', settings: { model: 'gpt-6.1-sol', reasoning_effort: null, developer_instructions: null } } });
+    const total = { input_tokens: 0, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, total_tokens: 0 };
+    for (let i = 0; i < 24 * 60; i++) {
+      const t = start + i * MIN + 30_000;
+      const window = (len: number, peak: number) => {
+        const k = Math.floor((t - BASE) / len);
+        const resetSec = (BASE + (k + 1) * len) / 1000;
+        return { used: Math.round(10 * (peak * ((t - BASE) % len) / len + rand() * 2)) / 10, resetSec };
+      };
+      const p = window(PRIMARY, 95), s = window(SECONDARY, 80);
+      resets.primary.add(p.resetSec);
+      resets.secondary.add(s.resetSec);
+      const last = { input_tokens: 800 + Math.floor(rand() * 400), cached_input_tokens: 500, cache_write_input_tokens: 0, output_tokens: 150, reasoning_output_tokens: 40, total_tokens: 0 };
+      last.total_tokens = last.input_tokens + last.output_tokens;
+      for (const k of Object.keys(total) as (keyof typeof total)[]) total[k] += last[k];
+      line(t, 'event_msg', { type: 'token_count', info: { total_token_usage: { ...total }, last_token_usage: last, model_context_window: 200000 },
+        rate_limits: { limit_id: 'codex', plan_type: 'pro', primary: { used_percent: p.used, window_minutes: 300, resets_at: p.resetSec },
+          secondary: { used_percent: s.used, window_minutes: 10080, resets_at: s.resetSec } } });
+      readings++;
+    }
+    bytes += w.close(start + 24 * 60 * MIN - 1);
+  }
+  // the first reading of each stream opens its first window; every later reset is a transition
+  return { days: DAYS, streams: 2, files: DAYS, readingsPerStream: readings, transitions: { primary: resets.primary.size - 1, secondary: resets.secondary.size - 1 }, bytes };
+}
+
+function tp() {
+  const { dir, summary } = t1mix('tp', TP);
+  const q = quota(path.join(dir, 'home', '.codex'));
+  const transcripts = summary.sessions.claude + summary.sessions.codex + summary.sessions.agy;
+  return { dir, summary: { ...summary, quota: q, totalSessions: transcripts + q.files, allBytes: summary.totalBytes + q.bytes } };
 }
 
 function ec15() {
@@ -219,9 +281,9 @@ function ec15() {
   return { dir, summary: { case: 'ec15', seed, smallBytes: small.bytes, largeBytes: large.bytes, belowCapRecordBytes: 6 * MiB, aboveCapRecordBytes: 80 * MiB, extraSessions: 120 } };
 }
 
-const cases = { t1, t1mix, ec15 } as const;
+const cases = { t1, t1mix: () => t1mix(), tp, ec15 } as const;
 const which = (values.case ?? 't1') as keyof typeof cases;
-if (!cases[which]) throw new Error('--case t1 | t1mix | ec15');
+if (!cases[which]) throw new Error('--case t1 | t1mix | tp | ec15');
 rmSync(path.join(ROOT, `${which}-${seed}`), { recursive: true, force: true });
 const { dir, summary } = cases[which]();
 writeFileSync(path.join(dir, 'summary.json'), JSON.stringify(summary, null, 2));
