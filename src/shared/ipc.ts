@@ -223,6 +223,9 @@ const MAX_SOURCES = 8, MAX_SOURCE = 32, MAX_LABEL = 4097; // labels are cut to D
 // XAIBO-PROD-504 (P5-T01; FR-10, US-5): the history overlay. The renderer names a session only by its row id.
 export const NAME_MAX = 200;
 export const HISTORY_MODES = ['all', 'archived', 'trash'] as const;
+/** XAIBO-PROD-554 (design §6.4 Filters, D-P6-05): the record markers a Session list can be filtered by; cwd filter bound. */
+export const HISTORY_STATES = ['pinned', 'kept', 'native-deleted', 'native-archived'] as const;
+export const CWD_FILTER_MAX = 4096;
 /** XAIBO-PROD-510 (P5-T01c; design §6.5.1): a map group. project null = automatic grouping (moved sessions excluded),
  *  else that Project override; at = a repository (worktree null: all its worktrees) or a cwd folder (repository grouping
  *  absent; cwd null: Cwd unavailable); at null only under a project. Keys are the stored canonical paths. */
@@ -235,7 +238,10 @@ export interface MapNode {
   group: MapGroup; project: Named | null; reasons: ((typeof REPO_REASONS)[number] | null)[];
   sessions: number | null; live: number | null; agents: string[] | null;
 }
-export interface HistoryFilter { mode: (typeof HISTORY_MODES)[number]; agent: string | null; project: number | null; folder: number | null; group?: MapGroup }
+export interface HistoryFilter { mode: (typeof HISTORY_MODES)[number]; agent: string | null; project: number | null; folder: number | null; group?: MapGroup;
+  /** XAIBO-PROD-554 (each present only when set): the folder and below; activity overlapping [from, to) ms; a record marker;
+   *  a model id (Dashboard month detail). */
+  cwd?: string; from?: number; to?: number; state?: (typeof HISTORY_STATES)[number]; model?: string }
 /** History keyset: pinned first, then last activity descending (unknown last), then id. */
 export interface HistoryKey { pinned: boolean; lastActivity: number | null; id: number }
 export interface Named { id: number; name: string }
@@ -585,12 +591,22 @@ function parseHistoryKey(x: unknown): HistoryKey | null | undefined { // undefin
   return exactKeys(x, ['pinned', 'lastActivity', 'id']) && typeof x.pinned === 'boolean' && timeOrNull(x.lastActivity) && positive(x.id)
     ? { pinned: x.pinned, lastActivity: x.lastActivity, id: x.id } : undefined;
 }
+const OPTIONAL_FILTER_KEYS = ['group', 'cwd', 'from', 'to', 'state', 'model'] as const;
+const msOk = (x: unknown): x is number => Number.isSafeInteger(x) && (x as number) >= 0;
 function parseFilter(x: unknown): HistoryFilter | null {
-  const grouped = isObj(x) && Object.hasOwn(x, 'group');
-  if (!exactKeys(x, ['mode', 'agent', 'project', 'folder', ...(grouped ? ['group'] : [])]) || !oneOf(HISTORY_MODES, x.mode)) return null;
-  const group = grouped ? parseMapGroup(x.group) : undefined;
+  const present = isObj(x) ? OPTIONAL_FILTER_KEYS.filter((k) => Object.hasOwn(x, k)) : [];
+  if (!exactKeys(x, ['mode', 'agent', 'project', 'folder', ...present]) || !oneOf(HISTORY_MODES, x.mode)) return null;
+  const has = (k: (typeof OPTIONAL_FILTER_KEYS)[number]) => present.includes(k);
+  const group = has('group') ? parseMapGroup(x.group) : undefined;
   if (group === null || !((x.agent === null || agentOk(x.agent)) && idOrNull(x.project) && idOrNull(x.folder))) return null;
-  return { mode: x.mode, agent: x.agent, project: x.project, folder: x.folder, ...(group ? { group } : {}) };
+  // XAIBO-PROD-554: strict shapes; a date range needs both ends in order
+  if (has('cwd') && !(text(x.cwd, CWD_FILTER_MAX) && x.cwd !== '')) return null;
+  if (has('from') !== has('to') || (has('from') && !(msOk(x.from) && msOk(x.to) && x.from <= x.to))) return null;
+  if (has('state') && !oneOf(HISTORY_STATES, x.state)) return null;
+  if (has('model') && !(text(x.model, MAX_MODEL) && x.model !== '')) return null;
+  return { mode: x.mode, agent: x.agent, project: x.project, folder: x.folder, ...(group ? { group } : {}),
+    ...(has('cwd') ? { cwd: x.cwd as string } : {}), ...(has('from') ? { from: x.from as number, to: x.to as number } : {}),
+    ...(has('state') ? { state: x.state as HistoryFilter['state'] } : {}), ...(has('model') ? { model: x.model as string } : {}) };
 }
 const keyText = (x: unknown): x is string => text(x) && x !== '';
 /** Exact shapes only; a group with neither project nor place names nothing and is refused. */

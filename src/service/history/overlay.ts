@@ -28,7 +28,8 @@ export function cleanName(s: string): string | null {
 
 const fail = (error: Extract<OverlayResult, { ok: false }>['error']): OverlayResult => ({ ok: false, error });
 /** A filter only the overlay tables can answer (Archived, Trash, a project, folder or map group). */
-export const needsOverlay = (f: HistoryFilter): boolean => f.mode !== 'all' || f.project !== null || f.folder !== null || !!f.group;
+export const needsOverlay = (f: HistoryFilter): boolean => f.mode !== 'all' || f.project !== null || f.folder !== null || !!f.group
+  || f.state === 'pinned' || f.state === 'kept';
 interface Key { agent: string; profile_id: string; native_session_id: string; cwd: string | null }
 
 /** XAIBO-PROD-542 G5b2-4: a Trash or restore that succeeded changes what every window lists: they resync. */
@@ -124,6 +125,17 @@ export function scopeWhere(f: HistoryFilter, overlay: boolean): { where: string[
   if (f.project !== null) { where.push('o.project_id = ?'); args.push(f.project); }
   if (f.folder !== null) { where.push('o.folder_id = ?'); args.push(f.folder); }
   if (f.group) { const g = groupWhere(f.group); where.push(...g.where); args.push(...g.args); } // P5-T01c: one map group's scope
+  // XAIBO-PROD-554 (design §6.4, D-P6-05): the folder and below on a path boundary (substr, so no LIKE wildcard applies)
+  if (f.cwd !== undefined) { const c = f.cwd.replace(/\/+$/, ''); where.push('(s.cwd = ? OR substr(s.cwd, 1, ?) = ?)'); args.push(c, c.length + 1, `${c}/`); }
+  // activity overlapping [from, to): a start-only or activity-only session counts at the time it has
+  if (f.from !== undefined && f.to !== undefined) { where.push('coalesce(s.started_at, s.last_activity) < ? AND coalesce(s.last_activity, s.started_at) >= ?'); args.push(f.to, f.from); }
+  if (f.state !== undefined) {
+    where.push({ pinned: 'coalesce(o.pinned, 0) = 1', kept: 'coalesce(o.keep, 0) = 1', 'native-deleted': 's.native_available = 0', 'native-archived': 's.native_archived = 1' }[f.state]);
+  }
+  if (f.model !== undefined) {
+    where.push('(EXISTS (SELECT 1 FROM usage u WHERE u.session_id = s.id AND u.model_id = ?) OR EXISTS (SELECT 1 FROM turns t WHERE t.session_id = s.id AND t.model_id = ?))');
+    args.push(f.model, f.model);
+  }
   return { where, args };
 }
 
