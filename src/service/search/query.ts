@@ -7,35 +7,28 @@
 // misses), treats emoji as separators (an emoji-only query finds nothing) and folds case and diacritics; a trigram index
 // is the later option.
 import type { DatabaseSync } from 'node:sqlite';
-import { PAGE_DEFAULT, PAGE_MAX } from '../api.ts';
-import { scopeWhere } from '../history/overlay.ts';
+import { hasTable, pageSize } from '../api.ts';
+import { needsOverlay, scopeWhere } from '../history/overlay.ts';
 import { notPurging } from '../history/suppression.ts';
-import { FTS_MAX_BYTES } from '../store/writer.ts';
-import type { HistoryFilter } from '../../shared/ipc.ts';
+import { QUERY_MAX, SNIPPET_MAX, type HistoryFilter, type SearchKey } from '../../shared/ipc.ts';
 
-export const QUERY_MAX_CHARS = 256, QUERY_MAX_TERMS = 16, SNIPPET_MAX = 200;
+export const QUERY_MAX_TERMS = 16;
 // Review M1: snippet() re-tokenizes a hit's whole stored content (an event up to the 8 MiB parse cap: ~450 ms when a term
 // repeats through it), so the snippet is cut from this many leading characters instead.
 const SNIPPET_SCAN = 16_384, SNIPPET_LEAD = 60;
-/** Design §6.4, shown below results. */
-export const SEARCH_COVERAGE = 'Search covers retained indexed content; incomplete sources may have gaps';
-/** PRD §5.7: the per-item index bound the UI states. */
-export const SEARCH_ITEM_LIMIT = `Only the first ${FTS_MAX_BYTES / 1024} KiB of each item is searchable`;
 
 export interface SearchHit { session: number; event: number; snippet: string; rank: number }
-/** Gate 5 round 2 review: `event` = the rowid of the last match read (exact continuation inside equal-rank ties). */
-export interface SearchKey { rank: number; session: number; event: number }
 
 /** The FTS5 query for user text: each whitespace-separated term as a quoted string (inner quotes doubled), at most
- *  QUERY_MAX_TERMS terms from the first QUERY_MAX_CHARS characters; control characters separate terms. null = nothing to find. */
+ *  QUERY_MAX_TERMS terms from the first QUERY_MAX characters; control characters separate terms. null = nothing to find. */
 export function ftsQuery(input: string): string | null {
   const terms = termsOf(input);
   return terms.length ? terms.map((t) => `"${t.replaceAll('"', '""')}"`).join(' ') : null;
 }
 
 function termsOf(input: string): string[] {
-  // review L3: bound the input before any whole-string work (2x keeps every code point of the first QUERY_MAX_CHARS)
-  const text = [...input.slice(0, 2 * QUERY_MAX_CHARS).replace(/\p{Cc}/gu, ' ')].slice(0, QUERY_MAX_CHARS).join('');
+  // review L3: bound the input before any whole-string work (2x keeps every code point of the first QUERY_MAX)
+  const text = [...input.slice(0, 2 * QUERY_MAX).replace(/\p{Cc}/gu, ' ')].slice(0, QUERY_MAX).join('');
   return text.split(/\s+/u).filter(Boolean).slice(0, QUERY_MAX_TERMS);
 }
 
@@ -50,8 +43,6 @@ export function snippetOf(text: string, terms: string[]): string {
   const rest = [...t.slice(from)], room = SNIPPET_MAX - lead.length;
   return lead + (rest.length <= room ? rest.join('') : `${rest.slice(0, room - 1).join('')}…`);
 }
-
-const has = (db: DatabaseSync, table: string) => db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) !== undefined;
 
 // Gate 5 round 2 B (owner decision 2026-11-20; M13 at TP: common-term pages took seconds grouping every match): matches
 // are read best rank first (FTS5 consumes ORDER BY rank: no sort, no grouping), injected and non-current events left out
@@ -78,12 +69,12 @@ export const searchStats = { examined: 0 };
 export function searchSessions(db: DatabaseSync, input: string, f: HistoryFilter, cursor: SearchKey | null, limit: number): { hits: SearchHit[]; next: SearchKey | null; capped?: true } {
   searchStats.examined = 0;
   const q = ftsQuery(input);
-  const overlay = has(db, 'overlays');
-  if (!q || (!overlay && (f.mode !== 'all' || f.project !== null || f.folder !== null || f.group))) return { hits: [], next: null };
-  const n = Math.min(Number.isSafeInteger(limit) && limit > 0 ? limit : PAGE_DEFAULT, PAGE_MAX);
+  const overlay = hasTable(db, 'overlays');
+  if (!q || (!overlay && needsOverlay(f))) return { hits: [], next: null };
+  const n = pageSize(limit);
   const s = scopeWhere(f, overlay);
   const where = [...s.where, notPurging(db)];
-  if (has(db, 'suppressions')) where.push(`NOT EXISTS (SELECT 1 FROM suppressions x WHERE x.agent = s.agent AND x.profile_id = s.profile_id
+  if (hasTable(db, 'suppressions')) where.push(`NOT EXISTS (SELECT 1 FROM suppressions x WHERE x.agent = s.agent AND x.profile_id = s.profile_id
     AND x.native_session_id = s.native_session_id AND x.cleared_at IS NULL)`);
   const joins = overlay ? 'LEFT JOIN overlays o ON o.agent = s.agent AND o.profile_id = s.profile_id AND o.native_session_id = s.native_session_id' : '';
   const sql = `SELECT e.session_id AS session, m.rowid AS event, m.rank AS rank FROM event_fts m JOIN events e ON e.id = m.rowid

@@ -182,3 +182,26 @@ test('PROD-549 (R183-1): replayNow storms on a store hovering near full are boun
     assert.ok(n >= 2 && n <= 7, `${n} passes in ~1.3 s with a 200 ms floor`);
   } finally { await svc.close(); }
 });
+
+// XAIBO-PROD-550 (G5Sx-1, Gate 5 fix re-review 7): the floor is stamped when a serialized pass starts, so a pass brought
+// forward while the startup replay still holds its 1 s cleanup grace starts no sooner than the floor after the startup
+// pass started (before: the floor was stamped only at tick dispatch, so it ran right after the startup pass, ~1 s in).
+test('G5Sx-1: a replayNow during a startup replay holding its grace waits for the floor after the startup pass start', async () => {
+  const h = await hookStore();
+  const spool = join(h.dir, 'spool');
+  const put = () => writeFileSync(join(spool, `${new Date().toISOString().slice(0, 10)}.jsonl`), `${JSON.stringify(envelope({ session_id: SESSION }))}\n`, { mode: 0o600, flag: 'a' });
+  mkdirSync(spool, { mode: 0o700 });
+  put();
+  const floor = 2_000;
+  const before = Date.now(); // at or before the startup pass start
+  const svc = await startHooks({ dataDir: h.dir, db: h.db, writer: h.writer, replayIntervalMs: 60_000, replayNowMinMs: floor });
+  try {
+    assert.ok(await until(() => count(h.db, 'SELECT count(*) FROM hook_delivery') === 1, 1_000), 'the startup pass delivered the spooled hook');
+    put(); // appended after the startup pass read the file; that pass now waits out its grace (and keeps the changed file)
+    svc.replayNow();
+    assert.ok(await until(() => count(h.db, 'SELECT count(*) FROM hook_delivery') === 2, floor + 2_000), 'the brought-forward pass ran');
+    const at = Date.now() - before;
+    assert.ok(at >= floor - 50, `the brought-forward pass started ${at} ms after the startup pass, floor ${floor} ms`);
+    await svc.replay;
+  } finally { await svc.close(); }
+});

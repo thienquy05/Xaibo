@@ -13,8 +13,8 @@ import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { CLAUDE_MANAGED_DIR, settings } from '../adapters/claude/hooks.ts';
 import type { Writer } from '../store/writer.ts';
+import { DAY } from '../retention/policy.ts';
 
-const DAY = 86_400_000;
 const MAX_DATE = 8.64e15; // the JS Date range (review L3)
 const STAT_CHUNK = 32;
 /** Claude Code's cleanupPeriodDays when unset (PRD EC-23: 30-day agent default). */

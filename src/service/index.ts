@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { errorCode, installCrashPolicy } from '../shared/crash.ts';
 import { accept, IPC_VERSION, parsePortRequest, parseServiceCommand } from '../shared/ipc.ts';
-import type { Banner, PortMessage, RetentionSetting, ServiceEvent, StorageReport } from '../shared/ipc.ts';
+import type { Banner, PortMessage, ServiceEvent, StorageReport } from '../shared/ipc.ts';
 import { appendQuiet, createLogger, loadInstallSecret, type Logger } from '../shared/log.ts';
 import { answer, answerCost, answerFiles, answerLiveSet, answerMarkers, answerSession, answerSlice, answerSubagents, answerTools, answerTranscript, answerUsage, answerUsageHistory, coalesce, createHub, sessionsByKey, type LiveOf } from './api.ts';
 import { boot, retentionDelayFromEnv, type Service } from './boot.ts';
@@ -79,6 +79,15 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
   void booted.then((s) => {
     // A closed store still answers (empty: each answer catches its store errors), so no renderer request waits forever.
     const db = s.store.db;
+    // XAIBO-PROD-550 (D-P5-15 item 3): a history answer that a closed or failing store cannot give says its fallback
+    // (failed where it has one: the renderer keeps its rows and offers Retry), never an empty page. The page spreads
+    // first, so it can never replace v, type or id (review L4).
+    type Body<T extends PortMessage['type']> = Omit<Extract<PortMessage, { type: T }>, 'v' | 'type' | 'id'>;
+    const reply = <T extends PortMessage['type']>(type: T, fallback: Body<T>, fn: () => Body<T>) => {
+      let page = fallback;
+      try { if (db.isOpen) page = fn(); } catch { /* the fallback */ }
+      port.postMessage({ ...page, v: IPC_VERSION, type, id: req.id } as PortMessage);
+    };
     switch (req.type) {
       case 'liveSet': port.postMessage(db.isOpen ? answerLiveSet(db, req, Date.now(), s.kinds(), s.models(), live) : { v: IPC_VERSION, type: 'liveSet', id: req.id, rows: [], more: false }); break;
       case 'usage': port.postMessage(answerUsage(db, req, homedir())); break;
@@ -94,25 +103,13 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
       // P5-T17a: computed in a worker and cached (ledger.ts); failed when the store cannot answer
       case 'monthly': void answerMonthly(ledger!, req).then((m) => port.postMessage(m)); break;
       // XAIBO-PROD-527 (P5-T18 part 1): history tools and retention/storage settings
-      case 'search': {
-        let page: Omit<Extract<PortMessage, { type: 'search' }>, 'v' | 'type' | 'id'> = { hits: [], next: null, failed: true };
-        try { if (db.isOpen) page = answerSearch(db, req, s.kinds(), s.models(), live); } catch { /* failed */ }
-        port.postMessage({ v: IPC_VERSION, type: 'search', id: req.id, ...page } satisfies PortMessage); break;
-      }
+      case 'search': reply('search', { hits: [], next: null, failed: true }, () => answerSearch(db, req, s.kinds(), s.models(), live)); break;
       // design review M6: the ledger and open windows refresh once the session is hidden (boot's onRemoved, phase a)
       case 'purge': void s.purge(req.session).then((result) => port.postMessage({ v: IPC_VERSION, type: 'purge', id: req.id, result } satisfies PortMessage)); break;
-      case 'suppressed': {
-        let page: Omit<Extract<PortMessage, { type: 'suppressed' }>, 'v' | 'type' | 'id'> = { rows: [], next: null, failed: true };
-        try { if (db.isOpen) page = suppressedPage(db, secret!, homedir(), req.cursor, req.limit); } catch { /* failed */ }
-        port.postMessage({ v: IPC_VERSION, type: 'suppressed', id: req.id, ...page } satisfies PortMessage); break;
-      }
+      case 'suppressed': reply('suppressed', { rows: [], next: null, failed: true }, () => suppressedPage(db, secret!, homedir(), req.cursor, req.limit)); break;
       case 'historyRow': port.postMessage({ v: IPC_VERSION, type: 'historyRow', id: req.id, ...answerHistoryRow(db, req.session, s.kinds(), s.models(), live) } satisfies PortMessage); break;
       case 'reimport': port.postMessage({ v: IPC_VERSION, type: 'reimport', id: req.id, result: s.reimport(req.key) } satisfies PortMessage); break;
-      case 'retention': {
-        let state: { setting: RetentionSetting | null; lastRunAt: number | null } = { setting: null, lastRunAt: null };
-        try { if (db.isOpen) state = retentionState(db); } catch { /* unreadable */ }
-        port.postMessage({ v: IPC_VERSION, type: 'retention', id: req.id, ...state } satisfies PortMessage); break;
-      }
+      case 'retention': reply('retention', { setting: null, lastRunAt: null }, () => retentionState(db)); break; // unreadable: no setting
       case 'setRetention': port.postMessage({ v: IPC_VERSION, type: 'setRetention', id: req.id, result: s.saveRetention(req.value) } satisfies PortMessage); break;
       case 'storage': { // measured in the meter's worker on request; at most once a minute (design review M4)
         const last = meter!.latest(), now = Date.now();
@@ -130,26 +127,11 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
       }); break;
       // XAIBO-PROD-504 (P5-T01): history overlay; Gate 5 G5b2-5: a store that cannot answer says failed (the renderer keeps
       // its rows and offers Retry), never an empty page
-      case 'history': {
-        let page: Omit<Extract<PortMessage, { type: 'history' }>, 'v' | 'type' | 'id'> = { rows: [], next: null, failed: true };
-        try { if (db.isOpen) page = listHistory(db, req.filter, req.cursor, req.limit, s.kinds(), s.models(), live); } catch { /* failed */ }
-        port.postMessage({ v: IPC_VERSION, type: 'history', id: req.id, ...page } satisfies PortMessage); break;
-      }
-      case 'projects': {
-        let page: Omit<Extract<PortMessage, { type: 'projects' }>, 'v' | 'type' | 'id'> = { projects: [], next: null, failed: true };
-        try { if (db.isOpen) page = listProjects(db, req.cursor, req.limit); } catch { /* failed */ }
-        port.postMessage({ v: IPC_VERSION, type: 'projects', id: req.id, ...page } satisfies PortMessage); break;
-      }
-      case 'folders': {
-        let page: Omit<Extract<PortMessage, { type: 'folders' }>, 'v' | 'type' | 'id'> = { folders: [], next: null, failed: true };
-        try { if (db.isOpen) page = listFolders(db, req.project, req.cursor, req.limit); } catch { /* failed */ }
-        port.postMessage({ v: IPC_VERSION, type: 'folders', id: req.id, ...page } satisfies PortMessage); break;
-      }
-      case 'mapGroups': { // P5-T01c: a store that cannot answer says failed (the renderer offers Retry), never an empty page
-        let page: Omit<Extract<PortMessage, { type: 'mapGroups' }>, 'v' | 'type' | 'id'> = { groups: [], next: null, failed: true };
-        try { if (db.isOpen) page = mapGroups(db, req.parent, req.cursor, req.limit, live); } catch { /* failed */ }
-        port.postMessage({ v: IPC_VERSION, type: 'mapGroups', id: req.id, ...page } satisfies PortMessage); break;
-      }
+      case 'history': reply('history', { rows: [], next: null, failed: true }, () => listHistory(db, req.filter, req.cursor, req.limit, s.kinds(), s.models(), live)); break;
+      case 'projects': reply('projects', { projects: [], next: null, failed: true }, () => listProjects(db, req.cursor, req.limit)); break;
+      case 'folders': reply('folders', { folders: [], next: null, failed: true }, () => listFolders(db, req.project, req.cursor, req.limit)); break;
+      // P5-T01c: a store that cannot answer says failed (the renderer offers Retry), never an empty page
+      case 'mapGroups': reply('mapGroups', { groups: [], next: null, failed: true }, () => mapGroups(db, req.parent, req.cursor, req.limit, live)); break;
       case 'overlay': {
         const result = applyOverlay(db, req.op, { readOnly: s.store.readOnly || !db.isOpen, now: Date.now() });
         port.postMessage({ v: IPC_VERSION, type: 'overlay', id: req.id, result } satisfies PortMessage);

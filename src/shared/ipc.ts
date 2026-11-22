@@ -261,6 +261,9 @@ export interface SearchHit { row: HistoryRow; event: number; snippet: string }
 export const PURGE_RESULTS = ['purged', 'pending', 'not-found', 'busy', 'read-only', 'disk-full', 'failed'] as const; // pending: Gate 5 second review M1
 export const REIMPORT_RESULTS = ['ok', 'none', 'pending', 'native-gone', 'not-found', 'read-only', 'disk-full', 'failed'] as const;
 export const SAVE_RESULTS = ['saved', 'invalid', 'read-only', 'disk-full', 'failed'] as const;
+export type PurgeResult = (typeof PURGE_RESULTS)[number];
+export type ReimportResult = (typeof REIMPORT_RESULTS)[number];
+export type SaveRetentionResult = (typeof SAVE_RESULTS)[number];
 /** A suppressed (purged) session: key = opaque HMAC handle; profile = its label, 'Unavailable' when the profile is gone. */
 export interface SuppressedRow { key: string; agent: string; profile: string; reason: 'manual' | 'retention'; at: number; filesPending: boolean }
 export interface SuppressedCursor { at: number; key: string }
@@ -334,14 +337,14 @@ export type PortMessage =
   | { v: 1; type: 'clearUsage'; id: number; result: ClearUsageResult }
   /** capped (Gate 5 round 2 B): the bounded scan stopped before the page filled; results may be incomplete, next continues. */
   | { v: 1; type: 'search'; id: number; hits: SearchHit[]; next: SearchKey | null; failed?: true; capped?: true }
-  | { v: 1; type: 'purge'; id: number; result: (typeof PURGE_RESULTS)[number] }
+  | { v: 1; type: 'purge'; id: number; result: PurgeResult }
   /** row null = no such session (gone: purged); failed (row null) = the store could not answer (keep the record, Retry). */
   | { v: 1; type: 'historyRow'; id: number; row: HistoryRow | null; failed?: true }
   | { v: 1; type: 'suppressed'; id: number; rows: SuppressedRow[]; next: SuppressedCursor | null; failed?: true }
-  | { v: 1; type: 'reimport'; id: number; result: (typeof REIMPORT_RESULTS)[number] }
+  | { v: 1; type: 'reimport'; id: number; result: ReimportResult }
   /** setting null = the stored value is unreadable (no session retention runs on it). */
   | { v: 1; type: 'retention'; id: number; setting: RetentionSetting | null; lastRunAt: number | null }
-  | { v: 1; type: 'setRetention'; id: number; result: (typeof SAVE_RESULTS)[number] }
+  | { v: 1; type: 'setRetention'; id: number; result: SaveRetentionResult }
   | { v: 1; type: 'storage'; id: number; report: StorageReport | null; failed?: true }
   | { v: 1; type: 'history'; id: number; rows: HistoryRow[]; next: HistoryKey | null; failed?: true }
   | { v: 1; type: 'projects'; id: number; projects: Named[]; next: number | null; failed?: true }

@@ -328,7 +328,7 @@ function settleStep(db: DatabaseSync, who: Identity, lim: PurgeLimits, secret: B
     c.m = Object.fromEntries([...months].map(([mo, x]) => [mo, { month: x.at.month, offset: x.at.offset, ts: x.ts, models: [...x.models] }]));
     if (c.u === SETTLED && c.t === SETTLED && c.q === SETTLED) out.push(...k.session(s, months)); // from the frozen rows
   }
-  settleContributions(db, [out], now);
+  settleContributions(db, out, now);
   const done = !s || (c.u === SETTLED && c.t === SETTLED && c.q === SETTLED);
   db.prepare('UPDATE suppressions SET purge_phase = ?, settle_cursor = ? WHERE agent = ? AND profile_id = ? AND native_session_id = ?')
     .run(done ? 'rows' : 'settle', done ? null : JSON.stringify(c), ...key);

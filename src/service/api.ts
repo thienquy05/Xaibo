@@ -23,6 +23,11 @@ import { displayName, modelLabel, type ModelEntry, type ModelList } from './usag
 
 export const PAGE_DEFAULT = 50;
 export const PAGE_MAX = 100;
+/** XAIBO-PROD-550 (D-P5-15 item 12): a requested page size, PAGE_DEFAULT unless a positive safe integer, at most PAGE_MAX. */
+export const pageSize = (limit: number): number => Math.min(Number.isSafeInteger(limit) && limit > 0 ? limit : PAGE_DEFAULT, PAGE_MAX);
+/** A table exists (an older read-only schema may lack the overlay or suppression tables); `name` is a constant. */
+export const hasTable = (db: DatabaseSync, name: string): boolean =>
+  db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined;
 /** Display strings (cwd, entrypoint, title) are cut to this many UTF-16 units plus "…" before IPC, far below the
  *  64 KiB per-string limit the renderer validates, so one long transcript value cannot void a page. The store keeps
  *  the original. */
@@ -95,13 +100,13 @@ export const toRow = (db: DatabaseSync, kinds: SessionKind[], models: ModelEntry
 /** P5-T03 (FR-11, design §6.1/§6.4): trashed sessions leave All sessions, the live set and deltas. A store without the
  *  overlay tables (a read-only older schema) has no Trash. */
 function shown(db: DatabaseSync): string {
-  return (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'overlays'").get() === undefined ? '1'
+  return (!hasTable(db, 'overlays') ? '1'
     : 'NOT EXISTS (SELECT 1 FROM overlays o WHERE o.agent = s.agent AND o.profile_id = s.profile_id AND o.native_session_id = s.native_session_id AND o.trashed_at IS NOT NULL)')
     + ` AND ${notPurging(db)}`; // XAIBO-PROD-542 G5-N1: a session being purged is hidden
 }
 
 export function listSessions(db: DatabaseSync, cursor: Cursor | null, limit: number, kinds: SessionKind[] = [], models: ModelEntry[] = [], live?: LiveOf): Page {
-  const n = Math.min(Number.isSafeInteger(limit) && limit > 0 ? limit : PAGE_DEFAULT, PAGE_MAX);
+  const n = pageSize(limit);
   const t = shown(db);
   let raw: Raw[];
   if (!cursor) raw = db.prepare(`${ROW(db)} WHERE ${t} ${ORDER}`).all(n) as unknown as Raw[];

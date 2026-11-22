@@ -4,7 +4,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { byRank, mergeToolCalls, type ToolCallObservation } from '../normalize.ts';
 import { resolveRepository, type Grouping } from '../history/repository.ts';
 import { cwdKey } from '../paths.ts';
-import { isDiskFull } from './db.ts';
+import { isDiskFull, rollback } from './db.ts';
 import { blocks, clear as clearMarker, MARKER, noteFile, refuses, type Marker } from '../history/suppression.ts';
 import { agyUsage, claudeUsage, codexRateLimits, codexStep, codexUsage, tokenRecordDrift, type Usage } from '../usage/tokens.ts';
 import { contextStep, type ContextObs, type Snapshot } from '../usage/context.ts';
@@ -302,12 +302,6 @@ function unsuppressed(st: ReturnType<typeof prepare>, batch: Batch): { batch: Ba
   } };
 }
 
-/** Research L6: rolls back after a failure without replacing the caller's error (a throwing ROLLBACK is swallowed).
- *  True when the connection is still inside a transaction afterwards. */
-export function rollback(db: DatabaseSync): boolean {
-  try { if (db.isTransaction) db.exec('ROLLBACK'); } catch { /* the original error is the one reported */ }
-  return db.isTransaction;
-}
 
 type HistRow = { used_percent: number | null; window_minutes: number | null; resets_at: number | null; plan: string | null; credits: string | null;
   as_of: number | null; first_observed_at: number; measured_at: number };

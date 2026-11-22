@@ -27,6 +27,12 @@ export function loadMigrations(dir: URL = MIGRATIONS_DIR): Migration[] {
 }
 
 /** SQLITE_FULL (primary code 13) or ENOSPC: the store cannot grow (EC-44). */
+/** Research L6: rolls back after a failure without replacing the caller's error (a throwing ROLLBACK is swallowed;
+ *  callers that care read db.isTransaction afterwards). XAIBO-PROD-550: shared by the writer and openStore. */
+export function rollback(db: DatabaseSync): void {
+  try { if (db.isTransaction) db.exec('ROLLBACK'); } catch { /* the original error is the one reported */ }
+}
+
 export const isDiskFull = (e: unknown) => {
   const x = e as { errcode?: unknown; code?: unknown } | null;
   return (typeof x?.errcode === 'number' && (x.errcode & 0xff) === 13) || x?.code === 'ENOSPC';
@@ -120,7 +126,7 @@ export async function openStore(o: StoreOptions): Promise<Store> {
       db.exec(`PRAGMA user_version = ${m.version}`);
       db.exec('COMMIT');
     } catch (e) {
-      try { if (db.isTransaction) db.exec('ROLLBACK'); } catch { /* the connection is closed and reopened read-only below */ }
+      rollback(db); // the connection is closed and reopened read-only below
       failed = isDiskFull(e) ? 'insufficient-space' : 'migration-failed'; // research L6: space is fixable by the owner
     } finally {
       if (fkOff) db.exec('PRAGMA foreign_keys = ON');

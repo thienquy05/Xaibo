@@ -14,7 +14,7 @@ import { profileLabel } from '../../src/service/api.ts';
 import { applyOverlay, listHistory } from '../../src/service/history/overlay.ts';
 import { purgeSession } from '../../src/service/history/purge.ts';
 import { clear } from '../../src/service/history/suppression.ts';
-import { answerHistoryRow, answerSearch, findSuppressed, PurgeLimit, purgeManual, reimportKey, rerunner, retentionState, saveRetention, suppressedPage, suppressionKey } from '../../src/service/history/tools.ts';
+import { answerHistoryRow, answerSearch, findSuppressed, purgeLimit, purgeManual, reimportKey, rerunner, retentionState, saveRetention, suppressedPage, suppressionKey } from '../../src/service/history/tools.ts';
 import { DAY } from '../../src/service/retention/policy.ts';
 import { ftsPrefix } from '../../src/service/store/writer.ts';
 import { parsePortMessage, parsePortRequest, RETENTION_MAX, type HistoryFilter } from '../../src/shared/ipc.ts';
@@ -139,7 +139,7 @@ test('suppressed: opaque domain-separated keys, profile labels, newest first, pa
 test('manual purge: purged and not-found; at most 10 per minute, then busy; the window moves on (D-P5-07)', async () => {
   const s = await store();
   let t = NOW;
-  const limit = new PurgeLimit(() => t);
+  const limit = purgeLimit(() => t);
   const ids = Array.from({ length: 12 }, (_, i) => s.add(`cap-${i}`));
   assert.equal(await purgeManual(s.writer, 999_999, { ...s.files(), limit }), 'not-found');
   for (let i = 0; i < 10; i++) assert.equal(await purgeManual(s.writer, ids[i]!, { ...s.files(), limit }), 'purged', `purge ${i}`);
@@ -249,7 +249,7 @@ test('second review M1: a purge stopped after the session is hidden answers pend
   const id = s.add('pend-a');
   for (let i = 0; i < 3; i++) s.ev(id, `pending purge record ${i}`);
   let hid = false;
-  const r = await purgeManual(s.writer, id, { ...s.files(), limit: new PurgeLimit(() => NOW), hidden: () => { hid = true; }, stopped: () => hid });
+  const r = await purgeManual(s.writer, id, { ...s.files(), limit: purgeLimit(() => NOW), hidden: () => { hid = true; }, stopped: () => hid });
   assert.equal(r, 'pending');
   assert.ok(s.db.prepare("SELECT 1 FROM sessions WHERE native_session_id = 'pend-a'").get(), 'the rows are still owed');
   assert.equal(listHistory(s.db, ALL, null, 100).rows.some((x) => x.id === id), false, 'hidden from the list');
@@ -262,7 +262,7 @@ test('second review M1: a purge stopped after the session is hidden answers pend
 test('round 4 review L7: a throw after the hide answers pending; the session stays hidden', async () => {
   const s = await store();
   const id = s.add('pend-b');
-  const r = await purgeManual(s.writer, id, { ...s.files(), limit: new PurgeLimit(() => NOW), hidden: () => { throw new Error('synthetic'); } });
+  const r = await purgeManual(s.writer, id, { ...s.files(), limit: purgeLimit(() => NOW), hidden: () => { throw new Error('synthetic'); } });
   assert.equal(r, 'pending');
   assert.equal(listHistory(s.db, ALL, null, 100).rows.some((x) => x.id === id), false, 'hidden from the list');
 });

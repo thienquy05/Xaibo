@@ -7,7 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { clockJumped, DAY, eligible, isActive, parseRetention, purgeAt, RETENTION_DEFAULT, retentionOf, setRetention } from '../../../src/service/retention/policy.ts';
 import { retentionScheduler } from '../../../src/service/retention/job.ts';
 import { blocks, refuses, type Marker, type SuppressionReason } from '../../../src/service/history/suppression.ts';
-import { trashExpired, trashPurgeAt } from '../../../src/service/history/trash.ts';
+import { trashPurgeAt } from '../../../src/service/history/trash.ts';
 import type { LiveStatus } from '../../../src/shared/ipc.ts';
 
 const NOW = Date.UTC(2026, 10, 18, 12);
@@ -25,12 +25,10 @@ test('setting: stored in kv, default 45 only when unset; an unreadable stored va
   const db = new DatabaseSync(':memory:');
   db.exec('CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
   assert.deepEqual(retentionOf(db), { days: 45 });
-  assert.equal(setRetention(db, 'never'), true);
+  setRetention(db, 'never');
   assert.deepEqual(retentionOf(db), 'never');
-  assert.equal(setRetention(db, 30), true);
-  assert.deepEqual(retentionOf(db), { days: 30 });
-  assert.equal(setRetention(db, 0), false);
-  assert.deepEqual(retentionOf(db), { days: 30 }, 'unchanged');
+  setRetention(db, { days: 30 });
+  assert.deepEqual(retentionOf(db), { days: 30 }); // XAIBO-PROD-550: the value is validated before (saveRetention, IPC)
   // review M1: a garbled or future-format value must not purge history the owner chose to keep
   for (const stored of ['garbage', '0045', '45abc', '3651', 'NEVER', '']) {
     db.prepare("UPDATE kv SET value = ? WHERE key = 'retention.sessions'").run(stored);
@@ -159,8 +157,6 @@ test('EC-42: retention and Trash expiry use elapsed N x 24 h across DST, not loc
     const tcal = calendarPlus(trashed, 30);
     assert.equal(tcal - trashPurgeAt(trashed), 3600_000, 'fixture crosses fall back');
     assert.equal(trashPurgeAt(trashed), trashed + 30 * DAY);
-    assert.equal(trashExpired(trashed, trashed + 30 * DAY - 1), false);
-    assert.equal(trashExpired(trashed, trashed + 30 * DAY), true, '30 x 24 h elapsed, before the local calendar date');
     // and retention across fall back is 1 h earlier than the calendar date
     const last2 = Date.UTC(2026, 9, 1, 14);
     assert.equal(calendarPlus(last2, 45) - purgeAt(last2, R45)!, 3600_000);

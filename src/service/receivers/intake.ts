@@ -223,6 +223,9 @@ export async function startHooks(o: HooksOptions): Promise<Hooks> {
   let live: ReportIntake | undefined;
   let failed = false;
   let lastReplay: Promise<unknown> = Promise.resolve(); // the latest replay started; a recovery replay runs after it
+  // XAIBO-PROD-550 (G5Sx-1): when the latest serialized pass started (monotonic, review L3), from service start until the
+  // first pass stamps it; the floor for passes brought forward by replayNow counts from here.
+  let lastStart = performance.now();
   const open = (): ReportIntake | undefined => {
     if (live) return live;
     try {
@@ -252,8 +255,10 @@ export async function startHooks(o: HooksOptions): Promise<Hooks> {
   /** One replay after the latest one settled (single flight: start, late listen, report recovery and interval replays).
    *  interval: only a replay that did something is logged. */
   const runReplay = (interval = false): Promise<ReplayResult> => {
-    const r = lastReplay.catch(() => undefined).then(() => replaySpool({ dataDir: o.dataDir, db: o.db, deliver: intake.deliver, stopped: () => stopped,
-      ...(o.now ? { now: o.now } : {}), deliverReport })).then((x) => {
+    const r = lastReplay.catch(() => undefined).then(() => {
+      lastStart = performance.now(); // G5Sx-1: every pass (startup, late listen, report recovery, interval) at its real start
+      return replaySpool({ dataDir: o.dataDir, db: o.db, deliver: intake.deliver, stopped: () => stopped, ...(o.now ? { now: o.now } : {}), deliverReport });
+    }).then((x) => {
       if (!interval || x.delivered || x.torn || x.skipped || x.dropped || !x.complete) {
         o.log?.log('spool_replay', { delivered: x.delivered, torn: x.torn, skipped: x.skipped, deferred: x.deferred, dropped: x.dropped, complete: x.complete ? 1 : 0 });
       }
@@ -267,16 +272,19 @@ export async function startHooks(o: HooksOptions): Promise<Hooks> {
   const floor = o.replayNowMinMs ?? REPLAY_NOW_MIN_MS;
   let wait = every;
   let timer: NodeJS.Timeout | undefined; // the one pending pass (interval or brought forward)
-  let running = false, again = false, lastStart = 0;
+  let running = false, again = false;
   const arm = () => { if (!stopped) timer = setTimeout(tick, wait).unref(); };
   // PROD-549 (R183-1): only a complete pass resets the backoff; a pass brought forward starts no sooner than `floor`
   // after the last start, through the same timer slot, so a store hovering near full cannot drive back-to-back passes.
   // ponytail: soon() replaces a pending interval timer even when that one is due earlier; only an interval below the
   // floor (tests) can see it. Keep the earlier due time if the interval is ever configured under REPLAY_NOW_MIN_MS.
-  const soon = () => { if (stopped) return; clearTimeout(timer); timer = setTimeout(tick, Math.max(0, lastStart + floor - Date.now())).unref(); };
+  // ponytail (G5Sx-1 review L3): the floor is read when soon() arms the timer, so a brought-forward pass queued behind
+  // two others (a slow pass, then a late-listen or recovery replay) can still start < floor after the middle one; bounded
+  // to one early pass per such event. Recheck the floor at the pass start if a storm is ever seen there.
+  const soon = () => { if (stopped) return; clearTimeout(timer); timer = setTimeout(tick, Math.min(floor, Math.max(0, lastStart + floor - performance.now()))).unref(); };
   const tick = () => {
     if (stopped) return;
-    clearTimeout(timer); running = true; lastStart = Date.now();
+    clearTimeout(timer); running = true;
     runReplay(true).then((x) => { wait = x.complete ? every : Math.min(wait * 2, REPLAY_BACKOFF_MAX_MS); },
       () => { wait = Math.min(wait * 2, REPLAY_BACKOFF_MAX_MS); }).finally(() => {
       running = false;

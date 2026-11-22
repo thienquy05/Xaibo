@@ -5,7 +5,7 @@
 // listens and the spool replays, before the file backfill; a full disk is logged and its hook-only gap written on recovery.
 import { statSync } from 'node:fs';
 import path from 'node:path';
-import { OUTCOMES, REASONS, RULES, type AgentStatus, type Banner, type ClearUsageResult, type PURGE_RESULTS, type REIMPORT_RESULTS, type RetentionSetting, type SAVE_RESULTS, type LiveStatus, type NotifyState, type ServiceMetrics } from '../shared/ipc.ts';
+import { OUTCOMES, REASONS, RULES, type AgentStatus, type Banner, type ClearUsageResult, type PurgeResult, type ReimportResult, type RetentionSetting, type SaveRetentionResult, type LiveStatus, type NotifyState, type ServiceMetrics } from '../shared/ipc.ts';
 import type { Logger } from '../shared/log.ts';
 import { AgyAdapter } from './adapters/agy/index.ts';
 import { ClaudeAdapter } from './adapters/claude/index.ts';
@@ -31,7 +31,7 @@ import { startHooks, type Hooks } from './receivers/intake.ts';
 import { Writer, type Batch } from './store/writer.ts';
 import { loadScopeSalt } from './usage/snapshots.ts';
 import { applyClear, clearWatermarks, keysInWorker } from './usage/clear.ts';
-import { PurgeLimit, purgeManual, reimportKey, rerunner, saveRetention } from './history/tools.ts';
+import { purgeLimit, purgeManual, reimportKey, rerunner, saveRetention } from './history/tools.ts';
 
 export interface BootOptions {
   dataDir: string; home: string; shell?: string | undefined; catalog?: Catalog; intervalMs?: number; log?: Logger;
@@ -90,14 +90,11 @@ export interface Service {
   /** XAIBO-PROD-527 (P5-T18 part 1): a confirmed manual purge (capped per minute), Re-import by opaque key (sets Keep,
    *  then reconciles), and the retention setting saved through the writer. */
   purge(session: number): Promise<PurgeResult>;
-  reimport(key: string): ReimportOutcome;
-  saveRetention(value: RetentionSetting): SaveOutcome;
+  reimport(key: string): ReimportResult;
+  saveRetention(value: RetentionSetting): SaveRetentionResult;
   stop(): void;
 }
 
-type PurgeResult = (typeof PURGE_RESULTS)[number];
-type ReimportOutcome = (typeof REIMPORT_RESULTS)[number];
-type SaveOutcome = (typeof SAVE_RESULTS)[number];
 
 /** The turn-settle interval (PRD §6.2/§6.3, Q8 default; a setting with the Settings screen after Gate D, Q3-14). */
 const SETTLE_MS = 4000;
@@ -337,7 +334,22 @@ export async function boot(o: BootOptions): Promise<Service> {
   // first), then daily; a run whose wall clock ran more than 1 h ahead of the monotonic clock is skipped (review H3).
   let retentionRun: Promise<RetentionResult | null> | null = null;
   let clearing: Promise<ClearUsageResult> | null = null; // XAIBO-PROD-526: Clear usage history in progress
-  const purgeLimit = new PurgeLimit(() => performance.now()); // XAIBO-PROD-527 (D-P5-07); review L2: a monotonic clock
+  const takePurge = purgeLimit(() => performance.now()); // XAIBO-PROD-527 (D-P5-07); review L2: a monotonic clock; one per service
+  // XAIBO-PROD-527 (design review L6): fixed codes and result enums only in the log. XAIBO-PROD-550 (D-P5-15 item 9): the
+  // owner's history actions answer read-only / failed (stopped, store closed) at once; anything that throws, synchronously
+  // (the secret's read) or as a rejection, is logged as `failEvent` and answers failed (review L3); every result is logged.
+  // Synchronous work answers synchronously (index.ts posts the value; review L2 of PROD-550). A refused or throwing call
+  // answers a plain value even for async work, so an async caller wraps it (purge is async: diff review H1).
+  type Refused = 'read-only' | 'failed';
+  function guarded<R extends string>(event: string, failEvent: string, fn: () => Promise<R>): Promise<R | Refused> | Refused;
+  function guarded<R extends string>(event: string, failEvent: string, fn: () => R): R | Refused;
+  function guarded<R extends string>(event: string, failEvent: string, fn: () => R | Promise<R>): R | Refused | Promise<R | Refused> {
+    const failed = (e: unknown): Refused => { o.log?.log(failEvent, { error: errorCode(e) }); return 'failed'; };
+    const done = <X extends string>(result: X): X => { o.log?.log(event, { result }); return result; };
+    let r: R | Promise<R> | Refused;
+    try { r = readOnly ? 'read-only' : stopped || !db.isOpen ? 'failed' : fn(); } catch (e) { r = failed(e); }
+    return r instanceof Promise ? r.catch(failed).then(done) : done(r);
+  }
   // re-review M1: after a Re-import every adapter backfills against the reset checkpoints, one adapter and one sweep at a
   // time (as the boot backfill, P3-T16e); Re-imports during a sweep merge into one more. ponytail: every adapter, not only
   // the re-imported session's profile; narrow it if many profiles make sweeps slow.
@@ -347,12 +359,12 @@ export async function boot(o: BootOptions): Promise<Service> {
       try { await a.backfill(); } catch (e) { o.log?.log('reimport_sync_failed', { error: errorCode(e) }); }
     }
   });
-  const purgeLog = (event: string, fields?: Record<string, string | number>) => o.log?.log(event, fields);
+  const logTo = (event: string, fields?: Record<string, string | number>) => o.log?.log(event, fields);
   // review M: a purge stops between batches once the service stops (the store closes right after); resume finishes it
   // G5Rr1-2: a retention marker cleared by native activity seen during its purge: the adapters re-read its files
   const onReimport = () => { void resync(); };
   const files = () => ({ dataDir: o.dataDir, backupDir: path.join(o.dataDir, 'backups'), secret: loadInstallSecret(o.dataDir), now: clock(), chunks: hooks?.chunks(),
-    stopped: () => stopped, log: purgeLog, onReimport });
+    stopped: () => stopped, log: logTo, onReimport });
   let nightly: NodeJS.Timeout | undefined;
   const resume = async () => {
     try {
@@ -361,7 +373,7 @@ export async function boot(o: BootOptions): Promise<Service> {
       let secret: Buffer | undefined;
       try { secret = loadInstallSecret(o.dataDir); } catch { secret = undefined; }
       const resumed = await resumePurges(writer, { dataDir: o.dataDir, backupDir: path.join(o.dataDir, 'backups'), secret, now: clock(), chunks: hooks?.chunks(),
-        stopped: () => stopped, log: purgeLog, onReimport });
+        stopped: () => stopped, log: logTo, onReimport });
       if (resumed) o.log?.log('purge_resumed', { count: resumed });
     } catch (e) { o.log?.log('purge_resume_failed', { error: errorCode(e) }); }
     if (!stopped) nightly = setTimeout(() => { void resume(); }, spoolResumeDelay(clock())).unref();
@@ -369,9 +381,8 @@ export async function boot(o: BootOptions): Promise<Service> {
   const retention = (): Promise<RetentionResult | null> => {
     if (readOnly || stopped || !db.isOpen) return Promise.resolve(null);
     // diff review M1: everything, the secret's read included, inside the chain: a failure is a logged rejection
-    retentionRun ??= Promise.resolve().then(() => runRetention(writer, db, { dataDir: o.dataDir, backupDir: path.join(o.dataDir, 'backups'),
-      secret: loadInstallSecret(o.dataDir), now: clock(), active: (agent, profile, sid) => isActive(engine?.status(agent, profile, sid)?.lifecycle ?? null),
-      stopped: () => stopped, chunks: hooks?.chunks(), onReimport, ...(o.log ? { log: (event: string, fields?: Record<string, string | number>) => o.log!.log(event, fields) } : {}) }))
+    retentionRun ??= Promise.resolve().then(() => runRetention(writer, db, { ...files(),
+      active: (agent, profile, sid) => isActive(engine?.status(agent, profile, sid)?.lifecycle ?? null) }))
       .then((r) => { if (r.sessions || r.trash || r.quota) o.onRemoved?.(); return r; }) // G5b2-2
       .catch((e: unknown) => { o.log?.log('retention_failed', { error: errorCode(e) }); return null; })
       .finally(() => { retentionRun = null; });
@@ -379,7 +390,7 @@ export async function boot(o: BootOptions): Promise<Service> {
   };
   const scheduler = retentionScheduler({ run: () => { if (!stopped) void retention(); }, delayMs: o.retentionDelayMs ?? RETENTION_DELAY_MS,
     wall: Date.now, mono: () => performance.now(), setTimer: (fn, ms) => setTimeout(fn, ms).unref(), clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
-    ...(o.log ? { log: (event: string, fields?: Record<string, string | number>) => o.log!.log(event, fields) } : {}) });
+    log: logTo });
 
   const done = start();
   done.catch(() => undefined); // callers observe it; this only keeps an early failure from being unhandled meanwhile
@@ -438,29 +449,15 @@ export async function boot(o: BootOptions): Promise<Service> {
     })().finally(() => { clearing = null; }),
     // XAIBO-PROD-527: fixed codes and result enums only in the log (design review L6)
     // review L3: anything that throws (the secret's read included) still answers failed
-    purge: async (session) => {
-      let result: PurgeResult = 'failed';
-      try {
-        result = readOnly ? 'read-only' : stopped || !db.isOpen ? 'failed'
-          : await purgeManual(writer, session, { ...files(), limit: purgeLimit, hidden: () => o.onRemoved?.() }); // design review M6: resync once hidden
-      } catch (e) { o.log?.log('purge_failed', { error: errorCode(e) }); }
-      o.log?.log('purge_manual', { result });
-      return result;
-    },
+    purge: async (session) => guarded('purge_manual', 'purge_failed', // design review M6: resync once hidden
+      () => purgeManual(writer, session, { ...files(), limit: takePurge, hidden: () => o.onRemoved?.() })),
     reimport: (key) => {
-      let result: ReimportOutcome = 'failed';
-      try { result = readOnly ? 'read-only' : stopped || !db.isOpen ? 'failed' : reimportKey(writer, db, key, files()); } catch (e) { o.log?.log('reimport_failed', { error: errorCode(e) }); }
-      o.log?.log('reimport', { result });
+      const result = guarded('reimport', 'reimport_failed', () => reimportKey(writer, db, key, files()));
       // review H2: backfill syncs against the stored checkpoints (reset by the Re-import); a scan only sees changed files
       if (result === 'ok') resync();
       return result;
     },
-    saveRetention: (value) => {
-      let result: SaveOutcome = 'failed';
-      try { result = readOnly ? 'read-only' : stopped || !db.isOpen ? 'failed' : saveRetention(writer, value); } catch (e) { o.log?.log('retention_set_failed', { error: errorCode(e) }); }
-      o.log?.log('retention_set', { result });
-      return result;
-    },
+    saveRetention: (value) => guarded('retention_set', 'retention_set_failed', () => saveRetention(writer, value)),
     stop: () => {
       stopped = true;
       if (due) clearTimeout(due.timer);

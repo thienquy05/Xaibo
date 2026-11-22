@@ -7,7 +7,7 @@
 // across event-loop turns; purge.ts runs one driver per identity, and Re-import answers pending while it runs.
 import { createHmac } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import { MAX_ITEMS, PURGE_RESULTS, REIMPORT_RESULTS, SAVE_RESULTS, parseRetentionSetting, type HistoryFilter, type HistoryRow, type RetentionSetting, type SearchHit, type SearchKey,
+import { MAX_ITEMS, parseRetentionSetting, type HistoryFilter, type PurgeResult, type ReimportResult, type SaveRetentionResult, type HistoryRow, type RetentionSetting, type SearchHit, type SearchKey,
   type SuppressedCursor, type SuppressedRow } from '../../shared/ipc.ts';
 import { profileLabel, type LiveOf } from '../api.ts';
 import type { SessionKind } from '../catalog/validate.ts';
@@ -22,9 +22,6 @@ import { reimport } from './reimport.ts';
 import { notPurging, type Identity } from './suppression.ts';
 import type { ChunkStore } from '../adapters/generic/chunks.ts';
 
-type Purge = (typeof PURGE_RESULTS)[number];
-type Reimport = (typeof REIMPORT_RESULTS)[number];
-type Save = (typeof SAVE_RESULTS)[number];
 interface Files { dataDir: string; backupDir: string; secret: Buffer; now: number; chunks?: ChunkStore | undefined }
 
 /** One search page; hits whose session is gone by the time its row is read are dropped (design review L4). */
@@ -87,29 +84,26 @@ export function findSuppressed(db: DatabaseSync, secret: Buffer, key: string): I
   return null;
 }
 
-/** At most `max` manual purges per `windowMs` (D-P5-07). */
-export class PurgeLimit {
-  #times: number[] = [];
-  readonly #now: () => number;
-  readonly #max: number;
-  readonly #windowMs: number;
-  constructor(now: () => number, max = 10, windowMs = 60_000) { this.#now = now; this.#max = max; this.#windowMs = windowMs; }
-  take(): boolean {
-    const t = this.#now();
-    this.#times = this.#times.filter((x) => t - x < this.#windowMs && x <= t);
-    if (this.#times.length >= this.#max) return false;
-    this.#times.push(t);
+const PURGE_MAX = 10, PURGE_WINDOW_MS = 60_000;
+/** At most PURGE_MAX manual purges per PURGE_WINDOW_MS (D-P5-07); one taker per service (boot), `now` monotonic. */
+export function purgeLimit(now: () => number): () => boolean {
+  let times: number[] = [];
+  return () => {
+    const t = now();
+    times = times.filter((x) => t - x < PURGE_WINDOW_MS && x <= t);
+    if (times.length >= PURGE_MAX) return false;
+    times = [...times, t];
     return true;
-  }
+  };
 }
 
 /** A purge the owner confirmed (reason manual, P5-T07 engine through the writer). An unknown session is not counted.
  *  `hidden`: called once the session is hidden (phase a), before its rows are deleted in batches. */
-export async function purgeManual(writer: Writer, session: number, o: FileOptions & { secret: Buffer; limit: PurgeLimit; hidden?: () => void }): Promise<Purge> {
+export async function purgeManual(writer: Writer, session: number, o: FileOptions & { secret: Buffer; limit: () => boolean; hidden?: () => void }): Promise<PurgeResult> {
   let hid = false; // Gate 5 second review M1 (design review 3014): once hidden, a failure is 'pending', never "nothing purged"
   try {
     if (!writer.transact((db) => db.prepare(`SELECT 1 FROM sessions s WHERE id = ? AND ${notPurging(db)}`).get(session) !== undefined)) return 'not-found';
-    if (!o.limit.take()) return 'busy';
+    if (!o.limit()) return 'busy';
     // the caller's options whole (stop, log), so the row phases see them; keep callers' objects to FileOptions (a spread is
     // not excess-checked: vacuum, guard or limits would pass through)
     const { limit: _limit, hidden, ...files } = o;
@@ -119,7 +113,7 @@ export async function purgeManual(writer: Writer, session: number, o: FileOption
 }
 
 /** Re-import by key; on ok the returning session is kept (D-P5-08). The caller triggers the reconcile. */
-export function reimportKey(writer: Writer, db: DatabaseSync, key: string, o: Files): Reimport {
+export function reimportKey(writer: Writer, db: DatabaseSync, key: string, o: Files): ReimportResult {
   try {
     const who = findSuppressed(db, o.secret, key);
     if (!who) return 'not-found';
@@ -134,11 +128,12 @@ export function retentionState(db: DatabaseSync): { setting: RetentionSetting | 
   return { setting: retentionOf(db), lastRunAt: last !== null && Number.isFinite(last) ? last : null };
 }
 
-/** Validates with the shared schema and saves through the writer (design review L5). */
-export function saveRetention(writer: Writer, value: unknown): Save {
+/** Validates with the shared schema, before any transaction (an invalid value never opens one: XAIBO-PROD-550 review
+ *  L1), and saves through the writer (design review L5). */
+export function saveRetention(writer: Writer, value: unknown): SaveRetentionResult {
   const v = parseRetentionSetting(value);
   if (!v) return 'invalid';
-  try { writer.transact((db) => setRetention(db, v === 'never' ? 'never' : v.days)); return 'saved'; }
+  try { writer.transact((db) => setRetention(db, v)); return 'saved'; }
   catch (e) { return isDiskFull(e) ? 'disk-full' : 'failed'; }
 }
 

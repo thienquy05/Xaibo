@@ -5,7 +5,7 @@
 import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { NAME_MAX, type HistoryFilter, type HistoryKey, type HistoryRow, type Named, type OverlayOp, type OverlayResult } from '../../shared/ipc.ts';
-import { cut, PAGE_DEFAULT, PAGE_MAX, ROW, toRow, type LiveOf, type Raw } from '../api.ts';
+import { cut, hasTable, pageSize, ROW, toRow, type LiveOf, type Raw } from '../api.ts';
 import type { SessionKind } from '../catalog/validate.ts';
 import { isDiskFull } from '../store/db.ts';
 import { groupWhere } from './map.ts';
@@ -27,7 +27,8 @@ export function cleanName(s: string): string | null {
 }
 
 const fail = (error: Extract<OverlayResult, { ok: false }>['error']): OverlayResult => ({ ok: false, error });
-const clamp = (limit: number) => Math.min(Number.isSafeInteger(limit) && limit > 0 ? limit : PAGE_DEFAULT, PAGE_MAX);
+/** A filter only the overlay tables can answer (Archived, Trash, a project, folder or map group). */
+export const needsOverlay = (f: HistoryFilter): boolean => f.mode !== 'all' || f.project !== null || f.folder !== null || !!f.group;
 interface Key { agent: string; profile_id: string; native_session_id: string; cwd: string | null }
 
 /** XAIBO-PROD-542 G5b2-4: a Trash or restore that succeeded changes what every window lists: they resync. */
@@ -130,9 +131,9 @@ export function scopeWhere(f: HistoryFilter, overlay: boolean): { where: string[
  *  (a read-only older schema) the list degrades to sessions with no overlay data. */
 export function listHistory(db: DatabaseSync, f: HistoryFilter, cursor: HistoryKey | null, limit: number,
   kinds: SessionKind[] = [], models: ModelEntry[] = [], live?: LiveOf): { rows: HistoryRow[]; next: HistoryKey | null } {
-  const overlay = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'overlays'").get() !== undefined;
-  if (!overlay && (f.mode !== 'all' || f.project !== null || f.folder !== null || f.group)) return { rows: [], next: null };
-  const n = clamp(limit);
+  const overlay = hasTable(db, 'overlays');
+  if (!overlay && needsOverlay(f)) return { rows: [], next: null };
+  const n = pageSize(limit);
   const P = overlay ? 'coalesce(o.pinned, 0)' : '0';
   const { cols, joins } = historySql(overlay, P);
   const s = scopeWhere(f, overlay);
@@ -169,14 +170,14 @@ function historyOf(db: DatabaseSync, kinds: SessionKind[], models: ModelEntry[],
 /** XAIBO-PROD-527: the history rows of `ids` (search hits), in no particular order; ids no longer present are absent. */
 export function historyRows(db: DatabaseSync, ids: number[], kinds: SessionKind[] = [], models: ModelEntry[] = [], live?: LiveOf): Map<number, HistoryRow> {
   if (!ids.length) return new Map();
-  const overlay = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'overlays'").get() !== undefined;
+  const overlay = hasTable(db, 'overlays');
   const { cols, joins } = historySql(overlay);
   const sql = `${ROW(db).replace(/^SELECT /, `SELECT ${cols}`)}${joins} WHERE s.id IN (${ids.map(() => '?').join(', ')}) AND ${notPurging(db)}`;
   return new Map(historyOf(db, kinds, models, live)(db.prepare(sql).all(...ids) as unknown as HistoryRaw[]).map((r) => [r.id, r]));
 }
 
 function idPage(db: DatabaseSync, sql: string, args: number[], cursor: number | null, limit: number): { list: Named[]; next: number | null } {
-  const n = clamp(limit);
+  const n = pageSize(limit);
   const list = db.prepare(sql).all(...args, cursor ?? 0, n) as unknown as Named[];
   return { list: list.map((x) => ({ id: x.id, name: x.name })), next: list.length === n ? list.at(-1)!.id : null };
 }
