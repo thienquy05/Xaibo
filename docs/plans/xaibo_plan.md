@@ -1886,16 +1886,16 @@ See §6: Q-4.1, Q-4.2, Q-4.4..Q-4.7 (Q-4.3 → OQ-X8, Q-4.8 → OQ-X11).
 - **Regression:** M12 and T0/T1 smoke after migrations; M1/M2 dispatch lag during retention/maintenance at TP.
 
 ### Gate 5 checklist
-- [ ] Purge acceptance (P5-T07) GREEN.
-- [ ] EC-21, 22, 23, 24, 58, 66, 71, 99, 103, 104, 105, 106, 107, 108 pass; Q24 existing rows unchanged. EC-87 is deferred to owner-started scale-up, not a gate pass.
-- [ ] EC-42 regression (P5-T10 DST fixture): retention and Trash expiry use elapsed N × 24 h.
-- [ ] History E2E flows pass (repository/worktree filters, search, move/pin/archive/Trash/Undo/restore/purge, Re-import, retention settings plus storage meter, settings persistence); monthly chart E2E (US-20); Agent Map tree/nav E2E (US-21, P5-T18a).
-- [ ] A11Y and visual baselines for history, chart and Agent Map tree; connected-browser visual check, 0 console errors.
-- [ ] M13 (TP) measured with quota history and snapshot/index bytes; regression reruns reported.
-- [ ] Native fixture stores byte-identical; app data 0700/0600; repo unchanged; M6 = 0.
-- [ ] Monthly tables contain only opaque keys.
-- [ ] Pipeline evidence per unit (`security-change` for purge, retention, settlement, clear).
-- [ ] GS: Codex review, Claude second review, owner stop.
+- [x] Purge acceptance (P5-T07) GREEN. *`gates/gate5.md`: test:electron on `829e51f`.*
+- [x] EC-21, 22, 23, 24, 58, 66, 71, 99, 103, 104, 105, 106, 107, 108 pass; Q24 existing rows unchanged. EC-87 is deferred to owner-started scale-up, not a gate pass. *`gates/gate5.md`: npm test, test:electron and E2E on `829e51f`.*
+- [x] EC-42 regression (P5-T10 DST fixture): retention and Trash expiry use elapsed N × 24 h. *`gates/gate5.md`.*
+- [x] History E2E flows pass (repository/worktree filters, search, move/pin/archive/Trash/Undo/restore/purge, Re-import, retention settings plus storage meter, settings persistence); monthly chart E2E (US-20); Agent Map tree/nav E2E (US-21, P5-T18a). *`gates/gate5.md`: E2E 75/75; the §6.4 filters not yet built are deferred (D-P5-17).*
+- [x] A11Y and visual baselines for history, chart and Agent Map tree; connected-browser visual check, 0 console errors. *`gates/gate5.md`: E2E baselines and the connected-browser check on the gate build.*
+- [x] M13 (TP) measured with quota history and snapshot/index bytes; regression reruns reported. *`gates/gate5.md`; TP usage with the real disk-full: D-P5-20, D-P5-22.*
+- [x] Native fixture stores byte-identical; app data 0700/0600; repo unchanged; M6 = 0. *`gates/gate5.md`: packaged audit.*
+- [x] Monthly tables contain only opaque keys. *`gates/gate5.md`.*
+- [x] Pipeline evidence per unit (`security-change` for purge, retention, settlement, clear). *Settlement and Clear ran `new-feature` with security reviews (D-P5-21).*
+- [x] GS: Codex review, Claude second review, owner stop. *Approved 2026-11-22 on `6991582` (`gates/gate5.md`).*
 
 ### Risks (Phase 5)
 - **FTS5 deletion** needs original indexed text or `contentless_delete` (SQLite ≥3.43, version from S1); a mismatch leaves orphans.
