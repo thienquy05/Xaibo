@@ -18,7 +18,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { claudeProfile } from '../helpers/hook-socket.ts';
 import { agyRoot, close, environment, launch, retentionNever, retentionRuns, serviceLog, sidOf, sleep, stats, tornLogLines, until, type Launched } from './app.ts';
 import { emit, installHelpers, now } from './emitter.ts';
-import { analyze, loadQualifies, type Emitted, type TraceLine, type Window } from './t2-analysis.ts';
+import { analyze, hookLookup, loadQualifies, type Emitted, type TraceLine, type Window } from './t2-analysis.ts';
 import { footprintMiB, psTree } from './m16.ts';
 import { codexTokenCount, fillVolume, FRAME_MS, frame, installTee, MALFORMED_EVERY, malformed, ORIGINAL, sh, teeMatches, timed, volume, type Timed } from './t2-usage.ts';
 
@@ -149,24 +149,18 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
     const teeCmd = usage ? installTee(dataDir, profile) : null;
     db = new DatabaseSync(path.join(dataDir, 'xaibo.db'), { readOnly: true });
     const reader = db;
-    // A spooled hook replayed later gets a newer rowid, so a delivery id is never given to two emits (review M2).
-    const deliveryAfter = reader.prepare('SELECT delivery_id AS id FROM hook_delivery WHERE rowid > ? AND native_session_id = ? AND event = ? ORDER BY rowid LIMIT 8');
-    const usedDeliveries = new Set<string>();
-    const resolve = (top: number, sid: string, event: string) => {
-      const id = (deliveryAfter.all(top, sid, event) as { id: string }[]).map((x) => x.id).find((x) => !usedDeliveries.has(x)) ?? null;
-      if (id) usedDeliveries.add(id);
-      return id;
-    };
-    const unresolved: { index: number; top: number; sid: string; event: string }[] = [];
+    // Gate 5 disk-full: each hook resolves to its own delivery by its unique (session, event, tool_use_id) key, so a hook
+    // rejected while the disk was full stays unresolved instead of taking a later hook's row (t2-analysis hookLookup).
+    const resolve = hookLookup(reader);
+    const unresolved: { index: number; sid: string; event: string; tool: string }[] = [];
     let lateResolved = 0;
     const resolveLate = () => {
       for (const u of unresolved) {
         if (emitted[u.index]!.id !== null) continue;
-        const id = resolve(u.top, u.sid, u.event);
+        const id = resolve('claude', u.sid, u.event, u.tool);
         if (id) { emitted[u.index]!.id = id; lateResolved++; }
       }
     };
-    const topRow = reader.prepare('SELECT coalesce(max(rowid), 0) AS n FROM hook_delivery');
     const imported = () => serviceLog(dataDir).find((e) => e.event === 'backfill_done');
 
     const emitted: Emitted[] = [];
@@ -202,16 +196,16 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
         next += interval;
         if (s.agent === 'claude' && rand() < HOOK_SHARE) {
           const event = tool % 2 ? 'PostToolUse' : 'PreToolUse';
-          const top = Number((topRow.get() as { n: number }).n);
+          const toolUseId = `t${Math.floor(tool / 2)}`; // unique per session and event: the hook's identity in the store
           if (usage && hooksSent % 4 === 0) { const b = await timed('/usr/bin/true', [], '{}'); hookBaseline.push({ t0: b.t0, ms: b.ms }); } // M16 under load: spawn alone
           const e = await emit(shim, 'claude', profile, { hook_event_name: event, session_id: s.sid, cwd: `${CWD}-${s.sid}`, tool_name: 'Bash',
-            tool_use_id: `t${Math.floor(tool / 2)}`, tool_input: { command: 'echo 1' }, ...(event === 'PostToolUse' ? { tool_response: { stdout: '1' } } : {}) });
+            tool_use_id: toolUseId, tool_input: { command: 'echo 1' }, ...(event === 'PostToolUse' ? { tool_response: { stdout: '1' } } : {}) });
           tool++;
           hooksSent++;
-          // none yet: the forwarder gave up at its deadline (the delivery may still land late, or only by the spool replay
-          // at the next service start); resolved again after the load, from the same snapshot
-          const id = resolve(top, s.sid, event);
-          if (id === null) unresolved.push({ index: emitted.length, top, sid: s.sid, event });
+          // none yet: the forwarder gave up at its deadline (the delivery may still land live, or only by the spool replay);
+          // resolved again after the load by the same key
+          const id = resolve('claude', s.sid, event, toolUseId);
+          if (id === null) unresolved.push({ index: emitted.length, sid: s.sid, event, tool: toolUseId });
           emitted.push({ kind: 'hook', id, t0: e.t0, exit: e.exit });
           continue;
         }
@@ -414,16 +408,19 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
       metric: 'live-load', profile: tier, profileSpec: p, seed, budgetsMs: B,
       load: { events: emitted.length, hooks: hooksSent, records: fileIds.length, eventsPerSecond: Math.round(emitted.length / p.seconds), seconds: p.seconds },
       recordBytes: { ...stats(sizes), p99: sorted[Math.max(0, Math.ceil(0.99 * sorted.length) - 1)] ?? null },
-      m1: r.m1, m2: r.m2, m1Hops: r.hops.m1, unpainted: r.unpainted, steadyMisses: r.steadyMisses,
-      // seconds late = delivered live after the forwarder gave up; minutes = only by the spool replay at the restart
+      m1: r.m1, m2: r.m2, m1Hops: r.hops.m1, m2Hops: r.hops.m2, unpainted: r.unpainted, steadyMisses: r.steadyMisses,
+      // hooks not stored when their forwarder exited, steady ones only (restart and fault windows kept apart as in M1):
+      // seconds late = delivered live after the forwarder gave up; minutes = only by a spool replay
       hooksPastForwarderDeadline: { count: unresolved.length, resolvedAfterLoad: lateResolved,
-        emitToPaintMs: analyze({ emitted: unresolved.map((u) => emitted[u.index]!), service: traceFile('perf-trace-service.jsonl'), main: traceFile('perf-trace-main.jsonl'), restart: null, loadEnd }).m1.steady },
+        emitToPaintMs: analyze({ emitted: unresolved.map((u) => emitted[u.index]!), service: traceFile('perf-trace-service.jsonl'), main: traceFile('perf-trace-main.jsonl'), restart, faults: faults(), loadEnd }).m1.steady },
+      ...(full ? { faultWindowS: { from: Number((full as Window).from - (emitted[0]?.t0 ?? 0n)) / 1e9, to: Number((full as Window).to - (emitted[0]?.t0 ?? 0n)) / 1e9 } } : {}),
       killAtMs: w ? Math.round(Number(w.from - (emitted[0]?.t0 ?? w.from)) / 1e6) + IN_FLIGHT_MS : null, drainMs: r.drainMs, ingestLagMs: r.ingestLagMs, writerQueueAgeMs: r.queueAgeMs, deltaResyncs: r.deltaResyncs,
       restart: w ? { windowMs: Number(w.to - w.from) / 1e6 } : null,
       stored, backfill: { corpus: summary.case, doneMs: backfillDone ? Date.parse(backfillDone.t) - launched.created : null }, workspaceOpen,
       retentionRan: retention.length > 0, retentionRuns: retention, ...(during ? { duringRetention: during } : {}),
       notes: 'M1/M2 checks use events emitted outside the restart window (kill to restarted-ready + 5 s); restart-window samples are reported apart. '
-        + 'A miss (never painted, or a hook spooled at the deadline) is timed as Infinity, which JSON prints as null. Queue age is checked as ingest lag '
+        + 'M1 is emit -> the hook\'s own paint, also when its live delivery lands after the forwarder\'s deadline; a miss (never painted by the end of the drain) '
+        + 'is timed as Infinity, which JSON prints as null. Hooks are matched to deliveries by (session, event, tool_use_id). Queue age is checked as ingest lag '
         + '(emit -> commit, steady events): file syncs flush the writer right after they enqueue, so the writer\'s own 5 s queue-age peaks stay ~0. Drain counts steady events. '
         + 'Paint ack = flushSync + 2 rAF, an upper bound.',
       ...(u ? { usage: u.report } : {}),
