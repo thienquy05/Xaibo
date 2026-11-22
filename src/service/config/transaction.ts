@@ -17,7 +17,10 @@ import { isDeepStrictEqual } from 'node:util';
 import { isObj } from '../../shared/ipc.ts';
 import { atomicWrite, fsyncDir, privateDir, writeExclusive } from '../fs-private.ts';
 
-export type Route = 'claude-plugin' | 'claude-settings-fallback' | 'claude-tee' | 'codex-hooks' | 'agy-hooks';
+const ROUTES = ['claude-plugin', 'claude-settings-fallback', 'claude-tee', 'codex-hooks', 'agy-hooks', 'claude-retention'] as const;
+export type Route = (typeof ROUTES)[number];
+/** P6-T02 (EC-73, FR-33): the retention offer's target value. */
+export const RETENTION_DAYS = 45;
 export type Op = { op: 'set' | 'append'; pointer: string; value: unknown };
 /** Realpaths: every target must resolve inside `root` and outside every `denied` root. */
 export interface Bounds { root: string; denied: string[] }
@@ -28,7 +31,9 @@ export type Code =
   // P3-T05 (claude-plugin route, EC-09): one install per profile; plugin and settings fallback exclude each other.
   | 'duplicate' | 'exclusive' | 'not-installed' | 'cli' | 'shim-missing' | 'route'
   // P3-T14 (claude-tee): an existing statusLine that is not a command statusLine cannot be teed.
-  | 'statusline';
+  | 'statusline'
+  // P6-T02 (EC-73): the claude-retention route only raises cleanupPeriodDays to 45 over an absent or lower readable value.
+  | 'retention';
 export class ConfigError extends Error {
   readonly code: Code;
   constructor(code: Code) {
@@ -245,6 +250,7 @@ export function plan(target: string, route: Route, ops: Op[], bounds: Bounds): P
   const file = resolveTarget(target, bounds);
   const cur = readFile(file);
   const { doc: base, style } = cur ? decode(cur.bytes) : { doc: {}, style: DEFAULT_STYLE };
+  if (route === 'claude-retention') checkRetention(ops, base);
   const doc = structuredClone(base);
   const owned: Owned[] = [];
   const created: string[] = [];
@@ -275,6 +281,16 @@ export function plan(target: string, route: Route, ops: Op[], bounds: Bounds): P
     target: file, route, existed: !!cur, preHash: cur ? sha256(cur.bytes) : null, dev: cur?.dev ?? null, ino: cur?.ino ?? null,
     mode: cur?.mode ?? NEW_FILE_MODE, base, after, diff, owned, created,
   };
+}
+
+/** P6-T02 design review H1: whatever a caller passes, this route never lowers a value, never replaces one it cannot read
+ *  (the file may have changed since the offer) and writes nothing but the 45-day value. */
+function checkRetention(ops: Op[], base: object) {
+  const [o] = ops;
+  if (ops.length !== 1 || o!.op !== 'set' || o!.pointer !== '/cleanupPeriodDays' || o!.value !== RETENTION_DAYS) fail('retention');
+  if (!Object.hasOwn(base, 'cleanupPeriodDays')) return;
+  const v = (base as Record<string, unknown>)['cleanupPeriodDays'];
+  if (typeof v !== 'number' || !Number.isSafeInteger(v) || v <= 0 || v >= RETENTION_DAYS) fail('retention');
 }
 
 const MANIFEST_VERSION = 1;
@@ -332,7 +348,10 @@ export function apply(p: Plan, o: ApplyOptions): ManifestEntry {
   if (resolveTarget(p.target, o.bounds) !== p.target) fail('changed');
   const dirs = privateDirs(o.dataDir);
   if (p.route === 'claude-plugin') fail('route'); // installs through `claude plugin` (adapters/claude/setup.ts)
-  assertExclusive(readManifest(o.dataDir), p.target, p.route);
+  const others = readManifest(o.dataDir);
+  assertExclusive(others, p.target, p.route);
+  // P6-T02 design review H2: one retention entry per file, so a revert can never remove a value the owner set since
+  if (p.route === 'claude-retention' && others.some((e) => e.target === p.target && e.route === p.route)) fail('duplicate');
   const before = readFile(p.target);
   if (!sameFile(p, before)) fail('changed');
   const backup = before ? `${randomUUID()}.bak` : null;
@@ -341,7 +360,6 @@ export function apply(p: Plan, o: ApplyOptions): ManifestEntry {
     id: randomUUID(), target: p.target, route: p.route, state: 'pending', existed: p.existed, preHash: p.preHash,
     postHash: sha256(p.after), owned: p.owned, created: p.created, backup, at: new Date().toISOString(),
   };
-  const others = readManifest(o.dataDir);
   try {
     writeManifest(o.dataDir, [...others, entry]); // pending first: a crash after the rename still leaves a revertable entry
   } catch (e) {
@@ -375,6 +393,7 @@ export function apply(p: Plan, o: ApplyOptions): ManifestEntry {
 }
 
 function checkEntry(e: ManifestEntry) {
+  if (!(ROUTES as readonly string[]).includes(e.route)) fail('manifest'); // P6-T02 design review L1: revert branches on the route
   if (e.backup !== null && !BACKUP_NAME.test(e.backup)) fail('manifest');
   [...e.owned.map((x) => x.pointer), ...e.created].forEach(segments);
 }

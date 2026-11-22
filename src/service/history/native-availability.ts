@@ -59,10 +59,12 @@ export async function reconcileNative(o: { db: DatabaseSync; writer: Writer; pro
   if (flipped.length) o.writer.notify({ profileId: o.profileId, agent: o.agent, sessions: flipped.map((nativeSessionId) => ({ nativeSessionId })), events: [] });
 }
 
-/** Effective Claude cleanupPeriodDays: managed policy (managed-settings.json, then managed-settings.d/*.json in order;
- *  the last that sets it) over user settings.json, else the default. null when any of those files is unreadable or the
- *  value is not a positive integer: no estimate rather than a wrong one. */
-export function claudeCleanupDays(configDir: string, managedDir = CLAUDE_MANAGED_DIR): number | null {
+/** Effective Claude cleanupPeriodDays and the layer that sets it: managed policy (managed-settings.json, then
+ *  managed-settings.d/*.json in order; the last that has the key) over user settings.json, else the default. Key presence
+ *  decides the layer (P6-T02 design review M1: an explicit null is set, not unset). null when any of those files is
+ *  unreadable; days null when the winning value is not a positive safe integer.
+ *  ponytail: MDM/server-managed policy, project settings and CLI flags are not read; policy still wins at runtime. */
+export function claudeCleanup(configDir: string, managedDir = CLAUDE_MANAGED_DIR): { days: number | null; layer: 'managed' | 'user' | 'default' } | null {
   let dropIns: string[] = [];
   try { dropIns = readdirSync(path.join(managedDir, 'managed-settings.d')).filter((n) => n.endsWith('.json')).sort(); } catch (e) {
     if (!['ENOENT', 'ENOTDIR'].includes((e as NodeJS.ErrnoException).code ?? '')) return null;
@@ -70,10 +72,13 @@ export function claudeCleanupDays(configDir: string, managedDir = CLAUDE_MANAGED
   const managed = [path.join(managedDir, 'managed-settings.json'), ...dropIns.map((n) => path.join(managedDir, 'managed-settings.d', n))].map(settings);
   const user = settings(path.join(configDir, 'settings.json'));
   if ([...managed, user].includes('bad')) return null;
-  const set = (s: Record<string, unknown> | null | 'bad') => (s && s !== 'bad' && 'cleanupPeriodDays' in s ? s.cleanupPeriodDays : undefined);
-  const v = managed.map(set).filter((x) => x !== undefined).at(-1) ?? set(user) ?? CLAUDE_CLEANUP_DEFAULT;
-  return typeof v === 'number' && Number.isSafeInteger(v) && v > 0 ? v : null;
+  const has = (s: Record<string, unknown> | null | 'bad'): s is Record<string, unknown> => !!s && s !== 'bad' && Object.hasOwn(s, 'cleanupPeriodDays');
+  const policy = managed.filter(has).at(-1);
+  const [v, layer] = policy ? [policy.cleanupPeriodDays, 'managed' as const] : has(user) ? [user.cleanupPeriodDays, 'user' as const] : [CLAUDE_CLEANUP_DEFAULT, 'default' as const];
+  return { days: typeof v === 'number' && Number.isSafeInteger(v) && v > 0 ? v : null, layer };
 }
+/** Effective Claude cleanupPeriodDays (claudeCleanup); null = no estimate rather than a wrong one. */
+export const claudeCleanupDays = (configDir: string, managedDir?: string): number | null => claudeCleanup(configDir, managedDir)?.days ?? null;
 
 /** EC-23: when Claude's cleanup is estimated to delete this session's transcript; null for other agents, a deleted
  *  native session, no transcript checkpoint or no usable setting. */
