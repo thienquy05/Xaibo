@@ -258,6 +258,183 @@ test('review 4: a foreign marketplace -> drifted; an oversized registry -> unrea
   assert.equal(w.spawns(), spawned, 'an unreadable registry is an ownership conflict: no `claude plugin` call');
 });
 
+// XAIBO-PROD-563 (P6-T04 part 2; design .handoff/p6-t04-design.md part 2 slice, review C1-C8): one preview and one
+// confirmation drop the manifest record and the backup of entries a fresh reconcile still reports removed; nothing in the
+// agent profile is written, no CLI runs; reconnect is the ordinary Connect afterwards.
+const A = {}, B = {};
+/** Every Xaibo hook group removed from settings.json behind Xaibo's back (the fallback entry becomes removed). */
+function stripXaibo(w: W) {
+  const s = json(w.files.claude) as { hooks: Record<string, unknown[]>; [k: string]: unknown };
+  put(w.files.claude, { ...s, hooks: Object.fromEntries(Object.entries(s.hooks).map(([ev, gs]) => [ev, gs.filter((g) => !xaibo(g))])) });
+  return s;
+}
+const backups = (w: W) => readdirSync(join(w.dataDir, 'integrations', 'backups'));
+
+test('part 2 plan case: the plugin removed outside Xaibo is cleaned up (record, backup); profile untouched, no CLI; reconnect after the marketplace goes', async () => {
+  const w = await world({ route: 'plugin' });
+  await connect(w, w.profiles.claude);
+  const [e] = readManifest(w.dataDir);
+  w.external('plugin', 'uninstall', 'xaibo-hooks@xaibo', '-s', 'user');
+  const ps = Object.values(w.profiles);
+  const pv = w.c.previewCleanup(ps, [e!.id], A);
+  assert.equal(pv.status, 'preview', JSON.stringify(pv));
+  if (pv.status !== 'preview') return;
+  assert.deepEqual({ ...pv, previewId: '' }, { status: 'preview', previewId: '', ttlMs: 300_000, items: [{ entry: e!.id, cleanup: ['manifest-entry', 'backup'] }] });
+  assert.equal(backups(w).length, 1);
+  const profile = tree(w.home), spawned = w.spawns();
+  assert.deepEqual(await w.c.applyCleanup(pv.previewId, A), { status: 'cleaned', removed: [e!.id], left: [] });
+  assert.deepEqual(readManifest(w.dataDir), []);
+  assert.deepEqual(backups(w), []);
+  assert.deepEqual(tree(w.home), profile, 'no agent profile file written');
+  assert.equal(w.spawns(), spawned, 'no CLI');
+  assert.deepEqual(w.c.reconciled(), { status: 'ready', entries: [] }, 'the kept report is refreshed');
+  assert.deepEqual(w.c.previewConnect(w.profiles.claude, { retention: false, tee: false }), { status: 'refused', code: 'duplicate' }, 'the marketplace is a manual leftover');
+  w.external('plugin', 'marketplace', 'remove', 'xaibo');
+  await connect(w, w.profiles.claude);
+  assert.deepEqual(states(w.restart()), [['claude-plugin', 'connected']]);
+});
+
+test('part 2: fallback cleaned then reconnected; only removed entries can be cleaned; empty or duplicate ids refused', async () => {
+  const w = await world();
+  await connect(w, w.profiles.claude, { retention: false, tee: true });
+  const [fb, tee] = readManifest(w.dataDir);
+  const ps = Object.values(w.profiles);
+  stripXaibo(w);
+  assert.deepEqual(w.c.previewCleanup(ps, [tee!.id], A), { status: 'refused', code: 'not-removed' }, 'the tee is still connected');
+  assert.deepEqual(w.c.previewCleanup(ps, [fb!.id, tee!.id], A), { status: 'refused', code: 'not-removed' }, 'no silent partial selection');
+  assert.deepEqual(w.c.previewCleanup(ps, ['00000000-0000-4000-8000-00000000dead'], A), { status: 'refused', code: 'not-removed' });
+  assert.deepEqual(w.c.previewCleanup(ps, [], A), { status: 'refused', code: 'ops' });
+  assert.deepEqual(w.c.previewCleanup(ps, [fb!.id, fb!.id], A), { status: 'refused', code: 'ops' });
+  recordEntry(w.dataDir, { ...tee!, backup: fb!.backup }); // code review 3: a hand-edited manifest sharing a backup
+  const pv = w.c.previewCleanup(ps, [fb!.id], A);
+  assert.equal(pv.status, 'preview');
+  assert.deepEqual(await w.c.applyCleanup(pv.status === 'preview' ? pv.previewId : '', A), { status: 'cleaned', removed: [fb!.id], left: [] });
+  assert.deepEqual(readManifest(w.dataDir).map((x) => x.id), [tee!.id]);
+  assert.ok(backups(w).includes(fb!.backup!), 'the backup an entry that stays names is kept');
+  recordEntry(w.dataDir, tee!);
+  const pc = w.c.previewConnect(w.profiles.claude, { retention: false, tee: false });
+  assert.equal(pc.status, 'preview', 'reconnect: the ordinary Connect preview');
+  assert.deepEqual(await w.c.applyConnect(pc.status === 'preview' ? pc.previewId : ''), { status: 'applied', entries: [readManifest(w.dataDir).at(-1)!.id], trustSteps: [] });
+});
+
+test('part 2: changed since the preview -> needs-preview, nothing written (values back, entry changed, plugin reinstalled)', async () => {
+  const w = await world();
+  await connect(w, w.profiles.claude);
+  const [fb] = readManifest(w.dataDir);
+  const ps = Object.values(w.profiles);
+  const s = stripXaibo(w);
+  let pv = w.c.previewCleanup(ps, [fb!.id], A);
+  put(w.files.claude, s); // the owner put Xaibo's groups back
+  assert.deepEqual(await w.c.applyCleanup(pv.status === 'preview' ? pv.previewId : '', A), { status: 'needs-preview' });
+  assert.deepEqual(readManifest(w.dataDir), [fb]);
+  stripXaibo(w);
+  pv = w.c.previewCleanup(ps, [fb!.id], A);
+  recordEntry(w.dataDir, { ...fb!, at: '2026-01-01T00:00:00.000Z' });
+  assert.deepEqual(await w.c.applyCleanup(pv.status === 'preview' ? pv.previewId : '', A), { status: 'needs-preview' });
+  assert.equal(backups(w).length, 1);
+
+  const p = await world({ route: 'plugin' });
+  await connect(p, p.profiles.claude);
+  const [pe] = readManifest(p.dataDir);
+  p.external('plugin', 'uninstall', 'xaibo-hooks@xaibo', '-s', 'user');
+  const ppv = p.c.previewCleanup(Object.values(p.profiles), [pe!.id], A);
+  p.external('plugin', 'install', 'xaibo-hooks@xaibo', '-s', 'user'); // review C2: settings.json alone would not show it
+  assert.deepEqual(await p.c.applyCleanup(ppv.status === 'preview' ? ppv.previewId : '', A), { status: 'needs-preview' });
+  assert.deepEqual(readManifest(p.dataDir), [pe]);
+});
+
+test('part 2 preview semantics: lock held (preview refused; at apply busy keeps it), wrong owner, closed port, expiry, no denylist', async () => {
+  const w = await world();
+  await connect(w, w.profiles.claude);
+  const [fb] = readManifest(w.dataDir);
+  const ps = Object.values(w.profiles);
+  stripXaibo(w);
+  const lock = acquireLock(w.dataDir);
+  assert.deepEqual(w.c.previewCleanup(ps, [fb!.id], A), { status: 'refused', code: 'busy' });
+  lock.release();
+  const pv = w.c.previewCleanup(ps, [fb!.id], A);
+  const id = pv.status === 'preview' ? pv.previewId : '';
+  const other = w.c.previewCleanup(ps, [fb!.id], A);
+  const oid = other.status === 'preview' ? other.previewId : '';
+  assert.deepEqual(await w.c.applyCleanup(oid, B), { status: 'refused', code: 'preview-invalid' }, 'another port');
+  assert.deepEqual(await w.c.applyCleanup(oid, A), { status: 'refused', code: 'preview-invalid' }, 'consumed by the wrong owner');
+  for (let i = 0; i < 31; i++) assert.equal(w.c.previewCleanup(ps, [fb!.id], A).status, 'preview');
+  assert.deepEqual(w.c.previewCleanup(ps, [fb!.id], A), { status: 'refused', code: 'busy' }, 'at most 32 held previews');
+  w.c.dropOwner(A);
+  assert.deepEqual(await w.c.applyCleanup(id, A), { status: 'refused', code: 'preview-invalid' }, 'the closed port dropped it too');
+  const kept = w.c.previewCleanup(ps, [fb!.id], A);
+  const kid = kept.status === 'preview' ? kept.previewId : '';
+  const held2 = acquireLock(w.dataDir);
+  assert.deepEqual(await w.c.applyCleanup(kid, A), { status: 'refused', code: 'busy' });
+  held2.release();
+  assert.deepEqual(await w.c.applyCleanup(kid, A), { status: 'cleaned', removed: [fb!.id], left: [] }, 'code review 1: busy kept the preview');
+  recordEntry(w.dataDir, fb!); // back for the remaining cases
+  const closed = w.c.previewCleanup(ps, [fb!.id], A);
+  w.c.dropOwner(A);
+  assert.deepEqual(await w.c.applyCleanup(closed.status === 'preview' ? closed.previewId : '', A), { status: 'refused', code: 'preview-invalid' }, 'C7: dropped with its port');
+  const clock = { t: 0 };
+  const c = createConnect({ ...w.ctx, now: () => clock.t });
+  const late = c.previewCleanup(ps, [fb!.id], A);
+  clock.t = 300_001;
+  assert.deepEqual(await c.applyCleanup(late.status === 'preview' ? late.previewId : '', A), { status: 'refused', code: 'preview-expired' });
+  assert.deepEqual(createConnect({ ...w.ctx, denied: null }).previewCleanup(ps, [fb!.id], A), { status: 'refused', code: 'bounds-unavailable' });
+  assert.deepEqual(await createConnect({ ...w.ctx, denied: null }).applyCleanup(id, A), { status: 'refused', code: 'bounds-unavailable' });
+  assert.deepEqual(readManifest(w.dataDir), [fb], 'nothing cleaned by any of these');
+});
+
+test('part 2 C4: a linked backup or backups folder refuses the whole apply before any write', async () => {
+  const w = await world();
+  await connect(w, w.profiles.claude);
+  const [fb] = readManifest(w.dataDir);
+  const ps = Object.values(w.profiles);
+  stripXaibo(w);
+  const dir = join(w.dataDir, 'integrations', 'backups'), file = join(dir, fb!.backup!), outside = join(w.base, 'outside.bak');
+  writeFileSync(outside, readFileSync(file));
+  unlinkSync(file);
+  symlinkSync(outside, file);
+  let pv = w.c.previewCleanup(ps, [fb!.id], A);
+  assert.deepEqual(await w.c.applyCleanup(pv.status === 'preview' ? pv.previewId : '', A), { status: 'refused', code: 'symlink' });
+  assert.deepEqual(readManifest(w.dataDir), [fb]);
+  unlinkSync(file);
+  renameSync(outside, file);
+  const moved = join(w.base, 'moved-backups');
+  renameSync(dir, moved);
+  symlinkSync(moved, dir);
+  pv = w.c.previewCleanup(ps, [fb!.id], A);
+  assert.deepEqual(await w.c.applyCleanup(pv.status === 'preview' ? pv.previewId : '', A), { status: 'refused', code: 'private-dir' });
+  assert.deepEqual(readManifest(w.dataDir), [fb]);
+  assert.equal(readdirSync(moved).length, 1, 'the linked folder\'s file is untouched');
+});
+
+test('part 2 code review 2: a non-regular backup or a malformed name refuses; several entries at once; a backup that cannot be removed is reported in left', async () => {
+  const w = await world();
+  await connect(w, w.profiles.claude, { retention: false, tee: true });
+  const [fb, tee] = readManifest(w.dataDir);
+  const ps = Object.values(w.profiles);
+  stripXaibo(w);
+  put(w.files.claude, { ...json(w.files.claude), statusLine: CLAUDE_SETTINGS.statusLine }); // the tee's replaced value is back
+  assert.deepEqual(states(w.restart()), [['claude-settings-fallback', 'disconnected-externally'], ['claude-tee', 'disconnected-externally']]);
+  const dir = join(w.dataDir, 'integrations', 'backups'), file = join(dir, fb!.backup!), saved = readFileSync(file);
+  unlinkSync(file);
+  mkdirSync(file);
+  let pv = w.c.previewCleanup(ps, [fb!.id, tee!.id], A);
+  assert.deepEqual(await w.c.applyCleanup(pv.status === 'preview' ? pv.previewId : '', A), { status: 'refused', code: 'not-regular' });
+  rmSync(file, { recursive: true });
+  writeFileSync(file, saved, { mode: 0o600 });
+  recordEntry(w.dataDir, { ...tee!, backup: 'not-a-uuid.bak' });
+  pv = w.c.previewCleanup(ps, [fb!.id, tee!.id], A);
+  assert.deepEqual(await w.c.applyCleanup(pv.status === 'preview' ? pv.previewId : '', A), { status: 'refused', code: 'manifest' });
+  assert.equal(readManifest(w.dataDir).length, 2, 'nothing dropped');
+  recordEntry(w.dataDir, tee!);
+  chmodSync(dir, 0o500); // the folder passes the private check (no group/other bits) but its files cannot be unlinked
+  pv = w.c.previewCleanup(ps, [fb!.id, tee!.id], A);
+  const r = await w.c.applyCleanup(pv.status === 'preview' ? pv.previewId : '', A);
+  chmodSync(dir, 0o700);
+  assert.deepEqual(r, { status: 'cleaned', removed: [fb!.id, tee!.id], left: [fb!.id, tee!.id] });
+  assert.deepEqual(readManifest(w.dataDir), []);
+  assert.equal(backups(w).length, 2, 'inert leftovers, reported');
+});
+
 test('no entries -> an empty ready report', async () => {
   const w = await world();
   assert.deepEqual(w.restart(), { status: 'ready', entries: [] });

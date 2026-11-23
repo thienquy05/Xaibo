@@ -12,7 +12,7 @@
 // and applied only when equal to the preview (D-P6-06). Part 2c (XAIBO-PROD-561): Disconnect, Uninstall and this undo remove a
 // plugin entry last on its file (after tee and retention) through the hardened uninstallPlugin.
 import { createHash, randomUUID } from 'node:crypto';
-import { lstatSync, realpathSync } from 'node:fs';
+import { lstatSync, realpathSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isProfileKey } from '../../shared/hook-protocol.ts';
@@ -25,9 +25,9 @@ import { claudeConnectRoute, claudeRetentionOffer, retentionOps, type RetentionO
 import { real, writable } from '../config/bounds.ts';
 import { acquireLock, lockState } from '../config/lock.ts';
 import {
-  apply, ConfigError, plan, readFile, readManifest, revert, type Bounds, type DiffLine, type ManifestEntry, type Op, type Plan, type Route,
+  apply, BACKUP_NAME, ConfigError, dropEntry, plan, privateDirs, readFile, readManifest, revert, type Bounds, type DiffLine, type ManifestEntry, type Op, type Plan, type Route,
 } from '../config/transaction.ts';
-import { reconcile as scan, runsShim, XAIBO_SHIM, type ReconcileReport, type Target } from './reconcile.ts';
+import { reconcile as scan, runsShim, XAIBO_SHIM, type Leftover, type ReconcileReport, type Target } from './reconcile.ts';
 
 export interface ConnectContext {
   dataDir: string;
@@ -54,6 +54,10 @@ export interface Selections { retention: boolean; tee: boolean }
  *  the CLI writes, relative to the config dir. */
 export interface StepView { route: Route; target: string; diff: DiffLine[]; cli?: { version: string; argv: string[][]; writes: string[] } }
 export type Refused = { status: 'refused'; code: string };
+/** Part 2: removed = records dropped; left = of those, the ids whose backup could not be removed (an inert leftover). */
+export type CleanupPreview = { status: 'preview'; previewId: string; ttlMs: number; items: { entry: string; cleanup: Leftover[] }[] };
+export type CleanupResult = { status: 'cleaned'; removed: string[]; left: string[] } | { status: 'needs-preview' }
+  | { status: 'partial'; removed: string[]; left: string[]; code: string } | Refused;
 export type Preview = { status: 'preview'; previewId: string; profileId: string; ttlMs: number; steps: StepView[]; retention: RetentionOffer | null; trustSteps: string[] };
 export type ConnectResult = { status: 'applied'; entries: string[]; trustSteps: string[] } | { status: 'needs-preview'; preview: Preview | Refused }
   | Refused | (Outcome & { status: 'partial'; code: string });
@@ -70,6 +74,7 @@ const MAX_PREVIEWS = 32;
 const fail = (code: ConfigError['code']): never => { throw new ConfigError(code); };
 const refused = (code: string): Refused => ({ status: 'refused', code });
 const sha256 = (b: Buffer) => createHash('sha256').update(b).digest('hex');
+const uid = process.getuid?.();
 
 /** Design review H1: each agent's exact file and routes, used by preview and by Disconnect (never "anything under the root"). */
 function targetOf(p: Profile): Target | null {
@@ -313,7 +318,10 @@ export function createConnect(ctx: ConnectContext) {
   const uninstall = async (): Promise<Outcome | Refused> => (denied ? locked(() => revertAll(readManifest(ctx.dataDir), denied)) : refused('bounds-unavailable'));
 
   /** A closed port's previews can never be applied: drop them (part 1b review L5). */
-  const dropOwner = (owner: unknown) => { for (const [id, h] of previews) if (h.owner === owner) previews.delete(id); };
+  const dropOwner = (owner: unknown) => {
+    for (const [id, h] of previews) if (h.owner === owner) previews.delete(id);
+    for (const [id, c] of cleanups) if (c.owner === owner) cleanups.delete(id); // part 2 review C7
+  };
 
   /** XAIBO-PROD-562 (P6-T04 part 1, EC-26): the read-only reconcile over the current profiles; the latest report is kept for
    *  the IPC read (P6-T10). Same denylist and writable roots as every write. */
@@ -322,5 +330,82 @@ export function createConnect(ctx: ConnectContext) {
   const reconcile = (profiles: readonly Profile[]) => (latest = scan({ dataDir: ctx.dataDir, denied, profiles, target: targetOf, permitted }));
   const reconciled = () => latest;
 
-  return { previewConnect, applyConnect, disconnect, uninstall, dropOwner, reconcile, reconciled };
+  // XAIBO-PROD-563 (P6-T04 part 2; slice and review C1-C8 in .handoff/p6-t04-design.md): one preview and one confirmation
+  // clean up entries a fresh reconcile reports disconnected-externally: their manifest record, then their backup. Their owned
+  // values are already gone, so no agent profile file is written and no CLI runs; the plugin copy and a still-registered
+  // marketplace stay manual (P6-T12). Previews as Connect's (TTL, single use, owner-bound, max 32) in their own map (C7).
+  const cleanups = new Map<string, { profiles: readonly Profile[]; entries: ManifestEntry[]; owner: unknown; expiresAt: number }>();
+  const current = (profiles: readonly Profile[], held: boolean) => scan({ dataDir: ctx.dataDir, denied, profiles, target: targetOf, permitted, held });
+
+  function previewCleanup(profiles: readonly Profile[], ids: readonly string[], owner?: unknown): CleanupPreview | Refused {
+    if (!denied) return refused('bounds-unavailable');
+    if (!ids.length || new Set(ids).size !== ids.length) return refused('ops'); // C8
+    const r = current(profiles, false);
+    if (r.status === 'blocked') return refused(r.code);
+    const items = ids.map((id) => r.entries.find((e) => e.entry === id && e.state === 'disconnected-externally'));
+    let manifest: ManifestEntry[];
+    try { manifest = readManifest(ctx.dataDir); } catch { return refused('manifest'); }
+    const entries = ids.map((id) => manifest.find((e) => e.id === id));
+    if (items.some((x) => !x) || entries.some((e) => !e)) return refused('not-removed'); // never a silent partial selection
+    const at = now();
+    for (const [id, c] of cleanups) if (c.expiresAt < at) cleanups.delete(id);
+    if (cleanups.size >= MAX_PREVIEWS) return refused('busy');
+    const previewId = randomUUID();
+    cleanups.set(previewId, { profiles, entries: structuredClone(entries as ManifestEntry[]), owner, expiresAt: at + TTL_MS });
+    return { status: 'preview', previewId, ttlMs: TTL_MS, items: items.map((x) => ({ entry: x!.entry, cleanup: x!.cleanup })) };
+  }
+
+  /** Under the lock, taken before the lookup (busy keeps the preview). Every recheck and backup check runs before the first
+   *  write (C3, C4); a failed record write after that is `partial`. ponytail (C6): `claude plugin` takes no Xaibo lock, so a
+   *  reinstall between the last check and the manifest write leaves a plugin Xaibo no longer owns (Disconnect will not remove it). */
+  async function applyCleanup(previewId: string, owner?: unknown): Promise<CleanupResult> {
+    if (!denied) return refused('bounds-unavailable');
+    return locked((): CleanupResult => {
+      const h = cleanups.get(previewId);
+      cleanups.delete(previewId);
+      if (!h || h.owner !== owner) return refused('preview-invalid');
+      if (now() > h.expiresAt) return refused('preview-expired');
+      const r = current(h.profiles, true); // C1: our own lock
+      if (r.status === 'blocked') return refused(r.code);
+      let manifest: ManifestEntry[];
+      try { manifest = readManifest(ctx.dataDir); } catch { return refused('manifest'); }
+      // C2: the entry exactly as previewed and still removed by a fresh reconcile (which also reads the plugin registries)
+      if (!h.entries.every((e) => isDeepStrictEqual(manifest.find((x) => x.id === e.id), e)
+        && r.entries.some((x) => x.entry === e.id && x.state === 'disconnected-externally'))) return { status: 'needs-preview' };
+      let todo: { id: string; file: string | null }[];
+      try {
+        const dir = privateDirs(ctx.dataDir).backups; // a linked or foreign backups dir refuses: private-dir
+        todo = h.entries.map((e) => {
+          if (e.backup === null) return { id: e.id, file: null };
+          if (!BACKUP_NAME.test(e.backup)) fail('manifest');
+          const file = path.join(dir, e.backup);
+          let st;
+          try { st = lstatSync(file); } catch (err) { if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { id: e.id, file: null }; throw err; }
+          if (st.isSymbolicLink()) fail('symlink');
+          if (!st.isFile() || (uid !== undefined && st.uid !== uid)) fail('not-regular');
+          return { id: e.id, file };
+        });
+      } catch (err) { return refused(err instanceof ConfigError ? err.code : 'failed'); }
+      const removed: string[] = [], left: string[] = [];
+      const refresh = () => { try { latest = current(h.profiles, true); } catch { latest = null; } }; // code review 4: never lose removed/left
+      // code review 3: backups are a fresh UUID per entry (apply, installPlugin); a hand-edited manifest sharing one with an
+      // entry that stays keeps the file. ponytail (review 5): the backups dir is checked once above; a same-user swap of it for
+      // a link before the unlink could remove a UUID-named .bak there (unlink never follows the final component).
+      const kept = new Set(manifest.filter((x) => !h.entries.some((e) => e.id === x.id)).map((x) => x.backup));
+      for (const { id, file } of todo) {
+        try { dropEntry(ctx.dataDir, id); } catch (err) {
+          refresh();
+          return { status: 'partial', removed, left, code: err instanceof ConfigError ? err.code : 'failed' };
+        }
+        removed.push(id);
+        if (file && !kept.has(path.basename(file))) {
+          try { unlinkSync(file); } catch (err) { if ((err as NodeJS.ErrnoException).code !== 'ENOENT') left.push(id); } // an inert leftover
+        }
+      }
+      refresh();
+      return { status: 'cleaned', removed, left };
+    });
+  }
+
+  return { previewConnect, applyConnect, disconnect, uninstall, dropOwner, reconcile, reconciled, previewCleanup, applyCleanup };
 }

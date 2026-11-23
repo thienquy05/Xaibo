@@ -74,7 +74,7 @@ const NEW_FILE_MODE = 0o600;
 const FORBIDDEN_SEGMENTS = new Set(['__proto__', 'constructor', 'prototype']);
 const FORBIDDEN_HOOK_TYPES = new Set(['prompt', 'agent']);
 const SYNC_CLAUDE_EVENTS = new Set(['Stop']); // S3 decision: Stop synchronous, every other event async
-const BACKUP_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.bak$/;
+export const BACKUP_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.bak$/;
 const INDEX = /^(0|[1-9]\d*)$/;
 
 const fail = (code: Code): never => { throw new ConfigError(code); };

@@ -13,7 +13,7 @@ import { isObj } from '../../shared/ipc.ts';
 import { pluginEvidence } from '../adapters/claude/setup.ts';
 import type { Profile } from '../catalog/detect.ts';
 import { lockState } from '../config/lock.ts';
-import { ConfigError, readFile, readManifest, segments, type ManifestEntry, type Route } from '../config/transaction.ts';
+import { BACKUP_NAME, ConfigError, readFile, readManifest, segments, type ManifestEntry, type Route } from '../config/transaction.ts';
 
 export type ReconcileState = 'connected' | 'disconnected-externally' | 'drifted' | 'pending-recovery' | 'unreadable';
 export type Leftover = 'manifest-entry' | 'backup' | 'plugin-copy' | 'marketplace';
@@ -36,7 +36,6 @@ export function runsShim(doc: unknown, shim: RegExp): boolean {
 }
 
 const INDEX = /^(0|[1-9]\d*)$/;
-const BACKUP = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.bak$/; // transaction.ts BACKUP_NAME
 const AGENT: Record<Route, string> = {
   'claude-plugin': 'claude', 'claude-settings-fallback': 'claude', 'claude-retention': 'claude', 'claude-tee': 'claude', 'codex-hooks': 'codex', 'agy-hooks': 'agy',
 };
@@ -76,9 +75,11 @@ function plugin(t: Target, copy: string | null) {
 export function reconcile(o: {
   dataDir: string; denied: string[] | null; profiles: readonly Profile[];
   target: (p: Profile) => Target | null; permitted: (t: Target) => boolean;
+  /** Part 2 review C1: the caller holds the operation lock itself (cleanup's recheck), so its state is not checked. */
+  held?: boolean;
 }): ReconcileReport {
   if (!o.denied) return { status: 'blocked', code: 'bounds-unavailable' };
-  const lock = lockState(o.dataDir); // read-only: lstat and the holder's pid (review R8)
+  const lock = o.held ? 'free' : lockState(o.dataDir); // read-only: lstat and the holder's pid (review R8)
   if (lock !== 'free') return { status: 'blocked', code: lock };
   let list: ManifestEntry[];
   try { list = readManifest(o.dataDir); } catch { return { status: 'blocked', code: 'manifest' }; }
@@ -95,7 +96,7 @@ export function reconcile(o: {
     try { // manifest-named paths only from validated names (a profile key, a backup UUID name)
       const copy = e.profileKey && isProfileKey(e.profileKey) ? path.join(o.dataDir, 'integrations', 'claude-plugin', e.profileKey) : null;
       const { state, manual } = e.route === 'claude-plugin' ? plugin(hit[1], copy) : { state: values(e), manual: [] };
-      const backup = e.backup && BACKUP.test(e.backup) && exists(path.join(o.dataDir, 'integrations', 'backups', e.backup)) ? ['backup' as const] : [];
+      const backup = e.backup && BACKUP_NAME.test(e.backup) && exists(path.join(o.dataDir, 'integrations', 'backups', e.backup)) ? ['backup' as const] : [];
       return { ...r, state, cleanup: state === 'disconnected-externally' ? ['manifest-entry', ...backup] : [], manual };
     } catch (err) { return { ...r, reason: err instanceof ConfigError ? err.code : 'unreadable' }; }
   }) };
