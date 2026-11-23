@@ -19,6 +19,7 @@ import { codexHookOps, codexTrustSteps, shimPath } from '../adapters/codex/setup
 import type { Profile } from '../catalog/detect.ts';
 import { claudeRetentionOffer, retentionOps, type RetentionOffer } from '../catalog/setup-plans.ts';
 import { real, writable } from '../config/bounds.ts';
+import { acquireLock, lockState } from '../config/lock.ts';
 import {
   apply, ConfigError, plan, readFile, readManifest, revert, type Bounds, type DiffLine, type ManifestEntry, type Op, type Plan, type Route,
 } from '../config/transaction.ts';
@@ -34,6 +35,9 @@ export interface ConnectContext {
   helpers: { hook: string; forwarder: string; statusline: string };
   /** Monotonic ms (default performance.now). */
   now?: () => number;
+  /** Test only (part 2a review L4): passed to the engine's apply() to inject a failure after a step's rename. The service's
+   *  connectContext() never sets it. */
+  afterRename?: (file: string) => void;
 }
 export interface Selections { retention: boolean; tee: boolean }
 export interface StepView { route: Route; target: string; diff: DiffLine[] }
@@ -137,7 +141,13 @@ export function createConnect(ctx: ConnectContext) {
     return { list, retention, trust: [] };
   }
 
+  /** Part 2a review L3: while another writer holds the lock a preview made now would fail at apply: busy, or stale-lock when
+   *  its holder is gone (code review L-c: never "try again" forever). */
   function previewConnect(p: Profile, sel: Selections, owner?: unknown): Preview | Refused {
+    const state = denied ? lockState(ctx.dataDir) : 'free';
+    return state === 'free' ? preview(p, sel, owner) : refused(state);
+  }
+  function preview(p: Profile, sel: Selections, owner?: unknown): Preview | Refused {
     if (!denied) return refused('bounds-unavailable');
     const t = targetOf(p);
     if (!t) return refused('unverified');
@@ -163,7 +173,18 @@ export function createConnect(ctx: ConnectContext) {
   /** Design review M3: stricter than the redacted diff: route, target, owned values with the full value they replace, created. */
   const same = (a: Plan, b: Plan) => a.route === b.route && a.target === b.target && isDeepStrictEqual(a.owned, b.owned) && isDeepStrictEqual(a.created, b.created);
 
-  function applyConnect(previewId: string, owner?: unknown): ConnectResult {
+  /** Part 2a: under the operation lock, taken before the preview is looked up, so `busy` keeps the preview for a retry. */
+  async function applyConnect(previewId: string, owner?: unknown): Promise<ConnectResult> {
+    if (!denied) return refused('bounds-unavailable');
+    return locked(() => applyLocked(previewId, owner));
+  }
+  /** The operation lock around one whole operation; a held or stale lock is the refusal, nothing else is touched. */
+  function locked<T>(fn: () => T): T | Refused {
+    let lock;
+    try { lock = acquireLock(ctx.dataDir); } catch (e) { return refused(e instanceof ConfigError ? e.code : 'failed'); } // nothing written yet (code review L-b)
+    try { return fn(); } finally { lock.release(); }
+  }
+  function applyLocked(previewId: string, owner?: unknown): ConnectResult {
     const h = previews.get(previewId);
     previews.delete(previewId); // consumed on first lookup, whatever happens next, a wrong owner included (review L1, 1b L5)
     if (!h || h.owner !== owner) return refused('preview-invalid');
@@ -171,7 +192,7 @@ export function createConnect(ctx: ConnectContext) {
     if (!denied) return refused('bounds-unavailable');
     const t = targetOf(h.profile);
     if (!t || !permitted(t)) return refused('real-profile');
-    const again = (): ConnectResult => ({ status: 'needs-preview', preview: previewConnect(h.profile, h.sel, h.owner) }); // 1b review M1
+    const again = (): ConnectResult => ({ status: 'needs-preview', preview: preview(h.profile, h.sel, h.owner) }); // 1b review M1; we hold the lock
     // checked before any helper is deployed: bytes, file identity and mode, as apply() will (review L2)
     const first = h.steps[0]!.plan, cur = readFile(first.target);
     if ((cur ? sha256(cur.bytes) : null) !== first.preHash || (cur && (cur.dev !== first.dev || cur.ino !== first.ino || cur.mode !== first.mode))) return again();
@@ -188,7 +209,7 @@ export function createConnect(ctx: ConnectContext) {
       if (i > 0 && !same(next, step.plan)) return undo(null);
       let known: Set<string>;
       try { known = new Set(readManifest(ctx.dataDir).map((e) => e.id)); } catch { return undo('failed'); } // review L-5: undone, never left half applied
-      try { done.push(apply(next, { dataDir: ctx.dataDir, bounds: { root: t.dir, denied } })); } catch (e) {
+      try { done.push(apply(next, { dataDir: ctx.dataDir, bounds: { root: t.dir, denied }, ...(ctx.afterRename ? { afterRename: ctx.afterRename } : {}) })); } catch (e) {
         // review M1: a step that threw after recording its entry leaves a pending entry: it is undone first
         const residue = readManifest(ctx.dataDir).filter((x) => !known.has(x.id));
         return undo(e instanceof ConfigError ? e.code : 'failed', residue);
@@ -217,15 +238,15 @@ export function createConnect(ctx: ConnectContext) {
     return out;
   }
 
-  function disconnect(p: Profile): Outcome | Refused {
+  async function disconnect(p: Profile): Promise<Outcome | Refused> {
     if (!denied) return refused('bounds-unavailable');
     const t = targetOf(p);
     if (!t) return refused('unverified');
-    return revertAll(readManifest(ctx.dataDir).filter((e) => e.target === t.file && t.routes.includes(e.route)), denied);
+    return locked(() => revertAll(readManifest(ctx.dataDir).filter((e) => e.target === t.file && t.routes.includes(e.route)), denied));
   }
 
   /** Every recorded entry, including profiles no longer detected; history and the shim stay (FR-34; orphan shim: P6-T05). */
-  const uninstall = (): Outcome | Refused => (denied ? revertAll(readManifest(ctx.dataDir), denied) : refused('bounds-unavailable'));
+  const uninstall = async (): Promise<Outcome | Refused> => (denied ? locked(() => revertAll(readManifest(ctx.dataDir), denied)) : refused('bounds-unavailable'));
 
   /** A closed port's previews can never be applied: drop them (part 1b review L5). */
   const dropOwner = (owner: unknown) => { for (const [id, h] of previews) if (h.owner === owner) previews.delete(id); };

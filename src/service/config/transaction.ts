@@ -33,7 +33,9 @@ export type Code =
   // P3-T14 (claude-tee): an existing statusLine that is not a command statusLine cannot be teed.
   | 'statusline'
   // P6-T02 (EC-73): the claude-retention route only raises cleanupPeriodDays to 45 over an absent or lower readable value.
-  | 'retention';
+  | 'retention'
+  // P6-T03 part 2a (config/lock.ts): another writer holds the operation lock; its holder is gone (never taken over).
+  | 'busy' | 'stale-lock';
 export class ConfigError extends Error {
   readonly code: Code;
   constructor(code: Code) {

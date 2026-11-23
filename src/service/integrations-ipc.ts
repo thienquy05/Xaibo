@@ -47,17 +47,25 @@ function wire(r: unknown, wrote: boolean): ConnectReply {
     ?? (wrote ? { status: 'partial', reverted: [], conflicts: [], remaining: [], code: 'too-large' } : refused('too-large'));
 }
 
-export function answerIntegrations(d: IntegrationsDeps, req: IntegrationsRequest, owner: object): PortMessage {
+/** Part 2a review M3: a rejection escaping after dispatch may follow a write: partial (re-read), never refused. */
+const AFTER_DISPATCH: ConnectReply = { status: 'partial', reverted: [], conflicts: [], remaining: [], code: 'failed' };
+export async function answerIntegrations(d: IntegrationsDeps, req: IntegrationsRequest, owner: object): Promise<PortMessage> {
   const send = (result: ConnectReply): PortMessage => ({ v: IPC_VERSION, type: req.type, id: req.id, result });
   if (d.readOnly) return send(refused('read-only'));
+  let c: Connect, p: Profile | undefined;
+  try { // before dispatch nothing is written: a throw is a refusal (review M2: never an unanswered request, never the error text)
+    const got = d.connect();
+    if (got === null) return send(refused('starting'));
+    if (got === 'unavailable') return send(refused('unavailable'));
+    c = got;
+    if (req.type === 'connectPreview' || req.type === 'disconnect') {
+      p = d.profile(req.profileId);
+      if (!p) return send(refused('profile-not-found'));
+    }
+    if (req.type === 'connectPreview') return send(wire(c.previewConnect(p!, req.selections, owner), false));
+  } catch { return send(refused('failed')); }
   try {
-    const c = d.connect();
-    if (c === null) return send(refused('starting'));
-    if (c === 'unavailable') return send(refused('unavailable'));
-    if (req.type === 'connectApply') return send(wire(c.applyConnect(req.previewId, owner), true));
-    if (req.type === 'uninstall') return send(wire(c.uninstall(), true));
-    const p = d.profile(req.profileId);
-    if (!p) return send(refused('profile-not-found'));
-    return send(req.type === 'connectPreview' ? wire(c.previewConnect(p, req.selections, owner), false) : wire(c.disconnect(p), true));
-  } catch { return send(refused('failed')); } // never an unanswered request (review M2); never the error text
+    const r = req.type === 'connectApply' ? await c.applyConnect(req.previewId, owner) : req.type === 'uninstall' ? await c.uninstall() : await c.disconnect(p!);
+    return send(wire(r, true));
+  } catch { return send(AFTER_DISPATCH); }
 }

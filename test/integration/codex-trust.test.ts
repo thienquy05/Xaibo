@@ -14,7 +14,8 @@ import { CODEX_HOOK_EVENTS } from '../../src/service/adapters/codex/hooks.ts';
 import { CodexAdapter } from '../../src/service/adapters/codex/index.ts';
 import { codexHookOps, codexHookStatus, installCodexHooks, shimPath, type CodexHookOptions } from '../../src/service/adapters/codex/setup.ts';
 import { deployShim } from '../../src/service/adapters/claude/setup.ts';
-import { ConfigError, plan, readManifest, revert } from '../../src/service/config/transaction.ts';
+import { ConfigError, dropEntry, plan, readManifest, revert } from '../../src/service/config/transaction.ts';
+import { acquireLock } from '../../src/service/config/lock.ts';
 
 /** The generic revert of the Codex hooks entry (dev-cli's revert path). */
 const uninstall = (o: CodexHookOptions) => revert(readManifest(o.dataDir).find((e) => e.route === 'codex-hooks')!, { dataDir: o.dataDir, bounds: o.bounds });
@@ -220,4 +221,35 @@ test('G3a-2: installCodexHooks applies the previewed plan, so an edit between pr
   assert.equal(code(() => installCodexHooks(h.o, p)), 'changed');
   assert.equal(readFileSync(file, 'utf8'), '{"hooks": {}, "edited": true}\n');
   assert.deepEqual(readManifest(h.dataDir), []);
+});
+
+// P6-T03 part 2a (design review H1): Codex status never rewrites the manifest while another writer holds the operation lock
+test('codexHookStatus skips its manifest write while the operation lock is held; the status is still computed', async () => {
+  const h = await sandbox();
+  installCodexHooks(h.o);
+  const edited = hooksJson(h);
+  (edited.hooks['Stop']!.at(-1) as { hooks: { command: string }[] }).hooks[0]!.command += ' extra';
+  writeFileSync(join(h.codexHome, 'hooks.json'), JSON.stringify(edited, null, 2));
+  const held = acquireLock(h.dataDir);
+  const s = codexHookStatus(h.o);
+  assert.equal(s.state, 'awaiting-trust');
+  assert.equal(readManifest(h.dataDir)[0]!.seen, undefined, 'no manifest write while locked');
+  held.release();
+  codexHookStatus(h.o);
+  assert.ok(readManifest(h.dataDir)[0]!.seen, 'recorded once the lock is free');
+  rmSync(h.base, { recursive: true, force: true });
+});
+
+// code review (run 193) M-1: an entry another writer removed after this call read it is never written back
+test('codexHookStatus never re-adds an entry removed between its read and its lock', async () => {
+  const h = await sandbox();
+  installCodexHooks(h.o);
+  const edited = hooksJson(h);
+  (edited.hooks['Stop']!.at(-1) as { hooks: { command: string }[] }).hooks[0]!.command += ' extra';
+  writeFileSync(join(h.codexHome, 'hooks.json'), JSON.stringify(edited, null, 2));
+  const id = readManifest(h.dataDir)[0]!.id;
+  const db = { prepare: (sql: string) => { dropEntry(h.dataDir, id); return h.db.prepare(sql); } }; // another writer, mid-call
+  codexHookStatus({ ...h.o, db: db as never });
+  assert.deepEqual(readManifest(h.dataDir), [], 'not brought back');
+  rmSync(h.base, { recursive: true, force: true });
 });

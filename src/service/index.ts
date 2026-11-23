@@ -143,7 +143,11 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
       }
       // XAIBO-PROD-558 (P6-T03 part 1b): Connect, Disconnect, Uninstall; a preview belongs to this port
       case 'connectPreview': case 'connectApply': case 'disconnect': case 'uninstall':
-        port.postMessage(answerIntegrations({ readOnly: s.store.readOnly, connect: () => integrationsFor(s), profile: (id) => s.profiles()?.find((p) => p.id === id) }, req, port));
+        // part 2a: awaited (the lock is released before the reply); a closed port drops the reply
+        void answerIntegrations({ readOnly: s.store.readOnly, connect: () => integrationsFor(s), profile: (id) => s.profiles()?.find((p) => p.id === id) }, req, port)
+          .then((m) => { try { port.postMessage(m); } catch { /* the window closed */ } }, () => { // code review L-a: never unanswered
+            try { port.postMessage({ v: IPC_VERSION, type: req.type, id: req.id, result: { status: 'partial', reverted: [], conflicts: [], remaining: [], code: 'failed' } } satisfies PortMessage); } catch { /* closed */ }
+          });
         break;
       default: port.postMessage(db.isOpen ? answer(db, req, s.kinds(), s.models(), live) : { v: IPC_VERSION, type: 'page', id: req.id, rows: [], next: null });
     }

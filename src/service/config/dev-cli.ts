@@ -30,6 +30,7 @@ import { checkAgyInstall, installAgyHooks } from '../adapters/agy/setup.ts';
 import { codexHookOps, codexTrustSteps, installCodexHooks, shimPath } from '../adapters/codex/setup.ts';
 import { readLoginEnv } from '../catalog/env.ts';
 import { deniedRootsFrom, real } from './bounds.ts';
+import { acquireLock, type Lock } from './lock.ts';
 import { addRegistration, RegistrationError, removeRegistration } from '../receivers/registrations.ts';
 import {
   apply, ConfigError, plan, readManifest, resolveTarget, revert, validateOps, within, type Bounds, type Plan, type Route,
@@ -113,6 +114,14 @@ function readOps(file: string) {
 
 const show = (v: unknown) => JSON.stringify(v);
 
+/** P6-T03 part 2a (review M2): the operation lock around a write, taken only after the owner confirmed (a waiting prompt never
+ *  blocks the service); Ctrl-C or SIGTERM while held releases it (review M1). */
+let held: Lock | null = null;
+async function locked<T>(dataDir: string, fn: () => Promise<T> | T): Promise<T> {
+  held = acquireLock(dataDir);
+  try { return await fn(); } finally { held.release(); held = null; }
+}
+
 /** P3-T13b: approve or revoke a report producer. --yes only for a data dir strictly below the temp dir (tests). */
 async function registration(argv: string[]): Promise<number> {
   const [cmd, ...rest] = argv;
@@ -165,7 +174,10 @@ async function main(argv: string[]): Promise<number> {
     const entry = readManifest(dataDir!).filter((e) => e.target === target).at(-1);
     if (!entry) refuse(`${a.target}: no Xaibo change to revert`);
     await confirm(a.yes, profile, `revert Xaibo changes in ${a.target}`);
-    const r = revert(entry!, { dataDir: dataDir!, bounds });
+    const r = await locked(dataDir!, () => { // part 2a review M2: the entry as it is now, under the lock (the service may have reverted it)
+      const now = readManifest(dataDir!).find((e) => e.id === entry!.id);
+      return now ? revert(now, { dataDir: dataDir!, bounds }) : refuse(`${a.target}: that Xaibo change is no longer recorded`);
+    });
     console.log(`${a.target}: ${r.result}`);
     for (const c of r.conflicts) console.log(`conflict (changed since Xaibo wrote it, kept): ${c.pointer}`);
     return r.conflicts.length ? 2 : 0;
@@ -175,7 +187,7 @@ async function main(argv: string[]): Promise<number> {
   const p = printPlan(a.target, plan(target, spec.route!, readOps(a.change!), bounds));
   if (a.cmd === 'plan') return 0;
   await confirm(a.yes, profile, `write ${a.target}`);
-  const entry = apply(p, { dataDir: dataDir!, bounds });
+  const entry = await locked(dataDir!, () => apply(p, { dataDir: dataDir!, bounds }));
   console.log(`${a.target}: applied ${entry.id}`);
   return 0;
 }
@@ -195,9 +207,11 @@ async function codex(a: ReturnType<typeof cliArgs>, dataDir: string, profile: st
   const p = printPlan(a.target, plan(target, 'codex-hooks', codexHookOps(shimPath(dataDir), a.profileKey!), bounds));
   if (a.cmd === 'plan') return 0;
   await confirm(a.yes, profile, 'write codex-hooks');
-  deployShim(dataDir, { hook: path.join(REPO, 'src', 'forwarder', 'xaibo-hook'), forwarder: real(a.forwarder ?? path.join(REPO, '.cache', 'sea', 'xaibo-forwarder')) });
   const codexHome = path.join(profile, '.codex');
-  const entry = installCodexHooks({ dataDir, codexHome, profileKey: a.profileKey!, bounds }, p); // the plan shown (G3a-2)
+  const entry = await locked(dataDir, () => {
+    deployShim(dataDir, { hook: path.join(REPO, 'src', 'forwarder', 'xaibo-hook'), forwarder: real(a.forwarder ?? path.join(REPO, '.cache', 'sea', 'xaibo-forwarder')) });
+    return installCodexHooks({ dataDir, codexHome, profileKey: a.profileKey!, bounds }, p); // the plan shown (G3a-2)
+  });
   console.log(`codex-hooks: applied ${entry.id}; installed, awaiting trust`);
   codexTrustSteps(codexHome, shimPath(dataDir), a.profileKey!).forEach((s, i) => console.log(`${i + 1}. ${s}`));
   return 0;
@@ -210,8 +224,10 @@ async function agy(a: ReturnType<typeof cliArgs>, dataDir: string, profile: stri
   const p = printPlan(a.target, plan(file, 'agy-hooks', ops, bounds));
   if (a.cmd === 'plan') return 0;
   await confirm(a.yes, profile, 'write agy-hooks');
-  deployShim(dataDir, { hook: path.join(REPO, 'src', 'forwarder', 'xaibo-hook'), forwarder: real(a.forwarder ?? path.join(REPO, '.cache', 'sea', 'xaibo-forwarder')) });
-  const entry = installAgyHooks(o, p); // the plan shown (G3a-2)
+  const entry = await locked(dataDir, () => {
+    deployShim(dataDir, { hook: path.join(REPO, 'src', 'forwarder', 'xaibo-hook'), forwarder: real(a.forwarder ?? path.join(REPO, '.cache', 'sea', 'xaibo-forwarder')) });
+    return installAgyHooks(o, p); // the plan shown (G3a-2)
+  });
   console.log(`agy-hooks: applied ${entry.id}`);
   return 0;
 }
@@ -223,9 +239,11 @@ async function tee(a: ReturnType<typeof cliArgs>, dataDir: string, profile: stri
   const p = printPlan(a.target, teePlan(o));
   if (a.cmd === 'plan') return 0;
   await confirm(a.yes, profile, 'write claude-tee');
-  deployShim(dataDir, { hook: path.join(REPO, 'src', 'forwarder', 'xaibo-hook'), forwarder: real(a.forwarder ?? path.join(REPO, '.cache', 'sea', 'xaibo-forwarder')),
-    statusline: real(a.statusline ?? path.join(REPO, '.cache', 'sea', 'xaibo-statusline')) });
-  const entry = installTee(o, p); // the plan shown (G3a-2)
+  const entry = await locked(dataDir, () => {
+    deployShim(dataDir, { hook: path.join(REPO, 'src', 'forwarder', 'xaibo-hook'), forwarder: real(a.forwarder ?? path.join(REPO, '.cache', 'sea', 'xaibo-forwarder')),
+      statusline: real(a.statusline ?? path.join(REPO, '.cache', 'sea', 'xaibo-statusline')) });
+    return installTee(o, p); // the plan shown (G3a-2)
+  });
   console.log(`claude-tee: applied ${entry.id}`);
   return 0;
 }
@@ -241,14 +259,16 @@ async function plugin(a: ReturnType<typeof cliArgs>, dataDir: string, profile: s
   }
   if (a.cmd === 'revert') {
     await confirm(a.yes, profile, `uninstall ${PLUGIN_REF} and remove marketplace ${MARKETPLACE}`);
-    const r = await uninstallPlugin(o);
+    const r = await locked(dataDir, () => uninstallPlugin(o));
     console.log(`claude-plugin: uninstalled; ${r.preHashRestored ? 'pre-install settings restored' : 'settings differ from before install (Claude-owned edits)'}`);
     for (const k of r.residue) console.log(`residue: enabledPlugins ${k}`);
     return r.residue.length ? 2 : 0;
   }
   await confirm(a.yes, profile, `install ${PLUGIN_REF} into ${o.configDir}`);
-  deployShim(dataDir, { hook: path.join(REPO, 'src', 'forwarder', 'xaibo-hook'), forwarder: real(a.forwarder ?? path.join(REPO, '.cache', 'sea', 'xaibo-forwarder')) });
-  const entry = await installPlugin(o);
+  const entry = await locked(dataDir, () => {
+    deployShim(dataDir, { hook: path.join(REPO, 'src', 'forwarder', 'xaibo-hook'), forwarder: real(a.forwarder ?? path.join(REPO, '.cache', 'sea', 'xaibo-forwarder')) });
+    return installPlugin(o);
+  });
   console.log(`claude-plugin: installed ${entry.id}`);
   return 0;
 }
@@ -259,6 +279,8 @@ const MESSAGES: Partial<Record<ConfigError['code'], string>> = {
   'parent-missing': 'refused: the config directory does not exist in this profile',
   changed: 'aborted: the file changed since it was read; nothing written',
   duplicate: 'refused: Xaibo hooks are already installed in this profile (or its selected project)',
+  busy: 'refused: another Xaibo operation is changing agent configuration; try again when it finishes',
+  'stale-lock': 'refused: a Xaibo operation stopped without releasing its lock (integrations/operation.lock); nothing was changed',
   exclusive: 'refused: this profile already has the other Claude hook route (plugin and settings fallback are exclusive)',
   'not-installed': 'nothing to uninstall: no Xaibo plugin recorded for this profile',
   cli: 'failed: a `claude plugin` step did not succeed; rolled back',
@@ -268,6 +290,7 @@ const MESSAGES: Partial<Record<ConfigError['code'], string>> = {
 };
 
 if (import.meta.main) {
+  for (const sig of ['SIGINT', 'SIGTERM'] as const) process.on(sig, () => { held?.release(); process.exit(130); });
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (e: unknown) => {
     if (e instanceof UsageError) console.error(e.message);
     else if (e instanceof ConfigError) console.error(MESSAGES[e.code] ?? e.message);

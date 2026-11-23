@@ -9,6 +9,7 @@
 // is independent of all this. Bounds come from the caller (dev CLI: disposable profiles only, real roots denied).
 import { createHash } from 'node:crypto';
 import { lstatSync, statSync } from 'node:fs';
+import { isDeepStrictEqual } from 'node:util';
 import path from 'node:path';
 import { isProfileKey } from '../../../shared/hook-protocol.ts';
 import type { DatabaseSync } from 'node:sqlite';
@@ -16,6 +17,7 @@ import {
   apply, ConfigError, plan, readFile, readManifest, recordEntry, resolveTarget, type Bounds, type ManifestEntry, type Op, type Plan,
 } from '../../config/transaction.ts';
 import { CODEX_ASYNC_EVENTS, CODEX_HOOK_EVENTS } from './hooks.ts';
+import { tryLock } from '../../config/lock.ts';
 
 export interface CodexHookOptions {
   dataDir: string; profileKey: string;
@@ -101,7 +103,16 @@ export function codexHookStatus(o: CodexHookOptions & { db: DatabaseSync }): Cod
     let at = 0;
     try { at = statSync(file).mtimeMs; } catch { /* gone: the stored deliveries bound it */ }
     seen = { hash: now, since: Math.max(seen.since, at, (last ?? -1) + 1) };
-    recordEntry(o.dataDir, { ...entry, seen });
+    // P6-T03 part 2a review H1: only under the operation lock, so another writer's manifest update is never lost; when held,
+    // the write waits for a later call (which only delays `connected`)
+    // code review (run 193) M-1: under the lock the entry is read again and written only if no one changed or removed it
+    const lock = tryLock(o.dataDir);
+    if (lock) {
+      try {
+        const cur = recorded(o, file);
+        if (cur?.id === entry.id && isDeepStrictEqual(cur.seen, entry.seen)) recordEntry(o.dataDir, { ...cur, seen });
+      } finally { lock.release(); }
+    }
   }
   const reason: CodexHookStatus['reason'] = entry.seen || seen !== before ? 'entry-changed' : 'no-event';
   if (now !== 'unreadable' && last !== null && last >= seen.since) return { state: 'connected', label: 'connected', steps: [] };

@@ -37,85 +37,98 @@ function world(o: { helpers?: boolean } = {}) {
 }
 type R = { status: string; [k: string]: unknown };
 /** Every reply goes through the renderer-side parser too (bounded, no ops). */
-function ask(deps: IntegrationsDeps, m: object, owner: object): R {
-  const out = answerIntegrations(deps, { v: 1, id: 7, ...m } as never, owner) as PortMessage & { result: R };
+async function ask(deps: IntegrationsDeps, m: object, owner: object): Promise<R> {
+  const out = await answerIntegrations(deps, { v: 1, id: 7, ...m } as never, owner) as PortMessage & { result: R };
   assert.ok(parsePortMessage(out), `parsePortMessage accepts ${JSON.stringify(out).slice(0, 200)}`);
   return out.result;
 }
 const A = {}, B = {};
 const SEL = { retention: true, tee: false };
 
-test('preview, apply and disconnect through the IPC handler; the retention offer has no ops', () => {
+test('preview, apply and disconnect through the IPC handler; the retention offer has no ops', async () => {
   const w = world();
-  const pv = ask(w.deps, { type: 'connectPreview', profileId: PID, selections: SEL }, A);
+  const pv = await ask(w.deps, { type: 'connectPreview', profileId: PID, selections: SEL }, A);
   assert.equal(pv.status, 'preview');
   assert.deepEqual(pv['retention'], { offered: true, from: 10, to: 45, layer: 'user' });
-  assert.equal(ask(w.deps, { type: 'connectApply', previewId: pv['previewId'] }, A).status, 'applied');
+  assert.equal((await ask(w.deps, { type: 'connectApply', previewId: pv['previewId'] }, A)).status, 'applied');
   assert.equal(JSON.parse(readFileSync(w.file, 'utf8')).cleanupPeriodDays, 45);
-  assert.equal(ask(w.deps, { type: 'disconnect', profileId: PID }, A).status, 'disconnected');
+  assert.equal((await ask(w.deps, { type: 'disconnect', profileId: PID }, A)).status, 'disconnected');
   assert.equal(readFileSync(w.file, 'utf8'), '{\n  "cleanupPeriodDays": 10\n}\n');
 });
 
-test('a preview belongs to its port: another port is refused and the preview is consumed; the new preview after a mismatch too', () => {
+test('a preview belongs to its port: another port is refused and the preview is consumed; the new preview after a mismatch too', async () => {
   const w = world();
-  const pv = ask(w.deps, { type: 'connectPreview', profileId: PID, selections: SEL }, A);
-  assert.deepEqual(ask(w.deps, { type: 'connectApply', previewId: pv['previewId'] }, B), { status: 'refused', code: 'preview-invalid' });
-  assert.deepEqual(ask(w.deps, { type: 'connectApply', previewId: pv['previewId'] }, A), { status: 'refused', code: 'preview-invalid' }, 'consumed');
-  const pv2 = ask(w.deps, { type: 'connectPreview', profileId: PID, selections: SEL }, A);
+  const pv = await ask(w.deps, { type: 'connectPreview', profileId: PID, selections: SEL }, A);
+  assert.deepEqual(await ask(w.deps, { type: 'connectApply', previewId: pv['previewId'] }, B), { status: 'refused', code: 'preview-invalid' });
+  assert.deepEqual(await ask(w.deps, { type: 'connectApply', previewId: pv['previewId'] }, A), { status: 'refused', code: 'preview-invalid' }, 'consumed');
+  const pv2 = await ask(w.deps, { type: 'connectPreview', profileId: PID, selections: SEL }, A);
   writeFileSync(w.file, '{\n  "cleanupPeriodDays": 11\n}\n');
-  const r = ask(w.deps, { type: 'connectApply', previewId: pv2['previewId'] }, A);
+  const r = await ask(w.deps, { type: 'connectApply', previewId: pv2['previewId'] }, A);
   assert.equal(r.status, 'needs-preview');
   const fresh = r['preview'] as R;
-  assert.deepEqual(ask(w.deps, { type: 'connectApply', previewId: fresh['previewId'] }, B), { status: 'refused', code: 'preview-invalid' });
+  assert.deepEqual(await ask(w.deps, { type: 'connectApply', previewId: fresh['previewId'] }, B), { status: 'refused', code: 'preview-invalid' });
 });
 
-test('the new preview after a mismatch applies from the same port', () => {
+test('the new preview after a mismatch applies from the same port', async () => {
   const w = world();
-  const pv = ask(w.deps, { type: 'connectPreview', profileId: PID, selections: SEL }, A);
+  const pv = await ask(w.deps, { type: 'connectPreview', profileId: PID, selections: SEL }, A);
   writeFileSync(w.file, '{\n  "cleanupPeriodDays": 12\n}\n');
-  const fresh = ask(w.deps, { type: 'connectApply', previewId: pv['previewId'] }, A)['preview'] as R;
-  assert.equal(ask(w.deps, { type: 'connectApply', previewId: fresh['previewId'] }, A).status, 'applied');
+  const fresh = (await ask(w.deps, { type: 'connectApply', previewId: pv['previewId'] }, A))['preview'] as R;
+  assert.equal((await ask(w.deps, { type: 'connectApply', previewId: fresh['previewId'] }, A)).status, 'applied');
 });
 
-test('a closed port drops its previews', () => {
+test('a closed port drops its previews', async () => {
   const w = world();
-  const pv = ask(w.deps, { type: 'connectPreview', profileId: PID, selections: SEL }, A);
+  const pv = await ask(w.deps, { type: 'connectPreview', profileId: PID, selections: SEL }, A);
   w.c.dropOwner(A);
-  assert.deepEqual(ask(w.deps, { type: 'connectApply', previewId: pv['previewId'] }, A), { status: 'refused', code: 'preview-invalid' });
+  assert.deepEqual(await ask(w.deps, { type: 'connectApply', previewId: pv['previewId'] }, A), { status: 'refused', code: 'preview-invalid' });
 });
 
-test('refusals that still reply: unknown profile, read-only store, still starting, a throwing handler, missing helpers', () => {
+test('refusals that still reply: unknown profile, read-only store, still starting, a throwing handler, missing helpers', async () => {
   const w = world();
-  assert.deepEqual(ask(w.deps, { type: 'connectPreview', profileId: OTHER, selections: SEL }, A), { status: 'refused', code: 'profile-not-found' });
-  assert.deepEqual(ask(w.deps, { type: 'disconnect', profileId: OTHER }, A), { status: 'refused', code: 'profile-not-found' });
+  assert.deepEqual(await ask(w.deps, { type: 'connectPreview', profileId: OTHER, selections: SEL }, A), { status: 'refused', code: 'profile-not-found' });
+  assert.deepEqual(await ask(w.deps, { type: 'disconnect', profileId: OTHER }, A), { status: 'refused', code: 'profile-not-found' });
   for (const m of [{ type: 'connectPreview', profileId: PID, selections: SEL }, { type: 'uninstall' }, { type: 'disconnect', profileId: PID }]) {
-    assert.deepEqual(ask({ ...w.deps, readOnly: true }, m, A), { status: 'refused', code: 'read-only' });
-    assert.deepEqual(ask({ ...w.deps, connect: () => null }, m, A), { status: 'refused', code: 'starting' });
-    assert.deepEqual(ask({ ...w.deps, connect: () => 'unavailable' }, m, A), { status: 'refused', code: 'unavailable' }, 'review L-2: startup failed');
-    assert.deepEqual(ask({ ...w.deps, connect: () => { throw new Error('no passwd entry'); } }, m, A), { status: 'refused', code: 'failed' }, 'review L-1');
+    assert.deepEqual(await ask({ ...w.deps, readOnly: true }, m, A), { status: 'refused', code: 'read-only' });
+    assert.deepEqual(await ask({ ...w.deps, connect: () => null }, m, A), { status: 'refused', code: 'starting' });
+    assert.deepEqual(await ask({ ...w.deps, connect: () => 'unavailable' }, m, A), { status: 'refused', code: 'unavailable' }, 'review L-2: startup failed');
+    assert.deepEqual(await ask({ ...w.deps, connect: () => { throw new Error('no passwd entry'); } }, m, A), { status: 'refused', code: 'failed' }, 'review L-1');
   }
   const throwing = { ...w.deps, profile: () => { throw new Error('boom'); } };
-  assert.deepEqual(ask(throwing, { type: 'connectPreview', profileId: PID, selections: SEL }, A), { status: 'refused', code: 'failed' });
+  assert.deepEqual(await ask(throwing, { type: 'connectPreview', profileId: PID, selections: SEL }, A), { status: 'refused', code: 'failed' });
   const bare = world({ helpers: false });
-  assert.deepEqual(ask(bare.deps, { type: 'connectPreview', profileId: PID, selections: SEL }, A), { status: 'refused', code: 'helpers-unavailable' });
+  assert.deepEqual(await ask(bare.deps, { type: 'connectPreview', profileId: PID, selections: SEL }, A), { status: 'refused', code: 'helpers-unavailable' });
   assert.equal(existsSync(join(bare.dataDir, 'integrations')), false);
 });
 
-test('an over-bound preview is refused, never truncated', () => {
+test('an over-bound preview is refused, never truncated', async () => {
   const w = world();
   const huge = { ...w.deps, connect: () => ({ ...w.c, previewConnect: () => ({ status: 'preview' as const, previewId: OTHER, profileId: PID, ttlMs: 1,
     steps: [{ route: 'claude-retention' as const, target: '/x', diff: Array.from({ length: 65 }, (_, i) => ({ pointer: `/k${i}`, new: i })) }], retention: null, trustSteps: [] }) }) };
-  assert.deepEqual(ask(huge, { type: 'connectPreview', profileId: PID, selections: SEL }, A), { status: 'refused', code: 'too-large' });
+  assert.deepEqual(await ask(huge, { type: 'connectPreview', profileId: PID, selections: SEL }, A), { status: 'refused', code: 'too-large' });
 });
 
 // code review (run 192) M-1: after a write, an over-bound reply never says "refused" (nothing changed): partial, re-read
-test('an over-bound reply after a write is partial with too-large, never a refusal', () => {
+test('an over-bound reply after a write is partial with too-large, never a refusal', async () => {
   const w = world();
   const many = { status: 'partial' as const, reverted: [], conflicts: [], remaining: Array.from({ length: 300 }, () => ({ entry: OTHER, route: 'claude-tee' as const, reason: 'refused' })) };
-  const stub = { ...w.deps, connect: () => ({ ...w.c, disconnect: () => many, uninstall: () => many,
-    applyConnect: () => ({ status: 'applied' as const, entries: Array.from({ length: 9 }, () => OTHER), trustSteps: [] }) }) };
+  const stub = { ...w.deps, connect: () => ({ ...w.c, disconnect: async () => many, uninstall: async () => many,
+    applyConnect: async () => ({ status: 'applied' as const, entries: Array.from({ length: 9 }, () => OTHER), trustSteps: [] }) }) };
   const partial = { status: 'partial', reverted: [], conflicts: [], remaining: [], code: 'too-large' };
-  assert.deepEqual(ask(stub, { type: 'disconnect', profileId: PID }, A), partial);
-  assert.deepEqual(ask(stub, { type: 'uninstall' }, A), partial);
-  assert.deepEqual(ask(stub, { type: 'connectApply', previewId: OTHER }, A), partial);
+  assert.deepEqual(await ask(stub, { type: 'disconnect', profileId: PID }, A), partial);
+  assert.deepEqual(await ask(stub, { type: 'uninstall' }, A), partial);
+  assert.deepEqual(await ask(stub, { type: 'connectApply', previewId: OTHER }, A), partial);
+});
+
+// P6-T03 part 2a (design review M3): a rejection that escapes after dispatch may follow a write: partial, never refused
+test('an escaped failure after dispatch replies partial; before dispatch refused', async () => {
+  const w = world();
+  const boom = () => Promise.reject(new Error('boom'));
+  const stub = { ...w.deps, connect: () => ({ ...w.c, applyConnect: boom, disconnect: boom, uninstall: boom }) };
+  const partial = { status: 'partial', reverted: [], conflicts: [], remaining: [], code: 'failed' };
+  assert.deepEqual(await ask(stub, { type: 'connectApply', previewId: OTHER }, A), partial);
+  assert.deepEqual(await ask(stub, { type: 'disconnect', profileId: PID }, A), partial);
+  assert.deepEqual(await ask(stub, { type: 'uninstall' }, A), partial);
+  const pre = { ...w.deps, connect: () => ({ ...w.c, previewConnect: () => { throw new Error('boom'); } }) };
+  assert.deepEqual(await ask(pre, { type: 'connectPreview', profileId: PID, selections: SEL }, A), { status: 'refused', code: 'failed' }, 'a preview writes nothing');
 });
