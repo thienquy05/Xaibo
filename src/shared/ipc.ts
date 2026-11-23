@@ -307,6 +307,29 @@ export interface LedgerFilter { agent: string | null; model: string | null }
 /** P5-T16: cleared; read-only = the store refused writes; failed = the transaction did not commit (nothing changed). */
 export const CLEAR_USAGE_RESULTS = ['cleared', 'read-only', 'failed'] as const;
 export type ClearUsageResult = (typeof CLEAR_USAGE_RESULTS)[number];
+/** XAIBO-PROD-558 (P6-T03 part 1b; design review L1/L2): Connect replies, bounded; never an op, a plan or a foreign value
+ *  (diff lines carry Xaibo's values and a replaced value's type + 12-hex hash only). An over-bound reply is refused by the
+ *  service (too-large), never truncated. */
+export const CONNECT_TYPES = ['connectPreview', 'connectApply', 'disconnect', 'uninstall'] as const;
+export const CONNECT_ROUTES = ['claude-plugin', 'claude-settings-fallback', 'claude-retention', 'claude-tee', 'codex-hooks', 'agy-hooks'] as const;
+export type ConnectRoute = (typeof CONNECT_ROUTES)[number];
+export const CONNECT_LIMITS = { steps: 3, diff: 64, value: 16_384, text: 8_192, trust: 8, entries: 8, list: 256 } as const;
+export interface ConnectSelections { retention: boolean; tee: boolean }
+export interface ConnectDiffLine { pointer: string; new: unknown; replaced?: { type: string; sha256: string } }
+export interface ConnectStep { route: ConnectRoute; target: string; diff: ConnectDiffLine[] }
+export type ConnectOffer = { offered: true; from: number; to: number; layer: 'user' | 'default' }
+  | { offered: false; reason: 'policy' | 'enough' | 'unknown' | 'connected' | 'unverified'; days: number | null };
+export type ConnectPreview = { status: 'preview'; previewId: string; profileId: string; ttlMs: number; steps: ConnectStep[]; retention: ConnectOffer | null; trustSteps: string[] };
+export type ConnectRefused = { status: 'refused'; code: string };
+export interface ConnectOutcome {
+  status: 'disconnected' | 'partial';
+  reverted: { entry: string; route: ConnectRoute; result: 'restored' | 'removed' | 'structural' | 'unchanged' }[];
+  conflicts: { entry: string; route: ConnectRoute; pointer: string }[];
+  remaining: { entry: string; route: ConnectRoute; reason: string }[];
+  code?: string;
+}
+export type ConnectReply = ConnectPreview | ConnectRefused | { status: 'applied'; entries: string[]; trustSteps: string[] }
+  | { status: 'needs-preview'; preview: ConnectPreview | ConnectRefused } | ConnectOutcome;
 export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Cursor | null; limit: number }
   /** P5-T17a: the ledger page of at most `limit` (1..12) observed months ending at `end` (null = the latest). */
   | { v: 1; type: 'monthly'; id: number; filter: LedgerFilter; end: string | null; limit: number }
@@ -341,8 +364,14 @@ export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Curs
   | { v: 1; type: 'slice'; id: number; session: number; event: number; part: 'text' | 'reasoning'; offset: number; call?: string }
   | IdPage<'tools'> | IdPage<'subagents'> | IdPage<'files'>
   | { v: 1; type: 'markers'; id: number; session: number; cursor: MCursor | null; limit: number }
-  | { v: 1; type: 'cost'; id: number; session: number };
+  | { v: 1; type: 'cost'; id: number; session: number }
+  /** XAIBO-PROD-558 (P6-T03 part 1b): Connect at the renderer trust boundary: a profile id, selections or a preview id only. */
+  | { v: 1; type: 'connectPreview'; id: number; profileId: string; selections: ConnectSelections }
+  | { v: 1; type: 'connectApply'; id: number; previewId: string }
+  | { v: 1; type: 'disconnect'; id: number; profileId: string }
+  | { v: 1; type: 'uninstall'; id: number };
 export type PortMessage =
+  | { v: 1; type: (typeof CONNECT_TYPES)[number]; id: number; result: ConnectReply }
   // P5-T17a: failed = the store could not answer (the renderer offers Retry), never an empty ledger
   | ({ v: 1; type: 'monthly'; id: number; failed?: true } & LedgerPage)
   | { v: 1; type: 'clearUsage'; id: number; result: ClearUsageResult }
@@ -732,8 +761,61 @@ function parseResult(x: unknown): OverlayResult | null {
   return x.ok === false && oneOf(OVERLAY_ERRORS, x.error) ? { ok: false, error: x.error } : null;
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const uuid = (x: unknown): x is string => typeof x === 'string' && UUID.test(x);
+const CODE = /^[a-z][a-z-]{0,31}$/;
+const connectCode = (x: unknown): x is string => typeof x === 'string' && CODE.test(x);
+const bounded = (x: unknown, max: number): x is unknown[] => Array.isArray(x) && x.length <= max;
+const depthOk = (v: unknown, d = 0): boolean => d <= 32 && (typeof v !== 'object' || v === null || Object.values(v).every((x) => depthOk(x, d + 1))); // review L-3
+const jsonValue = (v: unknown) => { try { const t = JSON.stringify(v); return t !== undefined && t.length <= CONNECT_LIMITS.value && depthOk(v); } catch { return false; } };
+const longText = (x: unknown): x is string => text(x, CONNECT_LIMITS.text);
+const route = (x: unknown): x is ConnectRoute => oneOf(CONNECT_ROUTES, x);
+function connectPreview(x: unknown): ConnectPreview | null {
+  if (!exactKeys(x, ['status', 'previewId', 'profileId', 'ttlMs', 'steps', 'retention', 'trustSteps']) || x.status !== 'preview') return null;
+  if (!uuid(x.previewId) || !uuid(x.profileId) || !count(x.ttlMs) || !bounded(x.trustSteps, CONNECT_LIMITS.trust) || !x.trustSteps.every(longText)) return null;
+  if (!bounded(x.steps, CONNECT_LIMITS.steps) || !x.steps.every((st) => exactKeys(st, ['route', 'target', 'diff']) && route(st.route) && longText(st.target)
+    && bounded(st.diff, CONNECT_LIMITS.diff) && st.diff.every((d) => exactKeys(d, isObj(d) && d.replaced !== undefined ? ['pointer', 'new', 'replaced'] : ['pointer', 'new'])
+      && longText(d.pointer) && jsonValue(d.new) && (d.replaced === undefined || (exactKeys(d.replaced, ['type', 'sha256']) && text(d.replaced.type, 16) && typeof d.replaced.sha256 === 'string' && /^[0-9a-f]{12}$/.test(d.replaced.sha256)))))) return null;
+  const o = x.retention;
+  const offer = o === null || (exactKeys(o, ['offered', 'from', 'to', 'layer']) && o.offered === true && count(o.from) && count(o.to) && oneOf(['user', 'default'] as const, o.layer))
+    || (exactKeys(o, ['offered', 'reason', 'days']) && o.offered === false && oneOf(['policy', 'enough', 'unknown', 'connected', 'unverified'] as const, o.reason) && (o.days === null || count(o.days)));
+  return offer ? x as unknown as ConnectPreview : null;
+}
+/** XAIBO-PROD-558: the one bound check for Connect replies (the service refuses what this refuses: too-large). */
+export function parseConnectReply(x: unknown): ConnectReply | null {
+  if (!isObj(x)) return null;
+  if (x.status === 'refused') return exactKeys(x, ['status', 'code']) && connectCode(x.code) ? { status: 'refused', code: x.code } : null;
+  if (x.status === 'preview') return connectPreview(x);
+  if (x.status === 'needs-preview') {
+    const inner = isObj(x.preview) && x.preview.status === 'refused' ? parseConnectReply(x.preview) : connectPreview(x.preview);
+    return exactKeys(x, ['status', 'preview']) && inner ? { status: 'needs-preview', preview: inner as ConnectPreview | ConnectRefused } : null;
+  }
+  if (x.status === 'applied') {
+    return exactKeys(x, ['status', 'entries', 'trustSteps']) && bounded(x.entries, CONNECT_LIMITS.entries) && x.entries.every(uuid)
+      && bounded(x.trustSteps, CONNECT_LIMITS.trust) && x.trustSteps.every(longText) ? x as unknown as ConnectReply : null;
+  }
+  if (x.status !== 'disconnected' && x.status !== 'partial') return null;
+  if (!exactKeys(x, x.code === undefined ? ['status', 'reverted', 'conflicts', 'remaining'] : ['status', 'reverted', 'conflicts', 'remaining', 'code'])) return null;
+  if (x.code !== undefined && !connectCode(x.code)) return null;
+  const L = CONNECT_LIMITS.list;
+  const ok = bounded(x.reverted, L) && x.reverted.every((r) => exactKeys(r, ['entry', 'route', 'result']) && uuid(r.entry) && route(r.route) && oneOf(['restored', 'removed', 'structural', 'unchanged'] as const, r.result))
+    && bounded(x.conflicts, L) && x.conflicts.every((c) => exactKeys(c, ['entry', 'route', 'pointer']) && uuid(c.entry) && route(c.route) && longText(c.pointer))
+    && bounded(x.remaining, L) && x.remaining.every((r) => exactKeys(r, ['entry', 'route', 'reason']) && uuid(r.entry) && route(r.route) && connectCode(r.reason));
+  return ok ? x as unknown as ConnectOutcome : null;
+}
+
 export function parsePortRequest(x: unknown): PortRequest | null {
   const m = envelope(x);
+  // XAIBO-PROD-558: exact keys; a profile id (UUID), literal-boolean selections or a preview id (UUID), nothing else
+  if (m?.type === 'connectPreview') {
+    const sel = m.selections;
+    return exactKeys(m, ['v', 'type', 'id', 'profileId', 'selections']) && count(m.id) && uuid(m.profileId)
+      && exactKeys(sel, ['retention', 'tee']) && typeof sel.retention === 'boolean' && typeof sel.tee === 'boolean'
+      ? { v: 1, type: 'connectPreview', id: m.id, profileId: m.profileId, selections: { retention: sel.retention, tee: sel.tee } } : null;
+  }
+  if (m?.type === 'connectApply') return exactKeys(m, ['v', 'type', 'id', 'previewId']) && count(m.id) && uuid(m.previewId) ? { v: 1, type: 'connectApply', id: m.id, previewId: m.previewId } : null;
+  if (m?.type === 'disconnect') return exactKeys(m, ['v', 'type', 'id', 'profileId']) && count(m.id) && uuid(m.profileId) ? { v: 1, type: 'disconnect', id: m.id, profileId: m.profileId } : null;
+  if (m?.type === 'uninstall') return exactKeys(m, ['v', 'type', 'id']) && count(m.id) ? { v: 1, type: 'uninstall', id: m.id } : null;
   if (m?.type === 'history') {
     const filter = parseFilter(m.filter), cursor = parseHistoryKey(m.cursor);
     return count(m.id) && filter && cursor !== undefined && pageLimit(m.limit) ? { v: 1, type: 'history', id: m.id, filter, cursor, limit: m.limit } : null;
@@ -812,6 +894,10 @@ export function parsePortRequest(x: unknown): PortRequest | null {
 export function parsePortMessage(x: unknown): PortMessage | null {
   const m = envelope(x);
   if (!m) return null;
+  if (oneOf(CONNECT_TYPES, m.type)) {
+    const result = parseConnectReply(m.result);
+    return exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) && result ? { v: 1, type: m.type, id: m.id, result } : null;
+  }
   // review L1: failed only where it is defined; a failed page carries nothing
   const failedOf = (empty: boolean) => (m.failed === undefined ? {} : m.failed === true && empty ? { failed: true as const } : null);
   if (m.type === 'history') { // Gate 5 G5b2-5: failed = the store could not answer (the renderer keeps its rows, Retry)

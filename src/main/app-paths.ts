@@ -36,3 +36,10 @@ export function initDataDir(input: DataDirInput, writeErr: (s: string) => void):
     return null;
   }
 }
+
+/** XAIBO-PROD-558 (P6-T03 part 1b; design review M3): the service's environment. main always sets XAIBO_BIN itself, last:
+ *  the packaged helpers in resources/bin, or '' (the service then uses the repo's helpers), so a value inherited from the
+ *  shell or launchctl never decides which helpers agent hooks run. */
+export function serviceEnv(env: Record<string, string | undefined>, o: { dataDir: string; packaged: boolean; resourcesPath: string }): Record<string, string | undefined> {
+  return { ...env, XAIBO_DATA_DIR: o.dataDir, XAIBO_BIN: o.packaged ? path.join(o.resourcesPath, 'bin') : '' };
+}

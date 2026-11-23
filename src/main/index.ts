@@ -9,7 +9,7 @@ import path from 'node:path';
 import { installCrashPolicy } from '../shared/crash.ts';
 import { AGENT_ID, IPC_VERSION, type ServiceMetrics } from '../shared/ipc.ts';
 import { appendQuiet, createLogger, loadInstallSecret } from '../shared/log.ts';
-import { initDataDir } from './app-paths.ts';
+import { initDataDir, serviceEnv } from './app-paths.ts';
 import { buildBundle, foldMetrics, readLogTail, writeBundle } from './diagnostics.ts';
 import { notificationText, showNotification } from './notifications.ts';
 import { forwardPower } from './power.ts';
@@ -54,7 +54,7 @@ function start(dataDir: string) {
   const notifyStub = process.env.XAIBO_NOTIFY_STUB === '1' ? path.join(app.getPath('logs'), 'notify-stub.jsonl') : null;
   const supervisor = new Supervisor<MessagePortMain>({
     fork: () => utilityProcess.fork(path.join(here, '..', 'service', 'index.js'), [], {
-      serviceName: 'xaibo-service', env: { ...process.env, XAIBO_DATA_DIR: dataDir },
+      serviceName: 'xaibo-service', env: serviceEnv(process.env, { dataDir, packaged: app.isPackaged, resourcesPath: process.resourcesPath }),
     }),
     channel: () => new MessageChannelMain(),
     onHealth: (h) => win?.webContents.send('health', h),

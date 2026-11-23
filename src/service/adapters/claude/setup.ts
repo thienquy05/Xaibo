@@ -98,7 +98,9 @@ export function deployShim(dataDir: string, from: { hook: string; forwarder: str
   if (from.statusline) files.push([STATUSLINE_BIN, from.statusline]);
   for (const [name, src] of files) {
     const tmp = path.join(bin, `.${name}.${randomUUID()}.tmp`);
-    copyFileSync(src, tmp, constants.COPYFILE_EXCL);
+    // P6-T03 part 1b review M4: an APFS clone (instant) where possible, else a copy. ponytail: other volumes copy the SEA
+    // binaries (~145 MB each) in full on every Connect; skip a deployed file that already matches if that shows up as slow
+    copyFileSync(src, tmp, constants.COPYFILE_EXCL | constants.COPYFILE_FICLONE);
     chmodSync(tmp, 0o755);
     renameSync(tmp, path.join(bin, name));
   }

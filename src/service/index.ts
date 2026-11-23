@@ -19,6 +19,8 @@ import { answerMonthly, MonthlyCache } from './usage/ledger.ts';
 import { answerHistoryRow, answerSearch, retentionState, suppressedPage } from './history/tools.ts';
 import { StorageMeter } from './storage/meter.ts';
 import { takePerf } from './perf-counters.ts';
+import { answerIntegrations, connectContext, type Connect } from './integrations-ipc.ts';
+import { createConnect } from './integrations/connect.ts';
 
 // P3-T10: 50 ms keeps one push per window while leaving most of M1's 250 ms hook-to-paint budget; the tick re-reads
 // sessions whose status changes with time alone (settle within interval + 250 ms, M1), coverage is re-read slowly.
@@ -139,15 +141,28 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
         if (resyncAfter(req.op, result)) removed(); // G5b2-4: other windows list it (or not) too
         break;
       }
+      // XAIBO-PROD-558 (P6-T03 part 1b): Connect, Disconnect, Uninstall; a preview belongs to this port
+      case 'connectPreview': case 'connectApply': case 'disconnect': case 'uninstall':
+        port.postMessage(answerIntegrations({ readOnly: s.store.readOnly, connect: () => integrationsFor(s), profile: (id) => s.profiles()?.find((p) => p.id === id) }, req, port));
+        break;
       default: port.postMessage(db.isOpen ? answer(db, req, s.kinds(), s.models(), live) : { v: IPC_VERSION, type: 'page', id: req.id, rows: [], next: null });
     }
   });
 });
 
+/** The Connect core, built once profiles are synced (null before: `starting`). XAIBO_BIN is always set by main (review M3). */
+let integrations: Connect | null = null;
+let startupDone = false; // review L-2: startup settled; still no profile sync = `unavailable`, never `starting` forever
+void booted.then((s) => s.done.then(() => { startupDone = true; }, () => { startupDone = true; }));
+const integrationsFor = (s: Service): Connect | null | 'unavailable' => {
+  if (!integrations && s.profiles() !== null && dataDir) integrations = createConnect(connectContext({ dataDir, login: s.loginEnv(), bin: process.env.XAIBO_BIN ?? '' }));
+  return integrations ?? (startupDone ? 'unavailable' : null);
+};
+
 function connect(port: MessagePortMain) {
   hub.add(port);
   port.on('message', (e) => request(e.data, port));
-  port.on('close', () => hub.remove(port));
+  port.on('close', () => { hub.remove(port); integrations?.dropOwner(port); });
   port.start();
   port.postMessage({ v: IPC_VERSION, type: 'agents', agents: svc?.agents() ?? null } satisfies PortMessage);
   port.postMessage({ v: IPC_VERSION, type: 'coverage', banners } satisfies PortMessage);

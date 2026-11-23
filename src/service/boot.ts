@@ -59,6 +59,10 @@ export interface Service {
   done: Promise<void>;
   /** Agent status for the renderer; null until detection has run. */
   agents(): AgentStatus[] | null;
+  /** XAIBO-PROD-558 (P6-T03 part 1b): the synced profiles, null until profile sync ran (never on a read-only store). */
+  profiles(): Profile[] | null;
+  /** The login-shell environment read at start; null until read or when it could not be read (no PATH). */
+  loginEnv(): LoginEnv | null;
   /** Catalog session kinds for list badges (P2-T04); empty if the catalog failed to load. */
   kinds(): SessionKind[];
   /** Model list for display names (P2-T08; with the owner override, P2-T09); empty if the bundled list failed to load. */
@@ -269,6 +273,7 @@ export async function boot(o: BootOptions): Promise<Service> {
   let stopped = false;
   let catalog: Catalog | undefined;
   let env: LoginEnv = {};
+  let synced = false; // XAIBO-PROD-558: Connect answers `starting` until profiles are synced
   let detected = false;
   let markDetected = () => {};
   const detection = new Promise<void>((resolve) => { markDetected = resolve; });
@@ -295,6 +300,7 @@ export async function boot(o: BootOptions): Promise<Service> {
     if (stopped || readOnly) return;
     const manual = Object.fromEntries(catalog.agents.map((a) => [a.id, manualRoots(db, a.id)]));
     profiles = syncProfiles(db, profileRoots(catalog, env, o.home, manual));
+    synced = true;
     hooks = await startHooks({
       dataDir: o.dataDir, db, writer, ...(o.log ? { log: o.log } : {}),
       publish: (e, durable) => {
@@ -400,6 +406,8 @@ export async function boot(o: BootOptions): Promise<Service> {
   done.catch(() => undefined); // callers observe it; this only keeps an early failure from being unhandled meanwhile
   return {
     store, detections, adapters, done, agents,
+    profiles: () => (synced ? profiles : null),
+    loginEnv: () => (env.PATH ? env : null),
     kinds: () => catalog?.sessionKinds ?? [],
     models: () => prices?.table.models ?? [],
     prices: () => prices,

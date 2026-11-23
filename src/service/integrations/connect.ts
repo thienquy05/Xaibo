@@ -9,7 +9,7 @@
 // ponytail: synchronous, so the service's one thread serializes these; part 2's `claude plugin` awaits need an in-process
 // mutex and a lock file shared with the dev CLI (transaction.ts lock note).
 import { createHash, randomUUID } from 'node:crypto';
-import { realpathSync } from 'node:fs';
+import { lstatSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isProfileKey } from '../../shared/hook-protocol.ts';
@@ -91,7 +91,9 @@ function noShim(file: string, agent: string) {
 }
 
 type Builder = [Route, () => Plan];
-interface Held { profile: Profile; sel: Selections; steps: { route: Route; build: () => Plan; plan: Plan }[]; trust: string[]; expiresAt: number }
+/** owner: the requesting port (part 1b review L5); only that owner applies the preview. */
+interface Held { profile: Profile; sel: Selections; owner: unknown; steps: { route: Route; build: () => Plan; plan: Plan }[]; trust: string[]; expiresAt: number }
+const regularFile = (f: string) => { try { return lstatSync(f).isFile(); } catch { return false; } };
 
 export function createConnect(ctx: ConnectContext) {
   const now = ctx.now ?? (() => performance.now());
@@ -135,11 +137,14 @@ export function createConnect(ctx: ConnectContext) {
     return { list, retention, trust: [] };
   }
 
-  function previewConnect(p: Profile, sel: Selections): Preview | Refused {
+  function previewConnect(p: Profile, sel: Selections, owner?: unknown): Preview | Refused {
     if (!denied) return refused('bounds-unavailable');
     const t = targetOf(p);
     if (!t) return refused('unverified');
     if (!permitted(t)) return refused('real-profile'); // before any offer read (review H3, M4)
+    // part 1b review M2: the helpers apply will deploy exist, before the owner confirms (xaibo-report ships beside the hook)
+    const helpers = [ctx.helpers.hook, path.join(path.dirname(ctx.helpers.hook), 'xaibo-report'), ctx.helpers.forwarder, ...(sel.tee ? [ctx.helpers.statusline] : [])];
+    if (!helpers.every(regularFile)) return refused('helpers-unavailable');
     let b, steps;
     try {
       b = builders(p, t, sel);
@@ -151,22 +156,22 @@ export function createConnect(ctx: ConnectContext) {
     if (previews.size - own.length >= MAX_PREVIEWS) return refused('busy'); // checked before the profile's own is dropped
     for (const id of own) previews.delete(id); // one per profile
     const previewId = randomUUID();
-    previews.set(previewId, { profile: p, sel, steps, trust: b.trust, expiresAt: at + TTL_MS });
+    previews.set(previewId, { profile: p, sel, owner, steps, trust: b.trust, expiresAt: at + TTL_MS });
     return { status: 'preview', previewId, profileId: p.id, ttlMs: TTL_MS, steps: steps.map((s) => ({ route: s.route, target: s.plan.target, diff: s.plan.diff })), retention: b.retention, trustSteps: b.trust };
   }
 
   /** Design review M3: stricter than the redacted diff: route, target, owned values with the full value they replace, created. */
   const same = (a: Plan, b: Plan) => a.route === b.route && a.target === b.target && isDeepStrictEqual(a.owned, b.owned) && isDeepStrictEqual(a.created, b.created);
 
-  function applyConnect(previewId: string): ConnectResult {
+  function applyConnect(previewId: string, owner?: unknown): ConnectResult {
     const h = previews.get(previewId);
-    previews.delete(previewId); // consumed on first lookup, whatever happens next (review L1)
-    if (!h) return refused('preview-invalid');
+    previews.delete(previewId); // consumed on first lookup, whatever happens next, a wrong owner included (review L1, 1b L5)
+    if (!h || h.owner !== owner) return refused('preview-invalid');
     if (now() > h.expiresAt) return refused('preview-expired');
     if (!denied) return refused('bounds-unavailable');
     const t = targetOf(h.profile);
     if (!t || !permitted(t)) return refused('real-profile');
-    const again = (): ConnectResult => ({ status: 'needs-preview', preview: previewConnect(h.profile, h.sel) });
+    const again = (): ConnectResult => ({ status: 'needs-preview', preview: previewConnect(h.profile, h.sel, h.owner) }); // 1b review M1
     // checked before any helper is deployed: bytes, file identity and mode, as apply() will (review L2)
     const first = h.steps[0]!.plan, cur = readFile(first.target);
     if ((cur ? sha256(cur.bytes) : null) !== first.preHash || (cur && (cur.dev !== first.dev || cur.ino !== first.ino || cur.mode !== first.mode))) return again();
@@ -181,7 +186,8 @@ export function createConnect(ctx: ConnectContext) {
       let next: Plan;
       try { next = i === 0 ? step.plan : step.build(); } catch (e) { return undo(e instanceof ConfigError ? null : 'failed'); } // code review M-a
       if (i > 0 && !same(next, step.plan)) return undo(null);
-      const known = new Set(readManifest(ctx.dataDir).map((e) => e.id));
+      let known: Set<string>;
+      try { known = new Set(readManifest(ctx.dataDir).map((e) => e.id)); } catch { return undo('failed'); } // review L-5: undone, never left half applied
       try { done.push(apply(next, { dataDir: ctx.dataDir, bounds: { root: t.dir, denied } })); } catch (e) {
         // review M1: a step that threw after recording its entry leaves a pending entry: it is undone first
         const residue = readManifest(ctx.dataDir).filter((x) => !known.has(x.id));
@@ -221,5 +227,8 @@ export function createConnect(ctx: ConnectContext) {
   /** Every recorded entry, including profiles no longer detected; history and the shim stay (FR-34; orphan shim: P6-T05). */
   const uninstall = (): Outcome | Refused => (denied ? revertAll(readManifest(ctx.dataDir), denied) : refused('bounds-unavailable'));
 
-  return { previewConnect, applyConnect, disconnect, uninstall };
+  /** A closed port's previews can never be applied: drop them (part 1b review L5). */
+  const dropOwner = (owner: unknown) => { for (const [id, h] of previews) if (h.owner === owner) previews.delete(id); };
+
+  return { previewConnect, applyConnect, disconnect, uninstall, dropOwner };
 }
