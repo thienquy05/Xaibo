@@ -20,7 +20,7 @@
 //   P3-T13b report registrations: register --agent <id> --profile-key <key> [--yes] | revoke --id <uuid> [--yes]
 //   register prints the registration id and its token once (only the token's hash is stored, <dataDir>/registrations.json);
 //   --yes is accepted only for a data dir strictly below the temp dir. Revoking cuts the producer's open connections.
-import { closeSync, constants, fstatSync, openSync, readSync, realpathSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
@@ -29,6 +29,7 @@ import { deployShim, installPlugin, installTee, MARKETPLACE, PLUGIN_REF, teePlan
 import { checkAgyInstall, installAgyHooks } from '../adapters/agy/setup.ts';
 import { codexHookOps, codexTrustSteps, installCodexHooks, shimPath } from '../adapters/codex/setup.ts';
 import { readLoginEnv } from '../catalog/env.ts';
+import { deniedRootsFrom, real } from './bounds.ts';
 import { addRegistration, RegistrationError, removeRegistration } from '../receivers/registrations.ts';
 import {
   apply, ConfigError, plan, readManifest, resolveTarget, revert, validateOps, within, type Bounds, type Plan, type Route,
@@ -42,14 +43,11 @@ const TARGETS: Record<string, { file: string; route: Route | null }> = {
   'agy-hooks': { file: '.gemini/config/hooks.json', route: 'agy-hooks' },
 };
 const COMMANDS = new Set(['plan', 'apply', 'revert', 'status']);
-const ROOT_NAMES = ['.claude', '.codex', '.gemini', '.claude.json'];
-const ENV_ROOTS = ['CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'GEMINI_CLI_HOME'] as const;
 const MAX_OPS_BYTES = 1 << 20;
 const REPO = path.resolve(import.meta.dirname, '..', '..', '..');
 
 class UsageError extends Error {}
 const refuse = (msg: string): never => { throw new UsageError(msg); };
-const real = (p: string) => { try { return realpathSync.native(p); } catch { return path.resolve(p); } };
 
 /** Strict flags (node:util): a value never comes from the next flag, no positionals, `--flag=value` accepted
  * (a value starting with '-' needs that form). Only parse errors become usage errors. */
@@ -77,13 +75,8 @@ function cliArgs(argv: string[]) {
 }
 
 async function deniedRoots(): Promise<string[]> {
-  const login = await readLoginEnv({ shell: process.env['SHELL'] });
-  if (!login.PATH) refuse('refused: the login shell environment could not be read, so agent home overrides are unknown');
-  const homes = new Set([os.homedir(), os.userInfo().homedir]);
-  return [
-    ...[...homes].flatMap((h) => ROOT_NAMES.map((n) => path.join(h, n))),
-    ...ENV_ROOTS.flatMap((k) => [login[k], process.env[k]]).filter((v): v is string => !!v),
-  ].map(real);
+  const denied = deniedRootsFrom(await readLoginEnv({ shell: process.env['SHELL'] })); // P6-T03: shared with the service
+  return denied ?? refuse('refused: the login shell environment could not be read, so agent home overrides are unknown');
 }
 
 /** `--yes` only for a profile strictly below the temp dir (unless that holds the real home) or .cache/profiles/. */

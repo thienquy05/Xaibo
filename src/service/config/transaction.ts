@@ -307,8 +307,11 @@ export function readManifest(dataDir: string): ManifestEntry[] {
 
 /** Adds or replaces (by id) an entry written outside apply(): the claude-plugin route (P3-T05). */
 export function recordEntry(dataDir: string, entry: ManifestEntry): void {
-  writeManifest(dataDir, [...readManifest(dataDir).filter((e) => e.id !== entry.id), entry]);
+  writeManifest(dataDir, upsert(readManifest(dataDir), entry));
 }
+/** P6-T03 design review M2: an entry is replaced where it stands, so manifest order stays creation order (newest last). */
+const upsert = (entries: ManifestEntry[], entry: ManifestEntry) =>
+  (entries.some((e) => e.id === entry.id) ? entries.map((e) => (e.id === entry.id ? entry : e)) : [...entries, entry]);
 export function dropEntry(dataDir: string, id: string): void {
   writeManifest(dataDir, readManifest(dataDir).filter((e) => e.id !== id));
 }
@@ -350,8 +353,9 @@ export function apply(p: Plan, o: ApplyOptions): ManifestEntry {
   if (p.route === 'claude-plugin') fail('route'); // installs through `claude plugin` (adapters/claude/setup.ts)
   const others = readManifest(o.dataDir);
   assertExclusive(others, p.target, p.route);
-  // P6-T02 design review H2: one retention entry per file, so a revert can never remove a value the owner set since
-  if (p.route === 'claude-retention' && others.some((e) => e.target === p.target && e.route === p.route)) fail('duplicate');
+  // P6-T02 design review H2, generalised by P6-T03 review H2: one entry per file and route, so a revert can never remove a
+  // value the owner set since and a re-Connect never appends Xaibo's hooks twice
+  if (others.some((e) => e.target === p.target && e.route === p.route)) fail('duplicate');
   const before = readFile(p.target);
   if (!sameFile(p, before)) fail('changed');
   const backup = before ? `${randomUUID()}.bak` : null;
@@ -434,6 +438,6 @@ export function revert(entry: ManifestEntry, o: { dataDir: string; bounds: Bound
   }
   if (!conflicts.length) return done('structural');
   const left = new Set(conflicts.map((c) => c.pointer));
-  writeManifest(o.dataDir, [...others, { ...entry, owned: entry.owned.filter((x) => left.has(x.pointer)), postHash: sha256(text), partial: true }]);
+  writeManifest(o.dataDir, upsert(readManifest(o.dataDir), { ...entry, owned: entry.owned.filter((x) => left.has(x.pointer)), postHash: sha256(text), partial: true }));
   return { result: 'structural', conflicts };
 }
