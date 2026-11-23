@@ -170,7 +170,7 @@ function encode(doc: unknown, s: Style): string {
   return (s.eol === '\n' ? text : text.replaceAll('\n', s.eol)) + (s.trailing ? s.eol : '');
 }
 
-function segments(pointer: string): string[] {
+export function segments(pointer: string): string[] {
   if (typeof pointer !== 'string' || !pointer.startsWith('/')) fail('pointer');
   const segs = pointer.slice(1).split('/').map((s) => s.replaceAll('~1', '/').replaceAll('~0', '~'));
   if (segs.some((s) => s === '' || s === '-' || FORBIDDEN_SEGMENTS.has(s))) fail('pointer');

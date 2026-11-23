@@ -169,7 +169,7 @@ function under(root: unknown, name: string): unknown[] {
 /** Xaibo traces the CLI may leave: enabledPlugins keys, the marketplace and plugin registries; unreadable counts. */
 function leftovers(configDir: string): string[] {
   const out: string[] = [];
-  const text = (f: string) => { try { return readFileSync(path.join(configDir, f), 'utf8'); } catch (e) { return (e as NodeJS.ErrnoException).code === 'ENOENT' ? null : undefined; } };
+  const text = (f: string) => { try { const c = readFile(path.join(configDir, f)); return c ? c.bytes.toString('utf8') : null; } catch { return undefined; } }; // review R2 (run 197)
   const s = text('settings.json');
   if (s === undefined) out.push('unreadable:settings.json');
   else if (s !== null) {
@@ -391,7 +391,7 @@ function ownership(configDir: string, doc: Record<string, unknown>, dir: string)
   const foreign = (x: string) => x !== PLUGIN_REF && x.endsWith(`@${MARKETPLACE}`);
   if (ep && Object.keys(ep).some(foreign)) conflicts.add(OWNERSHIP);
   const read = (f: string): unknown => { // null absent, undefined unreadable
-    const t = (() => { try { return readFileSync(path.join(configDir, f), 'utf8'); } catch (e) { return (e as NodeJS.ErrnoException).code === 'ENOENT' ? null : undefined; } })();
+    const t = (() => { try { const c = readFile(path.join(configDir, f)); return c ? c.bytes.toString('utf8') : null; } catch { return undefined; } })(); // review R2 (run 197)
     if (t === null || t === undefined) return t;
     try { return JSON.parse(t) as unknown; } catch { return undefined; }
   };
@@ -401,6 +401,28 @@ function ownership(configDir: string, doc: Record<string, unknown>, dir: string)
   if (ours.some((t) => !namesDir(t, dir))) conflicts.add(OWNERSHIP);
   if (installed && some(installed, foreign)) conflicts.add(OWNERSHIP);
   return { enabled, marketplace: ours.length > 0, registered: !!installed && mentions(installed, PLUGIN_REF), conflicts: [...conflicts] };
+}
+
+/** XAIBO-PROD-562 (P6-T04 part 1; owner D-P6-08): the plugin's state from the three files, never the CLI: the exact
+ *  enabledPlugins value (undefined = no key), whether the plugin registry names it, and whether the `xaibo` marketplace
+ *  names `dir` (ours), something else (foreign) or is absent. Unreadable, linked, oversized or invalid JSON throws ConfigError. */
+export function pluginEvidence(configDir: string, dir: string): { enabled: unknown; installed: boolean; marketplace: 'ours' | 'foreign' | 'absent' } {
+  // code review (run 197) 1: readFile refuses only a linked final component, so a linked plugins/ folder is refused here
+  // (configDir itself is a realpath). ponytail: namesDir still stats the paths the marketplace registry names (no content).
+  try { if (lstatSync(path.join(configDir, 'plugins')).isSymbolicLink()) fail('symlink'); } catch (e) { if (e instanceof ConfigError) throw e; }
+  const json = (f: string): unknown => {
+    const c = readFile(path.join(configDir, f));
+    if (!c) return null;
+    try { return JSON.parse(c.bytes.toString('utf8')) as unknown; } catch { return fail('invalid-json'); }
+  };
+  const doc = json('settings.json'), known = json('plugins/known_marketplaces.json'), installed = json('plugins/installed_plugins.json');
+  const ep = isObj(doc) && isObj(doc['enabledPlugins']) ? doc['enabledPlugins'] : null;
+  const ours = known ? under(known, MARKETPLACE) : [];
+  return {
+    enabled: ep && Object.hasOwn(ep, PLUGIN_REF) ? ep[PLUGIN_REF] : undefined,
+    installed: !!installed && mentions(installed, PLUGIN_REF),
+    marketplace: !ours.length ? 'absent' : ours.every((t) => namesDir(t, dir)) ? 'ours' : 'foreign',
+  };
 }
 
 /** `o.expect` is the current detection (Claude may have updated since install, D-P6-07); the dev CLI passes none. */

@@ -27,6 +27,7 @@ import { acquireLock, lockState } from '../config/lock.ts';
 import {
   apply, ConfigError, plan, readFile, readManifest, revert, type Bounds, type DiffLine, type ManifestEntry, type Op, type Plan, type Route,
 } from '../config/transaction.ts';
+import { reconcile as scan, runsShim, XAIBO_SHIM, type ReconcileReport, type Target } from './reconcile.ts';
 
 export interface ConnectContext {
   dataDir: string;
@@ -66,12 +67,10 @@ export interface Outcome {
 
 const TTL_MS = 5 * 60_000;
 const MAX_PREVIEWS = 32;
-const XAIBO_SHIM = (agent: string) => new RegExp(`xaibo-hook['"]?\\s+hook\\s+${agent}(\\s|$)`); // whatever its quoting
 const fail = (code: ConfigError['code']): never => { throw new ConfigError(code); };
 const refused = (code: string): Refused => ({ status: 'refused', code });
 const sha256 = (b: Buffer) => createHash('sha256').update(b).digest('hex');
 
-interface Target { dir: string; file: string; routes: Route[] }
 /** Design review H1: each agent's exact file and routes, used by preview and by Disconnect (never "anything under the root"). */
 function targetOf(p: Profile): Target | null {
   let root: string;
@@ -89,13 +88,6 @@ function targetOf(p: Profile): Target | null {
 /** The settings-fallback hook groups: the plugin's hooks appended under /hooks/<event>, foreign hooks kept (D-2). */
 const fallbackOps = (shim: string, key: string): Op[] =>
   Object.entries(pluginHooks(shim, key).hooks).flatMap(([ev, groups]) => groups.map((value) => ({ op: 'append' as const, pointer: `/hooks/${ev}`, value })));
-function runsShim(doc: unknown, shim: RegExp): boolean {
-  if (Array.isArray(doc)) return doc.some((x) => runsShim(x, shim));
-  if (typeof doc !== 'object' || doc === null) return false;
-  const o = doc as Record<string, unknown>;
-  if (o['type'] === 'command' && typeof o['command'] === 'string' && shim.test(o['command'])) return true;
-  return Object.values(o).some((x) => runsShim(x, shim));
-}
 /** Design review H2: hooks already running a Xaibo shim (even with the manifest lost) are never appended again. */
 function noShim(file: string, agent: string) {
   const cur = readFile(file);
@@ -323,5 +315,12 @@ export function createConnect(ctx: ConnectContext) {
   /** A closed port's previews can never be applied: drop them (part 1b review L5). */
   const dropOwner = (owner: unknown) => { for (const [id, h] of previews) if (h.owner === owner) previews.delete(id); };
 
-  return { previewConnect, applyConnect, disconnect, uninstall, dropOwner };
+  /** XAIBO-PROD-562 (P6-T04 part 1, EC-26): the read-only reconcile over the current profiles; the latest report is kept for
+   *  the IPC read (P6-T10). Same denylist and writable roots as every write. */
+  // ponytail (code review 6): kept for its first reader, the P6-T10 IPC read; only tests read it until then
+  let latest: ReconcileReport | null = null;
+  const reconcile = (profiles: readonly Profile[]) => (latest = scan({ dataDir: ctx.dataDir, denied, profiles, target: targetOf, permitted }));
+  const reconciled = () => latest;
+
+  return { previewConnect, applyConnect, disconnect, uninstall, dropOwner, reconcile, reconciled };
 }

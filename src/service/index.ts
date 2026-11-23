@@ -157,7 +157,12 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
 /** The Connect core, built once profiles are synced (null before: `starting`). XAIBO_BIN is always set by main (review M3). */
 let integrations: Connect | null = null;
 let startupDone = false; // review L-2: startup settled; still no profile sync = `unavailable`, never `starting` forever
-void booted.then((s) => s.done.then(() => { startupDone = true; }, () => { startupDone = true; }));
+void booted.then((s) => s.done.then(() => { startupDone = true; reconcileOnStart(s); }, () => { startupDone = true; reconcileOnStart(s); }));
+/** XAIBO-PROD-562 (P6-T04 part 1, EC-26): one read-only reconcile once startup settled; kept for the IPC read (P6-T10).
+ *  ponytail: once per start; a refresh after each Connect/Disconnect and on request comes with the IPC read. */
+function reconcileOnStart(s: Service) {
+  try { const c = integrationsFor(s); if (c && c !== 'unavailable') c.reconcile(s.profiles() ?? []); } catch { /* read-only: nothing to undo; the next start retries */ }
+}
 const integrationsFor = (s: Service): Connect | null | 'unavailable' => {
   if (!integrations && s.profiles() !== null && dataDir) {
     integrations = createConnect(connectContext({
