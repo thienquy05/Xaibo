@@ -209,12 +209,19 @@ function remove(doc: unknown, segs: string[]) {
 /** Undo owned values on a copy: unchanged ones are removed (or their replaced foreign value restored), changed ones
  * are conflicts; then Xaibo-created containers are dropped if empty. `lastOnly` (codex-hooks, S5-C5): Codex keys hook
  * trust by array position, so an owned element with anything after it is a conflict too, never shifted out. */
-function strip(doc: Record<string, unknown>, owned: Owned[], created: string[], lastOnly = false) {
+function strip(doc: Record<string, unknown>, owned: Owned[], created: string[], lastOnly = false, relocate = false) {
   const out = structuredClone(doc);
   const conflicts: Array<{ pointer: string }> = [];
   for (const o of [...owned].reverse()) {
-    const segs = segments(o.pointer);
+    let segs = segments(o.pointer);
     const parent = get(out, segs.slice(0, -1));
+    // XAIBO-PROD-564 (P6-T06, EC-72; review R1-R3): revert only. An appended element another tool's edits moved within
+    // its array is found by content: exactly one deep-equal element (FR-34 is value-based; Xaibo's group names its data-dir
+    // shim and profile key). None or several stay a conflict at the recorded pointer; codex-hooks (lastOnly) stay positional.
+    if (relocate && !lastOnly && Array.isArray(parent) && !('old' in o) && !isDeepStrictEqual(get(out, segs), o.value)) {
+      const hits = parent.flatMap((x, i) => (isDeepStrictEqual(x, o.value) ? [i] : []));
+      if (hits.length === 1) segs = [...segs.slice(0, -1), String(hits[0])];
+    }
     if (!isDeepStrictEqual(get(out, segs), o.value)
       || (lastOnly && Array.isArray(parent) && Number(segs.at(-1)) !== parent.length - 1)) { conflicts.push({ pointer: o.pointer }); continue; }
     if ('old' in o) (get(out, segs.slice(0, -1)) as Record<string, unknown>)[segs.at(-1)!] = o.old;
@@ -454,7 +461,7 @@ export function revert(entry: ManifestEntry, o: { dataDir: string; bounds: Bound
     return done('restored');
   }
   const { doc, style } = decode(cur.bytes);
-  const { doc: stripped, conflicts } = strip(doc, entry.owned, entry.created, entry.route === 'codex-hooks');
+  const { doc: stripped, conflicts } = strip(doc, entry.owned, entry.created, entry.route === 'codex-hooks', true);
   const text = encode(stripped, style);
   if (!isDeepStrictEqual(stripped, doc)) {
     atomicWrite(entry.target, text, cur.mode, unchangedSince);
