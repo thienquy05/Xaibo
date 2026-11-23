@@ -10,7 +10,7 @@ import { loadCatalog, validateCatalog, type AgentEntry } from '../../src/service
 
 const home = realpathSync(mkdtempSync(join(tmpdir(), 'xdetect-')));
 /** Part 2b: Detection also carries the executable's stat identity (checked in its own test). */
-const noId = (d: object) => { const { id: _, ...rest } = d as { id?: unknown }; return rest; };
+const noId = (d: object) => { const { id: _, manual: __, ...rest } = d as { id?: unknown; manual?: unknown }; return rest; };
 const bin = (dir: string, name: string, body: string) => {
   mkdirSync(dir, { recursive: true });
   const f = join(dir, name);
@@ -92,4 +92,14 @@ test('2b detection records the stat identity of the probed realpath and keeps a 
   const st = statSync(f);
   assert.deepEqual(d.state === 'detected' && d.id, { dev: st.dev, ino: st.ino, size: st.size, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs });
   assert.equal(d.state === 'detected' && d.version, '2.1.319-beta.1');
+});
+
+// XAIBO-PROD-561 (P6-T03 part 2c; review H1): a Claude found through the stored manual path is marked manual, so the plugin
+// route (which runs it) is never taken for a renderer-chosen executable.
+test('2c detection marks an executable found through the manual path', async () => {
+  const real = bin(join(home, 'manual2c'), 'm2c', 'echo "1.0.0"');
+  const viaManual = await detectAgent(entry('m2c', []), { env: { PATH: '/usr/bin:/bin' }, home, manualPath: real });
+  assert.equal(viaManual.state === 'detected' && viaManual.manual, true);
+  const viaPath = await detectAgent(entry('m2c', []), { env: { PATH: join(home, 'manual2c') }, home });
+  assert.equal(viaPath.state === 'detected' && viaPath.manual, false);
 });

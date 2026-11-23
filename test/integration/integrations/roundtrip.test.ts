@@ -39,7 +39,7 @@ const GEMINI_SETTINGS = `${JSON.stringify({ general: { sessionRetention: { enabl
 
 /** A disposable base (the only allowed root), one profile HOME with Claude, Codex, agy and Gemini files, a managed-policy
  *  dir, synthetic helper binaries and a data dir; `clock.t` is the injected clock. */
-async function world(o: { claude?: string | null | undefined; route?: 'plugin' | 'fallback'; version?: string | null } = {}) {
+async function world(o: { claude?: string | null | undefined; route?: 'plugin' | 'fallback'; version?: string | null; manual?: boolean } = {}) {
   const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'xconnect-')));
   dirs.push(base);
   const home = join(base, 'home'), managed = join(base, 'managed'), helpers = join(base, 'helpers'), dataDir = join(base, 'data');
@@ -58,7 +58,7 @@ async function world(o: { claude?: string | null | undefined; route?: 'plugin' |
   const clock = { t: 1_000 };
   const fake = join(base, 'fake-claude');
   writeFakeClaude(fake);
-  const ctx: ConnectContext = { ...await claudeContext({ ...(o.route ? { route: o.route } : {}), ...(o.version !== undefined ? { version: o.version } : {}), exe: fake }),
+  const ctx: ConnectContext = { ...await claudeContext({ ...(o.route ? { route: o.route } : {}), ...(o.version !== undefined ? { version: o.version } : {}), ...(o.manual ? { manual: true } : {}), exe: fake }),
     dataDir, denied: [join(base, 'real')], allowed: [base], claudeManagedDir: managed, now: () => clock.t,
     helpers: { hook: join(helpers, 'xaibo-hook'), forwarder: join(helpers, 'xaibo-forwarder'), statusline: join(helpers, 'xaibo-statusline') },
   };
@@ -387,29 +387,30 @@ test('2b plugin Connect: plugin, then retention and tee equal to the preview; en
   }
 });
 
-test('2b verified chain: the CLI changed the retention value -> no retention/tee written; partial mismatch, plugin remaining (2c)', async () => {
+test('2b/2c verified chain: the CLI changed the retention value -> the plugin is undone byte for byte, then a fresh preview', async () => {
   const w = await world({ route: 'plugin' });
+  const before = sha(w.files.claude);
   w.setMode('bump-retention');
   const pv = w.c.previewConnect(w.profiles.claude, { retention: true, tee: true });
   assert.equal(pv.status, 'preview');
   const r = await w.c.applyConnect(pv.status === 'preview' ? pv.previewId : '');
-  assert.equal(r.status, 'partial', JSON.stringify(r));
-  assert.equal(r.status === 'partial' && r.code, 'mismatch');
-  assert.deepEqual(r.status === 'partial' && r.remaining.map((x) => [x.route, x.reason]), [['claude-plugin', 'plugin']]);
-  assert.deepEqual(readManifest(w.dataDir).map((e) => e.route), ['claude-plugin']);
-  assert.equal(json(w.files.claude)['cleanupPeriodDays'], 50, 'the value the CLI left is not overwritten');
-  assert.ok(!JSON.stringify(json(w.files.claude)['statusLine']).includes('xaibo-statusline'));
+  assert.equal(r.status, 'needs-preview', JSON.stringify(r));
+  assert.deepEqual(readManifest(w.dataDir), []);
+  assert.equal(sha(w.files.claude), before, 'the install (and the CLI\'s own edit) undone: the pre-install bytes');
+  assert.deepEqual(w.log(), ['plugin marketplace add', 'plugin install xaibo-hooks@xaibo', 'plugin uninstall xaibo-hooks@xaibo', 'plugin marketplace remove']);
 });
 
-test('2b a dirty plugin failure never falls back: partial cli, the pending entry kept, no fallback hooks', async () => {
+test('2b/2c a dirty plugin failure never falls back: the pending entry is removed through the CLI, refused cli, profile unchanged', async () => {
   const w = await world({ route: 'plugin' });
+  const before = sha(w.files.claude);
   w.setMode('fail-dirty');
   const pv = w.c.previewConnect(w.profiles.claude, { retention: true, tee: false });
   const r = await w.c.applyConnect(pv.status === 'preview' ? pv.previewId : '');
-  assert.equal(r.status === 'partial' && r.code, 'cli', JSON.stringify(r));
-  assert.deepEqual(readManifest(w.dataDir).map((e) => [e.route, e.state]), [['claude-plugin', 'pending']]);
+  assert.deepEqual(r, { status: 'refused', code: 'cli' });
+  assert.deepEqual(readManifest(w.dataDir), []);
+  assert.equal(sha(w.files.claude), before);
   assert.ok(!JSON.stringify(json(w.files.claude)['hooks'] ?? {}).includes('xaibo-hook'));
-  assert.deepEqual(w.log(), ['plugin marketplace add', 'plugin install xaibo-hooks@xaibo', 'plugin marketplace remove']);
+  assert.deepEqual(w.log(), ['plugin marketplace add', 'plugin install xaibo-hooks@xaibo', 'plugin marketplace remove', 'plugin uninstall xaibo-hooks@xaibo']);
 });
 
 test('2b a clean plugin failure: refused cli, nothing recorded, settings unchanged', async () => {
@@ -441,4 +442,71 @@ test('2b the operation lock is held across the awaited CLI steps', async () => {
   assert.throws(() => acquireLock(w.dataDir), (e) => e instanceof ConfigError && e.code === 'busy');
   assert.equal((await pending).status, 'applied');
   acquireLock(w.dataDir).release(); // released after the operation
+});
+
+// XAIBO-PROD-561 (P6-T03 part 2c; design .handoff/p6-t03-design.md part 2c slice and review): Disconnect removes the plugin last
+// (after tee and retention) through `claude plugin`, giving settings.json back byte for byte; only an auto-detected Claude is
+// run; legacy entries and an undetected Claude stay remaining.
+test('2c plugin round trip: Connect (plugin, retention, tee) then Disconnect gives every file back byte for byte', async () => {
+  for (const claude of [undefined, null]) {
+    const w = await world({ route: 'plugin', claude });
+    const before = hashes(w);
+    await connect(w, w.profiles.claude);
+    const d = await w.c.disconnect(w.profiles.claude);
+    assert.equal(d.status, 'disconnected', JSON.stringify(d));
+    assert.deepEqual(d.status === 'disconnected' && d.reverted.map((x) => [x.route, x.result]), [['claude-tee', 'restored'], ['claude-retention', 'restored'], ['claude-plugin', claude === null ? 'removed' : 'restored']]);
+    assert.deepEqual(hashes(w), before);
+    assert.deepEqual(readManifest(w.dataDir), []);
+  }
+});
+
+test('2c a manually chosen Claude: Connect takes the fallback; a plugin entry is not removed with it (remaining unverified, no spawn)', async () => {
+  const m = await world({ route: 'plugin', manual: true });
+  const pv = m.c.previewConnect(m.profiles.claude, { retention: false, tee: false });
+  assert.deepEqual(pv.status === 'preview' && pv.steps.map((x) => x.route), ['claude-settings-fallback']);
+  const w = await world({ route: 'plugin' });
+  await connect(w, w.profiles.claude, { retention: false, tee: false });
+  const det = w.ctx.detection('claude');
+  const manual = createConnect({ ...w.ctx, detection: () => (det?.state === 'detected' ? { ...det, manual: true } : det) });
+  const d = await manual.disconnect(w.profiles.claude);
+  assert.deepEqual(d.status === 'partial' && d.remaining.map((x) => [x.route, x.reason]), [['claude-plugin', 'unverified']]);
+  assert.equal(w.log().length, 2, 'only the install ran');
+});
+
+test('2c Uninstall with Claude no longer detected: the plugin entry stays remaining unverified; a legacy entry stays legacy', async () => {
+  const w = await world({ route: 'plugin' });
+  await connect(w, w.profiles.claude, { retention: false, tee: false });
+  const gone = createConnect({ ...w.ctx, detection: () => ({ agent: 'claude', state: 'not-detected' }) });
+  const u = await gone.uninstall();
+  assert.deepEqual(u.status === 'partial' && u.remaining.map((x) => [x.route, x.reason]), [['claude-plugin', 'unverified']]);
+  const l = await world({ route: 'plugin' });
+  recordEntry(l.dataDir, { id: '00000000-0000-4000-8000-0000000000c1', target: realpathSync(l.files.claude), route: 'claude-plugin', state: 'applied', existed: true, preHash: null, postHash: 'x', owned: [], created: [], backup: null, at: '2026-11-01T00:00:00.000Z' });
+  const lu = await l.c.uninstall();
+  assert.deepEqual(lu.status === 'partial' && lu.remaining.map((x) => [x.route, x.reason]), [['claude-plugin', 'legacy']]);
+  assert.deepEqual(l.log(), []);
+});
+
+test('2c Claude auto-updated between Connect and Disconnect (D-P6-07): the current detection removes the plugin', async () => {
+  const w = await world({ route: 'plugin' });
+  const before = hashes(w);
+  await connect(w, w.profiles.claude, { retention: false, tee: false });
+  writeFileSync(w.fake, `${readFileSync(w.fake, 'utf8')}// 2.1.330\n`); // the executable changed in place
+  const fresh = createConnect({ ...w.ctx, ...await claudeContext({ route: 'plugin', version: '2.1.330', exe: w.fake }) });
+  assert.equal((await fresh.disconnect(w.profiles.claude)).status, 'disconnected');
+  assert.deepEqual(hashes(w), before);
+});
+
+// Code review (run 196) M2: a first pass that keeps the plugin entry as partial reports it remaining (not reverted).
+test('2c review M2: a kept partial plugin entry is remaining `partial` with its conflict; the next Disconnect drops it', async () => {
+  const w = await world({ route: 'plugin' });
+  await connect(w, w.profiles.claude, { retention: false, tee: false });
+  writeFileSync(w.files.claude, JSON.stringify({ ...json(w.files.claude), ownerKey: 1 }, null, 2)); // owner edit: structural
+  w.setMode('drop-foreign'); // and the CLI drops a foreign value
+  const d = await w.c.disconnect(w.profiles.claude);
+  assert.equal(d.status, 'partial', JSON.stringify(d));
+  assert.deepEqual(d.status === 'partial' && [d.reverted, d.remaining.map((x) => [x.route, x.reason]), d.conflicts.map((x) => x.pointer)], [[], [['claude-plugin', 'partial']], ['/']]);
+  w.setMode('');
+  const again = await w.c.disconnect(w.profiles.claude);
+  assert.deepEqual(again.status === 'partial' && again.reverted.map((x) => [x.route, x.result]), [['claude-plugin', 'structural']]);
+  assert.deepEqual(readManifest(w.dataDir), []);
 });

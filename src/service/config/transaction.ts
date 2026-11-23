@@ -63,6 +63,9 @@ export interface ManifestEntry {
    *  the executable the CLI ran as. Never logged, never on the wire. */
   phase?: 'marketplace' | 'install';
   exe?: { path: string; id: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number } };
+  /** claude-plugin (part 2c): the profile key the plugin copy was written for, and settings.json's mode before install. */
+  profileKey?: string;
+  preMode?: number;
 }
 export interface RevertResult { result: 'restored' | 'removed' | 'structural' | 'unchanged'; conflicts: Array<{ pointer: string }> }
 
@@ -408,6 +411,19 @@ function checkEntry(e: ManifestEntry) {
   if (!(ROUTES as readonly string[]).includes(e.route)) fail('manifest'); // P6-T02 design review L1: revert branches on the route
   if (e.backup !== null && !BACKUP_NAME.test(e.backup)) fail('manifest');
   [...e.owned.map((x) => x.pointer), ...e.created].forEach(segments);
+}
+
+/** XAIBO-PROD-561 (P6-T03 part 2c): puts `target` back to `bytes` with `mode`, or removes it (`bytes` null), only while it
+ *  still hashes to `expect` (null = absent), rechecked just before the rename; a file already holding the result is left as
+ *  it is (idempotent after a crash). ponytail: the recheck-to-rename window is the one apply() and revert() accept. */
+export function restoreFile(target: string, bytes: Buffer | null, expect: string | null, mode: number): void {
+  const cur = readFile(target);
+  if (bytes === null ? cur === null : !!cur && cur.bytes.equals(bytes) && cur.mode === mode) return;
+  const still = () => { const now = readFile(target); if ((now ? sha256(now.bytes) : null) !== expect) fail('changed'); };
+  still();
+  if (bytes === null) { removeFile(target); return; }
+  atomicWrite(target, bytes, mode, still);
+  fsyncDir(path.dirname(target));
 }
 
 export function revert(entry: ManifestEntry, o: { dataDir: string; bounds: Bounds }): RevertResult {

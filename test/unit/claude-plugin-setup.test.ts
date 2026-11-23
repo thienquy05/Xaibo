@@ -107,9 +107,9 @@ test('EC-09: plugin and settings fallback exclude each other in both directions'
 
 test('uninstall: the S4 sequence; manifest entry and plugin copy removed; pre-hash restored, or the residue reported', async () => {
   const s = sandbox();
+  const pre = readFileSync(s.settings);
   await install(s.o);
-  const pre = readFileSync(join(s.profile, 'fake-claude.orig'));
-  assert.deepEqual(await uninstallPlugin(s.o), { preHashRestored: true, residue: [] });
+  assert.deepEqual(await uninstallPlugin(s.o), { result: 'restored', preHashRestored: true, residue: [], conflicts: [] });
   assert.deepEqual(s.log().slice(2), [
     { argv: ['plugin', 'uninstall', PLUGIN_REF, '-s', 'user'], dir: s.configDir },
     { argv: ['plugin', 'marketplace', 'remove', 'xaibo'], dir: s.configDir },
@@ -119,12 +119,11 @@ test('uninstall: the S4 sequence; manifest entry and plugin copy removed; pre-ha
   assert.ok(!existsSync(join(s.dataDir, 'integrations', 'claude-plugin', 'p1')));
   assert.equal(await codeOf(uninstallPlugin(s.o)), 'not-installed');
 
-  for (const [mode, want] of [['residue', { preHashRestored: false, residue: [PLUGIN_REF, `installed:${PLUGIN_REF}`] }], ['empty-left', { preHashRestored: false, residue: [] }]] as const) {
-    const t = sandbox();
-    await install(t.o);
-    t.setMode(mode);
-    assert.deepEqual(await uninstallPlugin(t.o), want);
-  }
+  const t = sandbox(); // part 2c: residue keeps the entry and restores nothing yet
+  await install(t.o);
+  t.setMode('residue');
+  assert.deepEqual(await uninstallPlugin(t.o), { result: 'unchanged', preHashRestored: false, residue: [PLUGIN_REF, `installed:${PLUGIN_REF}`], conflicts: [] });
+  assert.equal(readManifest(t.dataDir).length, 1);
 });
 
 test('a failed install rolls back: marketplace removed, no manifest entry, settings untouched', async () => {
@@ -214,7 +213,7 @@ test('R2: a failed install that changed the profile keeps its pending entry and 
   assert.equal(e?.state, 'pending');
   assert.ok(existsSync(join(s.dataDir, 'integrations', 'claude-plugin', 'p1')));
   s.setMode('');
-  assert.deepEqual(await uninstallPlugin(s.o), { preHashRestored: true, residue: [] });
+  assert.deepEqual(await uninstallPlugin(s.o), { result: 'restored', preHashRestored: true, residue: [], conflicts: [] }, 'part 2c: a pending entry whose profile differs only by Xaibo\'s key is restored');
   assert.deepEqual(readManifest(s.dataDir), []);
 });
 
@@ -222,7 +221,7 @@ test('R4: an uninstall that leaves residue keeps the entry, so exclusivity still
   const s = sandbox();
   await install(s.o);
   s.setMode('residue');
-  assert.deepEqual(await uninstallPlugin(s.o), { preHashRestored: false, residue: [PLUGIN_REF, `installed:${PLUGIN_REF}`] });
+  assert.deepEqual(await uninstallPlugin(s.o), { result: 'unchanged', preHashRestored: false, residue: [PLUGIN_REF, `installed:${PLUGIN_REF}`], conflicts: [] });
   assert.equal(readManifest(s.dataDir).length, 1);
   assert.ok(existsSync(join(s.dataDir, 'integrations', 'claude-plugin', 'p1')));
   const ops = [{ op: 'append' as const, pointer: '/hooks/SessionStart', value: { hooks: [{ type: 'command', command: `'${s.shim}' hook claude p1`, async: true }] } }];
@@ -247,12 +246,13 @@ test('R2b: registry entries are matched on decoded JSON keys, so escaped names s
   writeFileSync(join(s.configDir, 'plugins', 'installed_plugins.json'), '{"version":2,"plugins":{"xaibo-hooks@xa\\u0069bo":[{"scope":"user"}]}}');
   writeFileSync(join(s.configDir, 'plugins', 'known_marketplaces.json'), '{"xa\\u0069bo":{"source":{"source":"directory"}}}');
   s.setMode('keep-registries');
-  const r = await uninstallPlugin(s.o);
-  assert.deepEqual(r.residue, [`marketplace:xaibo`, `installed:${PLUGIN_REF}`]);
+  const r = await uninstallPlugin(s.o); // part 2c: the escaped marketplace names no plugin dir: not ours, so no CLI call
+  assert.deepEqual(r.residue, [PLUGIN_REF, `marketplace:xaibo`, `installed:${PLUGIN_REF}`]);
+  assert.deepEqual(r.conflicts, [{ pointer: 'marketplace:xaibo' }]);
   assert.equal(readManifest(s.dataDir).length, 1, 'kept while registered');
   writeFileSync(join(s.configDir, 'plugins', 'known_marketplaces.json'), '{not json');
   writeFileSync(join(s.configDir, 'plugins', 'installed_plugins.json'), '{}');
-  assert.deepEqual((await uninstallPlugin(s.o)).residue, ['unreadable:plugins/known_marketplaces.json']);
+  assert.deepEqual((await uninstallPlugin(s.o)).residue, [PLUGIN_REF, 'unreadable:plugins/known_marketplaces.json']);
   assert.equal(readManifest(s.dataDir).length, 1);
 });
 
@@ -393,4 +393,156 @@ test('2b review M2: an interpreter shadowing the previewed one on the PATH is a 
   assert.equal(await codeOf(installPlugin(o, pv)), 'changed');
   assert.deepEqual(s.log(), []);
   assert.deepEqual(readManifest(s.dataDir), []);
+});
+
+// XAIBO-PROD-561 (P6-T03 part 2c; design .handoff/p6-t03-design.md part 2c slice and review): removal only where Xaibo's
+// ownership is proven (enabled key true, the xaibo marketplace naming our plugin dir, no foreign plugin on it), else a
+// conflict and no CLI call; the pre-install bytes and mode come back when nothing but Xaibo's key changed; owner edits are
+// never overwritten; a CLI that drops a foreign value in that case is a conflict kept as partial evidence.
+const cliCalls = (s: ReturnType<typeof sandbox>) => s.log().map((l) => l.argv.slice(0, 3).join(' '));
+
+test('2c restore: the pre-install bytes and mode come back although the CLI rewrote the file at 0600 and compactly', async () => {
+  const s = sandbox();
+  chmodSync(s.settings, 0o644);
+  const pre = readFileSync(s.settings);
+  s.setMode('install-0600');
+  await install(s.o);
+  assert.equal(statSync(s.settings).mode & 0o777, 0o600);
+  s.setMode('');
+  assert.deepEqual(await uninstallPlugin(s.o), { result: 'restored', preHashRestored: true, residue: [], conflicts: [] });
+  assert.deepEqual(readFileSync(s.settings), pre);
+  assert.equal(statSync(s.settings).mode & 0o777, 0o644, 'review M4: the pre-install mode');
+  assert.deepEqual(readManifest(s.dataDir), []);
+  assert.deepEqual(readdirSync(join(s.dataDir, 'integrations', 'backups')), []);
+  assert.ok(!existsSync(join(s.dataDir, 'integrations', 'claude-plugin', 'p1')));
+});
+
+test('2c no settings.json before install: removed again', async () => {
+  const s = sandbox(null);
+  await install(s.o);
+  assert.ok(existsSync(s.settings));
+  assert.equal((await uninstallPlugin(s.o)).result, 'removed');
+  assert.ok(!existsSync(s.settings));
+  assert.deepEqual(readManifest(s.dataDir), []);
+});
+
+test('2c an owner edit since install: structural, the edit survives, no backup written over it', async () => {
+  const s = sandbox();
+  await install(s.o);
+  const doc = JSON.parse(readFileSync(s.settings, 'utf8')) as Record<string, unknown>;
+  writeFileSync(s.settings, JSON.stringify({ ...doc, ownerKey: 'kept' }, null, 2));
+  const r = await uninstallPlugin(s.o);
+  assert.deepEqual(r, { result: 'structural', preHashRestored: false, residue: [], conflicts: [] });
+  const after = JSON.parse(readFileSync(s.settings, 'utf8')) as Record<string, unknown>;
+  assert.equal(after['ownerKey'], 'kept');
+  assert.equal(after['model'], 'claude-fixture');
+  assert.ok(!JSON.stringify(after).includes(PLUGIN_REF));
+  assert.deepEqual(readManifest(s.dataDir), []);
+});
+
+test('2c ownership not proven: an owner-changed enabled key, a foreign xaibo marketplace, a foreign plugin on it -> conflict, no CLI call', async () => {
+  const cases: [string, (s: ReturnType<typeof sandbox>) => void, string][] = [
+    ['disabled', (s) => { const d = JSON.parse(readFileSync(s.settings, 'utf8')); d.enabledPlugins[PLUGIN_REF] = false; writeFileSync(s.settings, JSON.stringify(d)); }, `/enabledPlugins/${PLUGIN_REF}`],
+    ['foreign marketplace', (s) => writeFileSync(join(s.configDir, 'plugins', 'known_marketplaces.json'), '{"xaibo":{"source":{"source":"directory","path":"/opt/other-marketplace"}}}'), 'marketplace:xaibo'],
+    ['foreign plugin', (s) => writeFileSync(join(s.configDir, 'plugins', 'installed_plugins.json'), `{"${PLUGIN_REF}":[{}],"other@xaibo":[{}]}`), 'marketplace:xaibo'],
+  ];
+  for (const [name, change, pointer] of cases) {
+    const s = sandbox();
+    await install(s.o);
+    change(s);
+    const before = readFileSync(s.settings);
+    const r = await uninstallPlugin(s.o);
+    assert.equal(r.result, 'unchanged', name);
+    assert.deepEqual(r.conflicts, [{ pointer }], name);
+    assert.equal(s.log().length, 2, `${name}: no CLI call after the install`);
+    assert.deepEqual(readFileSync(s.settings), before, name);
+    assert.equal(readManifest(s.dataDir).length, 1, `${name}: entry kept`);
+  }
+});
+
+test('2c structural path: a CLI that drops or adds a foreign value is a conflict kept as partial, reported again on retry', async () => {
+  for (const mode of ['drop-foreign', 'add-benign']) {
+    const s = sandbox({ theme: 'dark', model: 'claude-fixture' });
+    await install(s.o);
+    const doc = JSON.parse(readFileSync(s.settings, 'utf8')) as Record<string, unknown>;
+    writeFileSync(s.settings, JSON.stringify({ ...doc, ownerKey: 1 }, null, 2)); // owner edit: structural path
+    s.setMode(mode);
+    const r = await uninstallPlugin(s.o);
+    assert.equal(r.result, 'structural', mode);
+    assert.deepEqual(r.conflicts, [{ pointer: '/' }], mode);
+    const [e] = readManifest(s.dataDir);
+    assert.equal(e?.partial, true, `${mode}: kept as partial evidence`);
+    s.setMode('');
+    const again = await uninstallPlugin(s.o);
+    assert.deepEqual(again.conflicts, [{ pointer: '/' }], `${mode}: reported again, never restored`);
+    assert.deepEqual(readManifest(s.dataDir), []);
+  }
+});
+
+test('2c pending entries: after a marketplace add only `marketplace remove` runs; with nothing registered no CLI call', async () => {
+  const s = sandbox();
+  const pre = readFileSync(s.settings);
+  s.setMode('touch-self'); // the executable changes after `marketplace add`: the install stops with the entry pending
+  assert.equal(await codeOf(install(s.o)), 'changed');
+  s.setMode('');
+  assert.equal((await uninstallPlugin(s.o)).result, 'restored');
+  assert.deepEqual(cliCalls(s), ['plugin marketplace add', 'plugin marketplace remove']);
+  assert.deepEqual(readFileSync(s.settings), pre);
+  assert.deepEqual(readManifest(s.dataDir), []);
+
+  const t = sandbox();
+  t.setMode('touch-self');
+  await codeOf(install(t.o));
+  writeFileSync(join(t.configDir, 'plugins', 'known_marketplaces.json'), '{}'); // nothing of Xaibo's registered any more
+  t.setMode('');
+  assert.equal((await uninstallPlugin(t.o)).result, 'restored');
+  assert.deepEqual(cliCalls(t), ['plugin marketplace add'], 'no CLI call for the removal');
+  assert.deepEqual(readManifest(t.dataDir), []);
+});
+
+test('2c review M7: the registry may store the realpath of the plugin dir (data dir reached through a symlink)', async () => {
+  const s = sandbox();
+  const link = join(s.base, 'data-link');
+  symlinkSync(s.dataDir, link);
+  const o = { ...s.o, dataDir: link };
+  writeFileSync(join(s.profile, 'fake-claude.data'), link);
+  s.setMode('realpath-source');
+  await install(o);
+  assert.equal((await uninstallPlugin(o)).result, 'restored');
+  assert.deepEqual(readManifest(s.dataDir), []);
+});
+
+test('2c unreadable settings at removal: a conflict, no CLI call, entry kept; the dev CLI key must match the entry', async () => {
+  const s = sandbox();
+  await install(s.o);
+  writeFileSync(s.settings, '{ not json');
+  const r = await uninstallPlugin(s.o);
+  assert.deepEqual(r.conflicts, [{ pointer: '/' }]);
+  assert.equal(s.log().length, 2);
+  assert.equal(readManifest(s.dataDir).length, 1);
+  const t = sandbox();
+  await install(t.o);
+  assert.equal(await codeOf(uninstallPlugin({ ...t.o, profileKey: 'p2' })), 'ops', 'review M8: another profile key');
+  assert.equal(readManifest(t.dataDir)[0]?.profileKey, 'p1');
+});
+
+// Code review (run 196) M1: a settings change made while the CLI ran is never overwritten by the backup; M3: an unusable
+// backup is a conflict kept as partial (the CLI's removal stands), never an error that blocks the entry for good.
+test('2c review M1/M3: a change during the CLI run, or an unusable backup: no restore, conflict kept as partial, then dropped', async () => {
+  const s = sandbox();
+  await install(s.o);
+  s.setMode('add-benign'); // the file changes while `plugin uninstall` runs
+  const r = await uninstallPlugin(s.o);
+  assert.deepEqual([r.result, r.conflicts], ['structural', [{ pointer: '/' }]]);
+  assert.equal((JSON.parse(readFileSync(s.settings, 'utf8')) as Record<string, unknown>)['cliAdded'], true, 'not overwritten');
+  assert.equal(readManifest(s.dataDir)[0]?.partial, true);
+
+  const t = sandbox();
+  await install(t.o);
+  for (const f of readdirSync(join(t.dataDir, 'integrations', 'backups'))) spawnSync('/bin/rm', [join(t.dataDir, 'integrations', 'backups', f)]);
+  const u = await uninstallPlugin(t.o);
+  assert.deepEqual([u.result, u.conflicts], ['structural', [{ pointer: '/' }]]);
+  assert.equal(readManifest(t.dataDir)[0]?.partial, true);
+  assert.deepEqual((await uninstallPlugin(t.o)).conflicts, [{ pointer: '/' }]);
+  assert.deepEqual(readManifest(t.dataDir), [], 'dropped on the second pass');
 });

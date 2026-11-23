@@ -266,7 +266,8 @@ async function plugin(a: ReturnType<typeof cliArgs>, dataDir: string, profile: s
     const r = await locked(dataDir, () => uninstallPlugin(o));
     console.log(`claude-plugin: uninstalled; ${r.preHashRestored ? 'pre-install settings restored' : 'settings differ from before install (Claude-owned edits)'}`);
     for (const k of r.residue) console.log(`residue: enabledPlugins ${k}`);
-    return r.residue.length ? 2 : 0;
+    for (const c of r.conflicts) console.log(`conflict: ${c.pointer} (not Xaibo's as recorded; nothing overwritten)`); // part 2c
+    return r.residue.length || r.conflicts.length ? 2 : 0;
   }
   const pv = previewPlugin(o); // the confirmation binds settings.json, the executable and the argv (part 2b)
   await confirm(a.yes, profile, `install ${PLUGIN_REF} into ${o.configDir} with ${pv.exe.path}`);

@@ -7,8 +7,8 @@
 // The CLI writes under the config dir (settings.json, .claude.json, plugins/), so a symlink there or anything resolving
 // outside the bounds is refused before any call (Codex review). Recovery evidence (pending entry, plugin copy) is
 // dropped only once no Xaibo trace is left in the profile; an uninstall that leaves residue keeps its entry, so
-// exclusivity still holds and it can be retried. Uninstall reports whether the pre-install bytes came back (S4-C6:
-// Claude may leave its own edits). Bounds come from the caller (dev CLI: disposable profiles only, real roots denied).
+// exclusivity still holds and it can be retried. Removal (part 2c, below) proves ownership first and gives the pre-install
+// bytes back where nothing else changed. Bounds come from the caller (dev CLI: disposable profiles only, real roots denied).
 import { createHash, randomUUID } from 'node:crypto';
 import {
   accessSync, chmodSync, closeSync, constants, copyFileSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, renameSync, rmSync, writeFileSync,
@@ -16,12 +16,13 @@ import {
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { fileId, type FileId } from '../../catalog/detect.ts';
+import { real } from '../../config/bounds.ts';
 import { isObj } from '../../../shared/ipc.ts';
 import { isProfileKey } from '../../../shared/hook-protocol.ts';
 import type { Logger } from '../../../shared/log.ts';
 import { STATUSLINE_BIN, teeCommand } from '../../../forwarder/statusline-tee.ts';
 import {
-  apply, assertExclusive, ConfigError, dropEntry, plan, privateDirs, readFile, readManifest, recordEntry, resolveTarget, within,
+  apply, assertExclusive, ConfigError, dropEntry, plan, privateDirs, readFile, readManifest, recordEntry, resolveTarget, restoreFile, within,
   type Bounds, type ManifestEntry, type Op, type Plan,
 } from '../../config/transaction.ts';
 import { run, succeeded } from '../../spawn.ts';
@@ -141,15 +142,28 @@ function confine(o: PluginOptions) {
 
 /** Any decoded key or string value equal to `name`, at any depth (the registry layouts are Claude's, not a contract);
  *  an explicit stack, so deeply nested JSON cannot overflow the call stack. */
-function mentions(root: unknown, name: string): boolean {
+function mentions(root: unknown, name: string): boolean { return some(root, (x) => x === name); }
+/** Any decoded key or string value matching, at any depth (part 2c generalises `mentions`). */
+function some(root: unknown, match: (s: string) => boolean): boolean {
   const stack = [root];
   while (stack.length) {
     const v = stack.pop();
-    if (v === name) return true;
+    if (typeof v === 'string' && match(v)) return true;
     if (Array.isArray(v)) for (const x of v) stack.push(x); // no spread: a wide array would exceed the argument limit
-    else if (isObj(v)) for (const [k, x] of Object.entries(v)) { if (k === name) return true; stack.push(x); }
+    else if (isObj(v)) for (const [k, x] of Object.entries(v)) { if (match(k)) return true; stack.push(x); }
   }
   return false;
+}
+/** The values under every decoded key equal to `name`, at any depth. */
+function under(root: unknown, name: string): unknown[] {
+  const out: unknown[] = [];
+  const stack = [root];
+  while (stack.length) {
+    const v = stack.pop();
+    if (Array.isArray(v)) for (const x of v) stack.push(x);
+    else if (isObj(v)) for (const [k, x] of Object.entries(v)) { if (k === name) out.push(x); stack.push(x); }
+  }
+  return out;
 }
 
 /** Xaibo traces the CLI may leave: enabledPlugins keys, the marketplace and plugin registries; unreadable counts. */
@@ -225,7 +239,7 @@ const settingsId = (cur: ReturnType<typeof readFile>): SettingsId =>
   (cur ? { hash: createHash('sha256').update(cur.bytes).digest('hex'), dev: cur.dev, ino: cur.ino, mode: cur.mode } : null);
 /** The executable unchanged, and its interpreter resolved again as the spawn's `env` will (code review M2: a new one earlier on
  *  the PATH is a change) and unchanged too. */
-const sameExe = (p: PluginPreview, PATH: string) => {
+const sameExe = (p: Pick<PluginPreview, 'exe' | 'interp'>, PATH: string) => {
   if (!isDeepStrictEqual(idOf(p.exe.path), p.exe.id)) return false;
   try { return isDeepStrictEqual(interpreter(p.exe.path, PATH), p.interp); } catch { return false; }
 };
@@ -300,6 +314,7 @@ export async function installPlugin(o: PluginOptions, confirmed: PluginPreview):
   const entry: ManifestEntry = {
     id: randomUUID(), target, route: 'claude-plugin', state: 'pending', existed: !!cur, preHash: confirmed.settings?.hash ?? null, postHash: '',
     owned: [], created: [], backup, at: new Date().toISOString(), phase: 'marketplace', exe: { path: confirmed.exe.path, id: confirmed.exe.id },
+    profileKey: key(o.profileKey), ...(cur ? { preMode: cur.mode } : {}), // part 2c: removal evidence
   };
   try { // code review M1: until the pending entry is recorded nothing names these files, so a failure removes them
     dir = writePlugin(o.dataDir, o.profileKey, shim);
@@ -336,24 +351,121 @@ export async function installPlugin(o: PluginOptions, confirmed: PluginPreview):
   return applied;
 }
 
-/** ponytail: part 2c hardens this (ownership guards, backup restore, async revertAll dispatch); it now runs the CLI with the
- *  same explicit environment as install. */
-export async function uninstallPlugin(o: PluginOptions): Promise<{ preHashRestored: boolean; residue: string[] }> {
+// --- P6-T03 part 2c (XAIBO-PROD-561; design .handoff/p6-t03-design.md part 2c slice and review) -------------------------
+// Removal only where Xaibo's ownership is proven by the profile (never by the journal's phase): the enabled key still true,
+// the `xaibo` marketplace naming Xaibo's plugin dir, no foreign plugin on that marketplace; otherwise a conflict and no CLI
+// call. After the CLI (the profile, not its exit codes, decides), residue keeps everything. Then settings.json: when nothing
+// but Xaibo's key changed since before install (an applied entry: exactly the post-install bytes, tee and retention reverted
+// first; a pending one: the same document but for that key) the pre-install bytes and mode come back, or the file goes when
+// it did not exist; otherwise the CLI's removal stands (owner edits are never overwritten) and a foreign value the CLI
+// dropped or added is a conflict kept as partial evidence. Entry, backup and copy go last, in that order.
+
+export interface PluginRemoval {
+  result: 'restored' | 'removed' | 'structural' | 'unchanged'; preHashRestored: boolean; residue: string[]; conflicts: { pointer: string }[];
+}
+const ENABLED = `/enabledPlugins/${PLUGIN_REF}`;
+const OWNERSHIP = `marketplace:${MARKETPLACE}`;
+/** settings without Xaibo's enabled key, and without an enabledPlugins left empty by its removal. */
+function strip(doc: Record<string, unknown>): Record<string, unknown> {
+  const c = structuredClone(doc);
+  const ep = c['enabledPlugins'];
+  if (isObj(ep)) { delete ep[PLUGIN_REF]; if (!Object.keys(ep).length) delete c['enabledPlugins']; }
+  return c;
+}
+const parsed = (f: ReturnType<typeof readFile>): Record<string, unknown> | null => {
+  if (!f) return {};
+  try { const v: unknown = JSON.parse(f.bytes.toString('utf8')); return isObj(v) ? v : null; } catch { return null; }
+};
+/** Review M7: a registry string naming the plugin dir, compared after realpath (macOS temp dirs resolve through a symlink) or
+ *  below it. */
+// ponytail (code review L4): any string in the `xaibo` subtree naming the dir proves it; Claude repeats the source path in
+// its fields. Require every absolute path there to name it if a registry layout ever mixes sources.
+const namesDir = (t: unknown, dir: string) => { const d = real(dir); return some(t, (x) => path.isAbsolute(x) && (real(x) === d || real(x).startsWith(`${d}/`))); };
+
+/** What of the plugin is Xaibo's in this profile, read before any CLI call; conflicts mean nothing may run. */
+function ownership(configDir: string, doc: Record<string, unknown>, dir: string) {
+  const conflicts = new Set<string>();
+  const ep = isObj(doc['enabledPlugins']) ? doc['enabledPlugins'] : null;
+  const enabled = !!ep && Object.hasOwn(ep, PLUGIN_REF);
+  if (enabled && ep![PLUGIN_REF] !== true) conflicts.add(ENABLED); // FR-34: the owner changed it (incl. false)
+  const foreign = (x: string) => x !== PLUGIN_REF && x.endsWith(`@${MARKETPLACE}`);
+  if (ep && Object.keys(ep).some(foreign)) conflicts.add(OWNERSHIP);
+  const read = (f: string): unknown => { // null absent, undefined unreadable
+    const t = (() => { try { return readFileSync(path.join(configDir, f), 'utf8'); } catch (e) { return (e as NodeJS.ErrnoException).code === 'ENOENT' ? null : undefined; } })();
+    if (t === null || t === undefined) return t;
+    try { return JSON.parse(t) as unknown; } catch { return undefined; }
+  };
+  const known = read('plugins/known_marketplaces.json'), installed = read('plugins/installed_plugins.json');
+  if (known === undefined || installed === undefined) conflicts.add(OWNERSHIP);
+  const ours = known ? under(known, MARKETPLACE) : [];
+  if (ours.some((t) => !namesDir(t, dir))) conflicts.add(OWNERSHIP);
+  if (installed && some(installed, foreign)) conflicts.add(OWNERSHIP);
+  return { enabled, marketplace: ours.length > 0, registered: !!installed && mentions(installed, PLUGIN_REF), conflicts: [...conflicts] };
+}
+
+/** `o.expect` is the current detection (Claude may have updated since install, D-P6-07); the dev CLI passes none. */
+export async function uninstallPlugin(o: PluginOptions): Promise<PluginRemoval> {
   confine(o);
   const target = resolveTarget(path.join(o.configDir, 'settings.json'), o.bounds);
   const entry = readManifest(o.dataDir).find((e) => e.target === target && e.route === 'claude-plugin');
   if (!entry) return fail('not-installed');
-  const exe = bind(o.claude).path;
-  // Both steps run; the profile, not their exit codes, decides (a retry after a partial uninstall may see "not found").
-  const steps = [await cli(o, exe, ['plugin', 'uninstall', PLUGIN_REF, '-s', 'user']), await cli(o, exe, ['plugin', 'marketplace', 'remove', MARKETPLACE])];
+  if (entry.profileKey !== undefined && entry.profileKey !== key(o.profileKey)) fail('ops'); // review M8
+  const exe = bind(o.claude);
+  if (o.expect && !isDeepStrictEqual(exe.id, o.expect)) fail('unverified');
+  const bound = { exe, interp: interpreter(exe.path, o.path) };
+  const dir = path.join(o.dataDir, 'integrations', 'claude-plugin', key(o.profileKey));
+  const kept = (conflicts: string[]): PluginRemoval =>
+    ({ result: 'unchanged', preHashRestored: false, residue: leftovers(o.configDir), conflicts: conflicts.map((pointer) => ({ pointer })) });
+
+  const s0 = readFile(target), doc0 = parsed(s0);
+  if (!doc0) return kept(['/']); // review L10: unreadable settings: nothing proven, nothing run
+  const own = ownership(o.configDir, doc0, dir);
+  if (own.conflicts.length) return kept(own.conflicts);
+  const steps: string[][] = [];
+  if (own.enabled || own.registered) steps.push(['plugin', 'uninstall', PLUGIN_REF, '-s', 'user']);
+  if (own.marketplace) steps.push(['plugin', 'marketplace', 'remove', MARKETPLACE]);
+  const ran = [];
+  for (const args of steps) {
+    if (!sameExe(bound, o.path)) fail('changed'); // every spawn rechecks the executable and interpreter (2b M7)
+    ran.push(await cli(o, exe.path, args));
+  }
+  confine(o); // the CLI may have written anything under plugins/ (2b M6)
   const residue = leftovers(o.configDir);
   if (residue.length) {
-    if (!steps.every(succeeded)) fail('cli');
-    return { preHashRestored: hashOf(target) === entry.preHash, residue }; // entry kept: still ours, still exclusive
+    if (!ran.every(succeeded)) fail('cli');
+    return { result: 'unchanged', preHashRestored: false, residue, conflicts: [] }; // entry kept: still ours, still exclusive
   }
-  dropEntry(o.dataDir, entry.id);
-  rmSync(path.join(o.dataDir, 'integrations', 'claude-plugin', key(o.profileKey)), { recursive: true, force: true });
-  return { preHashRestored: hashOf(target) === entry.preHash, residue };
+
+  const s1 = readFile(target), doc1 = parsed(s1);
+  const backupFile = entry.backup ? path.join(privateDirs(o.dataDir).backups, entry.backup) : null;
+  const b = backupFile ? readFile(backupFile) : null;
+  const drop = (r: PluginRemoval): PluginRemoval => {
+    dropEntry(o.dataDir, entry.id);
+    if (backupFile) rmSync(backupFile, { force: true });
+    rmSync(dir, { recursive: true, force: true });
+    return r;
+  };
+  const hash = (f: typeof s0) => (f ? createHash('sha256').update(f.bytes).digest('hex') : null);
+  const backupDoc = entry.existed ? parsed(b) : {};
+  // the CLI kept every foreign value, and nothing else changed the file while it ran (code review M1)
+  const foreignKept = !!doc1 && isDeepStrictEqual(strip(doc1), strip(doc0));
+  const restore = !entry.partial && foreignKept && (entry.state === 'applied'
+    ? (hash(s0) ?? 'absent') === entry.postHash // design review M3: exactly what install left (tee and retention reverted first)
+    : !!backupDoc && isDeepStrictEqual(strip(doc0), strip(backupDoc)));
+  const usable = !entry.existed || (!!b && hash(b) === entry.preHash); // code review M3: else a conflict, never a lasting error
+  if (restore && usable) {
+    restoreFile(target, entry.existed ? b!.bytes : null, hash(s1), entry.preMode ?? s1?.mode ?? 0o600);
+    return drop({ result: entry.existed ? 'restored' : 'removed', preHashRestored: true, residue: [], conflicts: [] });
+  }
+  // structural: the CLI's removal stands; a foreign change or an unusable backup is partial evidence (design review M6)
+  if (entry.partial || !foreignKept || restore) {
+    if (!entry.partial) {
+      recordEntry(o.dataDir, { ...entry, partial: true });
+      return { result: 'structural', preHashRestored: false, residue: [], conflicts: [{ pointer: '/' }] };
+    }
+    return drop({ result: 'structural', preHashRestored: false, residue: [], conflicts: [{ pointer: '/' }] }); // reported again, never restored
+  }
+  return drop({ result: 'structural', preHashRestored: hash(s1) === entry.preHash, residue: [], conflicts: [] });
 }
 
 // --- statusLine tee (P3-T14; S-31, FR-45, EC-28, Q3-7) -------------------------------------------------------------

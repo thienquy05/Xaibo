@@ -15,7 +15,9 @@ import type { AgentEntry, Catalog } from './validate.ts';
 
 export type Detection =
   /** id: the probed realpath's stat identity (P6-T03 part 2b, review H1), so Connect can refuse a binary replaced since. */
-  | { agent: string; state: 'detected'; path: string; version: string | null; id: FileId }
+  /** manual: found through the stored manual path ("Set path…", renderer-chosen); part 2c review H1: never run as the plugin CLI.
+   *  The manual path is tried first, so a manual path naming the PATH's own binary is still manual (fails safe: fallback). */
+  | { agent: string; state: 'detected'; path: string; version: string | null; id: FileId; manual: boolean }
   | { agent: string; state: 'not-detected' };
 export interface FileId { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }
 export const fileId = (st: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }): FileId =>
@@ -58,7 +60,7 @@ export async function detectAgent(entry: AgentEntry, o: DetectOptions): Promise<
       if (!succeeded(r)) continue;
       let id: FileId;
       try { id = fileId(await stat(real)); } catch { continue; }
-      return { agent: entry.id, state: 'detected', path: real, version: VERSION.exec(r.stdout.toString('utf8'))?.[0] ?? null, id };
+      return { agent: entry.id, state: 'detected', path: real, version: VERSION.exec(r.stdout.toString('utf8'))?.[0] ?? null, id, manual: candidate === o.manualPath };
     }
   }
   return { agent: entry.id, state: 'not-detected' };

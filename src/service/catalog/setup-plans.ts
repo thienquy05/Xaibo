@@ -41,7 +41,9 @@ export const retentionOps = (offer: RetentionOffer, selected = true): Op[] => (o
  *  Claude, no or a prerelease version, or a version in no range. No chooser, no override; never a fallback after a failure. */
 export function claudeConnectRoute(catalog: Catalog, d: Detection | undefined): 'claude-plugin' | 'claude-settings-fallback' | null {
   if (d?.state !== 'detected') return null;
-  const ok = (catalog.agents.find((a) => a.id === 'claude')?.connectRoutes ?? []).filter((r) => inRange(d.version, r.versions)).map((r) => r.route);
+  // part 2c review H1: a manually chosen executable never gets the plugin route, which runs it; the fallback runs nothing
+  const ok = (catalog.agents.find((a) => a.id === 'claude')?.connectRoutes ?? [])
+    .filter((r) => inRange(d.version, r.versions) && !(d.manual && r.route === 'claude-plugin')).map((r) => r.route);
   return ok.includes('claude-plugin') ? 'claude-plugin' : ok.includes('claude-settings-fallback') ? 'claude-settings-fallback' : null;
 }
 

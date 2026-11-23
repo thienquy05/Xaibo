@@ -176,7 +176,7 @@ test('2b claudeConnectRoute: D-P6-07 range from 2.1.319, plugin preferred, every
   const { loadCatalog, validateCatalog } = await import('../../../src/service/catalog/validate.ts');
   const cat = loadCatalog();
   const id = { dev: 1, ino: 2, size: 3, mtimeMs: 4, ctimeMs: 5 };
-  const det = (version: string | null) => ({ agent: 'claude', state: 'detected' as const, path: '/tmp/xaibo-fixture/claude', version, id });
+  const det = (version: string | null) => ({ agent: 'claude', state: 'detected' as const, path: '/tmp/xaibo-fixture/claude', version, id, manual: false });
   assert.equal(claudeConnectRoute(cat, det('2.1.319')), 'claude-plugin');
   assert.equal(claudeConnectRoute(cat, det('2.1.322')), 'claude-plugin', 'no upper bound (D-P6-07)');
   assert.equal(claudeConnectRoute(cat, det('3.0.0')), 'claude-plugin');
@@ -188,6 +188,8 @@ test('2b claudeConnectRoute: D-P6-07 range from 2.1.319, plugin preferred, every
   const fb = only([{ route: 'claude-settings-fallback', versions: { min: '2.1.319' }, evidence: 'fixture' }]);
   assert.deepEqual(validateCatalog(fb), []);
   assert.equal(claudeConnectRoute(fb as typeof cat, det('2.1.320')), 'claude-settings-fallback');
+  // part 2c review H1: a manually chosen executable never gets the plugin route (it would be run); the fallback runs nothing
+  assert.equal(claudeConnectRoute(cat, { ...det('2.1.319'), manual: true }), 'claude-settings-fallback');
   assert.notDeepEqual(validateCatalog(only([{ route: 'claude-tee', versions: { min: '2.1.319' }, evidence: 'x' }])), [], 'only the two Connect routes');
   assert.notDeepEqual(validateCatalog(only([{ route: 'claude-plugin', versions: {}, evidence: 'x' }])), [], 'min required');
 });

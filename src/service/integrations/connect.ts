@@ -9,14 +9,15 @@
 // XAIBO-PROD-560 (part 2b; owner D-P6-07): Claude's route comes from the catalog and the detected version (plugin preferred,
 // unverified otherwise); the plugin step is previewed (previewPlugin: settings, executable and interpreter identity) and
 // installed through `claude plugin` under the operation lock, held across the awaits; retention and tee after it are rebuilt
-// and applied only when equal to the preview (D-P6-06). Undoing a plugin entry is part 2c: until then it stays remaining.
+// and applied only when equal to the preview (D-P6-06). Part 2c (XAIBO-PROD-561): Disconnect, Uninstall and this undo remove a
+// plugin entry last on its file (after tee and retention) through the hardened uninstallPlugin.
 import { createHash, randomUUID } from 'node:crypto';
 import { lstatSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isProfileKey } from '../../shared/hook-protocol.ts';
 import { agyHooksFile, checkAgyInstall } from '../adapters/agy/setup.ts';
-import { deployShim, installPlugin, PLUGIN_REF, pluginHooks, previewPlugin, teePlan, type PluginOptions, type PluginPreview } from '../adapters/claude/setup.ts';
+import { deployShim, installPlugin, PLUGIN_REF, pluginHooks, previewPlugin, teePlan, uninstallPlugin, type PluginOptions, type PluginPreview } from '../adapters/claude/setup.ts';
 import { codexHookOps, codexTrustSteps, shimPath } from '../adapters/codex/setup.ts';
 import type { Detection, Profile } from '../catalog/detect.ts';
 import type { Catalog } from '../catalog/validate.ts';
@@ -235,43 +236,43 @@ export function createConnect(ctx: ConnectContext) {
     if (!isDeepStrictEqual(cur ? { hash: sha256(cur.bytes), dev: cur.dev, ino: cur.ino, mode: cur.mode } : null, first)) return again();
     deployShim(ctx.dataDir, { hook: ctx.helpers.hook, forwarder: ctx.helpers.forwarder, ...(h.steps.some((s) => s.route === 'claude-tee') ? { statusline: ctx.helpers.statusline } : {}) });
     const done: ManifestEntry[] = [];
-    const undo = (code: string | null, extra: ManifestEntry[] = []): ConnectResult => {
-      const u = revertAll([...done, ...extra], denied);
+    const undo = async (code: string | null, extra: ManifestEntry[] = []): Promise<ConnectResult> => {
+      const u = await revertAll([...done, ...extra], denied);
       if (u.status === 'partial') return { ...u, status: 'partial', code: code ?? 'mismatch' };
       return code === null ? again() : refused(code);
     };
     if (h.plugin) {
       let known: Set<string>;
-      try { known = new Set(readManifest(ctx.dataDir).map((e) => e.id)); } catch { return undo('failed'); }
+      try { known = new Set(readManifest(ctx.dataDir).map((e) => e.id)); } catch { return await undo('failed'); }
       try { done.push(await installPlugin(h.plugin.o, h.plugin.pp)); } catch (e) {
         let residue: ManifestEntry[];
-        try { residue = readManifest(ctx.dataDir).filter((x) => !known.has(x.id)); } catch { return undo('failed'); } // code review L3
+        try { residue = readManifest(ctx.dataDir).filter((x) => !known.has(x.id)); } catch { return await undo('failed'); } // code review L3
         // a kept pending entry is undone first (M1)
         const code = e instanceof ConfigError ? e.code : 'failed';
-        return undo(code === 'changed' && !residue.length ? null : code, residue); // changed before any write: a fresh preview
+        return await undo(code === 'changed' && !residue.length ? null : code, residue); // changed before any write: a fresh preview
       }
       // design §4: offers are rechecked even when none was previewed; a retention raise appearing now is a step-count change
       if (h.sel.retention && !h.steps.some((s) => s.route === 'claude-retention')
-        && claudeRetentionOffer(t.dir, ctx.claudeManagedDir, readManifest(ctx.dataDir)).offered) return undo(null);
+        && claudeRetentionOffer(t.dir, ctx.claudeManagedDir, readManifest(ctx.dataDir)).offered) return await undo(null);
     }
     for (const [i, step] of h.steps.entries()) {
       const rebuilt = !!h.plugin || i > 0; // after the CLI rewrite every later step is rebuilt and compared (D-P6-06)
       let next: Plan;
-      try { next = rebuilt ? step.build() : step.plan; } catch (e) { return undo(e instanceof ConfigError ? null : 'failed'); } // code review M-a
-      if (rebuilt && !same(next, step.plan)) return undo(null);
+      try { next = rebuilt ? step.build() : step.plan; } catch (e) { return await undo(e instanceof ConfigError ? null : 'failed'); } // code review M-a
+      if (rebuilt && !same(next, step.plan)) return await undo(null);
       let known: Set<string>;
-      try { known = new Set(readManifest(ctx.dataDir).map((e) => e.id)); } catch { return undo('failed'); } // review L-5: undone, never left half applied
+      try { known = new Set(readManifest(ctx.dataDir).map((e) => e.id)); } catch { return await undo('failed'); } // review L-5: undone, never left half applied
       try { done.push(apply(next, { dataDir: ctx.dataDir, bounds: { root: t.dir, denied }, ...(ctx.afterRename ? { afterRename: ctx.afterRename } : {}) })); } catch (e) {
         // review M1: a step that threw after recording its entry leaves a pending entry: it is undone first
         const residue = readManifest(ctx.dataDir).filter((x) => !known.has(x.id));
-        return undo(e instanceof ConfigError ? e.code : 'failed', residue);
+        return await undo(e instanceof ConfigError ? e.code : 'failed', residue);
       }
     }
     return { status: 'applied', entries: done.map((e) => e.id), trustSteps: h.trust };
   }
 
   /** Newest first (manifest order is creation order, review M2); per entry: writable roots (review H3), then stop rules (L3). */
-  function revertAll(list: ManifestEntry[], d: string[]): Outcome {
+  async function revertAll(list: ManifestEntry[], d: string[]): Promise<Outcome> {
     const out: Outcome = { status: 'disconnected', reverted: [], conflicts: [], remaining: [] };
     const stopped = new Set<string>();
     for (const e of [...list].reverse()) {
@@ -279,7 +280,7 @@ export function createConnect(ctx: ConnectContext) {
       const stop = (reason: string) => { out.remaining.push({ ...at, reason }); stopped.add(e.target); };
       if (!writable(dir, ctx.allowed, d)) { stop('refused'); continue; }
       if (stopped.has(e.target)) { out.remaining.push({ ...at, reason: 'blocked' }); continue; }
-      if (e.route === 'claude-plugin') { stop('plugin'); continue; } // ponytail: part 2c uninstalls it through the hardened `claude plugin` path
+      if (e.route === 'claude-plugin') { await removePlugin(e, dir, d, out, stop, () => stopped.add(e.target)); continue; }
       try {
         const r = revert(e, { dataDir: ctx.dataDir, bounds: { root: real(dir), denied: d } });
         out.reverted.push({ ...at, result: r.result });
@@ -288,6 +289,25 @@ export function createConnect(ctx: ConnectContext) {
     }
     if (out.conflicts.length || out.remaining.length) out.status = 'partial';
     return out;
+  }
+
+  /** XAIBO-PROD-561 (part 2c): a plugin entry is removed through `claude plugin` (uninstallPlugin proves ownership first), only
+   *  with an auto-detected Claude whose version qualifies the plugin route (review H1: never a renderer-chosen executable, never
+   *  the one recorded at install); a legacy entry (no profile key or journal) is never inferred. */
+  async function removePlugin(e: ManifestEntry, dir: string, d: string[], out: Outcome, stop: (reason: string) => void, block: () => void) {
+    const at = { entry: e.id, route: e.route };
+    const det = ctx.detection('claude');
+    if (!e.profileKey || !e.phase) return stop('legacy');
+    if (!ctx.cliPath) return stop('bounds-unavailable');
+    if (!ctx.catalog || claudeConnectRoute(ctx.catalog, det) !== 'claude-plugin' || det?.state !== 'detected') return stop('unverified');
+    try {
+      const r = await uninstallPlugin({ dataDir: ctx.dataDir, profileKey: e.profileKey, configDir: dir, claude: det.path, bounds: { root: real(dir), denied: d }, path: ctx.cliPath, expect: det.id });
+      out.conflicts.push(...r.conflicts.map((c) => ({ ...at, pointer: c.pointer })));
+      if (r.result === 'unchanged') return stop(r.residue.length && !r.conflicts.length ? 'residue' : 'conflict');
+      if (readManifest(ctx.dataDir).some((x) => x.id === e.id)) return stop('partial'); // code review M2: kept, so not reverted
+      out.reverted.push({ ...at, result: r.result });
+      if (r.conflicts.length) block(); // older entries on that file wait (L3); this one is reverted
+    } catch (err) { stop(err instanceof ConfigError ? err.code : 'failed'); }
   }
 
   async function disconnect(p: Profile): Promise<Outcome | Refused> {
