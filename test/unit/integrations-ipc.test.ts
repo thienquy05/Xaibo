@@ -61,3 +61,21 @@ test('main always sets the service helper folder itself: packaged resources/bin,
   assert.deepEqual(serviceEnv(inherited, { dataDir: '/d', packaged: false, resourcesPath: '/R' }), { PATH: '/bin', XAIBO_BIN: '', XAIBO_DATA_DIR: '/d' });
   assert.deepEqual(serviceEnv(inherited, { dataDir: '/d', packaged: true, resourcesPath: '/R' }), { PATH: '/bin', XAIBO_BIN: '/R/bin', XAIBO_DATA_DIR: '/d' });
 });
+
+// XAIBO-PROD-560 (P6-T03 part 2b; review H2): the plugin step crosses the wire with the version, the argv with the plugin
+// folder as a placeholder and the CLI write surfaces relative to the profile; never an absolute path or a parent segment.
+test('2b plugin step: bounded cli view, placeholders and relative write surfaces only', () => {
+  const step = (cli: object) => ({ route: 'claude-plugin', target: '/tmp/p/.claude/settings.json', diff: [{ pointer: '/enabledPlugins/xaibo-hooks@xaibo', new: true }], cli });
+  const ok = { version: '2.1.319', argv: [['plugin', 'marketplace', 'add', '<plugin-dir>'], ['plugin', 'install', 'xaibo-hooks@xaibo', '-s', 'user']], writes: ['settings.json', '.claude.json', 'plugins/known_marketplaces.json', 'plugins/installed_plugins.json', 'plugins/cache/'] };
+  assert.ok(reply('connectPreview', preview({ steps: [step(ok)] })));
+  for (const bad of [
+    { ...ok, argv: [['plugin', 'marketplace', 'add', '/tmp/x/integrations/claude-plugin/p1']] },
+    { ...ok, writes: ['/tmp/p/.claude/settings.json'] },
+    { ...ok, writes: ['../settings.json'] },
+    { ...ok, version: 'latest' },
+    { ...ok, argv: Array.from({ length: 5 }, () => ['plugin']) },
+    { ...ok, argv: [Array.from({ length: 9 }, () => 'x')] },
+    { ...ok, path: '/opt/claude' },
+  ]) assert.equal(reply('connectPreview', preview({ steps: [step(bad)] })), null, JSON.stringify(bad).slice(0, 120));
+  assert.equal(reply('connectPreview', preview({ steps: [{ ...preview().steps[0], cli: ok }] })), null, 'only the plugin step carries a cli view');
+});

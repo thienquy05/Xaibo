@@ -11,6 +11,8 @@ export interface AgentEntry {
   existenceEvidence?: { root: string; path: string; kind: 'file' | 'directory' }[];
   /** P2-T12 (EC-53): hook events verified for an inclusive x.y.z range. */
   hookEvents?: { versions: { min: string; max?: string }; events: string[]; evidence: string }[];
+  /** P6-T03 part 2b (D-P6-07): Claude Connect routes qualified for an inclusive x.y.z range (no max = no upper bound). */
+  connectRoutes?: { route: 'claude-plugin' | 'claude-settings-fallback'; versions: { min: string; max?: string }; evidence: string }[];
   /** P3-T13a (§6.8): hook events to status evidence by exact name and field predicates. */
   hookMappings?: HookMappings;
 }

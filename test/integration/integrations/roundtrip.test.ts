@@ -14,6 +14,7 @@ import { createConnect, type ConnectContext } from '../../../src/service/integra
 import { apply, ConfigError, plan, readManifest, recordEntry, type ManifestEntry } from '../../../src/service/config/transaction.ts';
 import { acquireLock } from '../../../src/service/config/lock.ts';
 import { connectContext } from '../../../src/service/integrations-ipc.ts';
+import { claudeContext, writeFakeClaude } from '../../helpers/fake-claude.ts';
 import { readdirSync, unlinkSync } from 'node:fs';
 import type { Profile } from '../../../src/service/catalog/detect.ts';
 
@@ -38,7 +39,7 @@ const GEMINI_SETTINGS = `${JSON.stringify({ general: { sessionRetention: { enabl
 
 /** A disposable base (the only allowed root), one profile HOME with Claude, Codex, agy and Gemini files, a managed-policy
  *  dir, synthetic helper binaries and a data dir; `clock.t` is the injected clock. */
-function world(o: { claude?: string | null } = {}) {
+async function world(o: { claude?: string | null | undefined; route?: 'plugin' | 'fallback'; version?: string | null } = {}) {
   const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'xconnect-')));
   dirs.push(base);
   const home = join(base, 'home'), managed = join(base, 'managed'), helpers = join(base, 'helpers'), dataDir = join(base, 'data');
@@ -55,7 +56,9 @@ function world(o: { claude?: string | null } = {}) {
   writeFileSync(files.gemini, GEMINI_SETTINGS);
   for (const h of ['xaibo-hook', 'xaibo-report', 'xaibo-forwarder', 'xaibo-statusline']) writeFileSync(join(helpers, h), '#!/bin/sh\nexit 0\n');
   const clock = { t: 1_000 };
-  const ctx: ConnectContext = {
+  const fake = join(base, 'fake-claude');
+  writeFakeClaude(fake);
+  const ctx: ConnectContext = { ...await claudeContext({ ...(o.route ? { route: o.route } : {}), ...(o.version !== undefined ? { version: o.version } : {}), exe: fake }),
     dataDir, denied: [join(base, 'real')], allowed: [base], claudeManagedDir: managed, now: () => clock.t,
     helpers: { hook: join(helpers, 'xaibo-hook'), forwarder: join(helpers, 'xaibo-forwarder'), statusline: join(helpers, 'xaibo-statusline') },
   };
@@ -65,9 +68,12 @@ function world(o: { claude?: string | null } = {}) {
     agy: { id: 'agy-1', agent: 'agy', root: agyRoot, origin: 'default' },
     gemini: { id: 'gemini-1', agent: 'gemini', root: join(home, '.gemini'), origin: 'default' },
   };
-  return { base, home, managed, dataDir, files, ctx, clock, profiles, c: createConnect(ctx) };
+  const side = (f: string) => join(home, `fake-claude.${f}`); // the fake writes beside the config dir
+  const log = () => (existsSync(side('log')) ? readFileSync(side('log'), 'utf8').trimEnd().split('\n').map((l) => (JSON.parse(l) as { argv: string[] }).argv.slice(0, 3).join(' ')) : []);
+  const setMode = (m: string) => writeFileSync(side('mode'), m);
+  return { base, home, managed, dataDir, files, ctx, clock, profiles, fake, log, setMode, c: createConnect(ctx) };
 }
-type W = ReturnType<typeof world>;
+type W = Awaited<ReturnType<typeof world>>;
 const hashes = (w: W) => Object.fromEntries(Object.entries(w.files).map(([k, f]) => [k, sha(f)]));
 async function connect(w: W, p: Profile, sel = { retention: true, tee: true }) {
   const pv = w.c.previewConnect(p, sel);
@@ -78,7 +84,7 @@ async function connect(w: W, p: Profile, sel = { retention: true, tee: true }) {
 }
 
 test('Connect all offers plus the tee, then Disconnect: every file byte-identical; config.toml, trust and Gemini untouched', async () => {
-  const w = world();
+  const w = await world();
   const before = hashes(w);
   const { pv } = await connect(w, w.profiles.claude);
   assert.deepEqual(pv.status === 'preview' && pv.steps.map((s) => s.route), ['claude-settings-fallback', 'claude-retention', 'claude-tee']);
@@ -103,7 +109,7 @@ test('Connect all offers plus the tee, then Disconnect: every file byte-identica
 });
 
 test('no settings.json: Connect creates it, Disconnect (newest first) leaves no file', async () => {
-  const w = world({ claude: null });
+  const w = await world({ claude: null });
   await connect(w, w.profiles.claude, { retention: true, tee: false });
   assert.equal(json(w.files.claude)['cleanupPeriodDays'], 45);
   assert.equal((await w.c.disconnect(w.profiles.claude)).status, 'disconnected');
@@ -111,7 +117,7 @@ test('no settings.json: Connect creates it, Disconnect (newest first) leaves no 
 });
 
 test('an owner change to a Xaibo-owned value: a conflict, the file is not overwritten, older entries on that file stay', async () => {
-  const w = world();
+  const w = await world();
   await connect(w, w.profiles.claude, { retention: true, tee: false });
   writeFileSync(w.files.claude, JSON.stringify({ ...json(w.files.claude), cleanupPeriodDays: 60 }, null, 2));
   const changed = sha(w.files.claude);
@@ -123,7 +129,7 @@ test('an owner change to a Xaibo-owned value: a conflict, the file is not overwr
 });
 
 test('a foreign change survives; Xaibo entries are removed and replaced values come back', async () => {
-  const w = world();
+  const w = await world();
   await connect(w, w.profiles.claude);
   writeFileSync(w.files.claude, JSON.stringify({ ...json(w.files.claude), theme: 'light' }, null, 2));
   assert.equal((await w.c.disconnect(w.profiles.claude)).status, 'disconnected');
@@ -136,7 +142,7 @@ test('a foreign change survives; Xaibo entries are removed and replaced values c
 });
 
 test('an unreadable file is refused at preview: nothing written, no helper deployed, no manifest', async () => {
-  const w = world({ claude: '{ not json' });
+  const w = await world({ claude: '{ not json' });
   const before = hashes(w);
   assert.deepEqual(w.c.previewConnect(w.profiles.claude, { retention: true, tee: true }), { status: 'refused', code: 'invalid-json' });
   assert.deepEqual(hashes(w), before);
@@ -144,7 +150,7 @@ test('an unreadable file is refused at preview: nothing written, no helper deplo
 });
 
 test('previews: single use, replaced by a newer one for the profile, expire after five minutes', async () => {
-  const w = world();
+  const w = await world();
   const a = w.c.previewConnect(w.profiles.claude, { retention: false, tee: false });
   const b = w.c.previewConnect(w.profiles.claude, { retention: false, tee: false });
   assert.ok(a.status === 'preview' && b.status === 'preview');
@@ -158,7 +164,7 @@ test('previews: single use, replaced by a newer one for the profile, expire afte
 });
 
 test('the file changed after the preview: nothing written or deployed, a new preview', async () => {
-  const w = world();
+  const w = await world();
   const pv = w.c.previewConnect(w.profiles.claude, { retention: true, tee: true });
   writeFileSync(w.files.claude, CLAUDE_SETTINGS.replace('dark', 'light'));
   const edited = sha(w.files.claude);
@@ -170,7 +176,7 @@ test('the file changed after the preview: nothing written or deployed, a new pre
 });
 
 test('a later step no longer matching its preview (managed policy appeared) undoes the Connect and shows a new preview', async () => {
-  const w = world();
+  const w = await world();
   const before = sha(w.files.claude);
   const pv = w.c.previewConnect(w.profiles.claude, { retention: true, tee: false });
   writeFileSync(join(w.managed, 'managed-settings.json'), '{"cleanupPeriodDays":20}');
@@ -182,7 +188,7 @@ test('a later step no longer matching its preview (managed policy appeared) undo
 });
 
 test('already connected: a second preview is refused (one entry per file and route, also in the engine)', async () => {
-  const w = world();
+  const w = await world();
   await connect(w, w.profiles.claude, { retention: false, tee: false });
   assert.deepEqual(w.c.previewConnect(w.profiles.claude, { retention: false, tee: false }), { status: 'refused', code: 'duplicate' });
   const bounds = { root: w.profiles.claude.root, denied: [] };
@@ -191,7 +197,7 @@ test('already connected: a second preview is refused (one entry per file and rou
 });
 
 test('real or denied profile roots and Gemini are refused before anything is read or written', async () => {
-  const w = world();
+  const w = await world();
   const outside = realpathSync.native(mkdtempSync(join(tmpdir(), 'xreal-')));
   dirs.push(outside);
   mkdirSync(join(outside, '.claude'));
@@ -203,7 +209,7 @@ test('real or denied profile roots and Gemini are refused before anything is rea
 });
 
 test('Disconnect touches only its own profile; Uninstall reverts every entry and refuses targets outside the allowed roots', async () => {
-  const w = world();
+  const w = await world();
   const before = hashes(w);
   await connect(w, w.profiles.claude);
   await connect(w, w.profiles.codex);
@@ -222,7 +228,7 @@ test('Disconnect touches only its own profile; Uninstall reverts every entry and
 });
 
 test('design review M2: recordEntry replaces an entry in place, so manifest order stays creation order', async () => {
-  const w = world();
+  const w = await world();
   await connect(w, w.profiles.claude, { retention: true, tee: false });
   const [a, b] = readManifest(w.dataDir) as [ManifestEntry, ManifestEntry];
   recordEntry(w.dataDir, { ...a, seen: { hash: 'h', since: 1 } });
@@ -231,7 +237,7 @@ test('design review M2: recordEntry replaces an entry in place, so manifest orde
 
 // code review (run 191) M-c: no denylist (login environment unreadable) refuses everything, never fails open
 test('unavailable bounds: every call is refused', async () => {
-  const w = world();
+  const w = await world();
   for (const denied of [null, []]) {
     const c = createConnect({ ...w.ctx, denied });
     assert.deepEqual(c.previewConnect(w.profiles.claude, { retention: true, tee: false }), { status: 'refused', code: 'bounds-unavailable' });
@@ -243,7 +249,7 @@ test('unavailable bounds: every call is refused', async () => {
 
 // M-b: an allowed root that holds the home is not disposable; M-d and writable(): every folder up to the allowed root private
 test('refused: an allowed root holding the home, group-writable folders, a symlinked root into a denied root', async () => {
-  const w = world();
+  const w = await world();
   const home = process.env['HOME'];
   process.env['HOME'] = join(w.base, 'someone');
   try { assert.deepEqual(w.c.previewConnect(w.profiles.claude, { retention: false, tee: false }), { status: 'refused', code: 'real-profile' }); } finally { process.env['HOME'] = home; }
@@ -259,7 +265,7 @@ test('refused: an allowed root holding the home, group-writable folders, a symli
 
 // review LOW (L2): same bytes but another mode or file since the preview is a new preview, before any helper is deployed
 test('a mode change after the preview: nothing deployed, a new preview', async () => {
-  const w = world();
+  const w = await world();
   chmodSync(w.files.claude, 0o644); // a known mode under any umask (re-review LOW)
   const pv = w.c.previewConnect(w.profiles.claude, { retention: false, tee: false });
   chmodSync(w.files.claude, 0o600);
@@ -269,14 +275,14 @@ test('a mode change after the preview: nothing deployed, a new preview', async (
 
 // review LOW: Codex hooks that already run a Xaibo shim (manifest lost) are not appended again
 test('Codex hooks already running a Xaibo shim: refused as a duplicate', async () => {
-  const w = world();
+  const w = await world();
   writeFileSync(w.files.codex, JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: "'/x/integrations/bin/xaibo-hook' hook codex codex-1" }] }] } }));
   assert.deepEqual(w.c.previewConnect(w.profiles.codex, { retention: false, tee: false }), { status: 'refused', code: 'duplicate' });
 });
 
 // P6-T03 part 2a (design review M3, L3, L4): the operation lock; failures injected after a step's rename
 test('busy keeps the preview: apply while another writer holds the lock, then again once it is released; previews refuse while locked', async () => {
-  const w = world();
+  const w = await world();
   const pv = w.c.previewConnect(w.profiles.claude, { retention: true, tee: false });
   const held = acquireLock(w.dataDir);
   assert.deepEqual(await w.c.applyConnect(pv.status === 'preview' ? pv.previewId : ''), { status: 'refused', code: 'busy' });
@@ -287,7 +293,7 @@ test('busy keeps the preview: apply while another writer holds the lock, then ag
 });
 
 test('a step that throws after its rename: its pending entry is undone first, then step 1; the file comes back byte for byte', async () => {
-  const w = world();
+  const w = await world();
   const before = sha(w.files.claude);
   let n = 0;
   const c = createConnect({ ...w.ctx, afterRename: () => { if (++n === 2) throw new Error('injected'); } });
@@ -298,7 +304,7 @@ test('a step that throws after its rename: its pending entry is undone first, th
 });
 
 test('an undo that fails during compensation: partial, the older entry on that file blocked', async () => {
-  const w = world();
+  const w = await world();
   let n = 0;
   const c = createConnect({ ...w.ctx, afterRename: () => {
     if (++n !== 2) return;
@@ -315,15 +321,124 @@ test('an undo that fails during compensation: partial, the older entry on that f
 });
 
 test('the service context never sets the test-only afterRename hook', () => {
-  const ctx = connectContext({ dataDir: '/d', login: { PATH: '/bin' }, bin: '' });
+  const ctx = connectContext({ dataDir: '/d', login: { PATH: '/bin' }, bin: '', catalog: null, detection: () => undefined });
   assert.equal(ctx.afterRename, undefined);
 });
 
 // code review (run 193) L-c: a preview says stale-lock (not busy) when the lock's holder is gone
 test('a stale lock: the preview says stale-lock, apply too; nothing is touched', async () => {
-  const w = world();
+  const w = await world();
   mkdirSync(join(w.dataDir, 'integrations'), { recursive: true, mode: 0o700 });
   writeFileSync(join(w.dataDir, 'integrations', 'operation.lock'), JSON.stringify({ pid: 2_147_483_646, token: 'crashed', at: 1 }), { mode: 0o600 });
   assert.deepEqual(w.c.previewConnect(w.profiles.claude, { retention: false, tee: false }), { status: 'refused', code: 'stale-lock' });
   assert.deepEqual(await w.c.disconnect(w.profiles.claude), { status: 'refused', code: 'stale-lock' });
+});
+
+// XAIBO-PROD-560 (P6-T03 part 2b; owner D-P6-06, D-P6-07; design .handoff/p6-t03-design.md part 2b slice and review): Claude's
+// route comes from the catalog and the detected version; the plugin step is previewed (bounded cli view, a placeholder for
+// the plugin folder) and installed through the fake `claude` under the operation lock; retention and tee after it apply only
+// when equal to the preview, else the Connect is undone (plugin entries stay remaining until part 2c: partial).
+test('2b route at preview: 2.1.319 and later -> plugin step with a bounded cli view, no data dir on the wire, nothing run', async () => {
+  for (const version of ['2.1.319', '2.1.322']) {
+    const w = await world({ route: 'plugin', version });
+    const pv = w.c.previewConnect(w.profiles.claude, { retention: true, tee: true });
+    assert.equal(pv.status, 'preview', JSON.stringify(pv));
+    if (pv.status !== 'preview') return;
+    assert.deepEqual(pv.steps.map((s) => s.route), ['claude-plugin', 'claude-retention', 'claude-tee']);
+    const p = pv.steps[0]!;
+    assert.deepEqual(p.diff, [{ pointer: '/enabledPlugins/xaibo-hooks@xaibo', new: true }]);
+    assert.deepEqual(p.cli, {
+      version, argv: [['plugin', 'marketplace', 'add', '<plugin-dir>'], ['plugin', 'install', 'xaibo-hooks@xaibo', '-s', 'user']],
+      writes: ['settings.json', '.claude.json', 'plugins/known_marketplaces.json', 'plugins/installed_plugins.json', 'plugins/cache/'],
+    });
+    assert.ok(!JSON.stringify(p).includes(w.dataDir), 'review H2: the plugin step carries no data dir (plugin folder)'); // tee/hook diffs carry the helper they write
+    assert.ok(!JSON.stringify(pv).includes(w.fake), 'never the executable path');
+    assert.deepEqual(w.log(), []);
+  }
+});
+
+test('2b unverified: below 2.1.319, a prerelease, no version, not detected, an executable replaced since detection; no login PATH', async () => {
+  for (const version of ['2.1.318', '2.1.319-beta.1', null]) {
+    const w = await world({ route: 'plugin', version });
+    assert.deepEqual(w.c.previewConnect(w.profiles.claude, { retention: true, tee: true }), { status: 'refused', code: 'unverified' }, String(version));
+  }
+  const w = await world({ route: 'plugin' });
+  assert.deepEqual(createConnect({ ...w.ctx, detection: () => ({ agent: 'claude', state: 'not-detected' }) }).previewConnect(w.profiles.claude, { retention: false, tee: false }), { status: 'refused', code: 'unverified' });
+  assert.deepEqual(createConnect({ ...w.ctx, catalog: null }).previewConnect(w.profiles.claude, { retention: false, tee: false }), { status: 'refused', code: 'unverified' });
+  assert.deepEqual(createConnect({ ...w.ctx, cliPath: null }).previewConnect(w.profiles.claude, { retention: false, tee: false }), { status: 'refused', code: 'bounds-unavailable' });
+  writeFileSync(w.fake, `${readFileSync(w.fake, 'utf8')}// replaced after detection\n`);
+  assert.deepEqual(w.c.previewConnect(w.profiles.claude, { retention: false, tee: false }), { status: 'refused', code: 'unverified' }, 'review H1');
+  assert.deepEqual(w.log(), []);
+});
+
+test('2b plugin Connect: plugin, then retention and tee equal to the preview; entries in creation order', async () => {
+  for (const claude of [undefined, null]) { // review L1: also with no settings.json before Connect (the CLI creates it)
+    const w = await world({ route: 'plugin', claude });
+    const { r } = await connect(w, w.profiles.claude);
+    assert.equal(r.status, 'applied');
+    assert.deepEqual(w.log(), ['plugin marketplace add', 'plugin install xaibo-hooks@xaibo']);
+    const m = readManifest(w.dataDir);
+    assert.deepEqual(m.map((e) => [e.route, e.state]), [['claude-plugin', 'applied'], ['claude-retention', 'applied'], ['claude-tee', 'applied']]);
+    const s = json(w.files.claude);
+    assert.deepEqual(s['enabledPlugins'], { 'xaibo-hooks@xaibo': true });
+    assert.equal(s['cleanupPeriodDays'], 45);
+    assert.match(JSON.stringify(s['statusLine']), /xaibo-statusline/);
+    assert.ok(!JSON.stringify(s['hooks'] ?? {}).includes('xaibo-hook'), 'no settings-fallback hooks next to the plugin (EC-09)');
+  }
+});
+
+test('2b verified chain: the CLI changed the retention value -> no retention/tee written; partial mismatch, plugin remaining (2c)', async () => {
+  const w = await world({ route: 'plugin' });
+  w.setMode('bump-retention');
+  const pv = w.c.previewConnect(w.profiles.claude, { retention: true, tee: true });
+  assert.equal(pv.status, 'preview');
+  const r = await w.c.applyConnect(pv.status === 'preview' ? pv.previewId : '');
+  assert.equal(r.status, 'partial', JSON.stringify(r));
+  assert.equal(r.status === 'partial' && r.code, 'mismatch');
+  assert.deepEqual(r.status === 'partial' && r.remaining.map((x) => [x.route, x.reason]), [['claude-plugin', 'plugin']]);
+  assert.deepEqual(readManifest(w.dataDir).map((e) => e.route), ['claude-plugin']);
+  assert.equal(json(w.files.claude)['cleanupPeriodDays'], 50, 'the value the CLI left is not overwritten');
+  assert.ok(!JSON.stringify(json(w.files.claude)['statusLine']).includes('xaibo-statusline'));
+});
+
+test('2b a dirty plugin failure never falls back: partial cli, the pending entry kept, no fallback hooks', async () => {
+  const w = await world({ route: 'plugin' });
+  w.setMode('fail-dirty');
+  const pv = w.c.previewConnect(w.profiles.claude, { retention: true, tee: false });
+  const r = await w.c.applyConnect(pv.status === 'preview' ? pv.previewId : '');
+  assert.equal(r.status === 'partial' && r.code, 'cli', JSON.stringify(r));
+  assert.deepEqual(readManifest(w.dataDir).map((e) => [e.route, e.state]), [['claude-plugin', 'pending']]);
+  assert.ok(!JSON.stringify(json(w.files.claude)['hooks'] ?? {}).includes('xaibo-hook'));
+  assert.deepEqual(w.log(), ['plugin marketplace add', 'plugin install xaibo-hooks@xaibo', 'plugin marketplace remove']);
+});
+
+test('2b a clean plugin failure: refused cli, nothing recorded, settings unchanged', async () => {
+  const w = await world({ route: 'plugin' });
+  const before = sha(w.files.claude);
+  w.setMode('fail-install');
+  const pv = w.c.previewConnect(w.profiles.claude, { retention: true, tee: true });
+  assert.deepEqual(await w.c.applyConnect(pv.status === 'preview' ? pv.previewId : ''), { status: 'refused', code: 'cli' });
+  assert.deepEqual(readManifest(w.dataDir), []);
+  assert.equal(sha(w.files.claude), before);
+});
+
+test('2b settings changed between preview and apply: a fresh preview, no CLI call, no helper deployed', async () => {
+  const w = await world({ route: 'plugin' });
+  const pv = w.c.previewConnect(w.profiles.claude, { retention: true, tee: true });
+  writeFileSync(w.files.claude, '{"theme":"light"}\n');
+  const r = await w.c.applyConnect(pv.status === 'preview' ? pv.previewId : '');
+  assert.equal(r.status, 'needs-preview', JSON.stringify(r));
+  assert.deepEqual(w.log(), []);
+  assert.ok(!existsSync(join(w.dataDir, 'integrations', 'bin')));
+});
+
+test('2b the operation lock is held across the awaited CLI steps', async () => {
+  const w = await world({ route: 'plugin' });
+  w.setMode('slow');
+  const pv = w.c.previewConnect(w.profiles.claude, { retention: false, tee: false });
+  const pending = w.c.applyConnect(pv.status === 'preview' ? pv.previewId : '');
+  await new Promise((r) => setTimeout(r, 100)); // the install is running
+  assert.throws(() => acquireLock(w.dataDir), (e) => e instanceof ConfigError && e.code === 'busy');
+  assert.equal((await pending).status, 'applied');
+  acquireLock(w.dataDir).release(); // released after the operation
 });

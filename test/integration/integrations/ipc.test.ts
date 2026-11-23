@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { claudeContext } from '../../helpers/fake-claude.ts';
 import { createConnect, type ConnectContext } from '../../../src/service/integrations/connect.ts';
 import { answerIntegrations, type IntegrationsDeps } from '../../../src/service/integrations-ipc.ts';
 import { parsePortMessage, type PortMessage } from '../../../src/shared/ipc.ts';
@@ -20,7 +21,7 @@ dirs.push(iso);
 for (const k of ['HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'GEMINI_CLI_HOME', 'XAIBO_DATA_DIR']) process.env[k] = join(iso, k.toLowerCase());
 
 const PID = '00000000-0000-4000-8000-0000000000a1', OTHER = '00000000-0000-4000-8000-0000000000c3';
-function world(o: { helpers?: boolean } = {}) {
+async function world(o: { helpers?: boolean } = {}) {
   const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'xipc-')));
   dirs.push(base);
   const claude = join(base, 'home', '.claude'), helpers = join(base, 'helpers'), managed = join(base, 'managed'), dataDir = join(base, 'data');
@@ -28,7 +29,7 @@ function world(o: { helpers?: boolean } = {}) {
   const file = join(claude, 'settings.json');
   writeFileSync(file, '{\n  "cleanupPeriodDays": 10\n}\n');
   if (o.helpers !== false) for (const h of ['xaibo-hook', 'xaibo-report', 'xaibo-forwarder', 'xaibo-statusline']) writeFileSync(join(helpers, h), '#!/bin/sh\nexit 0\n');
-  const ctx: ConnectContext = { dataDir, denied: [join(base, 'real')], allowed: [base], claudeManagedDir: managed,
+  const ctx: ConnectContext = { dataDir, denied: [join(base, 'real')], allowed: [base], claudeManagedDir: managed, ...await claudeContext(),
     helpers: { hook: join(helpers, 'xaibo-hook'), forwarder: join(helpers, 'xaibo-forwarder'), statusline: join(helpers, 'xaibo-statusline') } };
   const profile: Profile = { id: PID, agent: 'claude', root: claude, origin: 'default' };
   const c = createConnect(ctx);
@@ -46,7 +47,7 @@ const A = {}, B = {};
 const SEL = { retention: true, tee: false };
 
 test('preview, apply and disconnect through the IPC handler; the retention offer has no ops', async () => {
-  const w = world();
+  const w = await world();
   const pv = await ask(w.deps, { type: 'connectPreview', profileId: PID, selections: SEL }, A);
   assert.equal(pv.status, 'preview');
   assert.deepEqual(pv['retention'], { offered: true, from: 10, to: 45, layer: 'user' });
@@ -57,7 +58,7 @@ test('preview, apply and disconnect through the IPC handler; the retention offer
 });
 
 test('a preview belongs to its port: another port is refused and the preview is consumed; the new preview after a mismatch too', async () => {
-  const w = world();
+  const w = await world();
   const pv = await ask(w.deps, { type: 'connectPreview', profileId: PID, selections: SEL }, A);
   assert.deepEqual(await ask(w.deps, { type: 'connectApply', previewId: pv['previewId'] }, B), { status: 'refused', code: 'preview-invalid' });
   assert.deepEqual(await ask(w.deps, { type: 'connectApply', previewId: pv['previewId'] }, A), { status: 'refused', code: 'preview-invalid' }, 'consumed');
@@ -70,7 +71,7 @@ test('a preview belongs to its port: another port is refused and the preview is 
 });
 
 test('the new preview after a mismatch applies from the same port', async () => {
-  const w = world();
+  const w = await world();
   const pv = await ask(w.deps, { type: 'connectPreview', profileId: PID, selections: SEL }, A);
   writeFileSync(w.file, '{\n  "cleanupPeriodDays": 12\n}\n');
   const fresh = (await ask(w.deps, { type: 'connectApply', previewId: pv['previewId'] }, A))['preview'] as R;
@@ -78,14 +79,14 @@ test('the new preview after a mismatch applies from the same port', async () => 
 });
 
 test('a closed port drops its previews', async () => {
-  const w = world();
+  const w = await world();
   const pv = await ask(w.deps, { type: 'connectPreview', profileId: PID, selections: SEL }, A);
   w.c.dropOwner(A);
   assert.deepEqual(await ask(w.deps, { type: 'connectApply', previewId: pv['previewId'] }, A), { status: 'refused', code: 'preview-invalid' });
 });
 
 test('refusals that still reply: unknown profile, read-only store, still starting, a throwing handler, missing helpers', async () => {
-  const w = world();
+  const w = await world();
   assert.deepEqual(await ask(w.deps, { type: 'connectPreview', profileId: OTHER, selections: SEL }, A), { status: 'refused', code: 'profile-not-found' });
   assert.deepEqual(await ask(w.deps, { type: 'disconnect', profileId: OTHER }, A), { status: 'refused', code: 'profile-not-found' });
   for (const m of [{ type: 'connectPreview', profileId: PID, selections: SEL }, { type: 'uninstall' }, { type: 'disconnect', profileId: PID }]) {
@@ -96,13 +97,13 @@ test('refusals that still reply: unknown profile, read-only store, still startin
   }
   const throwing = { ...w.deps, profile: () => { throw new Error('boom'); } };
   assert.deepEqual(await ask(throwing, { type: 'connectPreview', profileId: PID, selections: SEL }, A), { status: 'refused', code: 'failed' });
-  const bare = world({ helpers: false });
+  const bare = await world({ helpers: false });
   assert.deepEqual(await ask(bare.deps, { type: 'connectPreview', profileId: PID, selections: SEL }, A), { status: 'refused', code: 'helpers-unavailable' });
   assert.equal(existsSync(join(bare.dataDir, 'integrations')), false);
 });
 
 test('an over-bound preview is refused, never truncated', async () => {
-  const w = world();
+  const w = await world();
   const huge = { ...w.deps, connect: () => ({ ...w.c, previewConnect: () => ({ status: 'preview' as const, previewId: OTHER, profileId: PID, ttlMs: 1,
     steps: [{ route: 'claude-retention' as const, target: '/x', diff: Array.from({ length: 65 }, (_, i) => ({ pointer: `/k${i}`, new: i })) }], retention: null, trustSteps: [] }) }) };
   assert.deepEqual(await ask(huge, { type: 'connectPreview', profileId: PID, selections: SEL }, A), { status: 'refused', code: 'too-large' });
@@ -110,7 +111,7 @@ test('an over-bound preview is refused, never truncated', async () => {
 
 // code review (run 192) M-1: after a write, an over-bound reply never says "refused" (nothing changed): partial, re-read
 test('an over-bound reply after a write is partial with too-large, never a refusal', async () => {
-  const w = world();
+  const w = await world();
   const many = { status: 'partial' as const, reverted: [], conflicts: [], remaining: Array.from({ length: 300 }, () => ({ entry: OTHER, route: 'claude-tee' as const, reason: 'refused' })) };
   const stub = { ...w.deps, connect: () => ({ ...w.c, disconnect: async () => many, uninstall: async () => many,
     applyConnect: async () => ({ status: 'applied' as const, entries: Array.from({ length: 9 }, () => OTHER), trustSteps: [] }) }) };
@@ -122,7 +123,7 @@ test('an over-bound reply after a write is partial with too-large, never a refus
 
 // P6-T03 part 2a (design review M3): a rejection that escapes after dispatch may follow a write: partial, never refused
 test('an escaped failure after dispatch replies partial; before dispatch refused', async () => {
-  const w = world();
+  const w = await world();
   const boom = () => Promise.reject(new Error('boom'));
   const stub = { ...w.deps, connect: () => ({ ...w.c, applyConnect: boom, disconnect: boom, uninstall: boom }) };
   const partial = { status: 'partial', reverted: [], conflicts: [], remaining: [], code: 'failed' };

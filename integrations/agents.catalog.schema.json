@@ -146,6 +146,24 @@
             }
           }
         },
+        "connectRoutes": {
+          "description": "P6-T03 part 2b (D-2, D-P6-07): the Claude Connect routes qualified for an inclusive version range (max optional = no upper bound); a version outside every range, a prerelease or an unknown version is unverified. Where one version qualifies both, the plugin wins.",
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["route", "versions", "evidence"],
+            "properties": {
+              "route": { "enum": ["claude-plugin", "claude-settings-fallback"] },
+              "versions": {
+                "type": "object", "additionalProperties": false, "required": ["min"],
+                "properties": { "min": { "$ref": "#/$defs/version" }, "max": { "$ref": "#/$defs/version" } }
+              },
+              "evidence": { "type": "string", "minLength": 1, "maxLength": 256 }
+            }
+          }
+        },
         "hookMappings": {
           "description": "P3-T13a (PRD §6.8): hook events to normalized status evidence by exact event name and exact field predicates (null = absent or null). The first matching rule wins; no rule = reduced coverage. Data only, never executed.",
           "type": "object",

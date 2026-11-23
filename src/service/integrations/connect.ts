@@ -6,18 +6,21 @@
 // only if it equals the previewed one (route, target, owned values with what they replace, created keys); otherwise, or when
 // a step fails, this Connect is undone newest first and a new preview is shown. Disconnect and Uninstall revert newest
 // first, each entry bounds-checked on its own, and stop on a target after a conflict, refusal or error.
-// ponytail: synchronous, so the service's one thread serializes these; part 2's `claude plugin` awaits need an in-process
-// mutex and a lock file shared with the dev CLI (transaction.ts lock note).
+// XAIBO-PROD-560 (part 2b; owner D-P6-07): Claude's route comes from the catalog and the detected version (plugin preferred,
+// unverified otherwise); the plugin step is previewed (previewPlugin: settings, executable and interpreter identity) and
+// installed through `claude plugin` under the operation lock, held across the awaits; retention and tee after it are rebuilt
+// and applied only when equal to the preview (D-P6-06). Undoing a plugin entry is part 2c: until then it stays remaining.
 import { createHash, randomUUID } from 'node:crypto';
 import { lstatSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isProfileKey } from '../../shared/hook-protocol.ts';
 import { agyHooksFile, checkAgyInstall } from '../adapters/agy/setup.ts';
-import { deployShim, pluginHooks, teePlan } from '../adapters/claude/setup.ts';
+import { deployShim, installPlugin, PLUGIN_REF, pluginHooks, previewPlugin, teePlan, type PluginOptions, type PluginPreview } from '../adapters/claude/setup.ts';
 import { codexHookOps, codexTrustSteps, shimPath } from '../adapters/codex/setup.ts';
-import type { Profile } from '../catalog/detect.ts';
-import { claudeRetentionOffer, retentionOps, type RetentionOffer } from '../catalog/setup-plans.ts';
+import type { Detection, Profile } from '../catalog/detect.ts';
+import type { Catalog } from '../catalog/validate.ts';
+import { claudeConnectRoute, claudeRetentionOffer, retentionOps, type RetentionOffer } from '../catalog/setup-plans.ts';
 import { real, writable } from '../config/bounds.ts';
 import { acquireLock, lockState } from '../config/lock.ts';
 import {
@@ -33,6 +36,11 @@ export interface ConnectContext {
   claudeManagedDir: string;
   /** The bundled helpers deployShim copies (xaibo-report sits beside `hook`). */
   helpers: { hook: string; forwarder: string; statusline: string };
+  /** Part 2b: the bundled catalog (connectRoutes; null when it failed to load: Claude unverified), the live detection per agent
+   *  and the login PATH the plugin CLI runs with (null: refused). */
+  catalog: Catalog | null;
+  detection: (agent: string) => Detection | undefined;
+  cliPath: string | null;
   /** Monotonic ms (default performance.now). */
   now?: () => number;
   /** Test only (part 2a review L4): passed to the engine's apply() to inject a failure after a step's rename. The service's
@@ -40,7 +48,9 @@ export interface ConnectContext {
   afterRename?: (file: string) => void;
 }
 export interface Selections { retention: boolean; tee: boolean }
-export interface StepView { route: Route; target: string; diff: DiffLine[] }
+/** cli (the plugin step only): the detected version, the argv with the plugin folder as `<plugin-dir>` (review H2) and what
+ *  the CLI writes, relative to the config dir. */
+export interface StepView { route: Route; target: string; diff: DiffLine[]; cli?: { version: string; argv: string[][]; writes: string[] } }
 export type Refused = { status: 'refused'; code: string };
 export type Preview = { status: 'preview'; previewId: string; profileId: string; ttlMs: number; steps: StepView[]; retention: RetentionOffer | null; trustSteps: string[] };
 export type ConnectResult = { status: 'applied'; entries: string[]; trustSteps: string[] } | { status: 'needs-preview'; preview: Preview | Refused }
@@ -95,8 +105,17 @@ function noShim(file: string, agent: string) {
 }
 
 type Builder = [Route, () => Plan];
-/** owner: the requesting port (part 1b review L5); only that owner applies the preview. */
-interface Held { profile: Profile; sel: Selections; owner: unknown; steps: { route: Route; build: () => Plan; plan: Plan }[]; trust: string[]; expiresAt: number }
+interface Plugin { o: PluginOptions; version: string }
+/** owner: the requesting port (part 1b review L5); only that owner applies the preview. plugin: the confirmed plugin step. */
+interface Held {
+  profile: Profile; sel: Selections; owner: unknown; plugin: { o: PluginOptions; pp: PluginPreview } | null;
+  steps: { route: Route; build: () => Plan; plan: Plan }[]; trust: string[]; expiresAt: number;
+}
+const WRITES = ['settings.json', '.claude.json', 'plugins/known_marketplaces.json', 'plugins/installed_plugins.json', 'plugins/cache/'];
+const pluginView = (pp: PluginPreview, version: string): StepView => ({
+  route: 'claude-plugin', target: pp.target, diff: [{ pointer: `/enabledPlugins/${PLUGIN_REF}`, new: true }],
+  cli: { version, argv: [['plugin', 'marketplace', 'add', '<plugin-dir>'], pp.argv[1]!], writes: WRITES },
+});
 const regularFile = (f: string) => { try { return lstatSync(f).isFile(); } catch { return false; } };
 
 export function createConnect(ctx: ConnectContext) {
@@ -109,7 +128,7 @@ export function createConnect(ctx: ConnectContext) {
   const recorded = (file: string, routes: Route[]) => readManifest(ctx.dataDir).some((e) => e.target === file && routes.includes(e.route));
 
   /** Selections, profile key and helper paths are captured here, never taken from an apply request (review L1). */
-  function builders(p: Profile, t: Target, sel: Selections): { list: Builder[]; retention: RetentionOffer | null; trust: string[] } {
+  function builders(p: Profile, t: Target, sel: Selections): { plugin: Plugin | null; list: Builder[]; retention: RetentionOffer | null; trust: string[] } {
     const key = isProfileKey(p.id) ? p.id : fail('ops');
     const bounds: Bounds = { root: t.dir, denied: denied! };
     const shim = shimPath(ctx.dataDir);
@@ -118,17 +137,27 @@ export function createConnect(ctx: ConnectContext) {
         if (recorded(t.file, ['codex-hooks'])) fail('duplicate');
         noShim(t.file, 'codex');
         return plan(t.file, 'codex-hooks', codexHookOps(shim, key), bounds);
-      }]], retention: null, trust: codexTrustSteps(t.dir, shim, key) };
+      }]], plugin: null, retention: null, trust: codexTrustSteps(t.dir, shim, key) };
     }
     if (p.agent === 'agy') {
       return { list: [['agy-hooks', () => { const c = checkAgyInstall({ dataDir: ctx.dataDir, profileKey: key, profileHome: t.dir, bounds }); return plan(c.file, 'agy-hooks', c.ops, bounds); }]],
-        retention: null, trust: [] }; // ponytail: no project selected, so a project's .agents/hooks.json is not inspected
+        plugin: null, retention: null, trust: [] }; // ponytail: no project selected, so a project's .agents/hooks.json is not inspected
     }
-    const list: Builder[] = [['claude-settings-fallback', () => {
-      if (recorded(t.file, ['claude-plugin', 'claude-settings-fallback'])) fail('duplicate');
-      noShim(t.file, 'claude');
-      return plan(t.file, 'claude-settings-fallback', fallbackOps(shim, key), bounds);
-    }]];
+    const d = ctx.detection('claude');
+    const route = ctx.catalog ? claudeConnectRoute(ctx.catalog, d) : null; // D-2, D-P6-07: no chooser, never a fallback after a failure
+    if (!route || d?.state !== 'detected') return fail('unverified');
+    const list: Builder[] = [];
+    let plugin: Plugin | null = null;
+    if (route === 'claude-plugin') {
+      noShim(t.file, 'claude'); // settings hooks already running a Xaibo shim would deliver every event twice (EC-09)
+      plugin = { o: { dataDir: ctx.dataDir, profileKey: key, configDir: t.dir, claude: d.path, bounds, path: ctx.cliPath!, expect: d.id }, version: d.version! };
+    } else {
+      list.push(['claude-settings-fallback', () => {
+        if (recorded(t.file, ['claude-plugin', 'claude-settings-fallback'])) fail('duplicate');
+        noShim(t.file, 'claude');
+        return plan(t.file, 'claude-settings-fallback', fallbackOps(shim, key), bounds);
+      }]);
+    }
     // ponytail: a partial (conflicted) retention entry keeps the offer at `connected` until Disconnect resolves it (P6-T02)
     const retention = claudeRetentionOffer(t.dir, ctx.claudeManagedDir, readManifest(ctx.dataDir));
     if (sel.retention && retention.offered) {
@@ -138,7 +167,7 @@ export function createConnect(ctx: ConnectContext) {
       }]);
     }
     if (sel.tee) list.push(['claude-tee', () => teePlan({ dataDir: ctx.dataDir, profileKey: key, configDir: t.dir, bounds })]);
-    return { list, retention, trust: [] };
+    return { plugin, list, retention, trust: [] };
   }
 
   /** Part 2a review L3: while another writer holds the lock a preview made now would fail at apply: busy, or stale-lock when
@@ -152,12 +181,14 @@ export function createConnect(ctx: ConnectContext) {
     const t = targetOf(p);
     if (!t) return refused('unverified');
     if (!permitted(t)) return refused('real-profile'); // before any offer read (review H3, M4)
+    if (p.agent === 'claude' && !ctx.cliPath) return refused('bounds-unavailable'); // no login PATH: like no denylist
     // part 1b review M2: the helpers apply will deploy exist, before the owner confirms (xaibo-report ships beside the hook)
     const helpers = [ctx.helpers.hook, path.join(path.dirname(ctx.helpers.hook), 'xaibo-report'), ctx.helpers.forwarder, ...(sel.tee ? [ctx.helpers.statusline] : [])];
     if (!helpers.every(regularFile)) return refused('helpers-unavailable');
-    let b, steps;
+    let b, steps, pp: PluginPreview | null = null;
     try {
       b = builders(p, t, sel);
+      if (b.plugin) pp = previewPlugin(b.plugin.o); // nothing runs, nothing is written
       steps = b.list.map(([route, build]) => ({ route, build, plan: build() }));
     } catch (e) { if (e instanceof ConfigError) return refused(e.code); throw e; }
     const at = now();
@@ -166,8 +197,12 @@ export function createConnect(ctx: ConnectContext) {
     if (previews.size - own.length >= MAX_PREVIEWS) return refused('busy'); // checked before the profile's own is dropped
     for (const id of own) previews.delete(id); // one per profile
     const previewId = randomUUID();
-    previews.set(previewId, { profile: p, sel, owner, steps, trust: b.trust, expiresAt: at + TTL_MS });
-    return { status: 'preview', previewId, profileId: p.id, ttlMs: TTL_MS, steps: steps.map((s) => ({ route: s.route, target: s.plan.target, diff: s.plan.diff })), retention: b.retention, trustSteps: b.trust };
+    previews.set(previewId, { profile: p, sel, owner, plugin: b.plugin && pp ? { o: b.plugin.o, pp } : null, steps, trust: b.trust, expiresAt: at + TTL_MS });
+    const views: StepView[] = steps.map((s) => ({ route: s.route, target: s.plan.target, diff: s.plan.diff }));
+    return {
+      status: 'preview', previewId, profileId: p.id, ttlMs: TTL_MS, steps: b.plugin && pp ? [pluginView(pp, b.plugin.version), ...views] : views,
+      retention: b.retention, trustSteps: b.trust,
+    };
   }
 
   /** Design review M3: stricter than the redacted diff: route, target, owned values with the full value they replace, created. */
@@ -178,13 +213,14 @@ export function createConnect(ctx: ConnectContext) {
     if (!denied) return refused('bounds-unavailable');
     return locked(() => applyLocked(previewId, owner));
   }
-  /** The operation lock around one whole operation; a held or stale lock is the refusal, nothing else is touched. */
-  function locked<T>(fn: () => T): T | Refused {
+  /** The operation lock around one whole operation, held until its promise settles (part 2b: the CLI awaits); a held or stale
+   *  lock is the refusal, nothing else is touched. */
+  async function locked<T>(fn: () => T | Promise<T>): Promise<T | Refused> {
     let lock;
     try { lock = acquireLock(ctx.dataDir); } catch (e) { return refused(e instanceof ConfigError ? e.code : 'failed'); } // nothing written yet (code review L-b)
-    try { return fn(); } finally { lock.release(); }
+    try { return await fn(); } finally { lock.release(); }
   }
-  function applyLocked(previewId: string, owner?: unknown): ConnectResult {
+  async function applyLocked(previewId: string, owner?: unknown): Promise<ConnectResult> {
     const h = previews.get(previewId);
     previews.delete(previewId); // consumed on first lookup, whatever happens next, a wrong owner included (review L1, 1b L5)
     if (!h || h.owner !== owner) return refused('preview-invalid');
@@ -193,9 +229,10 @@ export function createConnect(ctx: ConnectContext) {
     const t = targetOf(h.profile);
     if (!t || !permitted(t)) return refused('real-profile');
     const again = (): ConnectResult => ({ status: 'needs-preview', preview: preview(h.profile, h.sel, h.owner) }); // 1b review M1; we hold the lock
-    // checked before any helper is deployed: bytes, file identity and mode, as apply() will (review L2)
-    const first = h.steps[0]!.plan, cur = readFile(first.target);
-    if ((cur ? sha256(cur.bytes) : null) !== first.preHash || (cur && (cur.dev !== first.dev || cur.ino !== first.ino || cur.mode !== first.mode))) return again();
+    // checked before any helper is deployed: bytes, file identity and mode, as apply() / installPlugin will (review L2)
+    const first = h.plugin ? h.plugin.pp.settings : h.steps[0]!.plan.preHash === null ? null : { hash: h.steps[0]!.plan.preHash, dev: h.steps[0]!.plan.dev, ino: h.steps[0]!.plan.ino, mode: h.steps[0]!.plan.mode };
+    const cur = readFile(h.plugin ? h.plugin.pp.target : h.steps[0]!.plan.target);
+    if (!isDeepStrictEqual(cur ? { hash: sha256(cur.bytes), dev: cur.dev, ino: cur.ino, mode: cur.mode } : null, first)) return again();
     deployShim(ctx.dataDir, { hook: ctx.helpers.hook, forwarder: ctx.helpers.forwarder, ...(h.steps.some((s) => s.route === 'claude-tee') ? { statusline: ctx.helpers.statusline } : {}) });
     const done: ManifestEntry[] = [];
     const undo = (code: string | null, extra: ManifestEntry[] = []): ConnectResult => {
@@ -203,10 +240,25 @@ export function createConnect(ctx: ConnectContext) {
       if (u.status === 'partial') return { ...u, status: 'partial', code: code ?? 'mismatch' };
       return code === null ? again() : refused(code);
     };
+    if (h.plugin) {
+      let known: Set<string>;
+      try { known = new Set(readManifest(ctx.dataDir).map((e) => e.id)); } catch { return undo('failed'); }
+      try { done.push(await installPlugin(h.plugin.o, h.plugin.pp)); } catch (e) {
+        let residue: ManifestEntry[];
+        try { residue = readManifest(ctx.dataDir).filter((x) => !known.has(x.id)); } catch { return undo('failed'); } // code review L3
+        // a kept pending entry is undone first (M1)
+        const code = e instanceof ConfigError ? e.code : 'failed';
+        return undo(code === 'changed' && !residue.length ? null : code, residue); // changed before any write: a fresh preview
+      }
+      // design §4: offers are rechecked even when none was previewed; a retention raise appearing now is a step-count change
+      if (h.sel.retention && !h.steps.some((s) => s.route === 'claude-retention')
+        && claudeRetentionOffer(t.dir, ctx.claudeManagedDir, readManifest(ctx.dataDir)).offered) return undo(null);
+    }
     for (const [i, step] of h.steps.entries()) {
+      const rebuilt = !!h.plugin || i > 0; // after the CLI rewrite every later step is rebuilt and compared (D-P6-06)
       let next: Plan;
-      try { next = i === 0 ? step.plan : step.build(); } catch (e) { return undo(e instanceof ConfigError ? null : 'failed'); } // code review M-a
-      if (i > 0 && !same(next, step.plan)) return undo(null);
+      try { next = rebuilt ? step.build() : step.plan; } catch (e) { return undo(e instanceof ConfigError ? null : 'failed'); } // code review M-a
+      if (rebuilt && !same(next, step.plan)) return undo(null);
       let known: Set<string>;
       try { known = new Set(readManifest(ctx.dataDir).map((e) => e.id)); } catch { return undo('failed'); } // review L-5: undone, never left half applied
       try { done.push(apply(next, { dataDir: ctx.dataDir, bounds: { root: t.dir, denied }, ...(ctx.afterRename ? { afterRename: ctx.afterRename } : {}) })); } catch (e) {
@@ -227,7 +279,7 @@ export function createConnect(ctx: ConnectContext) {
       const stop = (reason: string) => { out.remaining.push({ ...at, reason }); stopped.add(e.target); };
       if (!writable(dir, ctx.allowed, d)) { stop('refused'); continue; }
       if (stopped.has(e.target)) { out.remaining.push({ ...at, reason: 'blocked' }); continue; }
-      if (e.route === 'claude-plugin') { stop('plugin'); continue; } // ponytail: uninstalls through `claude plugin` in part 2
+      if (e.route === 'claude-plugin') { stop('plugin'); continue; } // ponytail: part 2c uninstalls it through the hardened `claude plugin` path
       try {
         const r = revert(e, { dataDir: ctx.dataDir, bounds: { root: real(dir), denied: d } });
         out.reverted.push({ ...at, result: r.result });

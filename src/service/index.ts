@@ -159,7 +159,12 @@ let integrations: Connect | null = null;
 let startupDone = false; // review L-2: startup settled; still no profile sync = `unavailable`, never `starting` forever
 void booted.then((s) => s.done.then(() => { startupDone = true; }, () => { startupDone = true; }));
 const integrationsFor = (s: Service): Connect | null | 'unavailable' => {
-  if (!integrations && s.profiles() !== null && dataDir) integrations = createConnect(connectContext({ dataDir, login: s.loginEnv(), bin: process.env.XAIBO_BIN ?? '' }));
+  if (!integrations && s.profiles() !== null && dataDir) {
+    integrations = createConnect(connectContext({
+      dataDir, login: s.loginEnv(), bin: process.env.XAIBO_BIN ?? '', catalog: s.catalog(),
+      detection: (agent) => s.detections.find((d) => d.agent === agent), // the live list: "Set path…" re-detects in place
+    }));
+  }
   return integrations ?? (startupDone ? 'unavailable' : null);
 };
 

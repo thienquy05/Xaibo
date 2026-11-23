@@ -12,7 +12,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { installPlugin, deployShim, uninstallPlugin } from '../../src/service/adapters/claude/setup.ts';
+import { installPlugin, deployShim, previewPlugin, uninstallPlugin } from '../../src/service/adapters/claude/setup.ts';
 import { startHooks } from '../../src/service/receivers/intake.ts';
 import { replaySpool } from '../../src/service/receivers/spool-replay.ts';
 import { ConfigError } from '../../src/service/config/transaction.ts';
@@ -39,16 +39,16 @@ test('live: install, one PR-OK session delivers SessionStart/UserPromptSubmit/St
   store.db.prepare("INSERT INTO profiles (id, agent, root, origin) VALUES ('live', 'claude', ?, 'manual')").run(configDir);
   const writer = new Writer(store.db);
   const hooks = await startHooks({ dataDir, db: store.db, writer });
-  const o = { dataDir, profileKey: 'live', configDir, claude: CLAUDE!, bounds: { root: home, denied: [] },
-    env: { PATH: process.env['PATH'] ?? '', HOME: home, DISABLE_AUTOUPDATER: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' } }; // the runner's freeze
+  // P6-T03 part 2b: setup.ts builds the CLI env (PATH + private HOME/TMPDIR/cwd + the runner's freeze switches)
+  const o = { dataDir, profileKey: 'live', configDir, claude: CLAUDE!, bounds: { root: home, denied: [] }, path: process.env['PATH'] ?? '' };
   const settings = join(configDir, 'settings.json');
   const hash = () => (existsSync(settings) ? createHash('sha256').update(readFileSync(settings)).digest('hex') : null);
   try {
     assert.ok(hooks.socket, 'the hook socket listens (run outside the Claude sandbox)');
     deployShim(dataDir, { hook: join(REPO, 'src', 'forwarder', 'xaibo-hook'), forwarder });
     const pre = hash();
-    await installPlugin(o);
-    await assert.rejects(installPlugin(o), (e) => e instanceof ConfigError && e.code === 'duplicate');
+    await installPlugin(o, previewPlugin(o));
+    assert.throws(() => previewPlugin(o), (e) => e instanceof ConfigError && e.code === 'duplicate');
     const code = await new Promise<number | null>((resolve) => {
       const c = spawn('/bin/bash', [join(REPO, 'spikes', 'shared', 'in-profile.sh'), 'claude', slot!, '--', CLAUDE!, '-p', 'Reply with exactly: OK'],
         { cwd: project, stdio: ['ignore', 'ignore', 'ignore'] });

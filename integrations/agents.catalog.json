@@ -11,7 +11,11 @@
       "profileRoots": [
         { "id": "user", "base": "home", "relative": ".claude", "envOverride": { "name": "CLAUDE_CONFIG_DIR", "mode": "replaces-root" } }
       ],
-      "existenceEvidence": [{ "root": "user", "path": "projects", "kind": "directory" }]
+      "existenceEvidence": [{ "root": "user", "path": "projects", "kind": "directory" }],
+      "connectRoutes": [
+        { "route": "claude-plugin", "versions": { "min": "2.1.319" }, "evidence": "S4-C1..C6 on 2.1.319 (D-26); no upper bound, runtime-verified at Connect (D-P6-07)" },
+        { "route": "claude-settings-fallback", "versions": { "min": "2.1.319" }, "evidence": "S4-C8 on 2.1.319; no upper bound (D-P6-07)" }
+      ]
     },
     {
       "id": "codex",

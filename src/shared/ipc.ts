@@ -316,7 +316,8 @@ export type ConnectRoute = (typeof CONNECT_ROUTES)[number];
 export const CONNECT_LIMITS = { steps: 3, diff: 64, value: 16_384, text: 8_192, trust: 8, entries: 8, list: 256 } as const;
 export interface ConnectSelections { retention: boolean; tee: boolean }
 export interface ConnectDiffLine { pointer: string; new: unknown; replaced?: { type: string; sha256: string } }
-export interface ConnectStep { route: ConnectRoute; target: string; diff: ConnectDiffLine[] }
+/** cli: the plugin step only (XAIBO-PROD-560, part 2b): version, argv with placeholders, write surfaces relative to the profile. */
+export interface ConnectStep { route: ConnectRoute; target: string; diff: ConnectDiffLine[]; cli?: { version: string; argv: string[][]; writes: string[] } }
 export type ConnectOffer = { offered: true; from: number; to: number; layer: 'user' | 'default' }
   | { offered: false; reason: 'policy' | 'enough' | 'unknown' | 'connected' | 'unverified'; days: number | null };
 export type ConnectPreview = { status: 'preview'; previewId: string; profileId: string; ttlMs: number; steps: ConnectStep[]; retention: ConnectOffer | null; trustSteps: string[] };
@@ -770,10 +771,19 @@ const depthOk = (v: unknown, d = 0): boolean => d <= 32 && (typeof v !== 'object
 const jsonValue = (v: unknown) => { try { const t = JSON.stringify(v); return t !== undefined && t.length <= CONNECT_LIMITS.value && depthOk(v); } catch { return false; } };
 const longText = (x: unknown): x is string => text(x, CONNECT_LIMITS.text);
 const route = (x: unknown): x is ConnectRoute => oneOf(CONNECT_ROUTES, x);
+// part 2b review H2: the plugin step's argv carries placeholders (never an absolute path), its writes are profile-relative
+const argText = (x: unknown) => text(x, 256) && !x.startsWith('/');
+const relPath = (x: unknown) => text(x, 256) && x.length > 0 && !x.startsWith('/') && !x.split('/').includes('..');
+const cliView = (c: unknown) => exactKeys(c, ['version', 'argv', 'writes']) && typeof c.version === 'string' && /^\d{1,6}\.\d{1,6}\.\d{1,6}$/.test(c.version)
+  && bounded(c.argv, 4) && c.argv.every((a) => bounded(a, 8) && a.every(argText)) && bounded(c.writes, 8) && c.writes.every(relPath);
+const stepKeys = (st: unknown) => {
+  const cli = isObj(st) && st.cli !== undefined;
+  return exactKeys(st, cli ? ['route', 'target', 'diff', 'cli'] : ['route', 'target', 'diff']) && (!cli || (st.route === 'claude-plugin' && cliView(st.cli)));
+};
 function connectPreview(x: unknown): ConnectPreview | null {
   if (!exactKeys(x, ['status', 'previewId', 'profileId', 'ttlMs', 'steps', 'retention', 'trustSteps']) || x.status !== 'preview') return null;
   if (!uuid(x.previewId) || !uuid(x.profileId) || !count(x.ttlMs) || !bounded(x.trustSteps, CONNECT_LIMITS.trust) || !x.trustSteps.every(longText)) return null;
-  if (!bounded(x.steps, CONNECT_LIMITS.steps) || !x.steps.every((st) => exactKeys(st, ['route', 'target', 'diff']) && route(st.route) && longText(st.target)
+  if (!bounded(x.steps, CONNECT_LIMITS.steps) || !x.steps.every((st) => stepKeys(st) && isObj(st) && route(st.route) && longText(st.target)
     && bounded(st.diff, CONNECT_LIMITS.diff) && st.diff.every((d) => exactKeys(d, isObj(d) && d.replaced !== undefined ? ['pointer', 'new', 'replaced'] : ['pointer', 'new'])
       && longText(d.pointer) && jsonValue(d.new) && (d.replaced === undefined || (exactKeys(d.replaced, ['type', 'sha256']) && text(d.replaced.type, 16) && typeof d.replaced.sha256 === 'string' && /^[0-9a-f]{12}$/.test(d.replaced.sha256)))))) return null;
   const o = x.retention;

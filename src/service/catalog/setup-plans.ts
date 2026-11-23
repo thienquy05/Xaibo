@@ -7,6 +7,9 @@ import { realpathSync } from 'node:fs';
 import path from 'node:path';
 import { RETENTION_DAYS, type ManifestEntry, type Op } from '../config/transaction.ts';
 import { claudeCleanup } from '../history/native-availability.ts';
+import { inRange } from './capabilities.ts';
+import type { Detection } from './detect.ts';
+import type { Catalog } from './validate.ts';
 
 export { RETENTION_DAYS };
 export type RetentionOffer =
@@ -32,6 +35,15 @@ export function claudeRetentionOffer(configDir: string, managedDir: string, entr
 
 /** Default-selected: the offer's ops unless the owner deselects it; nothing when not offered. */
 export const retentionOps = (offer: RetentionOffer, selected = true): Op[] => (offer.offered && selected ? offer.ops : []);
+
+/** XAIBO-PROD-560 (P6-T03 part 2b; D-2, owner D-P6-07): Claude's Connect route from the catalog and the detected version: the
+ *  plugin where a range qualifies it, else the settings fallback where one qualifies that; null (unverified) for an undetected
+ *  Claude, no or a prerelease version, or a version in no range. No chooser, no override; never a fallback after a failure. */
+export function claudeConnectRoute(catalog: Catalog, d: Detection | undefined): 'claude-plugin' | 'claude-settings-fallback' | null {
+  if (d?.state !== 'detected') return null;
+  const ok = (catalog.agents.find((a) => a.id === 'claude')?.connectRoutes ?? []).filter((r) => inRange(d.version, r.versions)).map((r) => r.route);
+  return ok.includes('claude-plugin') ? 'claude-plugin' : ok.includes('claude-settings-fallback') ? 'claude-settings-fallback' : null;
+}
 
 /** EC-90, D-19: Gemini's maxAge raise stays off until S11 runtime-verifies retention; reads nothing. */
 export const geminiRetentionOffer = (): RetentionOffer => ({ offered: false, reason: 'unverified', days: null });

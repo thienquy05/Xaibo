@@ -65,6 +65,8 @@ export interface Service {
   loginEnv(): LoginEnv | null;
   /** Catalog session kinds for list badges (P2-T04); empty if the catalog failed to load. */
   kinds(): SessionKind[];
+  /** XAIBO-PROD-560 (P6-T03 part 2b): the loaded catalog for Connect route selection; null if it failed to load. */
+  catalog(): Catalog | null;
   /** Model list for display names (P2-T08; with the owner override, P2-T09); empty if the bundled list failed to load. */
   models(): ModelEntry[];
   /** Current prices (P2-T09): accepted revision, or the last valid one with an error code; null if the bundled list is invalid. */
@@ -409,6 +411,7 @@ export async function boot(o: BootOptions): Promise<Service> {
     profiles: () => (synced ? profiles : null),
     loginEnv: () => (env.PATH ? env : null),
     kinds: () => catalog?.sessionKinds ?? [],
+    catalog: () => catalog ?? null,
     models: () => prices?.table.models ?? [],
     prices: () => prices,
     reloadPrices: () => reloadPrices(),

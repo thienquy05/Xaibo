@@ -25,7 +25,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { parseArgs as parseFlags } from 'node:util';
-import { deployShim, installPlugin, installTee, MARKETPLACE, PLUGIN_REF, teePlan, uninstallPlugin } from '../adapters/claude/setup.ts';
+import {
+  deployShim, installPlugin, installTee, MARKETPLACE, PLUGIN_REF, previewPlugin, teePlan, uninstallPlugin, type PluginOptions,
+} from '../adapters/claude/setup.ts';
 import { checkAgyInstall, installAgyHooks } from '../adapters/agy/setup.ts';
 import { codexHookOps, codexTrustSteps, installCodexHooks, shimPath } from '../adapters/codex/setup.ts';
 import { readLoginEnv } from '../catalog/env.ts';
@@ -251,7 +253,9 @@ async function tee(a: ReturnType<typeof cliArgs>, dataDir: string, profile: stri
 /** P3-T05: the hooks-only plugin, through `claude plugin` in the disposable profile only. */
 async function plugin(a: ReturnType<typeof cliArgs>, dataDir: string, profile: string, bounds: Bounds): Promise<number> {
   if (!a.claude || !a.profileKey) refuse('claude-plugin needs --claude <exe> and --profile-key <key>');
-  const o = { dataDir, profileKey: a.profileKey!, configDir: path.join(profile, '.claude'), claude: real(a.claude!), bounds, env: { PATH: process.env['PATH'] ?? '', HOME: profile } };
+  // P6-T03 part 2b: the CLI gets the login PATH and nothing else inherited (setup.ts builds its environment)
+  const PATH = (await readLoginEnv({ shell: process.env['SHELL'] })).PATH ?? refuse('refused: the login shell PATH could not be read');
+  const o: PluginOptions = { dataDir, profileKey: a.profileKey!, configDir: path.join(profile, '.claude'), claude: real(a.claude!), bounds, path: PATH };
   if (a.cmd === 'plan') {
     console.log(`claude-plugin: CLAUDE_CONFIG_DIR=${o.configDir}`);
     for (const argv of [['plugin', 'marketplace', 'add', '<appdata>/integrations/claude-plugin/' + a.profileKey], ['plugin', 'install', PLUGIN_REF, '-s', 'user']]) console.log(`+ claude ${argv.join(' ')}`);
@@ -264,10 +268,11 @@ async function plugin(a: ReturnType<typeof cliArgs>, dataDir: string, profile: s
     for (const k of r.residue) console.log(`residue: enabledPlugins ${k}`);
     return r.residue.length ? 2 : 0;
   }
-  await confirm(a.yes, profile, `install ${PLUGIN_REF} into ${o.configDir}`);
+  const pv = previewPlugin(o); // the confirmation binds settings.json, the executable and the argv (part 2b)
+  await confirm(a.yes, profile, `install ${PLUGIN_REF} into ${o.configDir} with ${pv.exe.path}`);
   const entry = await locked(dataDir, () => {
     deployShim(dataDir, { hook: path.join(REPO, 'src', 'forwarder', 'xaibo-hook'), forwarder: real(a.forwarder ?? path.join(REPO, '.cache', 'sea', 'xaibo-forwarder')) });
-    return installPlugin(o);
+    return installPlugin(o, pv);
   });
   console.log(`claude-plugin: installed ${entry.id}`);
   return 0;

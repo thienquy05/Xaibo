@@ -35,7 +35,9 @@ export type Code =
   // P6-T02 (EC-73): the claude-retention route only raises cleanupPeriodDays to 45 over an absent or lower readable value.
   | 'retention'
   // P6-T03 part 2a (config/lock.ts): another writer holds the operation lock; its holder is gone (never taken over).
-  | 'busy' | 'stale-lock';
+  | 'busy' | 'stale-lock'
+  // P6-T03 part 2b: the claude executable or its interpreter is not the detected one, or cannot be resolved.
+  | 'unverified';
 export class ConfigError extends Error {
   readonly code: Code;
   constructor(code: Code) {
@@ -57,6 +59,10 @@ export interface ManifestEntry {
   partial?: true;
   /** codex-hooks (P3-T06): the last observed fingerprint of Xaibo's declarations and the time it was first seen. */
   seen?: { hash: string; since: number };
+  /** claude-plugin (P6-T03 part 2b): the last CLI step started (a lower bound: a crash may follow a step that succeeded) and
+   *  the executable the CLI ran as. Never logged, never on the wire. */
+  phase?: 'marketplace' | 'install';
+  exe?: { path: string; id: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number } };
 }
 export interface RevertResult { result: 'restored' | 'removed' | 'structural' | 'unchanged'; conflicts: Array<{ pointer: string }> }
 

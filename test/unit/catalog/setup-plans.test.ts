@@ -167,3 +167,27 @@ test('connected is found for the profile path in other letter case (case-insensi
   assert.equal(claudeRetentionOffer(other, s.managed, readManifest(s.dataDir)).offered, false);
   assert.deepEqual(claudeRetentionOffer(other, s.managed, readManifest(s.dataDir)), { offered: false, reason: 'connected', days: 45 });
 });
+
+// XAIBO-PROD-560 (P6-T03 part 2b; owner D-P6-07): the Claude Connect route comes from the catalog's connectRoutes, plugin and
+// fallback qualified from 2.1.319 with no upper bound; below it, a prerelease, an unknown version or an undetected Claude is
+// unverified (null); where a version qualifies both, the plugin wins (D-2); the fallback only where it alone qualifies.
+test('2b claudeConnectRoute: D-P6-07 range from 2.1.319, plugin preferred, everything else unverified', async () => {
+  const { claudeConnectRoute } = await import('../../../src/service/catalog/setup-plans.ts');
+  const { loadCatalog, validateCatalog } = await import('../../../src/service/catalog/validate.ts');
+  const cat = loadCatalog();
+  const id = { dev: 1, ino: 2, size: 3, mtimeMs: 4, ctimeMs: 5 };
+  const det = (version: string | null) => ({ agent: 'claude', state: 'detected' as const, path: '/tmp/xaibo-fixture/claude', version, id });
+  assert.equal(claudeConnectRoute(cat, det('2.1.319')), 'claude-plugin');
+  assert.equal(claudeConnectRoute(cat, det('2.1.322')), 'claude-plugin', 'no upper bound (D-P6-07)');
+  assert.equal(claudeConnectRoute(cat, det('3.0.0')), 'claude-plugin');
+  for (const v of ['2.1.318', '2.0.999', '2.1.319-beta.1', null]) assert.equal(claudeConnectRoute(cat, det(v)), null, String(v));
+  assert.equal(claudeConnectRoute(cat, { agent: 'claude', state: 'not-detected' }), null);
+  assert.equal(claudeConnectRoute(cat, undefined), null);
+  const claude = cat.agents.find((a) => a.id === 'claude')!;
+  const only = (routes: unknown) => ({ ...cat, agents: cat.agents.map((a) => (a.id === 'claude' ? { ...claude, connectRoutes: routes } : a)) });
+  const fb = only([{ route: 'claude-settings-fallback', versions: { min: '2.1.319' }, evidence: 'fixture' }]);
+  assert.deepEqual(validateCatalog(fb), []);
+  assert.equal(claudeConnectRoute(fb as typeof cat, det('2.1.320')), 'claude-settings-fallback');
+  assert.notDeepEqual(validateCatalog(only([{ route: 'claude-tee', versions: { min: '2.1.319' }, evidence: 'x' }])), [], 'only the two Connect routes');
+  assert.notDeepEqual(validateCatalog(only([{ route: 'claude-plugin', versions: {}, evidence: 'x' }])), [], 'min required');
+});
