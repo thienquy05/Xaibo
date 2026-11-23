@@ -103,6 +103,8 @@ export interface Service {
 
 /** The turn-settle interval (PRD §6.2/§6.3, Q8 default; a setting with the Settings screen after Gate D, Q3-14). */
 const SETTLE_MS = 4000;
+// XAIBO-PROD-565 (P6-T07 part 1): every catalog entry is bundled until imports are merged (part 2), so detection probes.
+const BUNDLED = { origin: 'bundled' } as const;
 /** P5-T09: the first retention run waits this long after the backfill, off readiness and behind start-up work. */
 const RETENTION_DELAY_MS = 10 * 60_000;
 /** Gate 5 (perf probes): XAIBO_RETENTION_DELAY_MS overrides that wait, only under XAIBO_PERF_TRACE=1 (test only) and only
@@ -292,7 +294,7 @@ export async function boot(o: BootOptions): Promise<Service> {
       env = await readLoginEnv({ shell: o.shell, ...(o.log ? { log: o.log } : {}) });
       // A read-only store may lack kv (failed first migration): detect without manual paths then.
       detections.push(...await Promise.all(catalog.agents.map((a) =>
-        detectAgent(a, { env, home: o.home, manualPath: readOnly ? undefined : manualPath(db, a.id), ...(o.log ? { log: o.log } : {}) }))));
+        detectAgent(a, { env, home: o.home, manualPath: readOnly ? undefined : manualPath(db, a.id), access: BUNDLED, ...(o.log ? { log: o.log } : {}) }))));
       o.log?.log('detect', Object.fromEntries(detections.map((d) => [d.agent, d.state === 'detected'])));
     } finally { // a failed detection (e.g. a bad catalog) announces an empty list, never "detecting" forever
       detected = true;
@@ -436,7 +438,7 @@ export async function boot(o: BootOptions): Promise<Service> {
       const entry = catalog?.agents.find((a) => a.id === agent);
       const i = detections.findIndex((d) => d.agent === agent);
       if (stopped || readOnly || !entry || i < 0 || !(await setManualPath(db, agent, file))) return false;
-      detections[i] = await detectAgent(entry, { env, home: o.home, manualPath: manualPath(db, agent), ...(o.log ? { log: o.log } : {}) });
+      detections[i] = await detectAgent(entry, { env, home: o.home, manualPath: manualPath(db, agent), access: BUNDLED, ...(o.log ? { log: o.log } : {}) });
       announce();
       return true;
     },

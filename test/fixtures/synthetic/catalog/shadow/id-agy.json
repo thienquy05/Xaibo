@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "agents": [
+    {
+      "id": "agy",
+      "displayName": "Synthetic Agent",
+      "detection": {
+        "binaries": [
+          {
+            "id": "main",
+            "names": [
+              "synthagent"
+            ],
+            "versionArgs": [
+              "--version"
+            ]
+          }
+        ],
+        "locations": [
+          "~/.local/bin"
+        ]
+      },
+      "profileRoots": [
+        {
+          "id": "user",
+          "base": "home",
+          "relative": ".synthagent"
+        }
+      ],
+      "existenceEvidence": [
+        {
+          "root": "user",
+          "path": "config.json",
+          "kind": "file"
+        }
+      ]
+    }
+  ],
+  "sessionKinds": []
+}

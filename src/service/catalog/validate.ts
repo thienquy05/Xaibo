@@ -1,6 +1,7 @@
 // Bundled agent catalog (P1-T08, OQ-X6): integrations/agents.catalog.json validated against its schema with ajv
 // (Gate 0 validator, draft 2020-12, strict). Detection subset plus session kinds (P2-T04); unknown fields are rejected.
 import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 
 export interface AgentEntry {
@@ -43,7 +44,53 @@ export function validateCatalog(value: unknown): string[] {
 
 export function loadCatalog(url: URL = new URL('agents.catalog.json', DIR)): Catalog {
   const value: unknown = JSON.parse(readFileSync(url, 'utf8'));
-  const errors = validateCatalog(value);
-  if (errors.length) throw new Error(`invalid agent catalog: ${errors.join('; ')}`);
+  const issues = catalogIssues(value);
+  if (issues.length) throw new Error(`invalid agent catalog: ${issues.map((i) => `${i.at} ${i.code}`).join('; ')}`);
   return value as Catalog;
+}
+
+// XAIBO-PROD-565 (P6-T07 part 1; EC-78, SEC5; design .handoff/p6-t07-design.md, review R2/R11): structured issues, fixed
+// codes and JSON pointers only (never a submitted value or a parser message). Schema failures first (the semantic checks
+// need a well-formed catalog); then checks shared by bundled and imported data; with `bundled`, shadowing of a bundled id,
+// binary name or profile root. ponytail: part 2 adds the store codes (too-large, invalid-json, store-corrupt, not-approved).
+export type CatalogCode = 'schema-invalid' | 'duplicate-id' | 'unknown-reference' | 'unsafe-value' | 'shadow';
+export interface CatalogIssue { code: CatalogCode; at: string }
+
+const older = (a: string, b: string) => {
+  const x = a.split('.').map(Number), y = b.split('.').map(Number);
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i]! < y[i]!;
+  return false;
+};
+const binaryName = (n: string) => n.toLowerCase().replace(/\.exe$/, '');
+// code review 1: compared case-folded, since the default macOS and Windows volumes are case-insensitive (.CLAUDE is .claude)
+const rootKey = (relative: string) => path.posix.normalize(relative).toLowerCase();
+const overlaps = (a: string, b: string) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+
+export function catalogIssues(value: unknown, bundled?: Catalog): CatalogIssue[] {
+  if (!check(value)) return [...new Set((check.errors ?? []).map((e) => e.instancePath || '/'))].map((at) => ({ code: 'schema-invalid' as const, at }));
+  const c = value as Catalog, out: CatalogIssue[] = [];
+  const add = (code: CatalogCode, at: string) => out.push({ code, at });
+  const dup = (ids: string[], at: (j: number) => string) => ids.forEach((id, j) => { if (ids.indexOf(id) < j) add('duplicate-id', at(j)); });
+  dup(c.agents.map((a) => a.id), (j) => `/agents/${j}/id`);
+  const names = new Set(bundled?.agents.flatMap((b) => b.detection.binaries.flatMap((x) => x.names.map(binaryName))) ?? []);
+  const roots = bundled?.agents.flatMap((b) => b.profileRoots.map((r) => rootKey(r.relative))) ?? [];
+  c.agents.forEach((a, i) => {
+    const p = `/agents/${i}`;
+    dup(a.detection.binaries.map((b) => b.id), (j) => `${p}/detection/binaries/${j}/id`);
+    dup(a.profileRoots.map((r) => r.id), (j) => `${p}/profileRoots/${j}/id`);
+    const declared = new Set(a.profileRoots.map((r) => r.id));
+    a.existenceEvidence?.forEach((e, j) => { if (!declared.has(e.root)) add('unknown-reference', `${p}/existenceEvidence/${j}/root`); });
+    for (const key of ['hookEvents', 'connectRoutes'] as const) {
+      a[key]?.forEach((x, j) => { if (x.versions.max !== undefined && older(x.versions.max, x.versions.min)) add('unsafe-value', `${p}/${key}/${j}/versions`); });
+    }
+    if (a.connectRoutes && a.id !== 'claude') add('unsafe-value', `${p}/connectRoutes`); // Claude's routes belong to Claude only
+    if (!bundled) return;
+    if (bundled.agents.some((b) => b.id === a.id.toLowerCase())) add('shadow', `${p}/id`);
+    a.detection.binaries.forEach((b, k) => b.names.forEach((n, j) => { if (names.has(binaryName(n))) add('shadow', `${p}/detection/binaries/${k}/names/${j}`); }));
+    a.profileRoots.forEach((r, j) => { if (roots.some((x) => overlaps(rootKey(r.relative), x))) add('shadow', `${p}/profileRoots/${j}/relative`); });
+  });
+  const agents = new Set(c.agents.map((a) => a.id));
+  c.sessionKinds.forEach((k, j) => { if (!agents.has(k.agent)) add('unknown-reference', `/sessionKinds/${j}/agent`); });
+  dup(c.sessionKinds.map((k) => `${k.agent}\0${k.id}`), (j) => `/sessionKinds/${j}/id`);
+  return out;
 }

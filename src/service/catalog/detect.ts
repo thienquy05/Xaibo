@@ -18,11 +18,20 @@ export type Detection =
   /** manual: found through the stored manual path ("Set path…", renderer-chosen); part 2c review H1: never run as the plugin CLI.
    *  The manual path is tried first, so a manual path naming the PATH's own binary is still manual (fails safe: fallback). */
   | { agent: string; state: 'detected'; path: string; version: string | null; id: FileId; manual: boolean }
-  | { agent: string; state: 'not-detected' };
+  | { agent: string; state: 'not-detected'; reason?: 'probe-not-granted' };
 export interface FileId { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }
 export const fileId = (st: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }): FileId =>
   ({ dev: st.dev, ino: st.ino, size: st.size, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs });
-export interface DetectOptions { env: LoginEnv; home: string; manualPath?: string | undefined; timeoutMs?: number; log?: Logger }
+/** XAIBO-PROD-565 (P6-T07 part 1; FR-01, SEC5): where the entry came from. Bundled entries may run the bounded probe; an
+ *  imported entry never runs one without a grant (part 3). Required, so a missing provenance never defaults to bundled. */
+export type ProbeAccess = { origin: 'bundled' } | { origin: 'imported' };
+export interface DetectOptions {
+  env: LoginEnv; home: string; manualPath?: string | undefined; timeoutMs?: number; log?: Logger;
+  access: ProbeAccess;
+  /** Test seam for the probe runner. ponytail (code review 5): on the production options too; the gate returns before it is
+   *  read, so it never widens who may probe; move it to a test-only factory if a caller ever sets it. */
+  run?: typeof run;
+}
 export type Origin = 'default' | 'env' | 'manual';
 export interface ProfileRoot { agent: string; root: string; origin: Origin }
 export interface Profile extends ProfileRoot { id: string }
@@ -44,6 +53,9 @@ export async function checkExecutable(p: string): Promise<string | null> {
 const expandHome = (dir: string, home: string) => (dir === '~' ? home : dir.startsWith('~/') ? path.join(home, dir.slice(2)) : dir);
 
 export async function detectAgent(entry: AgentEntry, o: DetectOptions): Promise<Detection> {
+  // fail closed: anything but an explicit bundled provenance runs nothing (no PATH search, no stat, no spawn)
+  if (o.access?.origin !== 'bundled') return { agent: entry.id, state: 'not-detected', reason: 'probe-not-granted' };
+  const probe = o.run ?? run;
   const dirs = [
     ...(o.env.PATH ?? '').split(':').filter((d) => path.isAbsolute(d)),
     ...(entry.detection.locations ?? []).map((d) => expandHome(d, o.home)),
@@ -56,7 +68,7 @@ export async function detectAgent(entry: AgentEntry, o: DetectOptions): Promise<
       const real = await checkExecutable(candidate);
       if (!real || tried.has(real)) continue;
       tried.add(real);
-      const r = await run(real, b.versionArgs, { timeoutMs: o.timeoutMs ?? 3_000, maxBytes: PROBE_BYTES, env, ...(o.log ? { log: o.log } : {}) });
+      const r = await probe(real, b.versionArgs, { timeoutMs: o.timeoutMs ?? 3_000, maxBytes: PROBE_BYTES, env, ...(o.log ? { log: o.log } : {}) });
       if (!succeeded(r)) continue;
       let id: FileId;
       try { id = fileId(await stat(real)); } catch { continue; }
