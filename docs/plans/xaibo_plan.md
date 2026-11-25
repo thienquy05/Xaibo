@@ -1,5 +1,7 @@
 # Xaibo implementation plan
 
+**Jump to:** start at [progress §1a Ready tasks](xaibo_progress.md#1a-ready-tasks-pick-up-here), then read only your task's phase below. [§1a corrections and carried design items](#1a-corrections-from-later-approvals-documentation-audit-2026-11-13) · [§2 how to use](#2-how-to-use-this-plan) · [§3 conventions](#3-cross-cutting-conventions) · Phases [0](#phase-0--spikes-gate-0) · [1](#phase-1--skeleton--claude-ingest-gate-1) · [2](#phase-2--codex-ingest--normalization-antigravity-cli-evaluation-and-ingestion-gate-2) · [3](#phase-3--live-status-gate-3) · [D](#phase-d--xaibo-design-system-gate-d) · [4](#phase-4--session-workspace-ui-gate-4) · [5](#phase-5--history-and-retention-gate-5) · [6](#phase-6--integrations-gate-6) · [7](#phase-7--control-mvp-gate) · [v1-A](#v1-a--embedded-terminal-codex-app-server-control-acp) · [v1-B](#v1-b--otlp-receiver-compare-notify-wrapper-categories-inspector) · [v1-C](#v1-c--xaibo-mcp-server) · [v1-D](#v1-d--windows-then-linux) · [Public](#public-release-optional) · [§5 traceability](#5-traceability-appendix) · [§6 open questions](#6-consolidated-open-questions-and-plan-risks)
+
 ## 1. Header
 
 | Item | Value |
@@ -34,7 +36,7 @@
 
 Owner 2026-11-18 (D-P5-01): draft S-37 in Phase 5 and S14/S-38 in Phase 6 now. Draft S-39/S-40 at v1-A setup, S-44 at v1-B setup, S-41 at v1-E setup, S-43 at v1-F setup and S-42 at v2 setup, including their EC/metric/spike traceability (audit D2–D4, C14); these later items remain undrafted, not waived.
 
-Task text below that predates these decisions is read as corrected here (precedence rule above; audit ledger `docs/plans/docs_audit.md`). A phase that still has task text listed here folds the correction into that text at its phase setup task (Px-T00).
+Task text below that predates these decisions is read as corrected here (precedence rule above; audit IDs from the 2026-11-13 documentation audit, whose ledger was retired 2026-11-25 into the carried items below). A phase that still has task text listed here folds the correction into that text at its phase setup task (Px-T00).
 
 | Audit ID | Plan text affected | What holds | Source |
 |---|---|---|---|
@@ -59,6 +61,26 @@ Task text below that predates these decisions is read as corrected here (precede
 | D26 | Listed task order vs dependencies | The **Deps** field decides order; the listed order is reading order | — |
 | D27 | P1-T02: canary check with `git commit --dry-run` | `--dry-run` runs no hooks: stage the generated canary and run `.githooks/pre-commit` directly | progress P1-T02 |
 | D31 | Profiles retired at Gate 6 | Kept until the last task that needs a live profile (§3.2 retirement row) | §3.2 |
+
+#### Carried design items (from the 2026-11-13 audit ledger, retired 2026-11-25)
+
+Open audit items, placed where an agent will meet them. Each phase setup task (Px-T00) reads its row and either resolves the items (Codex design, Claude review, owner where noted) or carries them forward. Full original wording and evidence: git history of `docs/plans/docs_audit.md` (git history).
+
+| Surfaces at | Items | Status |
+|---|---|---|
+| Phase 6 / 7 setup | B23 Phase 6/7 choices; B6 VS Code/Desktop visibility, daemon attach, PTY visibility (capability rows); B7 Claude cleanup age basis; D30 real-profile enablement vs frozen gate SHA (Gate 6) | Codex design / phase entry |
+| v1-A setup | A21 plan ranks embedded PTY evidence above hooks vs FR-55; B11 S2/ACP pre-feature evidence; B12 S15 and clone-cost evidence; B24 v1-A/B/C defaults; D6 worktree ignored-file enumeration, traversal, symlinks, races (moves with the S-39 engine if v1-M takes it); D3 S-39/S-40 tasks (D-P5-01) | Codex design / phase entry |
+| v1-B setup | B9 Codex cache-write, agy reasoning/cache, prices; B11 S8/category evidence | Codex design / phase entry |
+| v1-C / v2 setup | D13 MCP control extension versioning for S-42 (run grants already specified) | Codex design |
+| v1-D / public release | B25 OS builds, CI, license, signing, encryption | phase entry |
+| v1-E setup | A9 sign-in change detection while polling is stopped; B13 broker provider/method matrix and terms reviews (owner + S16); D9 agent-interface broker invocation contract; D10 source `broker` in the normalized schema; D11 cancellation states (CRED7, CRED10 fixed) | Codex design / owner |
+| v1-F setup | B15 guard deny formats, latency and rule format (owner + S17) | owner + S17 |
+| Every v1 phase setup | C14 / D4 traceability rows and tasks for S-39..S-45, drafted at that phase's setup (D-P5-01) | deferred by the owner |
+| Scale-up stage | A33 T1 corpus shape vs accepted gate evidence | Codex design |
+| AEGIS / local LLM draft decision (owner) | A10–A13, B16–B20, D15–D20: orchestrator ownership, `delegate_task`, enforcement vs S-43, local model calls, OpenShell O1–O7, rule schema and policy layering, model downloads, training data flow, phase names. The draft stays separate (owner 2026-11-13); it now also overlaps S-45 Missions | owner |
+| Owner, no phase | B28 export and command palette; B8 Gemini CLI runtime unverified until S11 re-runs | owner |
+| Confirm at next touch (area already gated) | A15 worker layout vs plan; A22, A24, D21–D23 report ordering, exit codes, retry IDs, bounds, accepted-but-incomplete; A25, A26 status order invariance and Stop/subagent wording; A29 clear-usage settling; C17 hook wire protocol wording; D28 purge vs spool rotation; D29 monthly accounting time zone; D33 FTS cap; D34 stale/sampling identity | The phase that built the area may have settled these; confirm against code and close, or schedule |
+| Closed | B2, B3, B4, B5, B10 (Gate 3 approved with live checks, P3-T15 and M16, `gates/gate3.md`); B21 (Gates D and 4); B22 (Gate 5) | closed by gate approval |
 
 ## 2. How to use this plan
 
@@ -1750,7 +1772,7 @@ See §6: Q-4.1, Q-4.2, Q-4.4..Q-4.7 (Q-4.3 → OQ-X8, Q-4.8 → OQ-X11).
 
 ### Tasks
 
-**P5-T00 — Phase setup** — branch, base SHA, `/graphify`, progress section; the Orca journal-recovery comparison (research L6, result in `docs/research/orca-lessons.md`), whose takeaways are folded into P5-T01 and P5-T07. All Phase 5 gate measurements use TP (PRD §6.6); the TP corpus gains its quota history in P5-T11; T3 generation moves to P5-T19 in the owner-started scale-up stage.
+**P5-T00 — Phase setup** — branch, base SHA, `/graphify`, progress section; the Orca journal-recovery comparison (research L6, result in `docs/research/orca-lessons.md` (git history)), whose takeaways are folded into P5-T01 and P5-T07. All Phase 5 gate measurements use TP (PRD §6.6); the TP corpus gains its quota history in P5-T11; T3 generation moves to P5-T19 in the owner-started scale-up stage.
 
 **P5-T01 — Overlay: projects, folders, move, pin, archive (FR-10, US-5)** — forward-only migration with overlay tables keyed `(agent, profile, native_session_id)`; IPC actions; paged filtered history list (keyset on `(agent, last_activity)` and `(project_id)`); native files never touched; the "approved project label" confirm action used by notifications. Store open (research L6): read `user_version` before any pragma and open read-only with its own reason when it is newer than the latest migration; a migration that fails on disk space reports the space reason, not `migration-failed`. Files: `src/service/store/migrations/<n>_overlay.sql`, `src/service/history/overlay.ts`, `src/service/store/db.ts`, `src/main/ipc.ts`, `test/unit/service/overlay.test.ts`, `test/integration/overlay-migration.test.ts`. Test first: U — idempotent ops; a move keeps identity. I — backup taken by the recovery path; forward-only; native fixture checksum unchanged; a newer-schema DB opens read-only and is not written; SQLITE_FULL during a migration gives the space reason. Deps: P5-T00.
 

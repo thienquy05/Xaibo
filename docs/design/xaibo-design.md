@@ -2,7 +2,7 @@
 
 Gate D baseline approved (2026-11-14, progress gate record); owner amendments D-PD-01–D-PD-03 and design delta 1 applied.
 
-Design delta 2 **rev 3, approved by the owner 2026-11-14, applied**. [Delta and verification scope](deltas/xaibo-design-delta-2.md). Claude implementation review and runtime checks follow.
+Design delta 2 **rev 3, approved by the owner 2026-11-14, applied**; its implementation review and runtime checks ran in Phase 4 (Gate 4). Applied deltas are folded into this document; their proposal tables and verification notes are in git history (`docs/design/deltas/`, removed 2026-11-25).
 
 Design delta 1 (D-P4-04, 2026-11-14) is applied; DD1-07 ships only after its visual comparison.
 

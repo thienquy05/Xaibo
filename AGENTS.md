@@ -7,6 +7,8 @@ Loaded by Codex and Claude Code at session start. These are the stable project r
 - `docs/plans/xaibo_plan.md`: implementation plan. `docs/plans/xaibo_progress.md`: live status and decisions.
 - `docs/process/HARNESS_PROCESS.md`: the process.
 
+**Start here (picking up work):** read `docs/plans/xaibo_progress.md` §1 and §1a "Ready tasks". Take a task from that table, then read only its section in the plan (the plan's "Jump to" line links each phase) and the PRD sections that section cites. Phase setup tasks also read the plan §1a "Carried design items" row for their phase. These three files are the whole planning set: there are no side docs to look for. Gate records in `docs/plans/gates/` are approval evidence, not instructions.
+
 ## Roles
 The owner decides and approves every gate. Codex is lead designer and first reviewer; Claude implements and is second reviewer. Gate = Codex review, then Claude review, then owner stop (Gate D: Claude review, then owner approval).
 
