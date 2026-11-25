@@ -40,6 +40,7 @@ The short list an agent starts from. Before starting, check the task's row in §
 | 5 History and retention | `feat/phase5-history-retention` | done (filters carried to Phase 6, D-P5-17; P5-T19 deferred to scale-up) | Gate 5 approved | 2026-11-22 | #22 (merged) |
 | 6 Integrations | `feat/phase6-integrations` | done (P6-T01..T13) | Gate 6 approved | 2026-11-26 | PR to `master` (merge when green) |
 | 7 Control | `feat/phase7-control` | not started | MVP Gate | — | — |
+| v1-M Missions (proposed, PRD v1.4 draft) | `feat/v1m-missions` | not started; PRD v1.4 + design delta 3 drafts on `docs/missions-scope` await owner approval | Gate M | — | — |
 | v1-A | `feat/v1a-embedded-terminal` | not started | v1-A gate | — | — |
 | v1-B | `feat/v1b-otlp-compare` | not started | v1-B gate | — | — |
 | v1-C | `feat/v1c-mcp` | not started | v1-C gate | — | — |
