@@ -6,13 +6,14 @@
 // service is live), each through the diff dialog (IntegrationDiffDialog.tsx); after an apply the evidence is read again before
 // another action and the Agents list refreshes. Tee stays status only until unit 6. Every service string goes through visible().
 import { useEffect, useRef, useState } from 'react';
-import type { DETAIL_REFUSALS, IntegrationDetail, IntegrationDetailResult, IntegrationKey } from '../../shared/ipc.ts';
+import { uuid, type DETAIL_REFUSALS, type IntegrationDetail, type IntegrationDetailResult, type IntegrationKey } from '../../shared/ipc.ts';
 import { formatTime } from '../model.ts';
 import { Icon } from '../status/StatusBadge.tsx';
 import { visible } from '../text.ts';
 import { contentText, reasonsText, receiptText, STATE, stateText } from './integrations-state.ts';
 import { panelActions, teeHint, teeToggle, type DialogAction, type PanelAction } from './integration-dialog.ts';
 import { IntegrationDiffDialog, type Done, type WriteApi } from './IntegrationDiffDialog.tsx';
+import { SignInFieldset, type SignInApi } from '../usage/SignInFieldset.tsx';
 import { entryText, notifyText, pollTest, startTest, teeText, testable, testText, TEST_POLL_MS, TEST_TIMEOUT_MS, type ReceiptTest } from './integration-panel.ts';
 
 export type DetailFetch = (key: IntegrationKey) => Promise<IntegrationDetailResult>;
@@ -21,8 +22,8 @@ const REFUSED: Record<(typeof DETAIL_REFUSALS)[number], string> = {
 };
 const ACTION: Record<PanelAction, string> = { connect: 'Connect', disconnect: 'Disconnect', uninstall: 'Full Uninstall', cleanup: 'Clean up' };
 
-export function IntegrationPanel({ fetchDetail, write, target, lastKnown, onBack, onProfile, onChanged }: {
-  fetchDetail: DetailFetch; write: WriteApi; target: IntegrationKey; lastKnown: string | null; onBack: () => void; onProfile: (profileId: string) => void;
+export function IntegrationPanel({ fetchDetail, write, signIn, target, lastKnown, onBack, onProfile, onChanged }: {
+  fetchDetail: DetailFetch; write: WriteApi; signIn: SignInApi; target: IntegrationKey; lastKnown: string | null; onBack: () => void; onProfile: (profileId: string) => void;
   /** An apply was sent: evidence elsewhere (the Agents list) may have changed. */
   onChanged: () => void;
 }) {
@@ -137,6 +138,8 @@ export function IntegrationPanel({ fetchDetail, write, target, lastKnown, onBack
                 </div>
               ) : tee ? <p className="x-hint">{tee}</p> : null}
               {notify ? <p className="x-hint">{notify}</p> : null}
+              {uuid(pid) ? <SignInFieldset profileId={pid} api={signIn} live={lastKnown === null} />
+                : pid ? <p className="x-hint">Sign-in declarations are not available for this profile.</p> : null}
             </>
           )}
       </div>

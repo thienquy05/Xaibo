@@ -23,6 +23,7 @@ import { AgentsList, type AgentsSnapshot, type PageFetch } from './AgentsList.ts
 import { agentItems, agentKey, MODES, type Mode } from './integrations-state.ts';
 import { IntegrationPanel, type DetailFetch } from './IntegrationPanel.tsx';
 import type { WriteApi } from './IntegrationDiffDialog.tsx';
+import type { SignInApi } from '../usage/SignInFieldset.tsx';
 import { restoreTarget } from './integration-panel.ts';
 import type { IntegrationKey } from '../../shared/ipc.ts';
 
@@ -35,6 +36,8 @@ export interface MapApi extends WriteApi {
   integrationPage: PageFetch;
   /** XAIBO-PROD-578: the integration panel's read. */
   integrationDetail: DetailFetch;
+  /** XAIBO-PROD-585: the panel's sign-in fieldset. */
+  signIn: SignInApi;
 }
 
 type Child = MapNode | HistoryRow;
@@ -314,7 +317,7 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
             )}
         </section>
         {mode === 'agents' ? (panel ? (
-          <IntegrationPanel key={panel.origin} fetchDetail={api.integrationDetail} write={api} target={panel.key} lastKnown={lastKnown} onBack={backToMap} onChanged={() => setListTick((t) => t + 1)}
+          <IntegrationPanel key={panel.origin} fetchDetail={api.integrationDetail} write={api} signIn={api.signIn} target={panel.key} lastKnown={lastKnown} onBack={backToMap} onChanged={() => setListTick((t) => t + 1)}
             onProfile={(id) => setPanel((p) => (p ? { ...p, key: { agent: p.key.agent, profileId: id } } : p))} />
         ) : null) : (
         <section className="x-pane x-map-detail" aria-labelledby="map-detail-heading">

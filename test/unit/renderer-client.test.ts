@@ -121,6 +121,21 @@ test('usage and usageHistory resolve their own replies; a reply of another type 
   await assert.rejects(bad, /invalid reply/);
 });
 
+// XAIBO-PROD-585 (P6-T10a unit 4a): the sign-in read and its three mutations, by profile id and loaded revision only
+test('signIn sends the profile id, op and revision only, and resolves the code and view of its own reply', async () => {
+  const f = fakePort();
+  const c = createClient(f.port, { sessions() {}, agents() {} });
+  const P = '00000000-0000-4000-8000-0000000c8501';
+  const r = c.signIn(P, { op: 'set', method: 'api-key', expectedRevision: 2 });
+  const rd = c.signIn(P, { op: 'read' });
+  assert.deepEqual(f.sent, [{ v: 1, type: 'signIn', id: 1, profileId: P, op: 'set', method: 'api-key', expectedRevision: 2 }, { v: 1, type: 'signIn', id: 2, profileId: P, op: 'read' }]);
+  f.deliver({ v: 1, type: 'signIn', id: 2, code: 'unavailable', view: null });
+  f.deliver({ v: 1, type: 'signIn', id: 1, code: 'stale', view: { profileId: P, revision: 3, method: 'unknown', source: null, at: null, declaration: null, evidence: null, conflict: false, usingDeclaration: false, outputStatus: 'unavailable', generation: 0, boundary: null } });
+  assert.deepEqual((await r).code, 'stale');
+  assert.equal((await r).view?.revision, 3);
+  assert.deepEqual(await rd, { code: 'unavailable', view: null });
+});
+
 // XAIBO-PROD-412 (P4-T05c): the session workspace calls; each settles only on its own reply type and id.
 test('session workspace calls post their requests and resolve their own replies; an invalid reply rejects', async () => {
   const f = fakePort();

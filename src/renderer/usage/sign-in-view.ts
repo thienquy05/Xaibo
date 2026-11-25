@@ -17,6 +17,9 @@ export interface Draft { mode: Mode; method: SignInMethod }
 type Command = { op: 'set'; method: SignInMethod; expectedRevision: number } | { op: 'clear' | 'account-change'; expectedRevision: number };
 type Op = Command['op'];
 
+/** A sign-in request body: the read or one mutation (client.signIn, the fieldset's api). */
+export type SignInCommand = { op: 'read' } | Command;
+
 export const draftOf = (v: SignInView): Draft => (v.declaration ? { mode: 'declaration', method: v.declaration.method } : { mode: 'evidence', method: v.method });
 
 /** The command an action sends now, or null when it would change nothing. */
@@ -90,7 +93,7 @@ export function signInReducer(s: SignInState, e: SignInEvent): SignInState {
         case 'stale': return e.view ? { ...install(base, e.view, false), text: base.text, review: base.dirty } : { ...base, reload: s.reload + 1 }; // M2: a clean draft follows
         case 'limit': return e.view ? { ...install(base, e.view, false), text: base.text } : base;
         case 'profile-not-found': return { ...base, writable: false };
-        case 'failed': return { ...base, reload: s.reload + 1 };
+        case 'failed': case 'unavailable': return { ...base, reload: s.reload + 1 }; // unit 4a review L7: its words promise a reread
         default: return base;
       }
     }

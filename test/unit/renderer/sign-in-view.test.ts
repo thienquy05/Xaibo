@@ -110,6 +110,12 @@ test('usage lead per method; consumption words: tokens, ~$ estimate, list price 
   assert.deepEqual(consumptionLines({ ...c, coverage: 'partial', limited: true }, 'api-key').slice(3), ['Older requests beyond the read limit are not counted.']);
 });
 
+test('unit 4a review L7: a write answered unavailable keeps the draft and rereads (its words promise a retry)', () => {
+  const s = signInReducer(signInReducer(ready(), { type: 'edit', draft: { mode: 'declaration', method: 'api-key' } }), { type: 'save' });
+  const u = signInReducer(s, { type: 'replied', seq: 1, code: 'unavailable', view: null });
+  assert.deepEqual([u.pending, u.dirty, u.reload], [null, true, 1]);
+});
+
 test('unit 3 review M1-M3, L4, L5, L7: dirty follows the draft; discard; a clean draft follows a new view; older reads ignored; read codes', () => {
   let s = signInReducer(ready(), { type: 'edit', draft: { mode: 'declaration', method: 'api-key' } });
   s = signInReducer(s, { type: 'edit', draft: { mode: 'evidence', method: 'unknown' } });

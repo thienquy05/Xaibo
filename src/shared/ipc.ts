@@ -830,7 +830,7 @@ function parseResult(x: unknown): OverlayResult | null {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const uuid = (x: unknown): x is string => typeof x === 'string' && UUID.test(x);
+export const uuid = (x: unknown): x is string => typeof x === 'string' && UUID.test(x); // XAIBO-PROD-585: also the renderer's UUID check
 const CODE = /^[a-z][a-z-]{0,31}$/;
 const connectCode = (x: unknown): x is string => typeof x === 'string' && CODE.test(x);
 const bounded = (x: unknown, max: number): x is unknown[] => Array.isArray(x) && x.length <= max;

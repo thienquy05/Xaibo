@@ -5,6 +5,7 @@ import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { parseHealth, parseStartupReply } from '../shared/ipc.ts';
 import type { AgentStatus, Banner, Health, IntegrationKey, LedgerFilter, SessionRow, StartupRequest } from '../shared/ipc.ts';
+import type { SignInCommand } from './usage/sign-in-view.ts';
 import { createClient, parseVisible, type Client, type PortLike } from './client.ts';
 import { HealthStatus } from './Health.tsx';
 import { Icon } from './status/StatusBadge.tsx';
@@ -170,7 +171,9 @@ function App() {
       cleanupPreview: (profileId: string) => client.current?.cleanupPreview(profileId) ?? gone(),
       cleanupApply: (previewId: string) => client.current?.cleanupApply(previewId) ?? Promise.resolve(notSent),
       teePreview: (profileId: string) => client.current?.teePreview(profileId) ?? gone(),
-      teeRemovalPreview: (profileId: string) => client.current?.teeRemovalPreview(profileId) ?? gone() };
+      teeRemovalPreview: (profileId: string) => client.current?.teeRemovalPreview(profileId) ?? gone(),
+      // XAIBO-PROD-585: without a connection a read fails and a write is unavailable (nothing was sent)
+      signIn: (profileId: string, c: SignInCommand) => client.current?.signIn(profileId, c) ?? (c.op === 'read' ? gone() : Promise.resolve({ code: 'unavailable' as const, view: null })) };
   }, [browseApi]);
   const api = useMemo<UsageApi>(() => ({
     usage: () => client.current?.usage() ?? Promise.reject(new Error('no service')),

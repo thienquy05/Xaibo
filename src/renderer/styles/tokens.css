@@ -722,6 +722,11 @@ html, .x-shell.x-fixed { scroll-padding-top: var(--x-frame-pad, 8px); } /* clear
 .x-receipt-test { display: grid; gap: var(--x-space-1); justify-items: start; }
 /* XAIBO-PROD-579: the Connection actions and the integration diff dialog (one column, wrapped lines, no horizontal scroll) */
 .x-integration-actions { display: flex; flex-wrap: wrap; gap: var(--x-space-2); }
+/* XAIBO-PROD-585: nothing in the panel is wider than its pane (a native select sizes to its longest option, e.g. a long profile
+   path); labelled fields stack their label over the control */
+.x-integration .x-map-detail-body > * { max-width: 100%; min-width: 0; }
+.x-integration select { max-width: 100%; }
+.x-integration .x-field { display: grid; gap: var(--x-space-1); justify-items: start; }
 .x-diff-dialog { width: min(720px, calc(100vw - 32px)); max-width: none; max-height: calc(100vh - 32px); overflow-y: auto; }
 .x-diff-dialog h3 { margin: var(--x-space-2) 0 var(--x-space-1); font-size: var(--x-text-body); }
 .x-diff-dialog .x-radios { margin-bottom: var(--x-space-3); }
