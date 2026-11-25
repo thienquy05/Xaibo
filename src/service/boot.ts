@@ -356,7 +356,9 @@ export async function boot(o: BootOptions): Promise<Service> {
     // agent's backfill runs; backfills stay one at a time.
     for (const p of profiles.filter((x) => Adapters[x.agent])) {
       if (stopped) return;
-      const a = new Adapters[p.agent]!({ db, writer, profileId: p.id, root: p.root, accountSalt: p.agent === 'codex' ? salt : null,
+      // P6-T01a slice 4 (review M6): sign-in rules from the bundled catalog only, never the merged imports (none shipped)
+      const signInRules = p.agent === 'codex' ? bundled?.agents.find((x) => x.id === 'codex')?.signInRules ?? [] : [];
+      const a = new Adapters[p.agent]!({ db, writer, profileId: p.id, root: p.root, accountSalt: p.agent === 'codex' ? salt : null, signInRules,
         ...(o.intervalMs ? { intervalMs: o.intervalMs } : {}) });
       adapters.push(a);
       await a.watch();

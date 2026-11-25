@@ -14,6 +14,7 @@ const FLOOR = Date.UTC(2020, 0, 1); // review H1: older than any supported agent
 // ponytail: a stored boundary more than a day ahead of the clock came from a wrong clock, so it no longer holds later
 // boundaries back; ordinary steps (sleep, time zone, NTP) stay monotonic. A config knob if a day is ever wrong.
 const FAR_AHEAD_MS = 86_400_000;
+const EVIDENCE_RESERVE = 16;
 const VERSION = /^\d{1,6}\.\d{1,6}\.\d{1,6}(?:-[A-Za-z0-9.-]{1,48})?$/;
 const RULE_ID = /^[a-z]+(?:-[a-z]+)*$/;
 
@@ -48,6 +49,10 @@ const explicit = (s: SignInState) => s.declaration !== null || evidenced(s) !== 
 function withEvidence(s: SignInState, i: Extract<SignInInput, { kind: 'evidence' }>, now: number): SignInState {
   const t = i.sourceAt;
   if (typeof t !== 'number' || !Number.isSafeInteger(t) || t < FLOOR || t > now + SKEW_MS) return s; // review H1
+  // slice-4 review M2: never overrides a newer boundary (an owner decision), unless that one came from a clock far ahead
+  // (code review M1). ponytail: a boundary raised to the newest stored reading also drops a backfilled file's later
+  // records dated before it (stored history is never split; slice-4 code review L3).
+  if (s.boundaryAt !== null && s.boundaryAt <= now + FAR_AHEAD_MS && t < s.boundaryAt) return s;
   const e = s.evidence;
   if (i.result.kind === 'unknown') {
     return i.result.reason === 'ambiguous' && e && t > e.orderAt ? { ...s, evidence: { ...e, ambiguous: true, orderAt: t } } : s;
@@ -64,7 +69,7 @@ function withEvidence(s: SignInState, i: Extract<SignInInput, { kind: 'evidence'
 const visible = (s: SignInState) => JSON.stringify({ ...s, evidence: s.evidence && { ...s.evidence, orderAt: 0 } });
 
 /** The next state, and the epoch boundary it starts if any; the same object back when nothing changes. */
-export function nextSignIn(s: SignInState, i: SignInInput, now: number): { state: SignInState; boundary: Boundary | null } | { refused: 'limit' } {
+export function nextSignIn(s: SignInState, i: SignInInput, now: number, floor?: number): { state: SignInState; boundary: Boundary | null } | { refused: 'limit' } {
   const n = i.kind === 'evidence' ? withEvidence(s, i, now)
     : i.kind === 'declare' ? (s.declaration?.method === i.method ? s : { ...s, declaration: { method: i.method, at: now } })
       : i.kind === 'clear' ? (s.declaration ? { ...s, declaration: null } : s)
@@ -72,12 +77,15 @@ export function nextSignIn(s: SignInState, i: SignInInput, now: number): { state
   const method = effectiveMethod(n);
   const reason = i.kind === 'account-change' ? 'declared-account' : explicit(n) && method !== s.boundaryMethod ? 'method' : null;
   if (!reason) return { state: n === s ? s : visible(n) === visible(s) ? n : { ...n, revision: s.revision + 1 }, boundary: null };
-  if (s.generation >= MAX_BOUNDARIES) return i.kind === 'evidence' ? { state: s, boundary: null } : { refused: 'limit' }; // review H2
+  // review H2: at most MAX_BOUNDARIES; slice-4 review M1: evidence stops EVIDENCE_RESERVE short, so the owner keeps a reserve
+  if (s.generation >= (i.kind === 'evidence' ? MAX_BOUNDARIES - EVIDENCE_RESERVE : MAX_BOUNDARIES)) return i.kind === 'evidence' ? { state: s, boundary: null } : { refused: 'limit' };
   // review H1: never before the previous boundary, unless that one was stored while the clock ran far ahead (code review
-  // M1: one wrong clock reading must not pin every later boundary). An evidence epoch starts at acceptance (now), not at
-  // its source time: readings dated between the two stay in the old epoch (code review L5).
-  const prev = s.boundaryAt !== null && s.boundaryAt <= now + FAR_AHEAD_MS ? s.boundaryAt : now;
-  const at = Math.max(prev, now);
+  // M1: one wrong clock reading must not pin every later boundary). Owner epochs start now; an evidence epoch at its
+  // source time (so the reading that showed it lands in it), never in the future and never before the newest stored
+  // reading `floor` (slice-4 review H1: stored history is never split).
+  const prev = s.boundaryAt !== null && s.boundaryAt <= now + FAR_AHEAD_MS ? s.boundaryAt : -Infinity; // no earlier boundary: no lower bound
+  const sourceAt = i.kind === 'evidence' ? i.sourceAt ?? now : now; // validated by withEvidence on every path here
+  const at = i.kind === 'evidence' ? Math.max(prev, Math.min(now, Math.max(sourceAt, floor ?? -Infinity))) : Math.max(prev, now);
   const boundary: Boundary = { generation: s.generation + 1, at, reason, method };
   return { state: { ...n, revision: s.revision + 1, generation: boundary.generation, boundaryAt: at, boundaryMethod: explicit(n) ? method : s.boundaryMethod }, boundary };
 }
@@ -106,11 +114,16 @@ export type SignInCode = 'ok' | 'stale' | 'profile-not-found' | 'limit';
 
 /** Applies one input for a profile. Call inside one immediate transaction (Writer.transact, or the batch commit), so the
  *  revision read here is the one written (review M3). `expectedRevision`: owner actions; a mismatch changes nothing. */
-export function changeSignIn(db: DatabaseSync, profileId: string, input: SignInInput, now: number, expectedRevision?: number): { code: SignInCode; state: SignInState } {
+export function changeSignIn(db: DatabaseSync, profileId: string, input: SignInInput, now: number, expectedRevision?: number): { code: SignInCode; state: SignInState; boundary?: Boundary | null } {
   const s = readSignIn(db, profileId);
   if (!db.prepare('SELECT 1 FROM profiles WHERE id = ?').get(profileId)) return { code: 'profile-not-found', state: s }; // slice-3 review M2: before the revision
   if (expectedRevision !== undefined && expectedRevision !== s.revision) return { code: 'stale', state: s };
-  const r = nextSignIn(s, input, now);
+  // slice-4 code review M2: the newest stored reading of the profile is scanned only when evidence starts an epoch (rare)
+  const first = nextSignIn(s, input, now);
+  const floor = input.kind === 'evidence' && !('refused' in first) && first.boundary
+    ? (db.prepare(`SELECT max(h.measured_at) AS m FROM usage_history h JOIN usage_scopes u ON u.id = h.usage_scope_id
+      WHERE u.profile_id = ?`).get(profileId) as { m: number | null }).m ?? undefined : undefined;
+  const r = floor === undefined ? first : nextSignIn(s, input, now, floor);
   if ('refused' in r) return { code: 'limit', state: s };
   if (r.state === s) return { code: 'ok', state: s };
   const n = r.state, e = n.evidence;
@@ -128,7 +141,7 @@ export function changeSignIn(db: DatabaseSync, profileId: string, input: SignInI
     db.prepare('INSERT INTO sign_in_boundaries (profile_id, generation, revision, at, reason, method) VALUES (?, ?, ?, ?, ?, ?)')
       .run(profileId, r.boundary.generation, n.revision, r.boundary.at, r.boundary.reason, r.boundary.method);
   }
-  return { code: 'ok', state: n };
+  return { code: 'ok', state: n, boundary: r.boundary };
 }
 
 /** XAIBO-PROD-572 (slice 3): what P6-T10a shows for a profile: the effective method with its source and time, the

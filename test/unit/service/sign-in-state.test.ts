@@ -107,6 +107,35 @@ test('boundary times never go backwards (review H1)', () => {
   assert.equal(r.state.boundaryAt, NOW);
 });
 
+test('an evidence epoch starts at the evidence source time, never before the previous boundary (slice 4)', () => {
+  const r = ok(nextSignIn(emptySignIn(), ev('subscription', NOW - 600_000), NOW));
+  assert.equal(r.boundary?.at, NOW - 600_000);
+  const later = ok(nextSignIn(run(emptySignIn(), [{ kind: 'account-change' }, NOW]), ev('api-key', NOW + 60_000), NOW + 120_000));
+  assert.equal(later.boundary?.at, NOW + 60_000, 'after the previous boundary: its own source time');
+});
+
+test('an evidence epoch never starts in the future nor before a stored reading (slice-4 review H1)', () => {
+  assert.equal(ok(nextSignIn(emptySignIn(), ev('subscription', NOW + 3 * 60_000), NOW)).boundary?.at, NOW);
+  assert.equal(ok(nextSignIn(emptySignIn(), ev('subscription', NOW - 600_000), NOW, NOW - 60_000)).boundary?.at, NOW - 60_000, 'raised to the newest stored reading');
+});
+
+test('evidence older than the latest boundary is ignored (slice-4 review M2)', () => {
+  const s = run(emptySignIn(), [{ kind: 'declare', method: 'gateway' }, NOW], [{ kind: 'clear' }, NOW + 1]);
+  assert.equal(ok(nextSignIn(s, ev('subscription', NOW - 1000), NOW + 2)).state, s);
+});
+
+test('evidence stops 16 epochs short of the cap, keeping a reserve for the owner (slice-4 review M1)', () => {
+  let s = emptySignIn();
+  for (let i = 0; i < MAX_BOUNDARIES - 16; i++) s = ok(nextSignIn(s, { kind: 'account-change' }, NOW + i)).state;
+  assert.equal(ok(nextSignIn(s, ev('subscription', NOW + 300), NOW + 300)).state, s);
+  assert.equal(ok(nextSignIn(s, { kind: 'declare', method: 'subscription' }, NOW + 301)).state.generation, MAX_BOUNDARIES - 15);
+});
+
+test('a boundary stored with the clock far ahead does not block later evidence either (slice-4 code review M1)', () => {
+  const ahead = run(emptySignIn(), [{ kind: 'declare', method: 'subscription' }, NOW + 365 * 86_400_000], [{ kind: 'clear' }, NOW + 365 * 86_400_000 + 1]);
+  assert.equal(ok(nextSignIn(ahead, ev('api-key', NOW - 1000), NOW)).state.evidence?.method, 'api-key');
+});
+
 test('a boundary stored while the clock ran far ahead does not pin later ones (code review M1)', () => {
   const ahead = run(emptySignIn(), [{ kind: 'declare', method: 'subscription' }, NOW + 365 * 86_400_000]); // clock a year ahead
   const r = ok(nextSignIn(ahead, { kind: 'account-change' }, NOW)); // clock corrected

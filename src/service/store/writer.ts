@@ -13,6 +13,8 @@ import { LAST_RUN_KEY, QUOTA_MS } from '../retention/policy.ts';
 import { utcOffset } from '../usage/monthly.ts';
 import { computeExcerpt } from '../history/excerpt.ts';
 import { counters, timed } from '../perf-counters.ts';
+import { changeSignIn } from '../usage/sign-in-state.ts';
+import type { MethodResult, SignalSource } from '../usage/sign-in.ts';
 
 export const SCHEMA_VERSION = 1;
 // The FTS row of an event is its ftsPrefix; deletes (revisions, purge) must pass that same text, so changing this bound
@@ -69,6 +71,8 @@ export interface EventRow {
   quota?: Reading[];
   /** P3-T15 (§5.12): the agent-reported session cost (statusLine `cost.total_cost_usd`). */
   reportedCost?: number;
+  /** P6-T01a slice 4: sign-in evidence this record shows (a matched or ambiguous rule result), applied when the row is new. */
+  signIn?: { result: MethodResult; source: SignalSource; version: string | null; sourceAt: number | null };
 }
 type Obj = Record<string, unknown>;
 export type UsageObs =
@@ -318,7 +322,7 @@ type HistRow = { used_percent: number | null; window_minutes: number | null; res
  *  the Codex account marker when the session has one, else the session itself (account unverified). P6-T01a (R1 revised):
  *  each reading's sign-in generation is the one in force at its trusted source time, else the event's stored generation;
  *  a generation above 0 is its own scope. */
-function history(st: ReturnType<typeof prepare>, batch: Batch, sid: number | bigint, eventId: number | bigint, e: EventRow, readings: Reading[]) {
+function history(st: ReturnType<typeof prepare>, batch: Batch, sid: number | bigint, eventId: number | bigint, e: EventRow, readings: Reading[], forced?: number) {
   if (!readings.length) return;
   const epoch = batch.agent === 'codex' ? (st.sessionEpoch.get(sid) as { account_epoch: string | null } | undefined)?.account_epoch ?? null : null;
   const k = scopeKey({ profileId: batch.profileId, agent: batch.agent, epoch, nativeSessionId: e.nativeSessionId });
@@ -338,7 +342,8 @@ function history(st: ReturnType<typeof prepare>, batch: Batch, sid: number | big
   const expiredUpTo = lastRun <= Date.now() ? lastRun - QUOTA_MS : NaN;
   for (const r of readings) {
     const at = sourceTime(r, e.receivedTs);
-    const scope = scopeOf(at !== null ? (st.genAt.get(batch.profileId, at) as { g: number }).g : eventGen);
+    // slice-4 review H1: the reading whose evidence just started an epoch belongs to it, wherever its boundary was clamped
+    const scope = scopeOf(forced ?? (at !== null ? (st.genAt.get(batch.profileId, at) as { g: number }).g : eventGen));
     const p = st.prevHistory.get(scope, r.stream, at ?? e.receivedTs) as HistRow | undefined;
     const prev: Stored | null = p ? { stream: r.stream, usedPercent: p.used_percent, windowMinutes: p.window_minutes, resetsAt: p.resets_at, plan: p.plan,
       credits: p.credits, asOf: p.as_of, firstObservedAt: p.first_observed_at, measuredAt: p.measured_at } : null;
@@ -374,7 +379,7 @@ function putToolCall(st: ReturnType<typeof prepare>, sid: number | bigint, callI
  *  line wins. Codex: a segment row (consumption, latest cumulative of the counter segment) and a request row per
  *  advance; duplicates add nothing; a missing rate_limits reading writes no snapshot; a drifted token_usage_record is a
  *  gap row (D-P2-03), never consumption. */
-function usage(st: ReturnType<typeof prepare>, batch: Batch, sid: number | bigint, eventId: number | bigint, e: EventRow, u: UsageObs) {
+function usage(st: ReturnType<typeof prepare>, batch: Batch, sid: number | bigint, eventId: number | bigint, e: EventRow, u: UsageObs, forced?: number) {
   type Priced = { model_id: string | null; raw: string | null };
   const put = (identity: string, scope: string, segment: number | null, n: Usage | null, raw: Obj, model?: string, gap?: Obj) => {
     const before = scope === 'message' ? st.pricedUsage.get(sid, e.source, identity) as Priced | undefined : undefined;
@@ -401,7 +406,7 @@ function usage(st: ReturnType<typeof prepare>, batch: Batch, sid: number | bigin
       const r = codexRateLimits(u.rateLimits);
       st.snapshot.run(SCHEMA_VERSION, batch.agent, batch.profileId, sid, e.source, e.nativeId, r.limitId, r.plan,
         r.credits === null ? null : JSON.stringify(r.credits), JSON.stringify(r.windows), e.sourceTs ?? null, e.receivedTs);
-      history(st, batch, sid, eventId, e, codexReadings(u.rateLimits, e.sourceTs ?? null));
+      history(st, batch, sid, eventId, e, codexReadings(u.rateLimits, e.sourceTs ?? null), forced);
     }
   }
 }
@@ -556,7 +561,13 @@ export function commitBatch(db: DatabaseSync, input: Batch): Batch {
         if (c.part === 'args') o.argsEventId = Number(row.id); else o.resultEventId = Number(row.id);
         putToolCall(st, sid, c.callId, o);
       }
-      if (e.usage) usage(st, batch, sid, row.id, e, e.usage);
+      // P6-T01a slice 4: evidence of a new row only (a replay finds the row and skips it), before its readings are placed
+      let forced: number | undefined;
+      if (e.signIn) {
+        const r = changeSignIn(db, batch.profileId, { kind: 'evidence', ...e.signIn }, Date.now());
+        if (r.boundary) forced = r.state.generation;
+      }
+      if (e.usage) usage(st, batch, sid, row.id, e, e.usage, forced);
       if (e.model) {
         const effort = e.model.effort ?? null, exposed = e.model.effort !== undefined ? 1 : 0;
         const ts = e.model.ts ?? e.sourceTs, fresh = !e.model.stale;

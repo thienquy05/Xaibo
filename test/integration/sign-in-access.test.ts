@@ -95,7 +95,8 @@ test('EC-110: the sign-in paths touch no credential, auth, config or keychain ta
     segment = 'intake';
     await intake.deliver(envelope({ event: 'statusline', cwd: null, payload: { session_id: SESSION, api_key: OUT, rate_limits: { five_hour: { used_percentage: 10, resets_at: 1767243600 } } } }));
     segment = 'codex';
-    const a = new CodexAdapter({ db, writer, profileId: PID, root: codex, intervalMs: 60_000, accountSalt: Buffer.alloc(32, 3) });
+    const a = new CodexAdapter({ db, writer, profileId: PID, root: codex, intervalMs: 60_000, accountSalt: Buffer.alloc(32, 3), // slice 4: the evaluation path runs under the trace
+      signInRules: [{ id: 'syn-plan-pro', source: 'codex-rollout', version: '0.160.0', record: { type: 'event_msg', 'payload.type': 'token_count' }, field: 'payload.rate_limits.plan_type', test: { oneOf: ['pro'] }, method: 'subscription' }] });
     await a.start(); a.stop();
     segment = 'signIn';
     const R = (o: Record<string, unknown>) => parsePortRequest({ v: 1, type: 'signIn', id: 1, profileId: PID, ...o }) as Parameters<typeof answerSignIn>[1];
