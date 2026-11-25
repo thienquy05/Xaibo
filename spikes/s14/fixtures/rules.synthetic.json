@@ -1,0 +1,93 @@
+[
+  {
+    "id": "syn-claude-five-hour",
+    "source": "claude-statusline",
+    "version": "0.0.0-synthetic",
+    "record": {},
+    "field": "rate_limits.five_hour",
+    "test": {
+      "nonEmptyObject": true
+    },
+    "method": "subscription"
+  },
+  {
+    "id": "syn-codex-plan-subscription",
+    "source": "codex-rollout",
+    "version": "0.0.0-synthetic",
+    "record": {
+      "type": "event_msg",
+      "payload.type": "token_count"
+    },
+    "field": "payload.rate_limits.plan_type",
+    "test": {
+      "oneOf": [
+        "synthplus"
+      ]
+    },
+    "method": "subscription"
+  },
+  {
+    "id": "syn-codex-plan-key",
+    "source": "codex-rollout",
+    "version": "0.0.0-synthetic",
+    "record": {
+      "type": "event_msg",
+      "payload.type": "token_count"
+    },
+    "field": "payload.rate_limits.plan_type",
+    "test": {
+      "oneOf": [
+        "synthkey"
+      ]
+    },
+    "method": "api-key"
+  },
+  {
+    "id": "syn-codex-plan-cloud",
+    "source": "codex-rollout",
+    "version": "0.0.0-synthetic",
+    "record": {
+      "type": "event_msg",
+      "payload.type": "token_count"
+    },
+    "field": "payload.rate_limits.plan_type",
+    "test": {
+      "oneOf": [
+        "synthcloud"
+      ]
+    },
+    "method": "cloud-provider"
+  },
+  {
+    "id": "syn-codex-plan-gateway",
+    "source": "codex-rollout",
+    "version": "0.0.0-synthetic",
+    "record": {
+      "type": "event_msg",
+      "payload.type": "token_count"
+    },
+    "field": "payload.rate_limits.plan_type",
+    "test": {
+      "oneOf": [
+        "synthgateway"
+      ]
+    },
+    "method": "gateway"
+  },
+  {
+    "id": "syn-codex-plan-mixed",
+    "source": "codex-rollout",
+    "version": "0.0.0-synthetic",
+    "record": {
+      "type": "event_msg",
+      "payload.type": "token_count"
+    },
+    "field": "payload.rate_limits.plan_type",
+    "test": {
+      "oneOf": [
+        "synthmixed"
+      ]
+    },
+    "method": "mixed"
+  }
+]
