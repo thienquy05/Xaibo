@@ -1,7 +1,8 @@
 // Usage scope presentation (P4-T04b2; design §6.1 usage scopes, §7.1 countdown/freshness, §7.2 C16-C20; PRD §5.11,
 // FR-46): derived at render time from the service's raw newest measurement, against the local clock. Nothing here asks
 // an agent or provider for anything; a missing value is a phrase, never 0.
-import type { UsageScope } from '../../shared/ipc.ts';
+import type { SignInMethod, UsageConsumption, UsageScope } from '../../shared/ipc.ts';
+import { usdText } from '../workspace/cost/present.ts';
 import { day, DAY as D, formatTime, HOUR as H, MIN as M, SEC as S, shortTime } from '../model.ts';
 import { visible } from '../text.ts';
 
@@ -76,6 +77,23 @@ export function usageView(s: UsageScope, now: number, lastKnown: string | null =
   };
 }
 
+/** XAIBO-PROD-584 (P6-T10a unit 3; PRD §6.9, design "Usage scopes"): what leads a profile's usage by its effective sign-in
+ *  method: subscription the quota windows, API key / cloud provider / gateway the estimated cost and observed tokens, mixed both
+ *  (never summed), unknown neither. */
+export const usageLead = (m: SignInMethod): 'quota' | 'consumption' | 'both' | 'none' =>
+  m === 'subscription' ? 'quota' : m === 'mixed' ? 'both' : m === 'unknown' ? 'none' : 'consumption';
+/** One consumption group in words: the retained interval, observed tokens, the ~$ estimate (a list-price estimate for cloud
+ *  provider and gateway: review R9), and why a value is a known subtotal or capped. Missing values stay Unavailable. */
+export function consumptionLines(c: UsageConsumption, m: SignInMethod): string[] {
+  const list = m === 'cloud-provider' || m === 'gateway' ? ' (list-price estimate)' : '';
+  return [
+    c.from === null || c.to === null ? 'Retained observed consumption' : `Retained observed consumption, ${formatTime(c.from)} to ${formatTime(c.to)}`,
+    `Observed tokens: ${c.tokens === null ? 'Unavailable' : c.tokens.toLocaleString('en-US')}`,
+    `Estimated cost: ${c.estimatedUsd === null ? 'Unavailable' : usdText(c.estimatedUsd) + list}`,
+    ...(c.coverage === 'partial' && !c.limited ? ['Known subtotal: some requests are missing tokens or estimates.'] : []), // review L6: capped only is said below
+    ...(c.limited ? ['Older requests beyond the read limit are not counted.'] : []),
+  ];
+}
 export const HISTORY_DAYS = 45; // fixed observed-history retention (design §6.1)
 /** Local day start moved by whole days (calendar arithmetic, so DST days stay one day). */
 export function shiftDay(dayStart: number, days: number): number {
