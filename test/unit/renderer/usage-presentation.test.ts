@@ -9,7 +9,8 @@ import type { UsageScope } from '../../../src/shared/ipc.ts';
 const NOW = new Date(2026, 0, 2, 12, 0, 0).getTime();
 const MIN = 60_000;
 const s = (o: Partial<UsageScope> = {}): UsageScope => ({ scope: 1, agent: 'claude', profile: 'Default profile', verified: false, stream: 'five_hour', windowMinutes: 300,
-  usedPercent: 40, resetsAt: NOW + 65 * MIN + 3000, plan: null, credits: null, asOf: null, firstObservedAt: NOW - MIN, measuredAt: NOW - MIN, unavailable: null, ...o });
+  usedPercent: 40, resetsAt: NOW + 65 * MIN + 3000, plan: null, credits: null, asOf: null, firstObservedAt: NOW - MIN, measuredAt: NOW - MIN, unavailable: null,
+  profileId: 'p1', generation: 0, boundary: null, ...o }); // XAIBO-PROD-582 fields
 
 test('current reading: window, percent, reset clock, countdown, unknown source time, unverified scope', () => {
   const v = usageView(s(), NOW);

@@ -141,7 +141,12 @@ export interface UsageScope {
   scope: number | null; agent: string; profile: string; verified: boolean | null; stream: string | null;
   windowMinutes: number | null; usedPercent: number | null; resetsAt: number | null; plan: string | null; credits: Credits | null;
   asOf: number | null; firstObservedAt: number | null; measuredAt: number | null; unavailable: 'passive' | 'no-observation' | null;
+  /** XAIBO-PROD-582 (P6-T10a unit 1): the profile (its id, a profile key), the scope's sign-in generation (null on a row without a
+   *  scope) and that generation's boundary (null for generation 0: no invented provenance; never relabeled by a later change). */
+  profileId: string; generation: number | null; boundary: { method: SignInMethod; at: number; reason: 'method' | 'declared-account' } | null;
 }
+/** XAIBO-PROD-582: every profile once (agent, then id; custom agents too), with its label and current sign-in view (null: unreadable). */
+export interface UsageProfile { profileId: string; agent: string; label: string; signIn: SignInView | null }
 export interface HistoryCursor { measuredAt: number; id: number }
 export interface UsageRecord {
   id: number; kind: 'sample' | 'transition'; measuredAt: number; usedPercent: number | null; windowMinutes: number | null; resetsAt: number | null; sourceTimeKnown: boolean;
@@ -434,7 +439,7 @@ export type PortMessage =
   | { v: 1; type: 'markers'; id: number; markers: ModelMarker[]; next: MCursor | null; failed?: true }
   | { v: 1; type: 'page'; id: number; rows: SessionRow[]; next: Cursor | null }
   | { v: 1; type: 'liveSet'; id: number; rows: SessionRow[]; more: boolean }
-  | { v: 1; type: 'usage'; id: number; scopes: UsageScope[] }
+  | { v: 1; type: 'usage'; id: number; scopes: UsageScope[]; profiles: UsageProfile[] }
   | { v: 1; type: 'usageHistory'; id: number; records: UsageRecord[]; next: HistoryCursor | null }
   // coalesced deltas: current rows of changed sessions; delta only with XAIBO_PERF_TRACE=1 (the renderer acks its paint)
   | { v: 1; type: 'sessions'; rows: SessionRow[]; delta?: number }
@@ -532,9 +537,24 @@ function parseScope(x: unknown): UsageScope | null {
   if (!(x.unavailable === null || oneOf(['passive', 'no-observation'] as const, x.unavailable))) return null;
   const credits = parseCredits(x.credits);
   if (credits === undefined) return null;
-  return { scope: x.scope, agent: x.agent, profile: x.profile, verified: x.verified, stream: x.stream, windowMinutes: x.windowMinutes as number | null,
+  // XAIBO-PROD-582: identity and the scope's own sign-in generation and boundary
+  const b = x.boundary;
+  const boundary = b === null ? null : exactKeys(b, ['method', 'at', 'reason']) && oneOf(SIGN_IN_METHODS, b.method) && Number.isSafeInteger(b.at) && oneOf(['method', 'declared-account'] as const, b.reason)
+    ? { method: b.method, at: b.at as number, reason: b.reason } : undefined;
+  if (!profileKey(x.profileId) || !(x.generation === null || (Number.isSafeInteger(x.generation) && (x.generation as number) >= 0 && (x.generation as number) <= 256)) || boundary === undefined) return null;
+  return { profileId: x.profileId, generation: x.generation as number | null, boundary, scope: x.scope, agent: x.agent, profile: x.profile, verified: x.verified, stream: x.stream, windowMinutes: x.windowMinutes as number | null,
     usedPercent: x.usedPercent as number | null, resetsAt: x.resetsAt, plan: x.plan, credits, asOf: x.asOf, firstObservedAt: x.firstObservedAt,
     measuredAt: x.measuredAt, unavailable: x.unavailable };
+}
+export const PROFILE = /^[A-Za-z0-9._-]{1,128}$/; // may reach keys and paths downstream (security review 379 #9)
+/** A profile key that is safe as a path segment: PROFILE, never `.` or `..` (hook-protocol.ts re-exports both). */
+export const isProfileKey = (k: string): boolean => PROFILE.test(k) && k !== '.' && k !== '..';
+const profileKey = (x: unknown): x is string => typeof x === 'string' && isProfileKey(x);
+function parseUsageProfile(x: unknown): UsageProfile | null {
+  if (!exactKeys(x, ['profileId', 'agent', 'label', 'signIn']) || !profileKey(x.profileId) || !agentOk(x.agent) || !text(x.label, 4097)) return null;
+  const signIn = x.signIn === null ? null : parseSignInView(x.signIn);
+  if (signIn === undefined || (signIn && signIn.profileId !== x.profileId)) return null;
+  return { profileId: x.profileId, agent: x.agent, label: x.label, signIn };
 }
 function parseRecord(x: unknown): UsageRecord | null {
   if (!isObj(x) || !count(x.id) || !oneOf(['sample', 'transition'] as const, x.kind) || !finite(x.measuredAt) || typeof x.sourceTimeKnown !== 'boolean') return null;
@@ -1111,8 +1131,8 @@ export function parsePortMessage(x: unknown): PortMessage | null {
       ? { v: 1, type: 'monthly', id: m.id, months, quota, older: m.older, newer: m.newer, agents, models, ...(m.failed ? { failed: true as const } : {}) } : null;
   }
   if (m.type === 'usage') {
-    const scopes = all(m.scopes, MAX_SCOPES, parseScope);
-    return count(m.id) && scopes ? { v: 1, type: 'usage', id: m.id, scopes } : null;
+    const scopes = all(m.scopes, MAX_SCOPES, parseScope), profiles = all(m.profiles, MAX_SCOPES, parseUsageProfile);
+    return count(m.id) && scopes && profiles ? { v: 1, type: 'usage', id: m.id, scopes, profiles } : null;
   }
   if (m.type === 'usageHistory') {
     const records = all(m.records, MAX_RECORDS, parseRecord);

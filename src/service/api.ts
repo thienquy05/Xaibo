@@ -2,8 +2,10 @@
 // default 50 rows, hard cap 100; rows by session key for the coalesced deltas the service pushes after commits.
 import { nativeExpiresAt } from './history/native-availability.ts';
 import type { DatabaseSync } from 'node:sqlite';
-import { IPC_VERSION, isObj } from '../shared/ipc.ts';
-import type { ContextReading, CoverageCode, Credits, Cursor, HistoryCursor, LiveStatus, Page, PortMessage, PortRequest, SessionRow, TCursor, TranscriptItem, UsageRecord, UsageScope } from '../shared/ipc.ts';
+import { AGENT_ID, IPC_VERSION, isObj, isProfileKey } from '../shared/ipc.ts';
+import { UUID } from '../shared/hook-protocol.ts';
+import type { ContextReading, CoverageCode, Credits, Cursor, HistoryCursor, LiveStatus, Page, PortMessage, PortRequest, SessionRow, SignInMethod, SignInView, TCursor, TranscriptItem, UsageProfile, UsageRecord, UsageScope } from '../shared/ipc.ts';
+import { signInView } from './usage/sign-in-state.ts';
 import { COST_CODE, COST_COMPONENTS, MAX_COST_CODES, MAX_COST_GROUPS, MAX_ITEMS, MAX_RECORDS, MAX_REFERENCES, MAX_SCOPES, parseContext, parseCost, PREVIEW_BYTES,
   REFERENCE_MAX, SLICE_BYTES } from '../shared/ipc.ts';
 import type { CostDetail, CostGroup, PriceRevisionInfo } from '../shared/ipc.ts';
@@ -173,40 +175,67 @@ function credits(raw: string | null): Credits | null {
 }
 const finiteOrNull = (v: number | null) => (v !== null && Number.isFinite(v) ? v : null);
 type Latest = { scope: number; agent: string; verified: number; limit_id: string; used_percent: number | null; window_minutes: number | null; resets_at: number | null;
-  plan: string | null; credits: string | null; as_of: number | null; first_observed_at: number; measured_at: number; profile_id: string };
+  plan: string | null; credits: string | null; as_of: number | null; first_observed_at: number; measured_at: number; profile_id: string;
+  generation: number; b_method: SignInMethod | null; b_at: number | null; b_reason: 'method' | 'declared-account' | null };
 /** P4-T04b1: per profile (agent, id order): agy -> one passive-unavailable row; others -> the newest measurement per
  *  scope and stream (raw: state is derived at render time against the local clock), else one no-observation row.
  *  ponytail: streams found by a scan of the history index, as usageStatusList; capped at MAX_SCOPES rows. */
 export function usageScopes(db: DatabaseSync, home: string): UsageScope[] {
   // XAIBO-PROD-542: a purging session's own (unverified) scope leaves Usage with it
+  // XAIBO-PROD-582: the scope's sign-in generation and that generation's stored boundary (none for generation 0); a store left
+  // read-only before migration 027 has neither (review M1): generation 0, no boundary
+  const epochs = signInEpochs(db);
   const latest = db.prepare(`SELECT sc.id AS scope, sc.agent, sc.verified, sc.profile_id, h.limit_id, h.used_percent, h.window_minutes, h.resets_at, h.plan, h.credits,
-      h.as_of, h.first_observed_at, h.measured_at
+      h.as_of, h.first_observed_at, h.measured_at, ${epochs ? 'sc.sign_in_generation AS generation, b.method AS b_method, b.at AS b_at, b.reason AS b_reason' : '0 AS generation, NULL AS b_method, NULL AS b_at, NULL AS b_reason'}
     FROM (SELECT DISTINCT usage_scope_id, limit_id FROM usage_history) k
     JOIN usage_history h ON h.id = (SELECT id FROM usage_history x WHERE x.usage_scope_id = k.usage_scope_id AND x.limit_id = k.limit_id
       ORDER BY x.measured_at DESC, x.id DESC LIMIT 1)
     JOIN usage_scopes sc ON sc.id = h.usage_scope_id
+    ${epochs ? 'LEFT JOIN sign_in_boundaries b ON b.profile_id = sc.profile_id AND b.generation = sc.sign_in_generation' : ''}
     WHERE sc.session_id IS NULL OR EXISTS (SELECT 1 FROM sessions s WHERE s.id = sc.session_id AND ${notPurging(db)})
     ORDER BY sc.id, h.limit_id`).all() as Latest[];
-  const blank = { scope: null, verified: null, stream: null, windowMinutes: null, usedPercent: null, resetsAt: null, plan: null, credits: null, asOf: null, firstObservedAt: null, measuredAt: null };
+  const blank = { generation: null, boundary: null, scope: null, verified: null, stream: null, windowMinutes: null, usedPercent: null, resetsAt: null, plan: null, credits: null, asOf: null, firstObservedAt: null, measuredAt: null };
   const out: UsageScope[] = [];
   for (const p of db.prepare('SELECT id, agent, root, origin FROM profiles ORDER BY agent, id').all() as { id: string; agent: string; root: string; origin: string }[]) {
     const profile = profileLabel(p.origin, p.root, home);
-    if (p.agent === 'agy') { out.push({ ...blank, agent: p.agent, profile, unavailable: 'passive' }); continue; }
+    if (p.agent === 'agy') { out.push({ ...blank, profileId: p.id, agent: p.agent, profile, unavailable: 'passive' }); continue; }
     const mine = latest.filter((r) => r.profile_id === p.id);
     // Review M: only agents with a passive usage source get a no-observation row (a custom registration agent has none).
-    if (!mine.length) { if (p.agent === 'claude' || p.agent === 'codex') out.push({ ...blank, agent: p.agent, profile, unavailable: 'no-observation' }); continue; }
+    if (!mine.length) { if (p.agent === 'claude' || p.agent === 'codex') out.push({ ...blank, profileId: p.id, agent: p.agent, profile, unavailable: 'no-observation' }); continue; }
     for (const r of mine) {
-      out.push({ scope: r.scope, agent: r.agent, profile, verified: r.verified === 1, stream: r.limit_id, windowMinutes: r.window_minutes,
+      out.push({ profileId: p.id, generation: r.generation, boundary: r.b_method && r.b_at !== null && r.b_reason ? { method: r.b_method, at: r.b_at, reason: r.b_reason } : null,
+        scope: r.scope, agent: r.agent, profile, verified: r.verified === 1, stream: r.limit_id, windowMinutes: r.window_minutes,
         usedPercent: finiteOrNull(r.used_percent), resetsAt: r.resets_at, plan: r.plan, credits: credits(r.credits), asOf: r.as_of,
         firstObservedAt: r.first_observed_at, measuredAt: r.measured_at, unavailable: null });
     }
   }
   return out.slice(0, MAX_SCOPES);
 }
+const epochCols = new WeakMap<DatabaseSync, boolean>();
+/** Migration 027 (sign-in generations and boundaries) present: probed once per store, as suppression.ts's phaseClause. */
+const signInEpochs = (db: DatabaseSync) => {
+  let has = epochCols.get(db);
+  if (has === undefined) epochCols.set(db, has = db.prepare("SELECT 1 FROM pragma_table_info('usage_scopes') WHERE name = 'sign_in_generation'").get() !== undefined);
+  return has;
+};
+/** XAIBO-PROD-582 (P6-T10a unit 1): every profile once (agent, then id; custom agents too) with its label and current sign-in view,
+ *  from the database only (no reconcile, config, credential or environment read); a view that cannot be read is null. */
+// ponytail: the first MAX_SCOPES profiles (before the id filter), no "more" flag; page it if a store ever holds that many
+export function usageProfiles(db: DatabaseSync, home: string): UsageProfile[] {
+  return (db.prepare('SELECT id, agent, root, origin FROM profiles ORDER BY agent, id LIMIT ?').all(MAX_SCOPES) as { id: string; agent: string; root: string; origin: string }[])
+    .filter((p) => AGENT_ID.test(p.agent) && isProfileKey(p.id)) // an id the reply parser refuses would void the whole reply
+    .map((p) => {
+      let signIn: SignInView | null = null;
+      // review H1: only a UUID profile can be declared or opened (the sign-in and integration requests need one)
+      if (UUID.test(p.id)) try { signIn = signInView(db, p.id); } catch { /* unreadable: no view */ }
+      return { profileId: p.id, agent: p.agent, label: profileLabel(p.origin, p.root, home), signIn };
+    });
+}
 export function answerUsage(db: DatabaseSync, req: PortRequest & { type: 'usage' }, home: string): PortMessage & { type: 'usage' } {
-  let scopes: UsageScope[] = [];
+  let scopes: UsageScope[] = [], profiles: UsageProfile[] = [];
   try { scopes = usageScopes(db, home); } catch { /* unreadable store: no scopes */ }
-  return { v: IPC_VERSION, type: 'usage', id: req.id, scopes };
+  try { profiles = usageProfiles(db, home); } catch { /* unreadable store: no profiles */ }
+  return { v: IPC_VERSION, type: 'usage', id: req.id, scopes, profiles };
 }
 
 export const HISTORY_MAX = MAX_RECORDS;

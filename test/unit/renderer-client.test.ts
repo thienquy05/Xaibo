@@ -113,7 +113,7 @@ test('usage and usageHistory resolve their own replies; a reply of another type 
   assert.deepEqual(f.sent, [{ v: 1, type: 'usage', id: 1 }, { v: 1, type: 'usageHistory', id: 2, scope: 4, stream: 'five_hour', from: 10, to: 20, cursor: null, limit: 50 }]);
   f.deliver({ v: 1, type: 'liveSet', id: 1, rows: [], more: false });
   f.deliver({ v: 1, type: 'usageHistory', id: 2, records: [], next: null });
-  f.deliver({ v: 1, type: 'usage', id: 1, scopes: [] });
+  f.deliver({ v: 1, type: 'usage', id: 1, scopes: [], profiles: [] });
   assert.deepEqual(await u, []);
   assert.deepEqual(await h, { records: [], next: null });
   const bad = c.usage();

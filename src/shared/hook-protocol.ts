@@ -2,7 +2,8 @@
 // connection starts with a hello {v, token}; then envelopes, each answered by an ack. Validation is strict (exact keys,
 // bounded strings) and failures are fixed codes, never field values or parser messages. Shared by the forwarder (P3-T03)
 // and the service socket; no `v - 1` path until a second version exists.
-import { isObj } from './ipc.ts';
+import { isObj, isProfileKey, PROFILE } from './ipc.ts';
+export { isProfileKey, PROFILE }; // XAIBO-PROD-582 review L2: one rule, defined beside the IPC parsers (this module imports ipc.ts)
 export const PROTOCOL_VERSION = 1;
 export const MAX_FRAME = 1 << 20;
 /** Report v1 frames (P3-T13b, PRD §5.10): each serialized frame is at most 256 KiB. */
@@ -28,9 +29,6 @@ export class FrameError extends Error {
 const HEADER = 4;
 export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export const AGENT = /^[a-z0-9][a-z0-9-]{0,31}$/;
-export const PROFILE = /^[A-Za-z0-9._-]{1,128}$/; // may reach keys and paths downstream (security review 379 #9)
-/** A profile key that is safe as a path segment: PROFILE, never `.` or `..`. */
-export const isProfileKey = (k: string): boolean => PROFILE.test(k) && k !== '.' && k !== '..';
 const MAX_KEY = 128;
 const MAX_SESSION = 256;
 const MAX_CWD = 4096;

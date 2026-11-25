@@ -153,15 +153,29 @@ test('liveSet: request carries an id only; reply rows are validated and more is 
 
 // XAIBO-PROD-405 (P4-T04b1): usage scopes and observed-history pages.
 const scope = { scope: 4, agent: 'codex', profile: 'Default profile', verified: true, stream: 'codex:primary', windowMinutes: 300, usedPercent: 101.5,
-  resetsAt: 9, plan: 'pro', credits: { hasCredits: true, unlimited: null, balance: '12.50' }, asOf: 5, firstObservedAt: 5, measuredAt: 5, unavailable: null };
+  resetsAt: 9, plan: 'pro', credits: { hasCredits: true, unlimited: null, balance: '12.50' }, asOf: 5, firstObservedAt: 5, measuredAt: 5, unavailable: null,
+  profileId: 'c1', generation: 1, boundary: { method: 'api-key', at: 3, reason: 'method' } }; // XAIBO-PROD-582
 const blank = { scope: null, agent: 'agy', profile: 'Default profile', verified: null, stream: null, windowMinutes: null, usedPercent: null, resetsAt: null,
-  plan: null, credits: null, asOf: null, firstObservedAt: null, measuredAt: null, unavailable: 'passive' };
+  plan: null, credits: null, asOf: null, firstObservedAt: null, measuredAt: null, unavailable: 'passive', profileId: 'a1', generation: null, boundary: null };
+const VIEW = { profileId: '00000000-0000-4000-8000-0000000c8201', revision: 0, method: 'unknown', source: null, at: null, declaration: null, evidence: null, conflict: false,
+  usingDeclaration: false, outputStatus: 'unavailable', generation: 0, boundary: null };
+const profile = { profileId: VIEW.profileId, agent: 'claude', label: 'Default profile', signIn: VIEW };
 test('usage: request id only; reply scopes validated field by field and bounded', () => {
   assert.deepEqual(parsePortRequest({ v: 1, type: 'usage', id: 2, x: 1 }), { v: 1, type: 'usage', id: 2 });
   assert.equal(parsePortRequest({ v: 1, type: 'usage', id: -2 }), null);
-  const reply = { v: 1, type: 'usage', id: 2, scopes: [scope, blank, { ...blank, agent: 'claude', unavailable: 'no-observation' }] };
+  const reply = { v: 1, type: 'usage', id: 2, scopes: [scope, blank, { ...blank, agent: 'claude', unavailable: 'no-observation' }], profiles: [profile, { ...profile, profileId: 'r1', agent: 'acme', signIn: null }] };
   assert.deepEqual(parsePortMessage(reply), reply);
   assert.deepEqual(parsePortMessage({ ...reply, scopes: [{ ...scope, extra: '<b>', credits: { ...scope.credits, junk: 1 } }] }), { ...reply, scopes: [scope] });
+  // XAIBO-PROD-582: identity and sign-in fields, bounded; a profile's sign-in view as strict as the signIn reply's
+  for (const bad of [{ profileId: '' }, { profileId: '../x' }, { profileId: 5 }, { generation: -1 }, { generation: 257 }, { generation: 1.5 }, { boundary: { method: 'guess', at: 3, reason: 'method' } },
+    { boundary: { method: 'api-key', at: 'x', reason: 'method' } }, { boundary: { method: 'api-key', at: 3, reason: 'other' } }, { boundary: { method: 'api-key', at: 3, reason: 'method', path: '/x' } }]) {
+    assert.equal(parsePortMessage({ ...reply, scopes: [{ ...scope, ...bad }] }), null, JSON.stringify(bad));
+  }
+  for (const bad of [{ profileId: '' }, { agent: 'Bad Agent' }, { label: 5 }, { label: 'x'.repeat(4098) }, { signIn: { ...VIEW, method: 'guess' } }, { signIn: { ...VIEW, profileId: '00000000-0000-4000-8000-0000000c82ff' } }, { extra: 1 }]) {
+    assert.equal(parsePortMessage({ ...reply, profiles: [{ ...profile, ...bad }] }), null, JSON.stringify(bad));
+  }
+  assert.equal(parsePortMessage({ ...reply, profiles: undefined }), null, 'profiles required');
+  assert.equal(parsePortMessage({ ...reply, profiles: Array(257).fill(profile) }), null, 'profiles bounded');
   for (const bad of [{ scope: -1 }, { agent: 'Bad Agent' }, { profile: 5 }, { profile: 'x'.repeat(4098) }, { verified: 'yes' }, { stream: 'x'.repeat(81) },
     { windowMinutes: 0.5 }, { usedPercent: -1 }, { usedPercent: Number.NaN }, { resetsAt: 'x' }, { plan: 'x'.repeat(33) }, { credits: 'lots' },
     { credits: { hasCredits: 'y', unlimited: null, balance: null } }, { credits: { hasCredits: null, unlimited: null, balance: 'x'.repeat(33) } },
