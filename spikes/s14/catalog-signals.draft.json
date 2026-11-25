@@ -28,8 +28,8 @@
     {
       "agent": "claude",
       "surface": "claude-statusline",
-      "status": "candidate",
-      "note": "rate_limits windows survive captureRecord and intake. A window is evidence only when non-empty; null, {} or absent prove nothing. Discriminates only if alternative methods are shown not to emit it (not-run: D-P6-14)."
+      "status": "presence-verified",
+      "note": "Claude 2.1.332 (owner subscription, 2 starts, guard MATCH): rate_limits.five_hour and seven_day present and repeatable, production-reachable. Not a discriminator: API key, cloud and gateway were not run (D-P6-14), so the rules keep version 'unverified' and cannot match. Promote only after an alternative-method run on the same version shows them absent."
     },
     {
       "agent": "claude",

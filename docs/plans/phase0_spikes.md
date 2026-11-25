@@ -88,6 +88,7 @@ Procedure: P0-T04 (`guard.ts snapshot|compare`), P0-T05 (runner, deny wrapper, n
 | S11 Gemini/catalog | C1–C5 core-required; C6–C8, C11 conditional; C9, C10, C12 catalog-required (OQ-C14) | Fail→owner (Gemini live), catalog pass | Gemini live UNVERIFIED (owner: skip); catalog draft + validator `ajv` 8.20.0 | Q18; App. E #16/#17/#24; App. C (proposed) | [S11](#s11--gemini-and-catalog) |
 | S12 Capacity/latency | required (capacity) | Pass-narrowed (owner: personal profile, D-P0-24) | §7.1 layout C; batch 100 rows/50 ms/1 MiB; per-file watch + 5 s scan | FR-02, Q8, Q19, App. E #20/#26 (proposed) | [S12](#s12--capacitylatency-feasibility) |
 | S13 Passive usage/context/cost | required; no qualifying tee returns to owner | Pass-narrowed (C8 partial) | SEA statusLine tee; Claude account scope unverified; Codex salted-hash account marker | FR-51, §5.11, §5.12, App. E #22 | [S13](#s13--passive-usage-context-and-cost) |
+| S14 Sign-in signals | required before P6-T01a (FR-54); a negative result is valid | Pass-narrowed (proposed; owner decides): Claude subscription only, others not-run | Claude 2.1.332 statusLine `rate_limits` windows present and repeatable under subscription, but not shown to discriminate; no explicit method field | FR-54, S-38, EC-109/110 | [S14](#s14--sign-in-signals) |
 
 ## 2. Per-spike sections
 
@@ -732,6 +733,38 @@ Rule: no qualifying tee returns to the owner for a scope/implementation decision
 3. **Codex account scope: (a)**, use a local salted hash of `creator_account_id` as an epoch marker only, never the raw value (owner chose (a); (b), ignoring the field, was not chosen). PRD §5.11 forbids persisting account UUIDs, so (a) needs a one-line PRD clarification that a salted hash is allowed.
 
 **2.6 Consequences.** FR-51: Claude effort comes from the statusLine. §5.11: Claude `as_of` is always "Source time unknown; observed …". §5.12: 5m/1h cache-write classes, `service_tier` and `speed` need table support or the component is unavailable; Codex cache-write stays unavailable until its relation to input is tested. App. E #22 resolved (SIGTERM on a slow statusLine). App. E #23–#25 stay open for the unobserved parts of C8 and for v1-B categories. Still to observe: a model-window size change and Codex `/model` (S13-C8). App. C delta: the product ships a second SEA binary (or one binary with two entry modes, decided in Phase 3 with OQ-A4).
+
+### S14 — Sign-in signals
+
+**2.1 Question and refs.** Which fields that Xaibo already ingests identify a profile's sign-in method (subscription, API key, cloud provider, gateway, mixed) for an exact agent version? Plan P6-S14-T1; PRD FR-54, S-38; EC-109/110 (P6-T01a). Design: Codex (task-mww8dmn0-o2myrv), scope D-P6-14.
+
+**2.2 Criteria**
+
+| ID | Criterion | Status | Evidence |
+|---|---|---|---|
+| S14-C1 | Synthetic field-to-method checks, written first, incl. absent/ambiguous signals | pass | `spikes/s14/signals.test.ts` (23 tests): each method, absent/null/empty/malformed, unknown enum, exact version, wrong record type, text-only mention, dropped field, excluded field and discriminator, conflict vs Mixed |
+| S14-C2 | Only fields that survive production ingestion can map | pass | classifier runs on `captureRecord` and Codex `parseLine` + `codexRateLimits`; transcripts unprojected until P6-T01a |
+| S14-C3 | No credential, auth, config, keychain or environment access; no canary in output | pass | privacy test traps fs, child_process, net/http/https/dns and env reads (mutation-checked) |
+| S14-C4 | Live run in a disposable profile, guard MATCH around each start, fixed prompt | pass (Claude subscription only) | `run.sh claude a subscription`: 2 starts, every compare MATCH, version stable |
+| S14-C5 | Numberless per-agent/version report incl. unavailable methods | pass | `spikes/s14/evidence/s14.json` (rows + key-path names, no values) |
+| S14-C6 | A verified field-to-method mapping per agent | **not established** | Claude: present under subscription, alternatives not run; Codex, agy: not-run |
+
+**2.3 Method.** `spikes/s14/`: pure classifier `signals.ts`, status-line capture helper `capture.ts` (production projection plus key names, silent, exit 0), `collect.ts` (bounded regular-file reads inside the profile; an empty start is invalid), `report.ts` (allowlisted rows), owner runbook `README.md` and `run.sh`. Owner ran `bash spikes/s14/run.sh claude a subscription` (2026-11-25): two interactive starts of the disposable `claude-a` profile, each with the fixed prompt "Reply with the single word OK." and the capture helper as its statusLine (`--settings`; the profile's own settings unchanged), guard snapshot/compare around each start. Raw captures stay local (`.cache/spike-results/s14/raw`).
+
+**2.4 Evidence** (Claude 2.1.332, owner subscription sign-in)
+
+| Candidate (`catalog-signals.draft.json`) | Field | Signal | Repeatable | Result |
+|---|---|---|---|---|
+| `claude-five-hour-window` | statusLine `rate_limits.five_hour` (non-empty) | present | yes | verified presence; `alternatives-not-run` |
+| `claude-seven-day-window` | statusLine `rate_limits.seven_day` (non-empty) | present | yes | verified presence; `alternatives-not-run` |
+
+- Not run (no access, D-P6-14; ready: tests, rule shape, runbook): Claude API key, cloud provider (Bedrock/Vertex), gateway, mixed; Codex all methods; agy Google sign-in.
+- Key-path names (evidence `keys`): the statusLine has no auth, plan or method key (new since S13: `prompt_cache.*`, `fast_mode`, `thinking.enabled`, `output_style.name`, `prompt_id`). Claude transcripts have no explicit method key either; `accountUuid`/`organizationUuid` are identity (excluded), `message.usage.service_tier`, `fallback_credit` and `inference_geo` are usage (excluded). The transcript key list covers every transcript in the disposable profile, including earlier spike sessions, not only the two S14 starts.
+- Limit: presence under one method does not show that other methods lack the windows, so the field is not a discriminator yet.
+
+**2.5 Decision.** Proposed, pending owner (record_decision): **Pass-narrowed.** No verified sign-in mapping for any agent. P6-T01a ships with every agent's method **Unknown unless the owner declares it**. The Claude `rate_limits` windows stay a draft candidate (`version: unverified`, cannot match) until an API-key, cloud or gateway run on the same version shows them absent; that run is the trigger to promote them.
+
+**2.6 Consequences.** P6-T01a builds the owner declaration, the per-profile state and the catalog rule shape (`signals.ts` `Rule`), with no shipped rules. EC-109's automatic cases are tested on synthetic rules only. The P6-T10a sign-in fieldset leads with the declaration. Codex `payload.rate_limits.plan_type` stays the strongest unrun candidate.
 
 ## 3. Cross-spike decisions
 
