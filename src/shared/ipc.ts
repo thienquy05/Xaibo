@@ -348,6 +348,7 @@ export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Curs
   | { v: 1; type: 'storage'; id: number; refresh: boolean }
   /** XAIBO-PROD-568 (P6-T11): Settings > Local prices: the current table, a Validate that switches nothing, a Reload. */
   | { v: 1; type: 'prices'; id: number; op: PriceOp }
+  | SignInRequest
   | { v: 1; type: 'history'; id: number; filter: HistoryFilter; cursor: HistoryKey | null; limit: number }
   | { v: 1; type: 'projects'; id: number; cursor: number | null; limit: number }
   | { v: 1; type: 'folders'; id: number; project: number; cursor: number | null; limit: number }
@@ -391,6 +392,8 @@ export type PortMessage =
   | { v: 1; type: 'storage'; id: number; report: StorageReport | null; failed?: true }
   /** view null = the service has no prices (a bundled-list build error); check is set only by validate. */
   | { v: 1; type: 'prices'; id: number; view: PriceView | null; check: PriceCheck | null }
+  /** XAIBO-PROD-572: view null for profile-not-found, read-only, unavailable and failed. */
+  | { v: 1; type: 'signIn'; id: number; code: SignInReplyCode; view: SignInView | null }
   | { v: 1; type: 'history'; id: number; rows: HistoryRow[]; next: HistoryKey | null; failed?: true }
   | { v: 1; type: 'projects'; id: number; projects: Named[]; next: number | null; failed?: true }
   | { v: 1; type: 'folders'; id: number; folders: Named[]; next: number | null; failed?: true }
@@ -896,6 +899,7 @@ export function parsePortRequest(x: unknown): PortRequest | null {
   }
   if (m?.type === 'storage') return count(m.id) && typeof m.refresh === 'boolean' ? { v: 1, type: 'storage', id: m.id, refresh: m.refresh } : null;
   if (m?.type === 'prices') return count(m.id) && oneOf(PRICE_OPS, m.op) ? { v: 1, type: 'prices', id: m.id, op: m.op } : null;
+  if (m?.type === 'signIn') return parseSignInRequest(m);
   if (m?.type === 'monthly') {
     const filter = parseLedgerFilter(m.filter);
     return count(m.id) && filter && monthOrNull(m.end) && Number.isSafeInteger(m.limit) && (m.limit as number) >= 1 && (m.limit as number) <= LEDGER_MONTHS
@@ -995,6 +999,12 @@ export function parsePortMessage(x: unknown): PortMessage | null {
   if (m.type === 'retention') {
     const setting = m.setting === null ? null : parseRetentionSetting(m.setting);
     return count(m.id) && m.failed === undefined && (m.setting === null || setting) && timeOrNull(m.lastRunAt) ? { v: 1, type: 'retention', id: m.id, setting, lastRunAt: m.lastRunAt } : null;
+  }
+  if (m.type === 'signIn') {
+    if (!exactKeys(m, ['v', 'type', 'id', 'code', 'view']) || !count(m.id) || !oneOf(SIGN_IN_CODES, m.code)) return null;
+    const failure = m.code === 'profile-not-found' || m.code === 'read-only' || m.code === 'unavailable' || m.code === 'failed';
+    const view = m.view === null ? null : parseSignInView(m.view);
+    return view !== undefined && (view === null) === failure ? { v: 1, type: 'signIn', id: m.id, code: m.code, view } : null;
   }
   if (m.type === 'prices') {
     const view = m.view === null ? null : parsePriceView(m.view);
@@ -1131,4 +1141,63 @@ export function parseStartupReply(x: unknown): StartupReply | null {
   if (exactKeys(x, ['status', 'enabled']) && x.status === 'ready' && typeof x.enabled === 'boolean') return { status: 'ready', enabled: x.enabled };
   return exactKeys(x, ['status', 'code', 'enabled']) && x.status === 'failed' && oneOf(['platform', 'invalid'] as const, x.code)
     && (x.enabled === null || typeof x.enabled === 'boolean') ? { status: 'failed', code: x.code, enabled: x.enabled } : null;
+}
+
+// XAIBO-PROD-572 (P6-T01a slice 3; S-38, FR-54; design .handoff/p6-t01a-design.md "Slice 3 wire contract", security
+// review 3647): the owner's sign-in declaration. The renderer sends only the profile, the op, a method and the revision it
+// saw; the service assigns every time and reads no credential, auth, config or environment.
+export const SIGN_IN_METHODS = ['subscription', 'api-key', 'cloud-provider', 'gateway', 'mixed', 'unknown'] as const;
+export type SignInMethod = (typeof SIGN_IN_METHODS)[number];
+const SIGN_IN_KNOWN = SIGN_IN_METHODS.filter((m) => m !== 'unknown');
+const SIGN_IN_SOURCES = ['claude-statusline', 'claude-transcript', 'codex-rollout', 'agy-transcript'] as const;
+export const SIGN_IN_CODES = ['ok', 'stale', 'profile-not-found', 'limit', 'read-only', 'unavailable', 'failed'] as const;
+export type SignInReplyCode = (typeof SIGN_IN_CODES)[number];
+export type SignInRequest = { v: 1; type: 'signIn'; id: number; profileId: string } & (
+  | { op: 'read' }
+  | { op: 'set'; method: SignInMethod; expectedRevision: number }
+  | { op: 'clear' | 'account-change'; expectedRevision: number });
+export interface SignInView {
+  profileId: string; revision: number; method: SignInMethod;
+  /** What the method comes from: the owner's declaration, an output signal, or nothing (Unknown). */
+  source: 'owner' | (typeof SIGN_IN_SOURCES)[number] | null; at: number | null;
+  declaration: { method: SignInMethod; at: number } | null;
+  evidence: { method: Exclude<SignInMethod, 'unknown'>; source: (typeof SIGN_IN_SOURCES)[number]; version: string; ruleId: string; observedAt: number; sourceAt: number } | null;
+  conflict: boolean; usingDeclaration: boolean; outputStatus: 'unavailable' | 'matched' | 'ambiguous';
+  generation: number; boundary: { at: number; reason: 'method' | 'declared-account' } | null;
+}
+
+const SIGN_IN_VERSION = /^\d{1,6}\.\d{1,6}\.\d{1,6}(?:-[A-Za-z0-9.-]{1,48})?$/;
+const SIGN_IN_RULE = /^[a-z]+(?:-[a-z]+)*$/;
+const time = (x: unknown): x is number => Number.isSafeInteger(x);
+const msOrNull = (x: unknown): x is number | null => x === null || time(x);
+
+function parseSignInRequest(m: Msg): SignInRequest | null {
+  if (!count(m.id) || !uuid(m.profileId)) return null;
+  const base = { v: 1 as const, type: 'signIn' as const, id: m.id, profileId: m.profileId };
+  if (m.op === 'read') return exactKeys(m, ['v', 'type', 'id', 'profileId', 'op']) ? { ...base, op: 'read' } : null;
+  if (!count(m.expectedRevision)) return null;
+  if (m.op === 'set') {
+    return exactKeys(m, ['v', 'type', 'id', 'profileId', 'op', 'method', 'expectedRevision']) && oneOf(SIGN_IN_METHODS, m.method)
+      ? { ...base, op: 'set', method: m.method, expectedRevision: m.expectedRevision } : null;
+  }
+  return (m.op === 'clear' || m.op === 'account-change') && exactKeys(m, ['v', 'type', 'id', 'profileId', 'op', 'expectedRevision'])
+    ? { ...base, op: m.op, expectedRevision: m.expectedRevision } : null;
+}
+
+/** Review L5: the bounds again on the renderer side (the service writes them; a store row is not trusted). */
+function parseSignInView(x: unknown): SignInView | undefined {
+  if (!exactKeys(x, ['profileId', 'revision', 'method', 'source', 'at', 'declaration', 'evidence', 'conflict', 'usingDeclaration', 'outputStatus', 'generation', 'boundary'])) return undefined;
+  if (!uuid(x.profileId) || !count(x.revision) || !oneOf(SIGN_IN_METHODS, x.method) || !msOrNull(x.at) || !count(x.generation)) return undefined;
+  if (!(x.source === null || x.source === 'owner' || oneOf(SIGN_IN_SOURCES, x.source))) return undefined;
+  if (typeof x.conflict !== 'boolean' || typeof x.usingDeclaration !== 'boolean' || !oneOf(['unavailable', 'matched', 'ambiguous'] as const, x.outputStatus)) return undefined;
+  const d = x.declaration, e = x.evidence, b = x.boundary;
+  const declaration = d === null ? null : exactKeys(d, ['method', 'at']) && oneOf(SIGN_IN_METHODS, d.method) && time(d.at) ? { method: d.method, at: d.at } : undefined;
+  const evidence = e === null ? null : exactKeys(e, ['method', 'source', 'version', 'ruleId', 'observedAt', 'sourceAt']) && oneOf(SIGN_IN_KNOWN, e.method)
+    && oneOf(SIGN_IN_SOURCES, e.source) && text(e.version, 64) && SIGN_IN_VERSION.test(e.version) && text(e.ruleId, 64) && SIGN_IN_RULE.test(e.ruleId)
+    && time(e.observedAt) && time(e.sourceAt)
+    ? { method: e.method, source: e.source, version: e.version, ruleId: e.ruleId, observedAt: e.observedAt, sourceAt: e.sourceAt } : undefined;
+  const boundary = b === null ? null : exactKeys(b, ['at', 'reason']) && time(b.at) && oneOf(['method', 'declared-account'] as const, b.reason) ? { at: b.at, reason: b.reason } : undefined;
+  if (declaration === undefined || evidence === undefined || boundary === undefined) return undefined;
+  return { profileId: x.profileId, revision: x.revision, method: x.method, source: x.source, at: x.at, declaration, evidence, conflict: x.conflict,
+    usingDeclaration: x.usingDeclaration, outputStatus: x.outputStatus, generation: x.generation, boundary };
 }

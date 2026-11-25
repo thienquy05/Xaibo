@@ -149,6 +149,12 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
         if (resyncAfter(req.op, result)) removed(); // G5b2-4: other windows list it (or not) too
         break;
       }
+      case 'signIn': { // XAIBO-PROD-572 (P6-T01a slice 3): a change re-groups usage, so the ledger recomputes (review L6)
+        const r = s.signIn(req);
+        port.postMessage({ v: IPC_VERSION, type: 'signIn', id: req.id, code: r.code, view: r.view } satisfies PortMessage);
+        if (r.changed) ledger?.invalidate();
+        break;
+      }
       // XAIBO-PROD-558 (P6-T03 part 1b): Connect, Disconnect, Uninstall; a preview belongs to this port
       case 'connectPreview': case 'connectApply': case 'disconnect': case 'uninstall':
         // part 2a: awaited (the lock is released before the reply); a closed port drops the reply

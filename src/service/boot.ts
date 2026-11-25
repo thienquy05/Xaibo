@@ -31,6 +31,8 @@ import { openStore, type Store } from './store/db.ts';
 import { startHooks, type Hooks } from './receivers/intake.ts';
 import { Writer, type Batch } from './store/writer.ts';
 import { loadScopeSalt } from './usage/snapshots.ts';
+import { answerSignIn, mutationGate } from './usage/sign-in-state.ts';
+import type { SignInReplyCode, SignInRequest, SignInView } from '../shared/ipc.ts';
 import { applyClear, clearWatermarks, keysInWorker } from './usage/clear.ts';
 import { purgeLimit, purgeManual, reimportKey, rerunner, saveRetention } from './history/tools.ts';
 
@@ -104,6 +106,8 @@ export interface Service {
   purge(session: number): Promise<PurgeResult>;
   reimport(key: string): ReimportResult;
   saveRetention(value: RetentionSetting): SaveRetentionResult;
+  /** XAIBO-PROD-572 (P6-T01a slice 3): the owner's sign-in declaration for a synced profile (read, set, clear, account change). */
+  signIn(req: SignInRequest): { code: SignInReplyCode; view: SignInView | null; changed: boolean };
   stop(): void;
 }
 
@@ -287,6 +291,7 @@ export async function boot(o: BootOptions): Promise<Service> {
   let imported = new Map<string, Record<string, string>>();
   let env: LoginEnv = {};
   let synced = false; // XAIBO-PROD-558: Connect answers `starting` until profiles are synced
+  const signInGate = mutationGate(); // XAIBO-PROD-572 review M1
   let detected = false;
   let markDetected = () => {};
   const detection = new Promise<void>((resolve) => { markDetected = resolve; });
@@ -497,6 +502,7 @@ export async function boot(o: BootOptions): Promise<Service> {
       return result;
     },
     saveRetention: (value) => guarded('retention_set', 'retention_set_failed', () => saveRetention(writer, value)),
+    signIn: (req) => answerSignIn({ db, writer, readOnly: readOnly || stopped, profile: (id) => (synced ? profiles.some((p) => p.id === id) : null), allow: signInGate }, req, Date.now()),
     stop: () => {
       stopped = true;
       if (due) clearTimeout(due.timer);

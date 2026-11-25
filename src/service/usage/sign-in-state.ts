@@ -4,6 +4,8 @@
 // change or a declared account change, never on absence, at most MAX_BOUNDARIES times per profile. Times are assigned by
 // the service; callers give only the input and the revision they saw. Reads no credential, auth, config or environment.
 import type { DatabaseSync } from 'node:sqlite';
+import type { SignInReplyCode, SignInRequest, SignInView } from '../../shared/ipc.ts';
+import type { Writer } from '../store/writer.ts';
 import type { KnownMethod, Method, MethodResult, SignalSource } from './sign-in.ts';
 
 export const MAX_BOUNDARIES = 256;
@@ -106,8 +108,8 @@ export type SignInCode = 'ok' | 'stale' | 'profile-not-found' | 'limit';
  *  revision read here is the one written (review M3). `expectedRevision`: owner actions; a mismatch changes nothing. */
 export function changeSignIn(db: DatabaseSync, profileId: string, input: SignInInput, now: number, expectedRevision?: number): { code: SignInCode; state: SignInState } {
   const s = readSignIn(db, profileId);
+  if (!db.prepare('SELECT 1 FROM profiles WHERE id = ?').get(profileId)) return { code: 'profile-not-found', state: s }; // slice-3 review M2: before the revision
   if (expectedRevision !== undefined && expectedRevision !== s.revision) return { code: 'stale', state: s };
-  if (!db.prepare('SELECT 1 FROM profiles WHERE id = ?').get(profileId)) return { code: 'profile-not-found', state: s };
   const r = nextSignIn(s, input, now);
   if ('refused' in r) return { code: 'limit', state: s };
   if (r.state === s) return { code: 'ok', state: s };
@@ -127,4 +129,65 @@ export function changeSignIn(db: DatabaseSync, profileId: string, input: SignInI
       .run(profileId, r.boundary.generation, n.revision, r.boundary.at, r.boundary.reason, r.boundary.method);
   }
   return { code: 'ok', state: n };
+}
+
+/** XAIBO-PROD-572 (slice 3): what P6-T10a shows for a profile: the effective method with its source and time, the
+ *  declaration and the evidence side by side (a conflict keeps both), the epoch and its last boundary. No replay watermark. */
+export function signInView(db: DatabaseSync, profileId: string): SignInView {
+  const s = readSignIn(db, profileId), e = s.evidence, used = e && !e.ambiguous ? e : null;
+  let boundary: SignInView['boundary'] = null;
+  try {
+    const b = db.prepare('SELECT at, reason FROM sign_in_boundaries WHERE profile_id = ? ORDER BY generation DESC LIMIT 1').get(profileId) as { at: number; reason: 'method' | 'declared-account' } | undefined;
+    if (b) boundary = { at: b.at, reason: b.reason };
+  } catch (err) { if (!/no such table/.test(String((err as Error).message))) throw err; }
+  return {
+    profileId, revision: s.revision, method: effectiveMethod(s),
+    source: s.declaration ? 'owner' : used ? used.source : null, at: s.declaration ? s.declaration.at : used ? used.observedAt : null,
+    declaration: s.declaration && { method: s.declaration.method, at: s.declaration.at },
+    evidence: e && { method: e.method, source: e.source, version: e.version, ruleId: e.ruleId, observedAt: e.observedAt, sourceAt: e.sourceAt },
+    conflict: s.declaration !== null && used !== null && used.method !== s.declaration.method, usingDeclaration: s.declaration !== null,
+    outputStatus: !e ? 'unavailable' : e.ambiguous ? 'ambiguous' : 'matched', generation: s.generation, boundary,
+  };
+}
+
+/** Slice-3 review M1: at most `max` changes per profile per window, so a renderer cannot burn the epoch budget.
+ *  ponytail: in memory, per service run; a restart resets it (the 256-boundary cap still holds). */
+export function mutationGate(max = 10, windowMs = 60_000): (profileId: string, now: number) => boolean {
+  const seen = new Map<string, number[]>();
+  return (profileId, now) => {
+    const recent = (seen.get(profileId) ?? []).filter((t) => t > now - windowMs);
+    const ok = recent.length < max;
+    if (ok) recent.push(now);
+    seen.set(profileId, recent);
+    return ok;
+  };
+}
+
+export interface SignInDeps {
+  db: DatabaseSync; writer: Writer | null; readOnly: boolean;
+  /** The synced profiles (review M2): true if known, false if not, null before profile sync. */
+  profile(id: string): boolean | null;
+  allow(profileId: string, now: number): boolean;
+}
+
+/** The signIn request: fixed codes, the complete view, and whether anything changed (only then is the usage ledger
+ *  invalidated). Failures carry no view and never echo input (review L8). */
+export function answerSignIn(d: SignInDeps, req: SignInRequest, now: number): { code: SignInReplyCode; view: SignInView | null; changed: boolean } {
+  const none = (code: SignInReplyCode) => ({ code, view: null, changed: false });
+  try {
+    if (!d.db.isOpen) return none('failed');
+    const known = d.profile(req.profileId);
+    if (known === null) return none('unavailable');
+    if (!known || !d.db.prepare('SELECT 1 FROM profiles WHERE id = ?').get(req.profileId)) return none('profile-not-found');
+    if (req.op === 'read') return { code: 'ok', view: signInView(d.db, req.profileId), changed: false };
+    if (d.readOnly || !d.writer) return none('read-only');
+    if (!d.allow(req.profileId, now)) return { code: 'limit', view: signInView(d.db, req.profileId), changed: false };
+    const input: SignInInput = req.op === 'set' ? { kind: 'declare', method: req.method } : req.op === 'clear' ? { kind: 'clear' } : { kind: 'account-change' };
+    const r = d.writer.transact((db) => changeSignIn(db, req.profileId, input, now, req.expectedRevision));
+    if (r.code === 'profile-not-found') return none('profile-not-found');
+    const changed = r.code === 'ok' && r.state.revision !== req.expectedRevision;
+    try { return { code: r.code, view: signInView(d.db, req.profileId), changed }; } catch { return { ...none('failed'), changed }; } // committed: the ledger still recomputes (code review)
+  } catch {
+    return none('failed');
+  }
 }
