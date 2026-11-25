@@ -54,6 +54,38 @@
       "type": "string",
       "pattern": "^(?!(?:.*\\.)?(?:__proto__|prototype|constructor)(?:\\.|$))[A-Za-z_][A-Za-z0-9_]{0,63}(?:\\.[A-Za-z_][A-Za-z0-9_]{0,63}){0,3}$"
     },
+    "exactVersion": {
+      "description": "P6-T01a: one exact agent version, prerelease allowed; never a range.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^\\d{1,6}\\.\\d{1,6}\\.\\d{1,6}(?:-[A-Za-z0-9.-]{1,48})?$"
+    },
+    "signalPath": {
+      "description": "P6-T01a: a dotted path into a projected agent-output record, own properties only; prototype names are never paths.",
+      "type": "string",
+      "maxLength": 256,
+      "pattern": "^(?!(?:.*\\.)?(?:__proto__|prototype|constructor)(?:\\.|$))[A-Za-z_][A-Za-z0-9_]{0,63}(?:\\.[A-Za-z_][A-Za-z0-9_]{0,63}){0,7}$"
+    },
+    "signInRule": {
+      "description": "P6-T01a (S-38, FR-54; S14 D-P6-15): one exact-version rule mapping an allowlisted string leaf of already-ingested agent output to a sign-in method. Which paths are eligible is fixed in code (src/service/usage/sign-in.ts), not here.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "source", "version", "record", "field", "test", "method"],
+      "properties": {
+        "id": { "type": "string", "maxLength": 64, "pattern": "^[a-z]+(?:-[a-z]+)*$" },
+        "source": { "enum": ["claude-statusline", "claude-transcript", "codex-rollout", "agy-transcript"] },
+        "version": { "$ref": "#/$defs/exactVersion" },
+        "record": { "type": "object", "maxProperties": 8, "propertyNames": { "$ref": "#/$defs/signalPath" }, "additionalProperties": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$" } },
+        "field": { "$ref": "#/$defs/signalPath" },
+        "test": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["oneOf"],
+          "properties": { "oneOf": { "type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,32}$" } } }
+        },
+        "method": { "enum": ["subscription", "api-key", "cloud-provider", "gateway", "mixed"] }
+      }
+    },
     "agent": {
       "type": "object",
       "additionalProperties": false,
@@ -61,6 +93,7 @@
       "properties": {
         "id": { "$ref": "#/$defs/refId" },
         "displayName": { "$ref": "#/$defs/displayText" },
+        "signInRules": { "description": "P6-T01a: sign-in method rules (bundled catalog only; an imported entry may carry none). The bundled catalog ships none (S14 Pass-narrowed).", "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/signInRule" } },
         "detection": {
           "type": "object",
           "additionalProperties": false,

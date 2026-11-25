@@ -3,6 +3,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { Ajv2020 } from 'ajv/dist/2020.js';
+import { ruleProblem, SOURCE_AGENT, type MethodRule } from '../usage/sign-in.ts';
 
 export interface AgentEntry {
   id: string;
@@ -16,6 +17,8 @@ export interface AgentEntry {
   connectRoutes?: { route: 'claude-plugin' | 'claude-settings-fallback'; versions: { min: string; max?: string }; evidence: string }[];
   /** P3-T13a (§6.8): hook events to status evidence by exact name and field predicates. */
   hookMappings?: HookMappings;
+  /** P6-T01a (S-38, FR-54): sign-in method rules; bundled only, none shipped (S14 Pass-narrowed, D-P6-15). */
+  signInRules?: MethodRule[];
 }
 export interface HookRule {
   event: string;
@@ -67,7 +70,9 @@ const rootKey = (relative: string) => path.posix.normalize(relative).toLowerCase
 const overlaps = (a: string, b: string) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
 
 export function catalogIssues(value: unknown, bundled?: Catalog): CatalogIssue[] {
-  if (!check(value)) return [...new Set((check.errors ?? []).map((e) => e.instancePath || '/'))].map((at) => ({ code: 'schema-invalid' as const, at }));
+  // P6-T01a review M1: a pointer below a rule's record would carry a submitted key, so it stops at /record.
+  const pointer = (p: string) => (p || '/').replace(/(\/signInRules\/\d+\/record)\/.*$/, '$1');
+  if (!check(value)) return [...new Set((check.errors ?? []).map((e) => pointer(e.instancePath)))].map((at) => ({ code: 'schema-invalid' as const, at }));
   const c = value as Catalog, out: CatalogIssue[] = [];
   const add = (code: CatalogCode, at: string) => out.push({ code, at });
   const dup = (ids: string[], at: (j: number) => string) => ids.forEach((id, j) => { if (ids.indexOf(id) < j) add('duplicate-id', at(j)); });
@@ -84,6 +89,16 @@ export function catalogIssues(value: unknown, bundled?: Catalog): CatalogIssue[]
       a[key]?.forEach((x, j) => { if (x.versions.max !== undefined && older(x.versions.max, x.versions.min)) add('unsafe-value', `${p}/${key}/${j}/versions`); });
     }
     if (a.connectRoutes && a.id !== 'claude') add('unsafe-value', `${p}/connectRoutes`); // Claude's routes belong to Claude only
+    // P6-T01a (review H2): sign-in rules are bundled data only; an imported entry may carry none. Bundled: unique ids, the
+    // agent's own surface, and only the allowlisted fields and discriminators (sign-in.ts).
+    if (a.signInRules?.length && bundled) add('unsafe-value', `${p}/signInRules`);
+    else if (a.signInRules) {
+      dup(a.signInRules.map((r) => r.id), (j) => `${p}/signInRules/${j}/id`);
+      a.signInRules.forEach((r, j) => {
+        const problem = SOURCE_AGENT[r.source] !== a.id ? 'source' : ruleProblem(r);
+        if (problem) add('unsafe-value', `${p}/signInRules/${j}/${problem}`);
+      });
+    }
     if (!bundled) return;
     if (bundled.agents.some((b) => b.id === a.id.toLowerCase())) add('shadow', `${p}/id`);
     a.detection.binaries.forEach((b, k) => b.names.forEach((n, j) => { if (names.has(binaryName(n))) add('shadow', `${p}/detection/binaries/${k}/names/${j}`); }));
