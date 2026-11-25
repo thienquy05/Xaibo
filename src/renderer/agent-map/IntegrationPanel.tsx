@@ -11,7 +11,7 @@ import { formatTime } from '../model.ts';
 import { Icon } from '../status/StatusBadge.tsx';
 import { visible } from '../text.ts';
 import { contentText, reasonsText, receiptText, STATE, stateText } from './integrations-state.ts';
-import { panelActions, type ActionKind, type DialogAction } from './integration-dialog.ts';
+import { panelActions, teeHint, teeToggle, type DialogAction, type PanelAction } from './integration-dialog.ts';
 import { IntegrationDiffDialog, type Done, type WriteApi } from './IntegrationDiffDialog.tsx';
 import { entryText, notifyText, pollTest, startTest, teeText, testable, testText, TEST_POLL_MS, TEST_TIMEOUT_MS, type ReceiptTest } from './integration-panel.ts';
 
@@ -19,7 +19,7 @@ export type DetailFetch = (key: IntegrationKey) => Promise<IntegrationDetailResu
 const REFUSED: Record<(typeof DETAIL_REFUSALS)[number], string> = {
   starting: 'Agents are still being detected', unavailable: 'Agent evidence is unavailable', 'not-found': 'This agent or profile is no longer listed', failed: "Couldn't load this integration",
 };
-const ACTION: Record<ActionKind, string> = { connect: 'Connect', disconnect: 'Disconnect', uninstall: 'Full Uninstall', cleanup: 'Clean up' };
+const ACTION: Record<PanelAction, string> = { connect: 'Connect', disconnect: 'Disconnect', uninstall: 'Full Uninstall', cleanup: 'Clean up' };
 
 export function IntegrationPanel({ fetchDetail, write, target, lastKnown, onBack, onProfile, onChanged }: {
   fetchDetail: DetailFetch; write: WriteApi; target: IntegrationKey; lastKnown: string | null; onBack: () => void; onProfile: (profileId: string) => void;
@@ -70,13 +70,13 @@ export function IntegrationPanel({ fetchDetail, write, target, lastKnown, onBack
   const [dialogReq, setDialogReq] = useState<{ action: DialogAction; n: number } | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const trigger = useRef<HTMLButtonElement | null>(null);
-  const act = (k: ActionKind, el: HTMLButtonElement) => {
-    const pid = d?.row.key.profileId;
+  const trigger = useRef<HTMLElement | null>(null);
+  const pid = d?.row.key.profileId ?? null;
+  const act = (action: DialogAction, el: HTMLElement) => {
     if (refreshing || !pid) return;
     trigger.current = el;
     setNote(null);
-    setDialogReq((r) => ({ action: k === 'uninstall' ? { kind: 'uninstall' } : { kind: k, profileId: pid }, n: (r?.n ?? 0) + 1 }));
+    setDialogReq((r) => ({ action, n: (r?.n ?? 0) + 1 }));
   };
   const done = ({ note: said, focus, sent }: Done) => {
     if (said !== null) setNote(said);
@@ -88,6 +88,8 @@ export function IntegrationPanel({ fetchDetail, write, target, lastKnown, onBack
     onChanged();
   };
   const actions = d && lastKnown === null ? panelActions(d) : [];
+  // XAIBO-PROD-581 (unit 6b): the separate tee toggle mirrors the evidence, so a cancelled dialog leaves it as it was
+  const toggle = d && lastKnown === null ? teeToggle(d) : null;
   const why = d ? reasonsText(d.row) : null, tee = d ? teeText(d) : null, notify = d ? notifyText(d) : null, said = testText(test);
   return (
     <section className="x-pane x-map-detail x-integration" aria-labelledby="integration-heading">
@@ -118,7 +120,7 @@ export function IntegrationPanel({ fetchDetail, write, target, lastKnown, onBack
               {d.entries.length ? <><h3>Configuration</h3><ul className="x-integration-list">{d.entries.map((e) => <li key={e.entry}>{entryText(e)}</li>)}</ul></> : null}
               {actions.length ? <div className="x-receipt-test"><h3>Connection</h3><div className="x-integration-actions">{actions.map((k) => (
                 <button key={k} type="button" className={`x-btn ${k === 'connect' ? 'x-btn-primary' : k === 'cleanup' ? 'x-btn-secondary' : 'x-btn-danger'}`} aria-disabled={refreshing || undefined}
-                  onClick={(e) => act(k, e.currentTarget)}>{ACTION[k]}</button>
+                  onClick={(e) => { if (pid) act(k === 'uninstall' ? { kind: 'uninstall' } : { kind: k, profileId: pid }, e.currentTarget); }}>{ACTION[k]}</button>
               ))}</div><p className="x-hint" aria-live="polite">{visible(note ?? '')}</p></div> : null}
               {d.trustSteps.length ? <><h3>Hooks installed, awaiting trust</h3><ol className="x-integration-list">{d.trustSteps.map((s, i) => <li key={i}>{visible(s)}</li>)}</ol></> : null}
               {testable(d) ? (
@@ -127,7 +129,13 @@ export function IntegrationPanel({ fetchDetail, write, target, lastKnown, onBack
                   <p className="x-hint" aria-live="polite">{visible(said ?? '')}</p>
                 </div>
               ) : null}
-              {tee ? <p className="x-hint">{tee}</p> : null}
+              {toggle && pid ? (
+                <div className="x-receipt-test">
+                  <label className="x-radio"><input type="checkbox" checked={toggle === 'on'} aria-describedby="tee-state" aria-disabled={refreshing || undefined}
+                    onChange={(e) => act({ kind: 'tee', profileId: pid, enabled: toggle === 'off' }, e.currentTarget)} />Optional status-line tee</label>
+                  <p id="tee-state" className="x-hint">{teeHint(d)}</p>
+                </div>
+              ) : tee ? <p className="x-hint">{tee}</p> : null}
               {notify ? <p className="x-hint">{notify}</p> : null}
             </>
           )}

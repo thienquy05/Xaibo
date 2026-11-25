@@ -168,7 +168,9 @@ function App() {
       removalPreview: (profileId: string | null) => client.current?.removalPreview(profileId) ?? gone(),
       removalApply: (previewId: string) => client.current?.removalApply(previewId) ?? Promise.resolve(notSent),
       cleanupPreview: (profileId: string) => client.current?.cleanupPreview(profileId) ?? gone(),
-      cleanupApply: (previewId: string) => client.current?.cleanupApply(previewId) ?? Promise.resolve(notSent) };
+      cleanupApply: (previewId: string) => client.current?.cleanupApply(previewId) ?? Promise.resolve(notSent),
+      teePreview: (profileId: string) => client.current?.teePreview(profileId) ?? gone(),
+      teeRemovalPreview: (profileId: string) => client.current?.teeRemovalPreview(profileId) ?? gone() };
   }, [browseApi]);
   const api = useMemo<UsageApi>(() => ({
     usage: () => client.current?.usage() ?? Promise.reject(new Error('no service')),

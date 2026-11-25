@@ -1,5 +1,6 @@
 // XAIBO-PROD-579 (P6-T10 unit 5; design §6.5.2, §5.1 Dialog and dialog transactions, §5.4; .handoff/p6-t10-design.md
-// section 3, review R1/R8): the integration diff dialog for Connect, Disconnect, Full Uninstall and Clean up, over the
+// section 3, review R1/R8): the integration diff dialog for Connect, Disconnect, Full Uninstall, Clean up and (XAIBO-PROD-581)
+// the separate status-line tee, over the
 // model in integration-dialog.ts. Native showModal (browser modality, no manual trap), named by its heading; Cancel takes
 // focus first; item checkboxes, then the named wrapped diff scrollport, conflicts and effects, then Cancel and Apply.
 // Escape is Cancel before submission and does nothing while applying; a failure or a lost result keeps Close only. A close
@@ -8,9 +9,9 @@
 import { useEffect, useRef, useState } from 'react';
 import type { CleanupReply, ConnectReply, IntegrationDetail, RemovalReply } from '../../shared/ipc.ts';
 import { visible } from '../text.ts';
-import { actionTitle, applyLabel, canApply, conflictTexts, dialogStep, effectTexts, openDialog, previewItems, type DialogAction, type DialogEvent, type DialogState, type Send } from './integration-dialog.ts';
+import { actionTitle, applyLabel, canApply, conflictTexts, dialogStep, effectTexts, nativeClose, openDialog, previewItems, type DialogAction, type DialogEvent, type DialogState, type Send } from './integration-dialog.ts';
 
-/** The previewed writes; a refusal is a result. Tee is never requested here (unit 6). */
+/** The previewed writes; a refusal is a result. Connect never asks for the tee; the tee has its own previews. */
 export interface WriteApi {
   connectPreview(profileId: string, retention: boolean): Promise<ConnectReply>;
   connectApply(previewId: string): Promise<ConnectReply>;
@@ -18,8 +19,12 @@ export interface WriteApi {
   removalApply(previewId: string): Promise<RemovalReply>;
   cleanupPreview(profileId: string): Promise<CleanupReply>;
   cleanupApply(previewId: string): Promise<CleanupReply>;
+  /** XAIBO-PROD-581: the separate tee's previews (unit 6a); applied by connectApply / removalApply. */
+  teePreview(profileId: string): Promise<ConnectReply>;
+  teeRemovalPreview(profileId: string): Promise<RemovalReply>;
 }
 function request(api: WriteApi, a: DialogAction, send: Send): Promise<ConnectReply | RemovalReply | CleanupReply> {
+  if (a.kind === 'tee') return send.kind === 'apply' ? (a.enabled ? api.connectApply(send.previewId) : api.removalApply(send.previewId)) : a.enabled ? api.teePreview(a.profileId) : api.teeRemovalPreview(a.profileId);
   if (send.kind === 'apply') return a.kind === 'connect' ? api.connectApply(send.previewId) : a.kind === 'cleanup' ? api.cleanupApply(send.previewId) : api.removalApply(send.previewId);
   return a.kind === 'connect' ? api.connectPreview(a.profileId, send.retention) : a.kind === 'cleanup' ? api.cleanupPreview(a.profileId) : api.removalPreview(a.kind === 'uninstall' ? null : a.profileId);
 }
@@ -75,10 +80,10 @@ export function IntegrationDiffDialog({ open, detail, api, lastKnown, onDone }: 
     const cur = sRef.current;
     if (lastKnown !== null && cur) step({ type: 'lost', seq: cur.seq });
   }, [lastKnown]);
-  const closed = () => { // the native close event; ours already cleared sRef
-    const cur = sRef.current;
-    if (!cur) return;
-    if (cur.phase === 'applying') { dialog.current?.showModal(); return; } // applying blocks dismissal
+  const closed = () => { // the native close event (queued: a stale one after a quick reopen is ignored)
+    const what = nativeClose(sRef.current, dialog.current?.open === true);
+    if (what === 'ignore') return;
+    if (what === 'reopen') { dialog.current?.showModal(); return; } // applying blocks dismissal
     sRef.current = null;
     setS(null);
     onDone({ note: null, focus: 'trigger', sent: sent.current });
@@ -123,7 +128,7 @@ export function IntegrationDiffDialog({ open, detail, api, lastKnown, onDone }: 
           <div className="x-dialog-actions">{/* Close replaces the pressed buttons after a failure, so it takes focus */}
             {pending ? <>
               <button type="button" className="x-btn x-btn-secondary" autoFocus aria-disabled={applying || undefined} onClick={() => { if (!applying) close('trigger', null); }}>Cancel</button>
-              <button type="button" className={`x-btn ${s.action.kind === 'connect' || s.action.kind === 'cleanup' ? 'x-btn-primary' : 'x-btn-danger'}`} aria-disabled={!canApply(s) || undefined} aria-busy={applying || undefined}
+              <button type="button" className={`x-btn ${s.action.kind === 'connect' || s.action.kind === 'cleanup' || (s.action.kind === 'tee' && s.action.enabled) ? 'x-btn-primary' : 'x-btn-danger'}`} aria-disabled={!canApply(s) || undefined} aria-busy={applying || undefined}
                 onClick={() => step({ type: 'apply' })}>{applyLabel(s.action)}</button>
             </> : <button type="button" className="x-btn x-btn-secondary" autoFocus onClick={() => close('trigger', null)}>Close</button>}
           </div>

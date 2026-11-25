@@ -8,10 +8,14 @@
 // sends whole config documents); removal and cleanup show each entry's outcome (their previews carry no lines).
 import type { CleanupReply, ConnectOutcome, ConnectPreview, ConnectReply, IntegrationDetail, RemovalItem, RemovalPreview, RemovalReply } from '../../shared/ipc.ts';
 import { APPLYING, RESULT_UNAVAILABLE } from '../model.ts';
-import { ROUTE } from './integration-panel.ts';
+import { entryText, ROUTE } from './integration-panel.ts';
 
-export type DialogAction = { kind: 'connect'; profileId: string } | { kind: 'disconnect'; profileId: string } | { kind: 'uninstall' } | { kind: 'cleanup'; profileId: string };
+/** XAIBO-PROD-581 (unit 6b): `tee` is the separate status-line tee (on: a tee-only Connect preview; off: the tee entry's removal). */
+export type DialogAction = { kind: 'connect'; profileId: string } | { kind: 'disconnect'; profileId: string } | { kind: 'uninstall' } | { kind: 'cleanup'; profileId: string }
+  | { kind: 'tee'; profileId: string; enabled: boolean };
 export type ActionKind = DialogAction['kind'];
+/** The panel's buttons (the tee is its own toggle). */
+export type PanelAction = Exclude<ActionKind, 'tee'>;
 type CleanupPreview = Extract<CleanupReply, { status: 'preview' }>;
 export type Preview = ConnectPreview | RemovalPreview | CleanupPreview;
 export type Reply = ConnectReply | RemovalReply | CleanupReply;
@@ -28,6 +32,11 @@ export function openDialog(action: DialogAction, seq = 1): { s: DialogState; sen
 }
 
 const itemCount = (p: Preview) => ('steps' in p ? p.steps.length : p.items.length);
+/** The native close event is queued after close(): one arriving while the dialog is open again (Escape, then a quick reopen)
+ *  is stale (unit 6b E2E finding). Otherwise: ours already cleared the state; while applying the dialog reopens (dismissal is
+ *  blocked); before that it is a close we did not ask for. */
+export const nativeClose = (s: DialogState | null, stillOpen: boolean): 'ignore' | 'reopen' | 'closed' =>
+  stillOpen || !s ? 'ignore' : s.phase === 'applying' ? 'reopen' : 'closed';
 export const canApply = (s: DialogState) => s.phase === 'review' && !s.expired && s.preview !== null && itemCount(s.preview) > 0;
 
 const CHANGED = 'The configuration changed since the preview. Review the new changes, then apply again.';
@@ -72,10 +81,10 @@ export function dialogStep(s: DialogState, e: DialogEvent): { s: DialogState; se
 }
 
 const n = (k: number, one: string, many = `${one}s`) => `${k} ${k === 1 ? one : many}`;
-const removed = (kind: ActionKind, o: ConnectOutcome) => ({ done: true, text: `${kind === 'uninstall' ? 'Uninstalled from all profiles' : 'Disconnected'}: ${n(o.reverted.filter((x) => x.result !== 'unchanged').length, 'entry', 'entries')} removed or restored${o.conflicts.length ? `; ${n(o.conflicts.length, 'changed value')} kept` : ''}.` });
+const removed = (kind: ActionKind, o: ConnectOutcome) => (kind === 'tee' ? { done: true, text: `Status-line tee off${o.conflicts.length ? `; ${n(o.conflicts.length, 'changed value')} kept` : ''}.` } : { done: true, text: `${kind === 'uninstall' ? 'Uninstalled from all profiles' : 'Disconnected'}: ${n(o.reverted.filter((x) => x.result !== 'unchanged').length, 'entry', 'entries')} removed or restored${o.conflicts.length ? `; ${n(o.conflicts.length, 'changed value')} kept` : ''}.` });
 function outcomeText(kind: ActionKind, r: Reply): { done: boolean; text: string } {
   switch (r.status) {
-    case 'applied': return { done: true, text: `Changes applied.${r.trustSteps.length ? ' Hooks installed, awaiting trust.' : ''}` };
+    case 'applied': return kind === 'tee' ? { done: true, text: 'Status-line tee on.' } : { done: true, text: `Changes applied.${r.trustSteps.length ? ' Hooks installed, awaiting trust.' : ''}` };
     case 'disconnected': return removed(kind, r as ConnectOutcome);
     case 'cleaned': return { done: true, text: `Cleaned up ${n(r.removed.length, 'leftover')}${r.left.length ? `; ${r.left.length} left` : ''}.` };
     case 'partial':
@@ -95,18 +104,18 @@ const REFUSALS: Record<string, string> = {
   busy: 'Another integration change is in progress. Close and try again shortly.', 'stale-lock': 'An earlier change stopped without finishing; restart Xaibo, then try again.',
   'preview-expired': 'This preview expired. Close and open it again.', 'preview-invalid': 'This preview is no longer valid. Close and open it again.',
   unverified: "This agent's version isn't verified for Connect.", 'helpers-unavailable': "Xaibo's hook helpers are missing; reinstall Xaibo.",
-  'bounds-unavailable': "Xaibo couldn't confirm which folders are safe to change.", duplicate: 'Xaibo hooks are already present in this configuration.',
+  'bounds-unavailable': "Xaibo couldn't confirm which folders are safe to change.", duplicate: 'Xaibo is already set up in this configuration.',
   'invalid-json': "The configuration file isn't valid JSON. Nothing was changed.", 'not-connected': 'Nothing from Xaibo is installed here.',
   'nothing-to-clean': 'There is nothing to clean up.', 'profile-not-found': 'This profile is no longer listed.', 'read-only': 'Xaibo is read-only right now. Nothing was changed.',
   starting: 'Agents are still being detected. Try again shortly.', unavailable: 'Integration changes are unavailable.', 'too-large': 'This change is too large to preview.',
-  manifest: "Xaibo's integration record couldn't be read.", failed: "Couldn't complete the request.",
+  manifest: "Xaibo's integration record couldn't be read.", statusline: "The status line isn't a command Xaibo can wrap. Nothing was changed.", unsupported: "This agent doesn't support that change.", failed: "Couldn't complete the request.",
 };
 /** Codes are validated slugs (the shared parser); one Xaibo has no words for is named as it is. */
 export const refusalText = (code: string) => REFUSALS[code] ?? `Couldn't continue (${code}).`;
 
 export const actionTitle = (a: DialogAction, agent: string) =>
-  a.kind === 'uninstall' ? 'Full Uninstall: all profiles' : `${a.kind === 'connect' ? 'Connect' : a.kind === 'disconnect' ? 'Disconnect' : 'Clean up'} ${agent}`;
-export const applyLabel = (a: DialogAction) => ({ connect: 'Apply selected changes', disconnect: 'Disconnect', uninstall: 'Uninstall from all profiles', cleanup: 'Clean up' })[a.kind];
+  a.kind === 'tee' ? `Turn ${a.enabled ? 'on' : 'off'} the status-line tee: ${agent}` : a.kind === 'uninstall' ? 'Full Uninstall: all profiles' : `${a.kind === 'connect' ? 'Connect' : a.kind === 'disconnect' ? 'Disconnect' : 'Clean up'} ${agent}`;
+export const applyLabel = (a: DialogAction) => (a.kind === 'tee' ? `Turn ${a.enabled ? 'on' : 'off'} tee` : { connect: 'Apply selected changes', disconnect: 'Disconnect', uninstall: 'Uninstall from all profiles', cleanup: 'Clean up' }[a.kind]);
 
 export interface Line { kind: 'add' | 'remove' | 'note'; text: string }
 /** check: required (one selected group), on/off (deselectable), null (not selectable). */
@@ -135,6 +144,7 @@ const profileText = (d: IntegrationDetail, id: string | null) => d.profiles.find
 export function previewItems(s: DialogState, d: IntegrationDetail): Item[] {
   const p = s.preview;
   if (!p) return [];
+  if ('steps' in p && s.action.kind === 'tee') return [{ id: 'tee', title: 'Status-line tee', check: null, lines: p.steps.flatMap(diffLines) }]; // the toggle was the choice
   if ('steps' in p) {
     const hooks = p.steps.filter((st) => st.route !== 'claude-retention'), keep = p.steps.filter((st) => st.route === 'claude-retention');
     const out: Item[] = hooks.length ? [{ id: 'hooks', title: 'Lifecycle hooks (required)', check: 'required', lines: hooks.flatMap(diffLines) }] : [];
@@ -168,17 +178,28 @@ export function effectTexts(s: DialogState): string[] {
     case 'uninstall': return ['Removes every Xaibo integration listed, in every profile. Session history is kept, and Xaibo stays installed.'];
     case 'disconnect': return ['Session history is kept.'];
     case 'cleanup': return ["Only Xaibo's own leftovers are removed."];
+    case 'tee': return [s.action.enabled ? "Adds Xaibo's status-line tee; any existing status line keeps showing, and Xaibo also receives its usage data. Hooks are not changed." : 'Puts the status line as it was before the tee. Hooks are not changed.'];
   }
 }
 
+/** XAIBO-PROD-581: the separate tee toggle for a detected Claude profile: on when Xaibo recorded its tee (any state), else off. */
+export function teeToggle(d: IntegrationDetail): 'on' | 'off' | null {
+  if (d.row.key.agent !== 'claude' || d.row.key.profileId === null || d.row.state === 'not-detected' || d.row.state === 'unsupported-version') return null;
+  return d.entries.some((e) => e.route === 'claude-tee') ? 'on' : 'off';
+}
+/** The toggle's description (review 6b L2/L3): a preview comes first (WCAG 3.2.2); a state other than on or off is named. */
+export function teeHint(d: IntegrationDetail): string {
+  const e = d.entries.find((x) => x.route === 'claude-tee');
+  return `Changing it shows a preview first; nothing changes until you apply.${e && e.state !== 'connected' ? ` ${entryText(e)}.` : ''}`;
+}
 const CONNECTABLE = ['claude', 'codex', 'agy'];
 const LIFECYCLE = ['claude-plugin', 'claude-settings-fallback', 'codex-hooks', 'agy-hooks'];
 /** Which writes the panel offers. ponytail: Full Uninstall is offered from a profile with entries only (each profile's panel
  *  reaches it); add a global entry point if entries in unlisted profiles need one. */
-export function panelActions(d: IntegrationDetail): ActionKind[] {
+export function panelActions(d: IntegrationDetail): PanelAction[] {
   const { agent, profileId } = d.row.key;
   if (profileId === null) return [];
-  const out: ActionKind[] = [];
+  const out: PanelAction[] = [];
   if (CONNECTABLE.includes(agent) && d.row.state !== 'not-detected' && d.row.state !== 'unsupported-version' && !d.entries.some((e) => LIFECYCLE.includes(e.route))) out.push('connect');
   if (d.entries.length) out.push('disconnect', 'uninstall');
   if (d.entries.some((e) => e.state === 'disconnected-externally')) out.push('cleanup');

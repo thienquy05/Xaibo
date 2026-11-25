@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ConnectPreview, IntegrationDetail, RemovalPreview } from '../../../src/shared/ipc.ts';
 import { RESULT_UNAVAILABLE } from '../../../src/renderer/model.ts';
-import { actionTitle, applyLabel, canApply, conflictTexts, dialogStep, effectTexts, openDialog, panelActions, previewItems, refusalText, type DialogState } from '../../../src/renderer/agent-map/integration-dialog.ts';
+import { actionTitle, applyLabel, canApply, conflictTexts, dialogStep, effectTexts, nativeClose, openDialog, panelActions, previewItems, refusalText, teeHint, teeToggle, type DialogState } from '../../../src/renderer/agent-map/integration-dialog.ts';
 
 const P = '00000000-0000-4000-8000-0000000c7901', Q = '00000000-0000-4000-8000-0000000c7902';
 const V1 = '00000000-0000-4000-8000-0000000c79a1', V2 = '00000000-0000-4000-8000-0000000c79a2', V3 = '00000000-0000-4000-8000-0000000c79a3';
@@ -182,6 +182,55 @@ test('cleanup lists each leftover in words and reports what was removed', () => 
   const done = reply(dialogStep(c.s, { type: 'apply' }).s, { status: 'cleaned', removed: [E1], left: [] });
   assert.equal(done.s.phase, 'success');
   assert.match(done.s.text, /^Cleaned up/);
+});
+
+test('XAIBO-PROD-581 (unit 6b): the separate tee: its own preview, one item, its own words; never a retention row', () => {
+  const on = openDialog({ kind: 'tee', profileId: P, enabled: true });
+  assert.deepEqual(on.send, { seq: on.s.seq, kind: 'preview', retention: false });
+  assert.equal(actionTitle(on.s.action, 'Claude Code'), 'Turn on the status-line tee: Claude Code');
+  assert.equal(applyLabel(on.s.action), 'Turn on tee');
+  const r = reply(on.s, { status: 'preview', previewId: V1, profileId: P, ttlMs: 1, retention: null, trustSteps: [],
+    steps: [{ route: 'claude-tee', target: '/tmp/p/settings.json', diff: [{ pointer: '/statusLine/command', new: "'/x/xaibo-statusline' tee", replaced: { type: 'string', sha256: 'abcdef012345' } }] }] });
+  const items = previewItems(r.s, detail());
+  assert.deepEqual(items.map((i) => [i.id, i.title, i.check]), [['tee', 'Status-line tee', null]], 'nothing to select: the toggle was the choice');
+  assert.ok(items[0]!.lines.some((l) => l.kind === 'add' && l.text.includes('/statusLine/command')));
+  assert.equal(dialogStep(r.s, { type: 'retention', on: true }).send, undefined);
+  assert.ok(effectTexts(r.s).some((f) => /^Adds Xaibo's status-line tee; any existing status line keeps showing/.test(f)), 'review 6b nit: no status line yet is fine too');
+  assert.ok(effectTexts(r.s).some((f) => /Hooks are not changed/.test(f)));
+  assert.equal(reply(dialogStep(r.s, { type: 'apply' }).s, { status: 'applied', entries: [E1], trustSteps: [] }).s.text, 'Status-line tee on.');
+  const off = openDialog({ kind: 'tee', profileId: P, enabled: false });
+  assert.equal(actionTitle(off.s.action, 'Claude Code'), 'Turn off the status-line tee: Claude Code');
+  assert.equal(applyLabel(off.s.action), 'Turn off tee');
+  const o = reply(off.s, { status: 'preview', previewId: V2, profileId: P, ttlMs: 1, items: [{ entry: E1, route: 'claude-tee', profileId: P, state: 'connected', reason: null }] });
+  assert.deepEqual(previewItems(o.s, detail()).map((i) => i.title), ['Status-line tee · Default profile']);
+  assert.ok(effectTexts(o.s).some((f) => /status line as it was/.test(f)));
+  assert.equal(reply(dialogStep(o.s, { type: 'apply' }).s, { status: 'disconnected', reverted: [{ entry: E1, route: 'claude-tee', result: 'restored' }], conflicts: [], remaining: [] }).s.text, 'Status-line tee off.');
+  assert.equal(refusalText('statusline'), "The status line isn't a command Xaibo can wrap. Nothing was changed.");
+  assert.equal(refusalText('duplicate'), 'Xaibo is already set up in this configuration.', 'review 6b L4: true for hooks and for an unrecorded tee');
+});
+
+test('XAIBO-PROD-581: the tee toggle is offered for a detected Claude profile only; it mirrors the recorded tee', () => {
+  const tee = (state: IntegrationDetail['entries'][number]['state']) => [{ entry: E1, route: 'claude-tee' as const, state, reason: null }];
+  assert.equal(teeToggle(detail()), 'off');
+  assert.equal(teeToggle(detail({ entries: tee('connected') })), 'on');
+  assert.equal(teeToggle(detail({ entries: tee('drifted') })), 'on', 'changed outside Xaibo: still Xaibo\'s to turn off');
+  assert.equal(teeToggle(detail({ agent: 'codex' })), null);
+  assert.equal(teeToggle(detail({ profileId: null })), null);
+  assert.equal(teeToggle(detail({ state: 'not-detected' })), null);
+  assert.equal(teeToggle(detail({ state: 'unsupported-version' })), null);
+  // review 6b L2/L3: the toggle warns that a preview comes first (WCAG 3.2.2) and names only an unusual state
+  const warn = 'Changing it shows a preview first; nothing changes until you apply.';
+  assert.equal(teeHint(detail()), warn);
+  assert.equal(teeHint(detail({ entries: tee('connected') })), warn);
+  assert.equal(teeHint(detail({ entries: tee('drifted') })), `${warn} Status-line tee: changed outside Xaibo.`);
+});
+
+test('unit 6b E2E finding: a native close event is queued; one arriving after the dialog reopened is stale and ignored', () => {
+  const s = openDialog({ kind: 'tee', profileId: P, enabled: true }).s;
+  assert.equal(nativeClose(s, true), 'ignore', 'Escape closed the old dialog, Space reopened it, then the old close event arrived');
+  assert.equal(nativeClose(null, false), 'ignore', 'our own close already cleared the state');
+  assert.equal(nativeClose({ ...s, phase: 'applying' }, false), 'reopen', 'applying blocks dismissal');
+  assert.equal(nativeClose(s, false), 'closed', 'a close we did not ask for before applying');
 });
 
 test('the panel offers each write only where it applies (and none for a profile-less or undetected agent)', () => {

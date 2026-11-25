@@ -164,6 +164,9 @@ export function createClient(port: PortLike, push: Pushes) {
     async removalApply(previewId: string): Promise<RemovalReply> { return (await ask({ type: 'removalApply', previewId }, 'removalApply')).result; },
     async cleanupPreview(profileId: string): Promise<CleanupReply> { return (await ask({ type: 'cleanupPreview', profileId }, 'cleanupPreview')).result; },
     async cleanupApply(previewId: string): Promise<CleanupReply> { return (await ask({ type: 'cleanupApply', previewId }, 'cleanupApply')).result; },
+    /** XAIBO-PROD-581: the separate tee's previews (unit 6a). */
+    async teePreview(profileId: string): Promise<ConnectReply> { return (await ask({ type: 'teePreview', profileId }, 'teePreview')).result; },
+    async teeRemovalPreview(profileId: string): Promise<RemovalReply> { return (await ask({ type: 'teeRemovalPreview', profileId }, 'teeRemovalPreview')).result; },
     async overlay(op: OverlayOp): Promise<OverlayResult> { return (await ask({ type: 'overlay', op }, 'overlay')).result; },
     /** P4-T07a: the session's cost breakdown; null for an unknown session. */
     async cost(session: number): Promise<CostDetail | null> { return (await ask({ type: 'cost', session }, 'cost')).cost; },

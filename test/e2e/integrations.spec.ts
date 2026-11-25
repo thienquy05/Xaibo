@@ -313,6 +313,35 @@ test('Integration diff dialog: Connect with retention, changed file, Disconnect,
   await expect(dialog).toBeHidden();
   await expect(connect).toBeFocused();
   expect(existsSync(path.join(claudeA, 'settings.json'))).toBe(false);
+  // XAIBO-PROD-581 (unit 6b): the separate tee toggle, its own preview; Cancel leaves the toggle and the files as they were
+  const teeBox = claude.getByRole('checkbox', { name: 'Optional status-line tee' });
+  await expect(teeBox).not.toBeChecked();
+  await teeBox.click(); // the toggle opens the dialog; it stays unchecked until applied (check() would expect it checked)
+  await expect(dialog).toHaveAccessibleName('Turn on the status-line tee: Claude Code');
+  await expect(dialog.getByRole('region', { name: 'Changes to apply' })).toContainText('/statusLine', { timeout: 20_000 });
+  await expect(dialog).toContainText('Hooks are not changed.');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(teeBox).toBeFocused();
+  await expect(teeBox).not.toBeChecked();
+  expect(existsSync(path.join(claudeA, 'settings.json'))).toBe(false);
+  // Escape then a quick Space: the old dialog's queued close event must not empty the reopened one (unit 6b finding)
+  await page.keyboard.press('Space');
+  await expect(dialog.getByRole('region', { name: 'Changes to apply' })).toContainText('/statusLine', { timeout: 20_000 });
+  await dialog.getByRole('button', { name: 'Turn on tee' }).click();
+  await expect(dialog).toBeHidden({ timeout: 20_000 });
+  await expect(claude).toContainText('Status-line tee on.');
+  await expect(teeBox).toBeChecked();
+  const teeOn = JSON.parse(readFileSync(path.join(claudeA, 'settings.json'), 'utf8')) as Record<string, unknown>;
+  expect(Object.keys(teeOn)).toEqual(['statusLine']); // no hooks, no retention
+  await teeBox.click();
+  await expect(dialog).toHaveAccessibleName('Turn off the status-line tee: Claude Code');
+  await expect(dialog.getByRole('region', { name: 'Changes to apply' })).toContainText(/Status-line tee · .*claude-a/, { timeout: 20_000 });
+  await dialog.getByRole('button', { name: 'Turn off tee' }).click();
+  await expect(dialog).toBeHidden({ timeout: 20_000 });
+  await expect(claude).toContainText('Status-line tee off.');
+  await expect(teeBox).not.toBeChecked();
+  expect(existsSync(path.join(claudeA, 'settings.json')) ? readFileSync(path.join(claudeA, 'settings.json'), 'utf8') : '').not.toContain('xaibo-statusline');
   // the real default profile: refused before any read, with Close only
   await claude.getByRole('combobox', { name: 'Profile' }).selectOption({ label: 'Default profile' });
   await claude.getByRole('button', { name: 'Connect', exact: true }).click();
