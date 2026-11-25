@@ -64,6 +64,8 @@ export function createClient(port: PortLike, push: Pushes) {
       const m = await ask({ type: 'liveSet' }, 'liveSet');
       return { rows: m.rows, more: m.more };
     },
+    /** XAIBO-PROD-586: the whole usage reply (scopes and the per-profile list; Settings' sign-in profiles). */
+    async usageAll() { const m = await ask({ type: 'usage' }, 'usage'); return { scopes: m.scopes, profiles: m.profiles }; },
     /** P4-T04b1: usage scopes with their newest measurements. */
     async usage(): Promise<UsageScope[]> { return (await ask({ type: 'usage' }, 'usage')).scopes; },
     /** P5-T17a/b: one page of the monthly usage ledger (failed = the store could not answer). */

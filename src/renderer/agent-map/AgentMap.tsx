@@ -52,21 +52,23 @@ const leafFilter = (group: MapGroup): HistoryFilter => ({ mode: 'all', agent: nu
 
 /** `tick` counts session activity: an empty map loads its first page again when sessions arrive (an import after start);
  *  Gate 5 G5d-1: a shown map, and one restored (Return or the nav link), fetches its resident pages again instead. */
-export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, restoreId = null, onSave }: {
+export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, restoreId = null, onSave, open = null }: {
   api: MapApi; agents: AgentStatus[]; lastKnown: string | null; tick: number; onOpen: (row: HistoryRow) => void;
   /** XAIBO-PROD-539 Return to Agent Map: the map as left and the session to return to; `onSave` keeps it on leaving. */
   saved?: MapSnapshot | null; restoreId?: number | null; onSave?: (m: MapSnapshot) => void;
+  /** XAIBO-PROD-586 (D-P6-17): open this profile's integration panel (Agents mode) on arrival, e.g. from Settings. */
+  open?: IntegrationKey | null;
 }) {
   const name = useMemo(() => { const m = new Map(agents.map((a) => [a.agent, a.name])); return (id: string) => m.get(id) ?? id; }, [agents]);
   const [s, setS] = useState<State>(() => (saved ? resume(saved.state) : start()));
   const [notice, setNotice] = useState<string | null>(null);
   // XAIBO-PROD-575: the mode as left (nav link); Return from Session always shows Repositories (design §6.5.1)
-  const [mode, setMode] = useState<Mode>(() => (saved && restoreId === null ? saved.mode : 'repositories'));
+  const [mode, setMode] = useState<Mode>(() => (open ? 'agents' : saved && restoreId === null ? saved.mode : 'repositories'));
   const modeRef = useRef(mode);
   modeRef.current = mode;
   const agentsStore = useRef<AgentsSnapshot | null>(saved?.agents ?? null);
   // XAIBO-PROD-578: the open integration panel (Agents mode) and the row it was opened from
-  const [panel, setPanel] = useState<Panel>(saved?.panel ?? null);
+  const [panel, setPanel] = useState<Panel>(open ? { key: open, origin: agentKey(open) } : saved?.panel ?? null);
   const panelRef = useRef(panel);
   panelRef.current = panel;
   const [agentsFocus, setAgentsFocus] = useState<{ key: string; n: number } | null>(null);

@@ -5,8 +5,9 @@
 // the draft until the owner reviews it; a failed or lost reply keeps the draft and asks for a reread (the revision check makes a
 // repeat harmless, so nothing is retried automatically). A profile switch drops the draft and any old reply. No times, paths
 // or sources are ever sent; rendering is SignInFieldset.tsx.
-import type { SignInMethod, SignInReplyCode, SignInView } from '../../shared/ipc.ts';
+import { uuid, type SignInMethod, type SignInReplyCode, type SignInView, type UsageProfile } from '../../shared/ipc.ts';
 import { formatTime } from '../model.ts';
+import { visible } from '../text.ts';
 
 export const METHOD_TEXT: Record<SignInMethod, string> = {
   subscription: 'Subscription', 'api-key': 'API key', 'cloud-provider': 'Cloud provider', gateway: 'Gateway', mixed: 'Mixed', unknown: 'Unknown',
@@ -16,6 +17,12 @@ export interface Draft { mode: Mode; method: SignInMethod }
 /** The three mutations (review L8: written out; a read is not a command). */
 type Command = { op: 'set'; method: SignInMethod; expectedRevision: number } | { op: 'clear' | 'account-change'; expectedRevision: number };
 type Op = Command['op'];
+
+/** XAIBO-PROD-586 (unit 4b): the profiles Settings lists: every one from the usage reply (database only), named agent and profile
+ *  through visible() (review M1: untrusted text), declarable when its id is a UUID (the sign-in request and the integration route
+ *  need one). */
+export const settingsProfiles = (ps: UsageProfile[], name: (agent: string) => string) =>
+  ps.map((p) => ({ profileId: p.profileId, agent: p.agent, label: visible(`${name(p.agent)} · ${p.label}`), declarable: uuid(p.profileId) }));
 
 /** A sign-in request body: the read or one mutation (client.signIn, the fieldset's api). */
 export type SignInCommand = { op: 'read' } | Command;

@@ -101,5 +101,24 @@ test('Sign-in declaration in the panel: declare, change, account change, clear, 
   const page2 = await xaibo.window(again);
   const pane2 = await open(page2);
   await expect(pane2.getByRole('group', { name: 'Sign-in method' })).toContainText(/Owner declaration: Unknown · declared/, { timeout: 20_000 });
+  // XAIBO-PROD-586 (unit 4b, D-P6-17): the same declaration from Settings, then Open integration lands on that profile's panel
+  await page2.getByRole('navigation', { name: 'Areas' }).getByRole('link', { name: 'Settings' }).click();
+  const section = page2.getByRole('region', { name: 'Sign-in declarations' });
+  const pick = section.getByRole('combobox', { name: 'Profile' });
+  await expect(pick.locator('option', { hasText: `Codex · ${b}` })).toHaveCount(1, { timeout: 20_000 }); // with the catalog's default profiles
+  await expect(pick.locator('option', { hasText: `Codex · ${a}` })).toHaveCount(1);
+  await pick.selectOption({ label: `Codex · ${b}` });
+  const sfs = section.getByRole('group', { name: 'Sign-in method' });
+  await expect(sfs).toContainText('Sign-in method: Unknown', { timeout: 20_000 });
+  await sfs.getByRole('radio', { name: 'Owner declaration' }).check();
+  await sfs.getByRole('combobox', { name: 'Declared method' }).selectOption({ label: 'Gateway' });
+  await sfs.getByRole('button', { name: 'Save declaration' }).click();
+  await expect(sfs).toContainText('Declaration saved.');
+  await section.getByRole('button', { name: 'Open integration' }).click();
+  const paneB = page2.getByRole('region', { name: 'Integration: Codex' });
+  await expect(paneB.getByRole('heading', { level: 2 })).toBeFocused();
+  await expect(paneB.getByRole('group', { name: 'Sign-in method' })).toContainText(/Owner declaration: Gateway · declared/, { timeout: 20_000 });
+  await expect(page2.getByRole('group', { name: 'Agent Map view' }).getByRole('button', { name: 'Agents' })).toHaveAttribute('aria-pressed', 'true');
+  await shot(page2, 'sign-in-settings-open');
   await xaibo.quit(again);
 });

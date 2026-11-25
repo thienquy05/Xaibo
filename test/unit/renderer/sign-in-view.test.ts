@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SignInView, UsageConsumption } from '../../../src/shared/ipc.ts';
-import { commandOf, draftOf, initialSignIn, METHOD_TEXT, provenanceLines, replyText, signInReducer, toSend, type SignInState } from '../../../src/renderer/usage/sign-in-view.ts';
+import { commandOf, settingsProfiles, draftOf, initialSignIn, METHOD_TEXT, provenanceLines, replyText, signInReducer, toSend, type SignInState } from '../../../src/renderer/usage/sign-in-view.ts';
 import { consumptionLines, usageLead } from '../../../src/renderer/usage/presentation.ts';
 import { formatTime } from '../../../src/renderer/model.ts';
 
@@ -108,6 +108,17 @@ test('usage lead per method; consumption words: tokens, ~$ estimate, list price 
   assert.deepEqual(partial.slice(1), ['Observed tokens: Unavailable', 'Estimated cost: Unavailable', 'Known subtotal: some requests are missing tokens or estimates.']);
   // review L6: capped only: nothing is missing, older requests are just not read
   assert.deepEqual(consumptionLines({ ...c, coverage: 'partial', limited: true }, 'api-key').slice(3), ['Older requests beyond the read limit are not counted.']);
+});
+
+test('XAIBO-PROD-586 (unit 4b): Settings lists every profile from the usage reply, named agent and profile (visible), declarable when its id is a UUID', () => {
+  const p = (profileId: string, agent: string, label: string) => ({ profileId, agent, label, signIn: null, consumption: [], consumptionLimited: false });
+  const names: Record<string, string> = { codex: 'Codex', claude: 'Claude Code' };
+  const rlo = String.fromCharCode(0x202e), bs = String.fromCharCode(92);
+  assert.deepEqual(settingsProfiles([p(P, 'codex', '~/work' + rlo), p('reg-key', 'acme', 'registration:r1'), p(Q, 'claude', 'Default profile')], (a) => names[a] ?? a), [
+    { profileId: P, agent: 'codex', label: 'Codex · ~/work' + bs + 'u202E', declarable: true },
+    { profileId: 'reg-key', agent: 'acme', label: 'acme · registration:r1', declarable: false },
+    { profileId: Q, agent: 'claude', label: 'Claude Code · Default profile', declarable: true },
+  ], 'review M1: a bidi control never disguises which profile is shown; M2: registration profiles are listed, not declarable');
 });
 
 test('unit 4a review L7: a write answered unavailable keeps the draft and rereads (its words promise a retry)', () => {

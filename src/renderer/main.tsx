@@ -207,6 +207,10 @@ function App() {
   // XAIBO-PROD-539: a session opened from an Agent Map leaf returns there, to the map as it was left
   const [returnTo, setReturnTo] = useState<'Dashboard' | 'Agent Map'>('Dashboard');
   const mapSaved = useRef<MapSnapshot | null>(null);
+  // XAIBO-PROD-586 (D-P6-17): one route to a profile's integration panel (Settings now; the Dashboard usage blocks next)
+  const [openIntegration, setOpenIntegration] = useState<IntegrationKey | null>(null);
+  useEffect(() => { if (area !== 'map') setOpenIntegration(null); }, [area]); // the map reads it on arrival only
+  const toIntegration = (key: IntegrationKey) => { clearReturn(); setPreset(null); setLedgerRestore(null); setMapReturn(null); setOpenIntegration(key); setArea('map'); };
   const [mapReturn, setMapReturn] = useState<number | null>(null);
   const [focusId, setFocusId] = useState<number | null>(null);
   const liveRows = useRef(liveSet.rows);
@@ -320,9 +324,11 @@ function App() {
       </header>
       <div className="x-health"><HealthStatus health={health} banners={banners} /></div>
       <main id="main" className="x-main" tabIndex={-1}>
-        {area === 'settings' ? <Settings api={settingsApi} readOnly={!!health?.readOnly} />
+        {area === 'settings' ? <Settings api={settingsApi} readOnly={!!health?.readOnly} signIn={{
+            profiles: () => client.current?.usageAll().then((r) => r.profiles) ?? Promise.reject(new Error('no service connection')), api: mapApi.signIn,
+            name: (a) => agents?.find((x) => x.agent === a)?.name ?? a, open: toIntegration, live: lastKnown === null }} />
           : area === 'map' ? <AgentMap api={mapApi} agents={agents ?? []} lastKnown={lastKnown} tick={tick} onOpen={openFromMap}
-            saved={mapSaved.current} restoreId={mapReturn} onSave={(m) => { mapSaved.current = m; }} />
+            saved={mapSaved.current} restoreId={mapReturn} onSave={(m) => { mapSaved.current = m; }} open={openIntegration} />
           : area === 'dashboard'
           ? <Dashboard live={liveSet} liveFailed={liveFailed} liveRetry={liveRetry} onRetryLive={retryLive} lastKnown={lastKnown} agents={agents} banners={banners} api={api} tick={tick}
             onSetPath={(agent) => window.xaibo?.setAgentPath(agent)} onOpen={openSession} view={dashView} onView={(v) => { setLedgerRestore(null); setDashView(v); }} focusId={focusId}
