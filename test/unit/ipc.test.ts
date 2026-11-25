@@ -159,7 +159,8 @@ const blank = { scope: null, agent: 'agy', profile: 'Default profile', verified:
   plan: null, credits: null, asOf: null, firstObservedAt: null, measuredAt: null, unavailable: 'passive', profileId: 'a1', generation: null, boundary: null };
 const VIEW = { profileId: '00000000-0000-4000-8000-0000000c8201', revision: 0, method: 'unknown', source: null, at: null, declaration: null, evidence: null, conflict: false,
   usingDeclaration: false, outputStatus: 'unavailable', generation: 0, boundary: null };
-const profile = { profileId: VIEW.profileId, agent: 'claude', label: 'Default profile', signIn: VIEW };
+const CONS = { generation: 1, scope: 4, tokens: 175, estimatedUsd: 0.75, coverage: 'partial', from: 3, to: 5, limited: false }; // XAIBO-PROD-583
+const profile = { profileId: VIEW.profileId, agent: 'claude', label: 'Default profile', signIn: VIEW, consumption: [CONS], consumptionLimited: false };
 test('usage: request id only; reply scopes validated field by field and bounded', () => {
   assert.deepEqual(parsePortRequest({ v: 1, type: 'usage', id: 2, x: 1 }), { v: 1, type: 'usage', id: 2 });
   assert.equal(parsePortRequest({ v: 1, type: 'usage', id: -2 }), null);
@@ -174,6 +175,12 @@ test('usage: request id only; reply scopes validated field by field and bounded'
   for (const bad of [{ profileId: '' }, { agent: 'Bad Agent' }, { label: 5 }, { label: 'x'.repeat(4098) }, { signIn: { ...VIEW, method: 'guess' } }, { signIn: { ...VIEW, profileId: '00000000-0000-4000-8000-0000000c82ff' } }, { extra: 1 }]) {
     assert.equal(parsePortMessage({ ...reply, profiles: [{ ...profile, ...bad }] }), null, JSON.stringify(bad));
   }
+  for (const bad of [{ generation: -1 }, { generation: 257 }, { scope: -2 }, { tokens: -1 }, { tokens: 1.5 }, { estimatedUsd: -0.1 }, { estimatedUsd: Number.NaN }, { coverage: 'complete' },
+    { from: 'x' }, { to: null, from: 7 }, { limited: 1 }, { epoch: 'epoch-a' }]) {
+    assert.equal(parsePortMessage({ ...reply, profiles: [{ ...profile, consumption: [{ ...CONS, ...bad }] }] }), null, JSON.stringify(bad));
+  }
+  assert.equal(parsePortMessage({ ...reply, profiles: [{ ...profile, consumption: Array(65).fill(CONS) }] }), null, 'consumption bounded');
+  assert.equal(parsePortMessage({ ...reply, profiles: [{ ...profile, consumptionLimited: 'yes' }] }), null, 'review M3: a boolean');
   assert.equal(parsePortMessage({ ...reply, profiles: undefined }), null, 'profiles required');
   assert.equal(parsePortMessage({ ...reply, profiles: Array(257).fill(profile) }), null, 'profiles bounded');
   for (const bad of [{ scope: -1 }, { agent: 'Bad Agent' }, { profile: 5 }, { profile: 'x'.repeat(4098) }, { verified: 'yes' }, { stream: 'x'.repeat(81) },

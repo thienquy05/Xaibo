@@ -146,7 +146,12 @@ export interface UsageScope {
   profileId: string; generation: number | null; boundary: { method: SignInMethod; at: number; reason: 'method' | 'declared-account' } | null;
 }
 /** XAIBO-PROD-582: every profile once (agent, then id; custom agents too), with its label and current sign-in view (null: unreadable). */
-export interface UsageProfile { profileId: string; agent: string; label: string; signIn: SignInView | null }
+/** consumptionLimited (unit 2 review M3): the read was capped or groups dropped, so an empty or short list is not "nothing used". */
+export interface UsageProfile { profileId: string; agent: string; label: string; signIn: SignInView | null; consumption: UsageConsumption[]; consumptionLimited: boolean }
+/** XAIBO-PROD-583 (P6-T10a unit 2): retained observed consumption of one profile, sign-in generation and Codex account epoch
+ *  (scope: that epoch's verified quota scope id, the join key; the epoch itself never leaves the service). Tokens and the
+ *  per-request estimate are known subtotals; partial when anything is missing or the read was capped (`limited`). */
+export interface UsageConsumption { generation: number; scope: number | null; tokens: number | null; estimatedUsd: number | null; coverage: 'full' | 'partial'; from: number | null; to: number | null; limited: boolean }
 export interface HistoryCursor { measuredAt: number; id: number }
 export interface UsageRecord {
   id: number; kind: 'sample' | 'transition'; measuredAt: number; usedPercent: number | null; windowMinutes: number | null; resetsAt: number | null; sourceTimeKnown: boolean;
@@ -551,10 +556,21 @@ export const PROFILE = /^[A-Za-z0-9._-]{1,128}$/; // may reach keys and paths do
 export const isProfileKey = (k: string): boolean => PROFILE.test(k) && k !== '.' && k !== '..';
 const profileKey = (x: unknown): x is string => typeof x === 'string' && isProfileKey(x);
 function parseUsageProfile(x: unknown): UsageProfile | null {
-  if (!exactKeys(x, ['profileId', 'agent', 'label', 'signIn']) || !profileKey(x.profileId) || !agentOk(x.agent) || !text(x.label, 4097)) return null;
+  if (!exactKeys(x, ['profileId', 'agent', 'label', 'signIn', 'consumption', 'consumptionLimited']) || typeof x.consumptionLimited !== 'boolean' || !profileKey(x.profileId) || !agentOk(x.agent) || !text(x.label, 4097)) return null;
   const signIn = x.signIn === null ? null : parseSignInView(x.signIn);
   if (signIn === undefined || (signIn && signIn.profileId !== x.profileId)) return null;
-  return { profileId: x.profileId, agent: x.agent, label: x.label, signIn };
+  const consumption = all(x.consumption, 64, parseConsumption);
+  return consumption ? { profileId: x.profileId, agent: x.agent, label: x.label, signIn, consumption, consumptionLimited: x.consumptionLimited as boolean } : null;
+}
+function parseConsumption(x: unknown): UsageConsumption | null {
+  if (!exactKeys(x, ['generation', 'scope', 'tokens', 'estimatedUsd', 'coverage', 'from', 'to', 'limited'])) return null;
+  const t = (v: unknown) => v === null || Number.isSafeInteger(v);
+  const ok = Number.isSafeInteger(x.generation) && (x.generation as number) >= 0 && (x.generation as number) <= 256 && (x.scope === null || count(x.scope))
+    && (x.tokens === null || count(x.tokens)) && (x.estimatedUsd === null || (finite(x.estimatedUsd) && (x.estimatedUsd as number) >= 0))
+    && oneOf(['full', 'partial'] as const, x.coverage) && t(x.from) && t(x.to) && (x.from === null) === (x.to === null)
+    && (x.from === null || (x.from as number) <= (x.to as number)) && typeof x.limited === 'boolean';
+  return ok ? { generation: x.generation as number, scope: x.scope as number | null, tokens: x.tokens as number | null, estimatedUsd: x.estimatedUsd as number | null,
+    coverage: x.coverage as 'full' | 'partial', from: x.from as number | null, to: x.to as number | null, limited: x.limited as boolean } : null;
 }
 function parseRecord(x: unknown): UsageRecord | null {
   if (!isObj(x) || !count(x.id) || !oneOf(['sample', 'transition'] as const, x.kind) || !finite(x.measuredAt) || typeof x.sourceTimeKnown !== 'boolean') return null;

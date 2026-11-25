@@ -4,8 +4,9 @@ import { nativeExpiresAt } from './history/native-availability.ts';
 import type { DatabaseSync } from 'node:sqlite';
 import { AGENT_ID, IPC_VERSION, isObj, isProfileKey } from '../shared/ipc.ts';
 import { UUID } from '../shared/hook-protocol.ts';
-import type { ContextReading, CoverageCode, Credits, Cursor, HistoryCursor, LiveStatus, Page, PortMessage, PortRequest, SessionRow, SignInMethod, SignInView, TCursor, TranscriptItem, UsageProfile, UsageRecord, UsageScope } from '../shared/ipc.ts';
+import type { ContextReading, CoverageCode, Credits, Cursor, HistoryCursor, LiveStatus, Page, PortMessage, PortRequest, SessionRow, SignInMethod, SignInView, TCursor, TranscriptItem, UsageConsumption, UsageProfile, UsageRecord, UsageScope } from '../shared/ipc.ts';
 import { signInView } from './usage/sign-in-state.ts';
+import { consumptionByProfile, CONSUMPTION_ROWS } from './usage/consumption.ts';
 import { COST_CODE, COST_COMPONENTS, MAX_COST_CODES, MAX_COST_GROUPS, MAX_ITEMS, MAX_RECORDS, MAX_REFERENCES, MAX_SCOPES, parseContext, parseCost, PREVIEW_BYTES,
   REFERENCE_MAX, SLICE_BYTES } from '../shared/ipc.ts';
 import type { CostDetail, CostGroup, PriceRevisionInfo } from '../shared/ipc.ts';
@@ -222,13 +223,16 @@ const signInEpochs = (db: DatabaseSync) => {
  *  from the database only (no reconcile, config, credential or environment read); a view that cannot be read is null. */
 // ponytail: the first MAX_SCOPES profiles (before the id filter), no "more" flag; page it if a store ever holds that many
 export function usageProfiles(db: DatabaseSync, home: string): UsageProfile[] {
+  // XAIBO-PROD-583: consumption per profile; if it cannot be read the profiles still answer, with none
+  let cons: ReturnType<typeof consumptionByProfile> = { groups: new Map<string, UsageConsumption[]>(), limited: false, cut: new Set<string>() };
+  try { cons = consumptionByProfile(db, CONSUMPTION_ROWS, signInEpochs(db)); } catch { /* unreadable: no consumption */ }
   return (db.prepare('SELECT id, agent, root, origin FROM profiles ORDER BY agent, id LIMIT ?').all(MAX_SCOPES) as { id: string; agent: string; root: string; origin: string }[])
     .filter((p) => AGENT_ID.test(p.agent) && isProfileKey(p.id)) // an id the reply parser refuses would void the whole reply
     .map((p) => {
       let signIn: SignInView | null = null;
       // review H1: only a UUID profile can be declared or opened (the sign-in and integration requests need one)
       if (UUID.test(p.id)) try { signIn = signInView(db, p.id); } catch { /* unreadable: no view */ }
-      return { profileId: p.id, agent: p.agent, label: profileLabel(p.origin, p.root, home), signIn };
+      return { profileId: p.id, agent: p.agent, label: profileLabel(p.origin, p.root, home), signIn, consumption: cons.groups.get(p.id) ?? [], consumptionLimited: cons.limited || cons.cut.has(p.id) };
     });
 }
 export function answerUsage(db: DatabaseSync, req: PortRequest & { type: 'usage' }, home: string): PortMessage & { type: 'usage' } {
