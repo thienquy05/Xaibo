@@ -4,7 +4,7 @@
 // previous above and Load more below. Its state lives in the caller's store, so a mode switch unmounts the list and keeps
 // its pages and anchor; each mount refetches the resident pages in place. Every service string goes through visible().
 // Open integration and its panel are unit 4 (no inert control ships here).
-// ponytail: evidence refreshes on mode entry and service return only; unit 4 adds the refresh after an action.
+// Evidence refreshes on mode entry, on service return and after an integration action (XAIBO-PROD-579: `refresh`).
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import type { IntegrationKey, IntegrationPageResult, IntegrationRow } from '../../shared/ipc.ts';
 import { VirtualList } from '../components/VirtualList.tsx';
@@ -19,8 +19,10 @@ export interface AgentsSnapshot { level: AgentLevel; observedAt: number | null; 
 
 /** XAIBO-PROD-578: `onOpen` opens a row's integration panel (its named button, or Enter on the row); `focusTo` moves focus to a
  *  row (Back to map). */
-export function AgentsList({ fetchPage, lastKnown, store, onOpen, focusTo = null }: {
+export function AgentsList({ fetchPage, lastKnown, store, onOpen, focusTo = null, refresh: refreshTick = 0 }: {
   fetchPage: PageFetch; lastKnown: string | null; store: MutableRefObject<AgentsSnapshot | null>; onOpen: (row: IntegrationRow) => void; focusTo?: { key: string; n: number } | null;
+  /** XAIBO-PROD-579: a change refetches the resident pages in place (an integration action ran). */
+  refresh?: number;
 }) {
   const [s, setS] = useState<AgentsSnapshot>(() => (store.current ? { ...store.current, level: resumeLevel(store.current.level) }
     : { level: { ...(emptyLevel() as AgentLevel), loading: 'first' }, observedAt: null, focus: null }));
@@ -86,6 +88,8 @@ export function AgentsList({ fetchPage, lastKnown, store, onOpen, focusTo = null
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
   useEffect(() => { if (s.level.pages.length) refresh(); else load('first'); }, []);
+  const seenTick = useRef(refreshTick);
+  useEffect(() => { if (refreshTick !== seenTick.current) { seenTick.current = refreshTick; refreshRef.current(); } }, [refreshTick]);
   const wasLost = useRef(lastKnown !== null);
   useEffect(() => { // the service is back: its evidence again
     if (wasLost.current && lastKnown === null) refreshRef.current();

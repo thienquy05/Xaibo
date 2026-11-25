@@ -5,7 +5,7 @@
 // agy executable. 31 rows: every FR-06 state (Partial coverage after a restart with a recorded hook gap), 10 a page with
 // at most three resident and Load previous after eviction, the mode buttons (roving, manual activation, focus stays),
 // each mode keeping its own anchor, and the narrow layout. Nothing is installed and no agent runs.
-import { chmodSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { Page } from '@playwright/test';
@@ -169,7 +169,8 @@ test('Agents mode: 31 rows, every FR-06 state, bounded paging, mode anchors, res
   await expect(pane.getByText(/Open Codex once/)).toBeVisible();
   await expect(pane).toContainText('Codex hooks: intact');
   await expect(pane).toContainText('Codex notify wrapper: unavailable');
-  await expect(pane.getByRole('button', { name: /Connect|Disconnect|Uninstall/ })).toHaveCount(0);
+  // XAIBO-PROD-579 (unit 5): the intact hooks offer Disconnect and Full Uninstall (each previewed), never Connect again
+  await expect(pane.getByRole('button', { name: /Connect|Disconnect|Uninstall/ })).toHaveText(['Disconnect', 'Full Uninstall']);
   // the Profile select is scoped to Codex; a change keeps focus there
   const select = pane.getByRole('combobox', { name: 'Profile' });
   await expect(select.locator('option')).toHaveCount(29);
@@ -232,4 +233,168 @@ test('Agents mode: 31 rows, every FR-06 state, bounded paging, mode anchors, res
   await expect(row(page2, /^Codex · .*codex-03 · Partial coverage$/)).toContainText('Recent hook events lost (spool overflow)', { timeout: 30_000 });
   await expect(row(page2, /^Codex · .*codex-01 · Awaiting trust$/)).toHaveCount(1);
   await xaibo.quit(again);
+});
+
+// XAIBO-PROD-579 (P6-T10 unit 5; design §6.5.2, §5.1, §5.4): the integration diff dialog over the real service, in disposable
+// profiles under the run's TMPDIR. Claude Connect previews with retention selected; deselecting it replans and drops its
+// change; Escape cancels and nothing is written. The real default profile is refused with Close. Codex Connect: a file
+// changed after the preview answers a fresh preview that waits for another Apply; the applied hooks keep the foreign
+// command; Disconnect restores; Clean up clears a record of hooks removed outside Xaibo; Full Uninstall names every profile
+// and lists the conflict; the Agents list refreshes; narrow dialog wraps.
+const D = (n: number) => `00000000-0000-4000-8000-0000000d79${String(n).padStart(2, '0')}`;
+test('Integration diff dialog: Connect with retention, changed file, Disconnect, Clean up, Full Uninstall', async ({ xaibo }) => {
+  test.setTimeout(240_000);
+  const root = path.dirname(xaibo.home), tmp = path.join(root, 'tmp');
+  chmodSync(tmp, 0o700);
+  const dataDir = path.join(root, 'data-dialog');
+  mkdirSync(dataDir, { mode: 0o700 });
+  const bin = path.join(root, 'bin-dialog');
+  mkdirSync(bin);
+  for (const [name, out] of [['claude', '2.1.332 (Claude Code)'], ['codex', 'codex-cli 0.160.0']]) { writeFileSync(path.join(bin, name), `#!/bin/sh\necho "${out}"\n`); chmodSync(path.join(bin, name), 0o755); }
+  const env = { PATH: `${bin}:/usr/bin:/bin` };
+  const first = await xaibo.launch({ dataDir, env });
+  await xaibo.window(first);
+  await expect.poll(() => { try { const db = new DatabaseSync(path.join(dataDir, 'xaibo.db'), { readOnly: true }); try { return Number(Object.values(db.prepare('SELECT count(*) FROM profiles').get() ?? {})[0]); } finally { db.close(); } } catch { return -1; } }, { timeout: 30_000 }).toBeGreaterThan(0);
+  await xaibo.quit(first);
+
+  mkdirSync(path.join(tmp, 'profiles'), { mode: 0o700 });
+  const dir = (name: string) => { const d = path.join(tmp, 'profiles', name); mkdirSync(d, { mode: 0o700 }); return realpathSync(d); };
+  const claudeA = dir('claude-a'), [a, b, c, d] = ['codex-a', 'codex-b', 'codex-c', 'codex-d'].map(dir) as [string, string, string, string];
+  const at = Date.now() - 60_000;
+  writeFileSync(path.join(b, 'hooks.json'), JSON.stringify({ hooks: {} })); // Xaibo's group removed outside Xaibo
+  writeFileSync(path.join(c, 'hooks.json'), JSON.stringify({ hooks: { Stop: [group(dataDir, D(3))] } }));
+  writeFileSync(path.join(d, 'hooks.json'), JSON.stringify({ hooks: { Stop: [{ hooks: [{ ...group(dataDir, D(4)).hooks[0], timeout: 5 }] }] } })); // changed outside Xaibo
+  mkdirSync(path.join(dataDir, 'integrations'), { mode: 0o700, recursive: true });
+  const manifest = path.join(dataDir, 'integrations', 'manifest.json');
+  writeFileSync(manifest, JSON.stringify({ v: 1, entries: [[b, 2], [c, 3], [d, 4]].map(([r, n]) => entry(dataDir, r as string, D(n as number), at)) }), { mode: 0o600 });
+  const db = new DatabaseSync(path.join(dataDir, 'xaibo.db'));
+  try {
+    const add = db.prepare("INSERT INTO profiles (id, agent, root, origin) VALUES (?, ?, ?, 'manual')");
+    [a, b, c, d].forEach((r, i) => add.run(D(i + 1), 'codex', r));
+    add.run(D(5), 'claude', claudeA);
+    db.prepare("INSERT INTO kv (key, value) VALUES ('agent.codex.roots', ?)").run(JSON.stringify([a, b, c, d]));
+    db.prepare("INSERT INTO kv (key, value) VALUES ('agent.claude.roots', ?)").run(JSON.stringify([claudeA]));
+  } finally { db.close(); }
+
+  const run = await xaibo.launch({ dataDir, env });
+  const page = await xaibo.window(run);
+  const errors: string[] = [];
+  page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+  await run.app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(1280, 800));
+  await page.getByRole('navigation', { name: 'Areas' }).getByRole('link', { name: 'Agent Map' }).click();
+  await modes(page).getByRole('button', { name: 'Agents' }).click();
+  const dialog = page.getByRole('dialog');
+  const open = async (agent: string, profile: RegExp) => {
+    await page.getByRole('button', { name: new RegExp(`^Open integration: ${agent} · ${profile.source}`) }).click();
+    const pane = page.getByRole('region', { name: `Integration: ${agent}` });
+    await expect(pane.getByRole('heading', { level: 2 })).toBeFocused();
+    return pane;
+  };
+
+  // Claude: retention selected by default, deselecting replans without its change; Escape = Cancel; nothing written
+  const claude = await open('Claude Code', /.*claude-a$/);
+  const connect = claude.getByRole('button', { name: 'Connect', exact: true });
+  await connect.click();
+  await expect(dialog).toHaveAccessibleName('Connect Claude Code');
+  await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
+  const keep = dialog.getByRole('checkbox', { name: /^Raise transcript retention from \d+ to 45 days$/ });
+  await expect(keep).toBeChecked({ timeout: 20_000 });
+  await expect(dialog.getByRole('checkbox', { name: 'Lifecycle hooks (required)' })).toBeDisabled();
+  const diff = dialog.getByRole('region', { name: 'Changes to apply' });
+  await expect(diff).toContainText('/cleanupPeriodDays: 45');
+  await expect(diff).toContainText('Runs: claude plugin');
+  await keep.uncheck();
+  await expect(dialog).toContainText('Preview updated.');
+  await expect(keep).not.toBeChecked();
+  await expect(diff).not.toContainText('/cleanupPeriodDays');
+  await expect(dialog.getByRole('button', { name: 'Apply selected changes' })).not.toHaveAttribute('aria-disabled', 'true');
+  await shot(page, 'dialog-connect-claude');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(connect).toBeFocused();
+  expect(existsSync(path.join(claudeA, 'settings.json'))).toBe(false);
+  // the real default profile: refused before any read, with Close only
+  await claude.getByRole('combobox', { name: 'Profile' }).selectOption({ label: 'Default profile' });
+  await claude.getByRole('button', { name: 'Connect', exact: true }).click();
+  await expect(dialog).toContainText('real-profile changes stay off until Gate 6', { timeout: 20_000 });
+  await expect(dialog.getByRole('button', { name: 'Apply selected changes' })).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: 'Close' })).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(dialog).toBeHidden();
+  await expect(claude.getByRole('button', { name: 'Connect', exact: true })).toBeFocused();
+
+  // Codex: a file changed after the preview answers a fresh preview that waits for another Apply
+  const codex = await open('Codex', /.*codex-a$/);
+  await codex.getByRole('button', { name: 'Connect', exact: true }).click();
+  await expect(dialog).toHaveAccessibleName('Connect Codex');
+  await expect(diff).toContainText('/hooks/Stop/0', { timeout: 20_000 });
+  await expect(dialog).toContainText('After applying:');
+  await expect(dialog).toContainText('Existing commands from other tools stay in place.');
+  const foreign = { hooks: [{ type: 'command', command: 'echo foreign' }] };
+  writeFileSync(path.join(a, 'hooks.json'), JSON.stringify({ hooks: { Stop: [foreign] } }));
+  const apply = dialog.getByRole('button', { name: 'Apply selected changes' });
+  await apply.click();
+  await expect(dialog).toContainText('The configuration changed since the preview', { timeout: 20_000 });
+  await expect(diff).toContainText('/hooks/Stop/1');
+  expect(readFileSync(path.join(a, 'hooks.json'), 'utf8')).not.toContain('xaibo-hook'); // never submitted again by itself
+  await apply.click();
+  await expect(dialog).toBeHidden({ timeout: 20_000 });
+  await expect(codex.getByRole('heading', { level: 2 })).toBeFocused();
+  await expect(codex).toContainText('Changes applied. Hooks installed, awaiting trust.');
+  await expect(codex).toContainText('Codex hooks: intact');
+  const hooks = readFileSync(path.join(a, 'hooks.json'), 'utf8');
+  expect(hooks).toContain('echo foreign');
+  expect(hooks).toContain('xaibo-hook');
+  await expect(row(page, /^Codex · .*codex-a · Awaiting trust$/)).toHaveCount(1, { timeout: 20_000 }); // the list refreshed
+  // Disconnect: the profile's entry, then the foreign command alone remains
+  await codex.getByRole('button', { name: 'Disconnect' }).click();
+  await expect(dialog).toHaveAccessibleName('Disconnect Codex');
+  await expect(dialog.getByRole('region', { name: 'Changes to apply' })).toContainText(/Codex hooks · .*codex-a/, { timeout: 20_000 });
+  await expect(dialog).toContainText('Session history is kept.');
+  await dialog.getByRole('button', { name: 'Disconnect' }).click();
+  await expect(dialog).toBeHidden({ timeout: 20_000 });
+  await expect(codex).toContainText(/Disconnected: 1 entry removed or restored/);
+  expect(readFileSync(path.join(a, 'hooks.json'), 'utf8')).not.toContain('xaibo-hook');
+  expect(readFileSync(path.join(a, 'hooks.json'), 'utf8')).toContain('echo foreign');
+  await expect(codex.getByRole('button', { name: 'Connect', exact: true })).toBeVisible();
+
+  // Clean up: hooks removed outside Xaibo leave Xaibo's record, which is cleared
+  const select = codex.getByRole('combobox', { name: 'Profile' });
+  await select.selectOption(D(2));
+  await codex.getByRole('button', { name: 'Clean up' }).click();
+  await expect(dialog).toHaveAccessibleName('Clean up Codex');
+  await expect(dialog).toContainText("Xaibo's record of this entry", { timeout: 20_000 });
+  await dialog.getByRole('button', { name: 'Clean up' }).click();
+  await expect(dialog).toBeHidden({ timeout: 20_000 });
+  await expect(codex).toContainText('Cleaned up 1 leftover.');
+  await expect(codex.getByRole('button', { name: 'Clean up' })).toHaveCount(0);
+
+  // Full Uninstall: all profiles, every entry named, the changed one listed as a conflict; history kept
+  await select.selectOption(D(3));
+  await codex.getByRole('button', { name: 'Full Uninstall' }).click();
+  await expect(dialog).toHaveAccessibleName('Full Uninstall: all profiles');
+  await expect(dialog.getByRole('region', { name: 'Changes to apply' }).getByRole('heading', { level: 3 })).toHaveCount(2, { timeout: 20_000 });
+  await expect(dialog.getByRole('heading', { name: 'Conflicts' })).toBeVisible();
+  await expect(dialog).toContainText(/codex-d: changed outside Xaibo/);
+  await expect(dialog).toContainText('Session history is kept');
+  await shot(page, 'dialog-uninstall');
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await shot(page, 'dialog-uninstall-dark');
+  await page.emulateMedia({ colorScheme: 'light' });
+  await dialog.getByRole('button', { name: 'Uninstall from all profiles' }).click();
+  await expect(dialog).toBeHidden({ timeout: 20_000 });
+  await expect(codex).toContainText(/Uninstalled from all profiles: 2 entries removed or restored/);
+  expect(readFileSync(path.join(c, 'hooks.json'), 'utf8')).not.toContain('xaibo-hook');
+  expect(readFileSync(path.join(d, 'hooks.json'), 'utf8')).toContain('"timeout":5'); // the changed value is kept
+
+  // narrow: one column, wrapped lines, no horizontal scroll
+  await run.app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(720, 640));
+  await codex.getByRole('button', { name: 'Connect', exact: true }).click();
+  await expect(diff).toContainText('/hooks/Stop/0', { timeout: 20_000 });
+  expect(await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await shot(page, 'dialog-narrow');
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(codex.getByRole('button', { name: 'Connect', exact: true })).toBeFocused();
+  expect(errors).toEqual([]);
+  await xaibo.quit(run);
 });

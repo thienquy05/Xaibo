@@ -22,10 +22,12 @@ import {
 import { AgentsList, type AgentsSnapshot, type PageFetch } from './AgentsList.tsx';
 import { agentItems, agentKey, MODES, type Mode } from './integrations-state.ts';
 import { IntegrationPanel, type DetailFetch } from './IntegrationPanel.tsx';
+import type { WriteApi } from './IntegrationDiffDialog.tsx';
 import { restoreTarget } from './integration-panel.ts';
 import type { IntegrationKey } from '../../shared/ipc.ts';
 
-export interface MapApi {
+/** XAIBO-PROD-579: plus the panel's previewed writes (WriteApi). */
+export interface MapApi extends WriteApi {
   mapGroups(parent: MapGroup | null, cursor: MapGroup | null, limit: number): Promise<{ groups: MapNode[]; next: MapGroup | null }>;
   history(filter: HistoryFilter, cursor: HistoryKey | null, limit: number): Promise<{ rows: HistoryRow[]; next: HistoryKey | null }>;
   historyRow(session: number): Promise<HistoryRow | null>;
@@ -65,6 +67,7 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
   const panelRef = useRef(panel);
   panelRef.current = panel;
   const [agentsFocus, setAgentsFocus] = useState<{ key: string; n: number } | null>(null);
+  const [listTick, setListTick] = useState(0); // XAIBO-PROD-579: an integration action ran: the list refetches
   const backToMap = () => {
     const origin = panelRef.current?.origin;
     setPanel(null);
@@ -290,7 +293,7 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
               ))}
             </div>
           </div>
-          {mode === 'agents' ? <AgentsList fetchPage={api.integrationPage} lastKnown={lastKnown} store={agentsStore} focusTo={agentsFocus} onOpen={(r) => setPanel({ key: r.key, origin: agentKey(r.key) })} />
+          {mode === 'agents' ? <AgentsList fetchPage={api.integrationPage} lastKnown={lastKnown} store={agentsStore} focusTo={agentsFocus} refresh={listTick} onOpen={(r) => setPanel({ key: r.key, origin: agentKey(r.key) })} />
             : rootsEmpty && s.roots.loading && s.roots.pages.length === 0 ? <p className="x-hint x-map-note">Loading…</p>
             : rootsEmpty && s.roots.failed ? <p className="x-hint x-map-note">Groups could not be loaded. <button type="button" className="x-btn x-btn-quiet" onClick={() => load(null, null, 'first')}>Retry</button></p>
             : rootsEmpty ? <p className="x-hint x-map-note">No sessions yet.</p>
@@ -311,7 +314,7 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
             )}
         </section>
         {mode === 'agents' ? (panel ? (
-          <IntegrationPanel key={panel.origin} fetchDetail={api.integrationDetail} target={panel.key} lastKnown={lastKnown} onBack={backToMap}
+          <IntegrationPanel key={panel.origin} fetchDetail={api.integrationDetail} write={api} target={panel.key} lastKnown={lastKnown} onBack={backToMap} onChanged={() => setListTick((t) => t + 1)}
             onProfile={(id) => setPanel((p) => (p ? { ...p, key: { agent: p.key.agent, profileId: id } } : p))} />
         ) : null) : (
         <section className="x-pane x-map-detail" aria-labelledby="map-detail-heading">

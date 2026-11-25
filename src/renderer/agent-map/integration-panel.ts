@@ -30,7 +30,7 @@ export function testText(t: ReceiptTest): string | null {
   }
 }
 
-const ROUTE: Record<RemovalItem['route'], string> = {
+export const ROUTE: Record<RemovalItem['route'], string> = {
   'claude-plugin': 'Claude plugin hooks', 'claude-settings-fallback': 'Claude settings hooks', 'claude-retention': 'Transcript retention',
   'claude-tee': 'Status-line tee', 'codex-hooks': 'Codex hooks', 'agy-hooks': 'Antigravity hooks',
 };

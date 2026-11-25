@@ -720,6 +720,18 @@ html, .x-shell.x-fixed { scroll-padding-top: var(--x-frame-pad, 8px); } /* clear
 .x-integration h3 { margin: 0; font-size: var(--x-text-body); }
 .x-integration-list { margin: 0; padding-left: var(--x-space-4); display: grid; gap: var(--x-space-1); overflow-wrap: anywhere; }
 .x-receipt-test { display: grid; gap: var(--x-space-1); justify-items: start; }
+/* XAIBO-PROD-579: the Connection actions and the integration diff dialog (one column, wrapped lines, no horizontal scroll) */
+.x-integration-actions { display: flex; flex-wrap: wrap; gap: var(--x-space-2); }
+.x-diff-dialog { width: min(720px, calc(100vw - 32px)); max-width: none; max-height: calc(100vh - 32px); overflow-y: auto; }
+.x-diff-dialog h3 { margin: var(--x-space-2) 0 var(--x-space-1); font-size: var(--x-text-body); }
+.x-diff-dialog .x-radios { margin-bottom: var(--x-space-3); }
+.x-diff { max-height: 40vh; overflow-y: auto; margin-bottom: var(--x-space-3); padding: var(--x-space-2) var(--x-space-3); border: var(--x-border); border-radius: var(--x-radius-control); background: var(--x-inset); }
+.x-diff:focus-visible { outline-offset: -4px; }
+.x-diff ul { margin: 0; padding: 0; list-style: none; }
+.x-diff li { font-family: var(--x-font-mono); font-size: var(--x-text-small); line-height: var(--x-leading-small); white-space: pre-wrap; overflow-wrap: anywhere; }
+.x-diff-add { color: var(--x-success); }
+.x-diff-remove { color: var(--x-danger); }
+.x-diff-note { color: var(--x-muted); }
 .x-map-note { margin: 0; padding: var(--x-space-4); }
 .x-map-node { display: flex; align-items: flex-start; min-width: 0; cursor: pointer; }
 .x-map-cell { flex: 1; display: flex; align-items: flex-start; gap: var(--x-space-1); min-width: 0; }

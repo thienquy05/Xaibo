@@ -2,22 +2,29 @@
 // integration panel in Agent Map's detail pane, over unit 4a's integrationDetail. Heading, Back to map, a native Profile
 // select scoped to the agent (a change discards the old profile's test), facts, the profile's configuration in words, Codex
 // trust steps while awaiting trust, Test receipt (reads only; integration-panel.ts) and the status-only tee and notify lines.
-// No write control before its preview (R1: units 5-6). Every service string goes through visible().
+// XAIBO-PROD-579 (unit 5): Connection actions (Connect, Disconnect, Full Uninstall, Clean up; only where they apply and the
+// service is live), each through the diff dialog (IntegrationDiffDialog.tsx); after an apply the evidence is read again before
+// another action and the Agents list refreshes. Tee stays status only until unit 6. Every service string goes through visible().
 import { useEffect, useRef, useState } from 'react';
-import type { DETAIL_REFUSALS, IntegrationDetailResult, IntegrationKey } from '../../shared/ipc.ts';
+import type { DETAIL_REFUSALS, IntegrationDetail, IntegrationDetailResult, IntegrationKey } from '../../shared/ipc.ts';
 import { formatTime } from '../model.ts';
 import { Icon } from '../status/StatusBadge.tsx';
 import { visible } from '../text.ts';
 import { contentText, reasonsText, receiptText, STATE, stateText } from './integrations-state.ts';
+import { panelActions, type ActionKind, type DialogAction } from './integration-dialog.ts';
+import { IntegrationDiffDialog, type Done, type WriteApi } from './IntegrationDiffDialog.tsx';
 import { entryText, notifyText, pollTest, startTest, teeText, testable, testText, TEST_POLL_MS, TEST_TIMEOUT_MS, type ReceiptTest } from './integration-panel.ts';
 
 export type DetailFetch = (key: IntegrationKey) => Promise<IntegrationDetailResult>;
 const REFUSED: Record<(typeof DETAIL_REFUSALS)[number], string> = {
   starting: 'Agents are still being detected', unavailable: 'Agent evidence is unavailable', 'not-found': 'This agent or profile is no longer listed', failed: "Couldn't load this integration",
 };
+const ACTION: Record<ActionKind, string> = { connect: 'Connect', disconnect: 'Disconnect', uninstall: 'Full Uninstall', cleanup: 'Clean up' };
 
-export function IntegrationPanel({ fetchDetail, target, lastKnown, onBack, onProfile }: {
-  fetchDetail: DetailFetch; target: IntegrationKey; lastKnown: string | null; onBack: () => void; onProfile: (profileId: string) => void;
+export function IntegrationPanel({ fetchDetail, write, target, lastKnown, onBack, onProfile, onChanged }: {
+  fetchDetail: DetailFetch; write: WriteApi; target: IntegrationKey; lastKnown: string | null; onBack: () => void; onProfile: (profileId: string) => void;
+  /** An apply was sent: evidence elsewhere (the Agents list) may have changed. */
+  onChanged: () => void;
 }) {
   const [res, setRes] = useState<IntegrationDetailResult | 'loading' | 'error'>('loading');
   const [test, setTest] = useState<ReceiptTest>({ phase: 'idle' });
@@ -33,7 +40,7 @@ export function IntegrationPanel({ fetchDetail, target, lastKnown, onBack, onPro
     return fetchDetail(targetRef.current).then((r) => { if (seq.current !== t) return null; if (!poll || r.status === 'ready') setRes(r); return r; }, () => { if (seq.current === t && !poll) setRes('error'); return null; });
   };
   const polling = useRef(false); // code review L1: a slow read is never superseded by the next tick
-  useEffect(() => { setRes('loading'); setTest({ phase: 'idle' }); void load(); }, [keyStr]); // a profile change discards the old test
+  useEffect(() => { setRes('loading'); setTest({ phase: 'idle' }); setNote(null); void load(); }, [keyStr]); // a profile change discards the old test and note (code review L2)
   useEffect(() => { heading.current?.focus(); }, []); // opened: the panel heading (design §6.5.2); a profile change keeps focus on the select
   useEffect(() => { // Test receipt: read every 2 s; a backstop timeout when reads fail (the service is gone)
     if (test.phase !== 'waiting') return;
@@ -57,6 +64,30 @@ export function IntegrationPanel({ fetchDetail, target, lastKnown, onBack, onPro
   const profilesRef = useRef<{ id: string; label: string }[]>([]);
   if (d) profilesRef.current = d.profiles;
   const profiles = profilesRef.current;
+  // XAIBO-PROD-579: the dialog keeps the detail it opened with while a reload runs; actions wait for that reload
+  const detailRef = useRef<IntegrationDetail | null>(null);
+  if (d) detailRef.current = d;
+  const [dialogReq, setDialogReq] = useState<{ action: DialogAction; n: number } | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const trigger = useRef<HTMLButtonElement | null>(null);
+  const act = (k: ActionKind, el: HTMLButtonElement) => {
+    const pid = d?.row.key.profileId;
+    if (refreshing || !pid) return;
+    trigger.current = el;
+    setNote(null);
+    setDialogReq((r) => ({ action: k === 'uninstall' ? { kind: 'uninstall' } : { kind: k, profileId: pid }, n: (r?.n ?? 0) + 1 }));
+  };
+  const done = ({ note: said, focus, sent }: Done) => {
+    if (said !== null) setNote(said);
+    if (focus === 'heading' || (focus === 'trigger' && !trigger.current?.isConnected)) heading.current?.focus();
+    else if (focus === 'trigger') trigger.current?.focus();
+    if (!sent) return;
+    setRefreshing(true); // the outcome is established by fresh evidence before another action (design §5.1)
+    void load().then(() => setRefreshing(false));
+    onChanged();
+  };
+  const actions = d && lastKnown === null ? panelActions(d) : [];
   const why = d ? reasonsText(d.row) : null, tee = d ? teeText(d) : null, notify = d ? notifyText(d) : null, said = testText(test);
   return (
     <section className="x-pane x-map-detail x-integration" aria-labelledby="integration-heading">
@@ -85,6 +116,10 @@ export function IntegrationPanel({ fetchDetail, target, lastKnown, onBack, onPro
                 <div><dt>Evidence checked</dt><dd>{formatTime(ready.observedAt)}</dd></div>
               </dl>
               {d.entries.length ? <><h3>Configuration</h3><ul className="x-integration-list">{d.entries.map((e) => <li key={e.entry}>{entryText(e)}</li>)}</ul></> : null}
+              {actions.length ? <div className="x-receipt-test"><h3>Connection</h3><div className="x-integration-actions">{actions.map((k) => (
+                <button key={k} type="button" className={`x-btn ${k === 'connect' ? 'x-btn-primary' : k === 'cleanup' ? 'x-btn-secondary' : 'x-btn-danger'}`} aria-disabled={refreshing || undefined}
+                  onClick={(e) => act(k, e.currentTarget)}>{ACTION[k]}</button>
+              ))}</div><p className="x-hint" aria-live="polite">{visible(note ?? '')}</p></div> : null}
               {d.trustSteps.length ? <><h3>Hooks installed, awaiting trust</h3><ol className="x-integration-list">{d.trustSteps.map((s, i) => <li key={i}>{visible(s)}</li>)}</ol></> : null}
               {testable(d) ? (
                 <div className="x-receipt-test">
@@ -97,6 +132,7 @@ export function IntegrationPanel({ fetchDetail, target, lastKnown, onBack, onPro
             </>
           )}
       </div>
+      {detailRef.current ? <IntegrationDiffDialog open={dialogReq} detail={detailRef.current} api={write} lastKnown={lastKnown} onDone={done} /> : null}
     </section>
   );
 }

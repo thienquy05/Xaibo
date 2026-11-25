@@ -157,9 +157,19 @@ function App() {
     };
   }, []);
 
-  // XAIBO-PROD-575: the Agent Map adds the Agents list page to the browse requests
-  const mapApi = useMemo(() => ({ ...browseApi, integrationPage: (cursor: IntegrationKey | null, limit: number) => client.current?.integrationPage(cursor, limit) ?? Promise.reject(new Error('no service connection')),
-    integrationDetail: (key: IntegrationKey) => client.current?.integrationDetail(key) ?? Promise.reject(new Error('no service connection')) }), [browseApi]);
+  // XAIBO-PROD-575: the Agent Map adds the Agents list page to the browse requests. XAIBO-PROD-579: and the panel's writes;
+  // without a connection a preview fails and an apply is refused (nothing was sent, so the outcome is known)
+  const mapApi = useMemo(() => {
+    const gone = () => Promise.reject(new Error('no service connection')), notSent = { status: 'refused', code: 'unavailable' } as const;
+    return { ...browseApi, integrationPage: (cursor: IntegrationKey | null, limit: number) => client.current?.integrationPage(cursor, limit) ?? gone(),
+      integrationDetail: (key: IntegrationKey) => client.current?.integrationDetail(key) ?? gone(),
+      connectPreview: (profileId: string, retention: boolean) => client.current?.connectPreview(profileId, retention) ?? gone(),
+      connectApply: (previewId: string) => client.current?.connectApply(previewId) ?? Promise.resolve(notSent),
+      removalPreview: (profileId: string | null) => client.current?.removalPreview(profileId) ?? gone(),
+      removalApply: (previewId: string) => client.current?.removalApply(previewId) ?? Promise.resolve(notSent),
+      cleanupPreview: (profileId: string) => client.current?.cleanupPreview(profileId) ?? gone(),
+      cleanupApply: (previewId: string) => client.current?.cleanupApply(previewId) ?? Promise.resolve(notSent) };
+  }, [browseApi]);
   const api = useMemo<UsageApi>(() => ({
     usage: () => client.current?.usage() ?? Promise.reject(new Error('no service')),
     history: (scope, stream, from, to, cursor) => client.current?.usageHistory(scope, stream, from, to, cursor, PAGE) ?? Promise.reject(new Error('no service')),
