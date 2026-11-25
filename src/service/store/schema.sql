@@ -87,6 +87,7 @@ CREATE TABLE hook_delivery (
   committed_ts INTEGER NOT NULL,
   unattributed TEXT CHECK (unattributed IN ('unknown-profile', 'no-session'))
 );
+CREATE INDEX hook_delivery_receipt ON hook_delivery (agent, profile_key, received_ts);
 CREATE TABLE hook_gaps (
   id INTEGER PRIMARY KEY,
   reason TEXT NOT NULL CHECK (reason IN ('spool-overflow', 'spool-saturated', 'spool-torn', 'disk-full')),
@@ -237,6 +238,7 @@ CREATE TABLE report_delivery (
   unattributed TEXT CHECK (unattributed IN ('unknown-profile')), has_model INTEGER NOT NULL DEFAULT 0 CHECK (has_model IN (0, 1)),
   PRIMARY KEY (registration_id, delivery_id)
 );
+CREATE INDEX report_delivery_receipt ON report_delivery (agent, profile_key, received_ts);
 CREATE INDEX report_delivery_seq ON report_delivery (registration_id, producer_id, native_session_id, producer_seq) WHERE has_model = 1;
 CREATE TABLE report_rejects (
   registration_id TEXT NOT NULL,

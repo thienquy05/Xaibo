@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { errorCode, installCrashPolicy } from '../shared/crash.ts';
 import { accept, IPC_VERSION, parsePortRequest, parseServiceCommand } from '../shared/ipc.ts';
-import type { Banner, PortMessage, ServiceEvent, StorageReport } from '../shared/ipc.ts';
+import type { Banner, PortMessage, ServiceEvent, StorageReport, IntegrationPageResult } from '../shared/ipc.ts';
 import { appendQuiet, createLogger, loadInstallSecret, type Logger } from '../shared/log.ts';
 import { answer, answerCost, answerFiles, answerLiveSet, answerMarkers, answerSession, answerSlice, answerSubagents, answerTools, answerTranscript, answerUsage, answerUsageHistory, coalesce, createHub, sessionsByKey, type LiveOf } from './api.ts';
 import { boot, retentionDelayFromEnv, type Service } from './boot.ts';
@@ -21,6 +21,7 @@ import { answerHistoryRow, answerSearch, retentionState, suppressedPage } from '
 import { StorageMeter } from './storage/meter.ts';
 import { takePerf } from './perf-counters.ts';
 import { answerIntegrations, connectContext, type Connect } from './integrations-ipc.ts';
+import { answerIntegrationPage, pageEvidence } from './integrations/state.ts';
 import { createConnect } from './integrations/connect.ts';
 
 // P3-T10: 50 ms keeps one push per window while leaving most of M1's 250 ms hook-to-paint budget; the tick re-reads
@@ -147,6 +148,14 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
         const result = applyOverlay(db, req.op, { readOnly: s.store.readOnly || !db.isOpen, now: Date.now() });
         port.postMessage({ v: IPC_VERSION, type: 'overlay', id: req.id, result } satisfies PortMessage);
         if (resyncAfter(req.op, result)) removed(); // G5b2-4: other windows list it (or not) too
+        break;
+      }
+      case 'integrationPage': { // XAIBO-PROD-574 (P6-T10 unit 2a): the Agents list, from a fresh read-only reconcile
+        const c = integrationsFor(s);
+        const result: IntegrationPageResult = c === null ? { status: 'refused', code: 'starting' } : c === 'unavailable' || !dataDir ? { status: 'refused', code: 'unavailable' }
+          : answerIntegrationPage({ db, catalog: s.catalog(), detections: s.detections, profiles: s.profiles(), home: homedir(), now: Date.now(),
+            reconcile: () => c.reconcile(s.profiles() ?? []), ...pageEvidence({ db, dataDir }) }, req);
+        port.postMessage({ v: IPC_VERSION, type: 'integrationPage', id: req.id, result } satisfies PortMessage);
         break;
       }
       case 'signIn': { // XAIBO-PROD-572 (P6-T01a slice 3): a change re-groups usage, so the ledger recomputes (review L6)

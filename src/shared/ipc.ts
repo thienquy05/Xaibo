@@ -349,6 +349,7 @@ export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Curs
   /** XAIBO-PROD-568 (P6-T11): Settings > Local prices: the current table, a Validate that switches nothing, a Reload. */
   | { v: 1; type: 'prices'; id: number; op: PriceOp }
   | SignInRequest
+  | { v: 1; type: 'integrationPage'; id: number; cursor: IntegrationKey | null; direction: 'next' | 'previous'; limit: number }
   | { v: 1; type: 'history'; id: number; filter: HistoryFilter; cursor: HistoryKey | null; limit: number }
   | { v: 1; type: 'projects'; id: number; cursor: number | null; limit: number }
   | { v: 1; type: 'folders'; id: number; project: number; cursor: number | null; limit: number }
@@ -394,6 +395,7 @@ export type PortMessage =
   | { v: 1; type: 'prices'; id: number; view: PriceView | null; check: PriceCheck | null }
   /** XAIBO-PROD-572: view null for profile-not-found, read-only, unavailable and failed. */
   | { v: 1; type: 'signIn'; id: number; code: SignInReplyCode; view: SignInView | null }
+  | { v: 1; type: 'integrationPage'; id: number; result: IntegrationPageResult }
   | { v: 1; type: 'history'; id: number; rows: HistoryRow[]; next: HistoryKey | null; failed?: true }
   | { v: 1; type: 'projects'; id: number; projects: Named[]; next: number | null; failed?: true }
   | { v: 1; type: 'folders'; id: number; folders: Named[]; next: number | null; failed?: true }
@@ -900,6 +902,12 @@ export function parsePortRequest(x: unknown): PortRequest | null {
   if (m?.type === 'storage') return count(m.id) && typeof m.refresh === 'boolean' ? { v: 1, type: 'storage', id: m.id, refresh: m.refresh } : null;
   if (m?.type === 'prices') return count(m.id) && oneOf(PRICE_OPS, m.op) ? { v: 1, type: 'prices', id: m.id, op: m.op } : null;
   if (m?.type === 'signIn') return parseSignInRequest(m);
+  if (m?.type === 'integrationPage') {
+    const cursor = m.cursor === null ? null : parseIntegrationKey(m.cursor);
+    return exactKeys(m, ['v', 'type', 'id', 'cursor', 'direction', 'limit']) && count(m.id) && cursor !== undefined && (m.direction === 'next' || m.direction === 'previous')
+      && Number.isSafeInteger(m.limit) && (m.limit as number) >= 1 && (m.limit as number) <= INTEGRATION_PAGE_MAX
+      ? { v: 1, type: 'integrationPage', id: m.id, cursor, direction: m.direction, limit: m.limit as number } : null;
+  }
   if (m?.type === 'monthly') {
     const filter = parseLedgerFilter(m.filter);
     return count(m.id) && filter && monthOrNull(m.end) && Number.isSafeInteger(m.limit) && (m.limit as number) >= 1 && (m.limit as number) <= LEDGER_MONTHS
@@ -999,6 +1007,10 @@ export function parsePortMessage(x: unknown): PortMessage | null {
   if (m.type === 'retention') {
     const setting = m.setting === null ? null : parseRetentionSetting(m.setting);
     return count(m.id) && m.failed === undefined && (m.setting === null || setting) && timeOrNull(m.lastRunAt) ? { v: 1, type: 'retention', id: m.id, setting, lastRunAt: m.lastRunAt } : null;
+  }
+  if (m.type === 'integrationPage') {
+    const result = exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) ? parseIntegrationPage(m.result) : undefined;
+    return result ? { v: 1, type: 'integrationPage', id: m.id as number, result } : null;
   }
   if (m.type === 'signIn') {
     if (!exactKeys(m, ['v', 'type', 'id', 'code', 'view']) || !count(m.id) || !oneOf(SIGN_IN_CODES, m.code)) return null;
@@ -1200,4 +1212,57 @@ function parseSignInView(x: unknown): SignInView | undefined {
   if (declaration === undefined || evidence === undefined || boundary === undefined) return undefined;
   return { profileId: x.profileId, revision: x.revision, method: x.method, source: x.source, at: x.at, declaration, evidence, conflict: x.conflict,
     usingDeclaration: x.usingDeclaration, outputStatus: x.outputStatus, generation: x.generation, boundary };
+}
+
+// XAIBO-PROD-574 (P6-T10 unit 2a; FR-06, D-P6-11; design .handoff/p6-t10-design.md sections 1-2, review R2/R3/R7): the
+// Agent Map Agents list, one row per agent and profile, read only. Reasons and gaps are fixed codes; no path beyond the
+// profile label the usage view already shows; a receipt names only its source, event and time.
+export const INTEGRATION_STATES = ['detected', 'setup-required', 'awaiting-trust', 'connected', 'partial-coverage', 'unsupported-version', 'not-detected'] as const;
+export const INTEGRATION_FACTS = ['no-executable', 'probe-not-granted', 'probe-grant-stale', 'version-unknown', 'version-unqualified', 'no-profile', 'not-connected',
+  'evidence-unavailable', 'drifted', 'disconnected-externally', 'pending-recovery', 'unreadable', 'hooks-blocked', 'no-receipt', 'waiting-for-receipt', 'hook-gap',
+  'content-unavailable'] as const;
+export const CONTENT_MODES = ['native-transcript', 'report-full', 'report-state-only', 'unavailable'] as const;
+export const INTEGRATION_REFUSALS = ['starting', 'unavailable', 'stale-cursor', 'too-large', 'failed'] as const;
+export const INTEGRATION_PAGE_MAX = 10;
+export type IntegrationState = (typeof INTEGRATION_STATES)[number];
+export type IntegrationFact = (typeof INTEGRATION_FACTS)[number];
+export interface IntegrationKey { agent: string; profileId: string | null }
+export interface IntegrationRow {
+  key: IntegrationKey; name: string; profileLabel: string | null; version: string | null; state: IntegrationState; reasons: IntegrationFact[];
+  lifecycleGaps: (typeof GAP_REASONS)[number][]; receipt: { source: 'hook' | 'report'; event: string; receivedAt: number } | null;
+  content: { mode: (typeof CONTENT_MODES)[number]; assurance: 'verified' | 'declared' | 'unavailable'; evidence: string | null; gaps: string[] };
+}
+export type IntegrationPageResult =
+  | { status: 'ready'; observedAt: number; value: { rows: IntegrationRow[]; previous: IntegrationKey | null; next: IntegrationKey | null } }
+  | { status: 'refused'; code: (typeof INTEGRATION_REFUSALS)[number] };
+
+const EVENT_NAME = /^[A-Za-z][A-Za-z0-9.]{0,63}$/;
+const SHORT_CODE = /^[a-z][a-z0-9-]{0,31}$/;
+function parseIntegrationKey(x: unknown): IntegrationKey | undefined {
+  return exactKeys(x, ['agent', 'profileId']) && typeof x.agent === 'string' && AGENT_ID.test(x.agent) && (x.profileId === null || uuid(x.profileId))
+    ? { agent: x.agent, profileId: x.profileId } : undefined;
+}
+const codeList = <T extends string>(x: unknown, allowed: readonly T[]): x is T[] => Array.isArray(x) && x.length <= 16 && x.every((c) => oneOf(allowed, c));
+function parseIntegrationRow(x: unknown): IntegrationRow | undefined {
+  if (!exactKeys(x, ['key', 'name', 'profileLabel', 'version', 'state', 'reasons', 'lifecycleGaps', 'receipt', 'content'])) return undefined;
+  const key = parseIntegrationKey(x.key), r = x.receipt, c = x.content;
+  if (!key || !text(x.name, 200) || !(x.profileLabel === null || text(x.profileLabel, 512)) || !(x.version === null || text(x.version, 64))) return undefined;
+  if (!oneOf(INTEGRATION_STATES, x.state) || !codeList(x.reasons, INTEGRATION_FACTS) || !codeList(x.lifecycleGaps, GAP_REASONS)) return undefined;
+  const receipt = r === null ? null : exactKeys(r, ['source', 'event', 'receivedAt']) && (r.source === 'hook' || r.source === 'report') && typeof r.event === 'string'
+    && EVENT_NAME.test(r.event) && count(r.receivedAt) ? { source: r.source as 'hook' | 'report', event: r.event, receivedAt: r.receivedAt } : undefined;
+  const content = exactKeys(c, ['mode', 'assurance', 'evidence', 'gaps']) && oneOf(CONTENT_MODES, c.mode) && oneOf(['verified', 'declared', 'unavailable'] as const, c.assurance)
+    && (c.evidence === null || text(c.evidence, 64)) && Array.isArray(c.gaps) && c.gaps.length <= 16 && c.gaps.every((g) => typeof g === 'string' && SHORT_CODE.test(g))
+    ? { mode: c.mode, assurance: c.assurance, evidence: c.evidence, gaps: [...c.gaps] as string[] } : undefined;
+  if (receipt === undefined || content === undefined) return undefined;
+  return { key, name: x.name, profileLabel: x.profileLabel, version: x.version, state: x.state, reasons: [...x.reasons], lifecycleGaps: [...x.lifecycleGaps], receipt, content };
+}
+function parseIntegrationPage(x: unknown): IntegrationPageResult | undefined {
+  if (exactKeys(x, ['status', 'code']) && x.status === 'refused') return oneOf(INTEGRATION_REFUSALS, x.code) ? { status: 'refused', code: x.code } : undefined;
+  if (!exactKeys(x, ['status', 'observedAt', 'value']) || x.status !== 'ready' || !count(x.observedAt)) return undefined;
+  const v = x.value;
+  if (!exactKeys(v, ['rows', 'previous', 'next']) || !Array.isArray(v.rows) || v.rows.length > INTEGRATION_PAGE_MAX) return undefined;
+  const rows = v.rows.map(parseIntegrationRow);
+  const previous = v.previous === null ? null : parseIntegrationKey(v.previous), next = v.next === null ? null : parseIntegrationKey(v.next);
+  if (rows.some((r) => r === undefined) || previous === undefined || next === undefined) return undefined;
+  return { status: 'ready', observedAt: x.observedAt, value: { rows: rows as IntegrationRow[], previous, next } };
 }
