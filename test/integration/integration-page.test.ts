@@ -88,6 +88,7 @@ async function deps(o: Partial<PageDeps> = {}): Promise<PageDeps> {
     installedAt: (p) => (p.id === X1 ? null : 1_000),
     trust: (p) => (p.id === C2 ? 'awaiting-trust' : null),
     policy: () => null,
+    trustSteps: () => [],
     ...o,
   };
 }

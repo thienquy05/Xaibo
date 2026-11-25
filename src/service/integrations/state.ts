@@ -4,7 +4,7 @@
 // lifecycle receipt, in the design's order, each with named reasons. Nothing runs; the only write is the existing Codex
 // observation record codexHookStatus keeps (as the coverage banners do; code review M1).
 import type { DatabaseSync } from 'node:sqlite';
-import { GAP_REASONS, INTEGRATION_PAGE_MAX, type IntegrationFact, type IntegrationKey, type IntegrationPageResult, type IntegrationRow,
+import { CONNECT_LIMITS, GAP_REASONS, INTEGRATION_PAGE_MAX, REMOVAL_LIMIT, type IntegrationDetailResult, type IntegrationFact, type IntegrationKey, type IntegrationPageResult, type IntegrationRow,
   type IntegrationState } from '../../shared/ipc.ts';
 import { CLAUDE_HOOK_EVENTS, claudeHookPolicy } from '../adapters/claude/hooks.ts';
 import { CODEX_HOOK_EVENTS } from '../adapters/codex/hooks.ts';
@@ -93,12 +93,13 @@ export interface PageDeps {
   trust(p: Profile): 'awaiting-trust' | 'connected' | null;
   /** Claude only: 'blocked' or 'unknown' hook policy, else null. */
   policy(p: Profile): string | null;
+  /** XAIBO-PROD-577: Codex's guided trust steps for the profile (shown only while it awaits trust). */
+  trustSteps(p: Profile): string[];
 }
 
 const order = (k: IntegrationKey) => k.agent + '|' + (k.profileId ?? ''); // agent ids hold no '|'
 
-function rows(d: PageDeps): IntegrationRow[] {
-  const report = d.reconcile();
+function rows(d: PageDeps, report: ReconcileReport | null): IntegrationRow[] {
   // code review M3: a gap recorded without an agent (a spool that could not tell) limits every agent
   const gapsOf = (agent: string) => (d.db.prepare('SELECT DISTINCT reason FROM hook_gaps WHERE (agent = ? OR agent IS NULL) AND recorded_at >= ? ORDER BY reason')
     .all(agent, d.now - GAP_WINDOW_MS) as { reason: string }[]).map((g) => g.reason).filter((g): g is (typeof GAP_REASONS)[number] => (GAP_REASONS as readonly string[]).includes(g));
@@ -141,7 +142,7 @@ export function answerIntegrationPage(d: PageDeps, req: { cursor: IntegrationKey
   if (d.profiles === null) return { status: 'refused', code: 'starting' };
   if (d.catalog === null) return { status: 'refused', code: 'unavailable' }; // code review: never an empty list
   try {
-    const all = rows(d);
+    const all = rows(d, d.reconcile());
     if (all.length > MAX_CANDIDATES) return { status: 'refused', code: 'too-large' };
     const limit = Math.min(req.limit, INTEGRATION_PAGE_MAX);
     let start = 0, end = all.length;
@@ -158,16 +159,49 @@ export function answerIntegrationPage(d: PageDeps, req: { cursor: IntegrationKey
   }
 }
 
+/** XAIBO-PROD-577 (P6-T10 unit 4a; design section 2, review R7/R8): the integration panel's read, from the same fresh reconcile
+ *  as its row. A null profile only for a catalog agent with no profile (never an invented one). ponytail (code review L2): every
+ *  row is rebuilt to find this one (so it always equals the list's row); filter rows() by agent if detail reads ever cost. */
+export function answerIntegrationDetail(d: PageDeps, key: IntegrationKey): IntegrationDetailResult {
+  if (d.profiles === null) return { status: 'refused', code: 'starting' };
+  if (d.catalog === null) return { status: 'refused', code: 'unavailable' };
+  try {
+    const report = d.reconcile();
+    const row = rows(d, report).find((r) => order(r.key) === order(key));
+    if (!row) return { status: 'refused', code: 'not-found' };
+    const p = key.profileId === null ? null : d.profiles.find((x) => x.id === key.profileId) ?? null;
+    const profiles = d.profiles.filter((x) => x.agent === key.agent).sort((x, y) => (x.id < y.id ? -1 : 1)).slice(0, REMOVAL_LIMIT)
+      .map((x) => ({ id: x.id, label: profileLabel(x.origin, x.root, d.home) }));
+    const entries = p && report?.status === 'ready' ? report.entries.filter((e) => e.profileId === p.id).slice(0, REMOVAL_LIMIT)
+      .map((e) => ({ entry: e.entry, route: e.route, state: e.state, reason: e.reason ?? null })) : [];
+    const trustSteps = p && row.state === 'awaiting-trust' ? d.trustSteps(p).slice(0, CONNECT_LIMITS.trust) : [];
+    return { status: 'ready', observedAt: d.now, value: { row, profiles, entries, trustSteps, boundary: p ? d.installedAt(p) : null } };
+  } catch {
+    return { status: 'refused', code: 'failed' };
+  }
+}
+
 /** The production evidence for a page: the manifest is read once per request; each profile check that fails is unknown. */
-export function pageEvidence(o: { db: DatabaseSync; dataDir: string }): Pick<PageDeps, 'installedAt' | 'trust' | 'policy'> {
+export function pageEvidence(o: { db: DatabaseSync; dataDir: string }): Pick<PageDeps, 'installedAt' | 'trust' | 'policy' | 'trustSteps'> {
   let manifest: ManifestEntry[] = [];
   try { manifest = readManifest(o.dataDir).filter((e) => e.state === 'applied'); } catch { /* none: nothing installed shows as such */ }
   const lifecycle = (p: Profile) => manifest.filter((e) => LIFECYCLE_ROUTES.has(e.route) && within(e.target, p.root));
+  // code review L1: one Codex status read per profile per request, so the trust state and its steps always agree
+  const codex = new Map<string, ReturnType<typeof codexHookStatus> | null>();
+  const codexOf = (p: Profile) => {
+    if (!codex.has(p.id)) { try { codex.set(p.id, codexHookStatus({ dataDir: o.dataDir, profileKey: p.id, codexHome: p.root, bounds: { root: p.root, denied: [] }, db: o.db })); } catch { codex.set(p.id, null); } }
+    return codex.get(p.id)!;
+  };
   return {
     installedAt: (p) => { const t = lifecycle(p).map((e) => Math.max(Date.parse(e.at), e.seen?.since ?? 0)).filter(Number.isFinite); return t.length ? Math.max(...t) : null; },
     trust: (p) => {
       if (!lifecycle(p).length) return null;
-      try { const s = codexHookStatus({ dataDir: o.dataDir, profileKey: p.id, codexHome: p.root, bounds: { root: p.root, denied: [] }, db: o.db }).state; return s === 'not-installed' ? null : s; } catch { return 'awaiting-trust'; }
+      const s = codexOf(p);
+      return s === null ? 'awaiting-trust' : s.state === 'not-installed' ? null : s.state;
+    },
+    trustSteps: (p) => {
+      if (p.agent !== 'codex' || !lifecycle(p).length) return [];
+      return codexOf(p)?.steps ?? [];
     },
     policy: (p) => {
       if (p.agent !== 'claude' || !lifecycle(p).length) return null;

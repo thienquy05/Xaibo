@@ -362,6 +362,7 @@ export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Curs
   | { v: 1; type: 'prices'; id: number; op: PriceOp }
   | SignInRequest
   | { v: 1; type: 'integrationPage'; id: number; cursor: IntegrationKey | null; direction: 'next' | 'previous'; limit: number }
+  | { v: 1; type: 'integrationDetail'; id: number; key: IntegrationKey }
   | { v: 1; type: 'history'; id: number; filter: HistoryFilter; cursor: HistoryKey | null; limit: number }
   | { v: 1; type: 'projects'; id: number; cursor: number | null; limit: number }
   | { v: 1; type: 'folders'; id: number; project: number; cursor: number | null; limit: number }
@@ -412,6 +413,7 @@ export type PortMessage =
   /** XAIBO-PROD-572: view null for profile-not-found, read-only, unavailable and failed. */
   | { v: 1; type: 'signIn'; id: number; code: SignInReplyCode; view: SignInView | null }
   | { v: 1; type: 'integrationPage'; id: number; result: IntegrationPageResult }
+  | { v: 1; type: 'integrationDetail'; id: number; result: IntegrationDetailResult }
   | { v: 1; type: 'history'; id: number; rows: HistoryRow[]; next: HistoryKey | null; failed?: true }
   | { v: 1; type: 'projects'; id: number; projects: Named[]; next: number | null; failed?: true }
   | { v: 1; type: 'folders'; id: number; folders: Named[]; next: number | null; failed?: true }
@@ -947,6 +949,10 @@ export function parsePortRequest(x: unknown): PortRequest | null {
   if (m?.type === 'storage') return count(m.id) && typeof m.refresh === 'boolean' ? { v: 1, type: 'storage', id: m.id, refresh: m.refresh } : null;
   if (m?.type === 'prices') return count(m.id) && oneOf(PRICE_OPS, m.op) ? { v: 1, type: 'prices', id: m.id, op: m.op } : null;
   if (m?.type === 'signIn') return parseSignInRequest(m);
+  if (m?.type === 'integrationDetail') { // XAIBO-PROD-577: one agent/profile key, nothing else
+    const key = parseIntegrationKey(m.key);
+    return exactKeys(m, ['v', 'type', 'id', 'key']) && count(m.id) && key ? { v: 1, type: 'integrationDetail', id: m.id, key } : null;
+  }
   if (m?.type === 'integrationPage') {
     const cursor = m.cursor === null ? null : parseIntegrationKey(m.cursor);
     return exactKeys(m, ['v', 'type', 'id', 'cursor', 'direction', 'limit']) && count(m.id) && cursor !== undefined && (m.direction === 'next' || m.direction === 'previous')
@@ -1060,6 +1066,10 @@ export function parsePortMessage(x: unknown): PortMessage | null {
   if (m.type === 'retention') {
     const setting = m.setting === null ? null : parseRetentionSetting(m.setting);
     return count(m.id) && m.failed === undefined && (m.setting === null || setting) && timeOrNull(m.lastRunAt) ? { v: 1, type: 'retention', id: m.id, setting, lastRunAt: m.lastRunAt } : null;
+  }
+  if (m.type === 'integrationDetail') {
+    const result = exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) ? parseIntegrationDetail(m.result) : undefined;
+    return result ? { v: 1, type: 'integrationDetail', id: m.id as number, result } : null;
   }
   if (m.type === 'integrationPage') {
     const result = exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) ? parseIntegrationPage(m.result) : undefined;
@@ -1308,6 +1318,33 @@ function parseIntegrationRow(x: unknown): IntegrationRow | undefined {
     ? { mode: c.mode, assurance: c.assurance, evidence: c.evidence, gaps: [...c.gaps] as string[] } : undefined;
   if (receipt === undefined || content === undefined) return undefined;
   return { key, name: x.name, profileLabel: x.profileLabel, version: x.version, state: x.state, reasons: [...x.reasons], lifecycleGaps: [...x.lifecycleGaps], receipt, content };
+}
+// XAIBO-PROD-577 (P6-T10 unit 4a; design section 2, review R7/R8): the panel's read. The list row, that agent's profiles,
+// that profile's reconcile entries (ids and enums), Codex trust steps while awaiting trust, the install boundary.
+export const DETAIL_REFUSALS = ['starting', 'unavailable', 'not-found', 'failed'] as const;
+export interface IntegrationDetail {
+  row: IntegrationRow; profiles: { id: string; label: string }[];
+  entries: { entry: string; route: ConnectRoute; state: (typeof RECONCILE_STATES)[number]; reason: string | null }[];
+  trustSteps: string[]; boundary: number | null;
+}
+export type IntegrationDetailResult = { status: 'ready'; observedAt: number; value: IntegrationDetail } | { status: 'refused'; code: (typeof DETAIL_REFUSALS)[number] };
+function parseIntegrationDetail(x: unknown): IntegrationDetailResult | undefined {
+  if (exactKeys(x, ['status', 'code']) && x.status === 'refused') return oneOf(DETAIL_REFUSALS, x.code) ? { status: 'refused', code: x.code } : undefined;
+  if (!exactKeys(x, ['status', 'observedAt', 'value']) || x.status !== 'ready' || !count(x.observedAt)) return undefined;
+  const v = x.value;
+  if (!exactKeys(v, ['row', 'profiles', 'entries', 'trustSteps', 'boundary'])) return undefined;
+  const row = parseIntegrationRow(v.row);
+  const ok = row && bounded(v.profiles, REMOVAL_LIMIT) && v.profiles.every((p) => exactKeys(p, ['id', 'label']) && uuid(p.id) && text(p.label, 512))
+    && bounded(v.entries, REMOVAL_LIMIT) && v.entries.every((e) => exactKeys(e, ['entry', 'route', 'state', 'reason']) && uuid(e.entry) && route(e.route)
+      && oneOf(RECONCILE_STATES, e.state) && (e.reason === null || connectCode(e.reason)))
+    && bounded(v.trustSteps, CONNECT_LIMITS.trust) && v.trustSteps.every(longText) && (v.boundary === null || count(v.boundary));
+  if (!ok) return undefined;
+  // code review L3: the fields agree: trust steps only while awaiting trust; a profile-less row has no entries or boundary; the
+  // row's own profile is listed
+  const pid = row.key.profileId, d = v as unknown as IntegrationDetail;
+  if ((d.trustSteps.length && row.state !== 'awaiting-trust') || (pid === null && (d.entries.length || d.boundary !== null))
+    || (pid !== null && !d.profiles.some((p) => p.id === pid))) return undefined;
+  return { status: 'ready', observedAt: x.observedAt, value: { row, profiles: d.profiles.map((p) => ({ ...p })), entries: d.entries.map((e) => ({ ...e })), trustSteps: [...d.trustSteps], boundary: d.boundary } };
 }
 function parseIntegrationPage(x: unknown): IntegrationPageResult | undefined {
   if (exactKeys(x, ['status', 'code']) && x.status === 'refused') return oneOf(INTEGRATION_REFUSALS, x.code) ? { status: 'refused', code: x.code } : undefined;
