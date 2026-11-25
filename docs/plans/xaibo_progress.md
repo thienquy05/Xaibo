@@ -25,7 +25,7 @@ The short list an agent starts from. Before starting, check the task's row in §
 | P6-T11 | Price-override access in Settings | P6-T01 ✓ | [Phase 6](xaibo_plan.md#phase-6--integrations-gate-6) | agent | `feat/phase6-integrations` |
 | P6-S14-T1 | Sign-in signal spike (S14); unblocks P6-T01a, then P6-T08, P6-T09, P6-T10a | Gate 3 ✓ | [Phase 6](xaibo_plan.md#phase-6--integrations-gate-6) | **owner-started: ask first** | `feat/phase6-integrations` |
 | P6-T12 | Real-profile enablement and owner live check | P6-T03 ✓, P6-T10 | [Phase 6](xaibo_plan.md#phase-6--integrations-gate-6) | agent, then owner live check | `feat/phase6-integrations` |
-| Missions scope | PRD v1.4 delta S-45 (orchestrator "Missions", phase v1-M) and design delta 3; docs consolidation | owner approval | PRD App. G / App. H | Claude + Codex, owner approves | `docs/missions-scope` |
+| v1-M setup | After the MVP Gate: owner approves the S18 spike plan, then v1-M setup drafts tasks from PRD v1.4 (S-45) and design §6.14 (D-M-01) | MVP Gate | [v1-M](xaibo_plan.md#v1-m--missions-prd-v14-approved-2026-11-25) | **owner-started (S18)** | `feat/v1m-missions` |
 
 ## 2. Per-phase status
 
@@ -40,7 +40,7 @@ The short list an agent starts from. Before starting, check the task's row in §
 | 5 History and retention | `feat/phase5-history-retention` | done (filters carried to Phase 6, D-P5-17; P5-T19 deferred to scale-up) | Gate 5 approved | 2026-11-22 | #22 (merged) |
 | 6 Integrations | `feat/phase6-integrations` | done (P6-T01..T13) | Gate 6 approved | 2026-11-26 | PR to `master` (merge when green) |
 | 7 Control | `feat/phase7-control` | not started | MVP Gate | — | — |
-| v1-M Missions (proposed, PRD v1.4 draft) | `feat/v1m-missions` | not started; PRD v1.4 + design delta 3 drafts on `docs/missions-scope` await owner approval | Gate M | — | — |
+| v1-M Missions | `feat/v1m-missions` | not started; PRD v1.4 and design §6.14 approved 2026-11-25 (D-M-01) | Gate M | — | — |
 | v1-A | `feat/v1a-embedded-terminal` | not started | v1-A gate | — | — |
 | v1-B | `feat/v1b-otlp-compare` | not started | v1-B gate | — | — |
 | v1-C | `feat/v1c-mcp` | not started | v1-C gate | — | — |
@@ -566,6 +566,7 @@ Entry format:
 | D-P6-23 | 2026-11-26 | Gate 6 round 1 dispositions: fix the six Codex majors (G6A-1, G6A-2, G6B-1, G6B-2, G6D1-1, G6E-1) and the cheap minors (G6D1-2, G6E-2, G6F-2) test-first as hotfix runs; **defer G6D1-3** (Return to Dashboard from the integration panel: a design feature gap) to a Phase 7 unit; **accept** the `import-liveness` event-loop test (a 5 ms timer must run within 400 ms "even under suite load") as a load-sensitive miss: it fails in most full parallel runs on this machine, including the clean clone, and passes alone and at `--test-concurrency=2` (as EC-71 at Gate 5) | Owner: "go" (on the recommendation) | plan §2.4 step 3; P6-T13 | — | owner |
 | D-P6-24 | 2026-11-26 | Gate 6 owner stop: approved on `7ad7479`; the second `import-liveness` test ("watching many settling sessions stays linear") accepted on the same grounds as D-P6-23; the six Claude second-review findings (stuck operation lock recovery and its text, also a pre-enable checklist note; usage-consumption read cost; refresh dropped during Load more; `loadImports` per report profile; packaged temp-dir allowance and test env vars; a `connect.ts` comment) deferred to a Phase 7 cleanup unit; then the pre-enable checklist: `REAL_PROFILE_ENABLED` flipped on in the merge result (`e76c862`), items 2-9 acknowledged | Owner: "approve"; "flip, items 2-9 confirmed" | plan §2.4 step 6, P6-T12 pre-enable checklist; `gates/gate6.md` | — | owner |
 | D-P6-25 | 2026-11-27 | PR #23's CI `gate` job (ubuntu-latest) failed two pre-existing Linux-only tests: `m15-fourth-agent` (connectContext's disposable root is `os.tmpdir()`, the shared `/tmp` on Linux, which `writable()` refuses by design) and the `inode` case of `claude-plugin-setup` 2b (ext4 reuses inode numbers at once, as D-P6-02). Both skip off macOS (test-only, `ponytail:` notes naming S-23); macOS behaviour and the Gate 6 evidence are unchanged | macOS is the MVP target; the same class of fix as D-P6-02 | plan §2.4; S-23 | — | Claude (owner: "merge when green") |
+| D-M-01 | 2026-11-25 | Owner approves PRD v1.4 (Missions, S-45, phase v1-M after the MVP Gate, before v1-A) and design delta 3 rev 2 (one mission page starting with Needs you; folded into design §6.14). Owner choices: plan-then-run with one approve-run grant and Xaibo's deterministic scheduler; small tasks auto-merge after observed checks and cross-family review, large/flagged tasks PR only with lead notes; integrator resolves conflicts and the small/large rules apply to the result; mission docs in the target repo; Q35..Q41 at their defaults. Also consolidated the planning docs (Orca notes → PRD App. H, audit ledger → plan §1a carried items, design deltas folded) and added progress §1a Ready tasks. Branch `docs/missions-scope` | owner |
 
 ## 5. Deviations from plan or PRD
 

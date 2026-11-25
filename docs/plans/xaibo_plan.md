@@ -1,6 +1,6 @@
 # Xaibo implementation plan
 
-**Jump to:** start at [progress §1a Ready tasks](xaibo_progress.md#1a-ready-tasks-pick-up-here), then read only your task's phase below. [§1a corrections and carried design items](#1a-corrections-from-later-approvals-documentation-audit-2026-11-13) · [§2 how to use](#2-how-to-use-this-plan) · [§3 conventions](#3-cross-cutting-conventions) · Phases [0](#phase-0--spikes-gate-0) · [1](#phase-1--skeleton--claude-ingest-gate-1) · [2](#phase-2--codex-ingest--normalization-antigravity-cli-evaluation-and-ingestion-gate-2) · [3](#phase-3--live-status-gate-3) · [D](#phase-d--xaibo-design-system-gate-d) · [4](#phase-4--session-workspace-ui-gate-4) · [5](#phase-5--history-and-retention-gate-5) · [6](#phase-6--integrations-gate-6) · [7](#phase-7--control-mvp-gate) · [v1-M](#v1-m--missions-proposed-prd-v14-draft) · [v1-A](#v1-a--embedded-terminal-codex-app-server-control-acp) · [v1-B](#v1-b--otlp-receiver-compare-notify-wrapper-categories-inspector) · [v1-C](#v1-c--xaibo-mcp-server) · [v1-D](#v1-d--windows-then-linux) · [Public](#public-release-optional) · [§5 traceability](#5-traceability-appendix) · [§6 open questions](#6-consolidated-open-questions-and-plan-risks)
+**Jump to:** start at [progress §1a Ready tasks](xaibo_progress.md#1a-ready-tasks-pick-up-here), then read only your task's phase below. [§1a corrections and carried design items](#1a-corrections-from-later-approvals-documentation-audit-2026-11-13) · [§2 how to use](#2-how-to-use-this-plan) · [§3 conventions](#3-cross-cutting-conventions) · Phases [0](#phase-0--spikes-gate-0) · [1](#phase-1--skeleton--claude-ingest-gate-1) · [2](#phase-2--codex-ingest--normalization-antigravity-cli-evaluation-and-ingestion-gate-2) · [3](#phase-3--live-status-gate-3) · [D](#phase-d--xaibo-design-system-gate-d) · [4](#phase-4--session-workspace-ui-gate-4) · [5](#phase-5--history-and-retention-gate-5) · [6](#phase-6--integrations-gate-6) · [7](#phase-7--control-mvp-gate) · [v1-M](#v1-m--missions-prd-v14-approved-2026-11-25) · [v1-A](#v1-a--embedded-terminal-codex-app-server-control-acp) · [v1-B](#v1-b--otlp-receiver-compare-notify-wrapper-categories-inspector) · [v1-C](#v1-c--xaibo-mcp-server) · [v1-D](#v1-d--windows-then-linux) · [Public](#public-release-optional) · [§5 traceability](#5-traceability-appendix) · [§6 open questions](#6-consolidated-open-questions-and-plan-risks)
 
 ## 1. Header
 
@@ -2176,9 +2176,9 @@ See §6: Q-5.1..Q-5.11.
 
 ---
 
-## v1-M — Missions (proposed, PRD v1.4 draft)
+## v1-M — Missions (PRD v1.4, approved 2026-11-25)
 
-Placeholder only. PRD v1.4 (S-45, FR-60..FR-72, MIS1..MIS7, EC-121..EC-136, M19..M22, S18, Gate M) and design delta 3 are drafts awaiting owner approval; nothing here binds until then. Order once approved: owner-approved S18 spike plan (disposable profiles, owner-started) → v1-M setup task drafts the tasks, EC/metric traceability and the S-39 engine split (D-P5-01, D-37) → build → Gate M. Runs after the MVP Gate and before v1-A. Branch: `feat/v1m-missions`.
+Placeholder until v1-M setup. Requirements: PRD v1.4 (S-45, FR-60..FR-72, MIS1..MIS7, EC-121..EC-136, M19..M22, S18, Gate M) and design §6.14, both approved by the owner 2026-11-25 (D-M-01). Order once approved: owner-approved S18 spike plan (disposable profiles, owner-started) → v1-M setup task drafts the tasks, EC/metric traceability and the S-39 engine split (D-P5-01, D-37) → build → Gate M. Runs after the MVP Gate and before v1-A. Branch: `feat/v1m-missions`.
 
 ## v1-A — Embedded terminal, Codex app-server control, ACP
 
