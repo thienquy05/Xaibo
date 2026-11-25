@@ -42,6 +42,12 @@ test('Sign-in declaration in the panel: declare, change, account change, clear, 
     const add = db.prepare("INSERT INTO profiles (id, agent, root, origin) VALUES (?, 'codex', ?, 'manual')");
     add.run(A, a); add.run(B, b);
     db.prepare("INSERT INTO kv (key, value) VALUES ('agent.codex.roots', ?)").run(JSON.stringify([a, b]));
+    // XAIBO-PROD-587: one synthetic priced request for profile B (its retained observed consumption)
+    const t = Date.now() - 60_000;
+    const sid = Number(db.prepare("INSERT INTO sessions (agent, profile_id, native_session_id) VALUES ('codex', ?, 'sb-1')").run(B).lastInsertRowid);
+    const ev = Number(db.prepare("INSERT INTO events (session_id, schema_version, source, confidence, native_id, kind, source_seq, received_ts) VALUES (?, 1, 'fixture', 'confirmed', 'e-sb', 'assistant', 1, ?)").run(sid, t).lastInsertRowid);
+    db.prepare("INSERT INTO usage (session_id, schema_version, source, identity, scope, event_id, uncached_input, cache_read, cache_write, output, source_ts) VALUES (?, 1, 'fixture', 'r-sb', 'message', ?, 100, 0, 0, 50, ?)").run(sid, ev, t);
+    db.prepare("INSERT INTO cost_estimates (session_id, schema_version, source, covered_scope, amount_usd, basis, coverage) VALUES (?, 1, 'fixture', 'usage:fixture:r-sb', 0.25, 'token_table', '{\"coverage\":\"full\"}')").run(sid);
   } finally { db.close(); }
 
   const run = await xaibo.launch({ dataDir, env });
@@ -120,5 +126,23 @@ test('Sign-in declaration in the panel: declare, change, account change, clear, 
   await expect(paneB.getByRole('group', { name: 'Sign-in method' })).toContainText(/Owner declaration: Gateway · declared/, { timeout: 20_000 });
   await expect(page2.getByRole('group', { name: 'Agent Map view' }).getByRole('button', { name: 'Agents' })).toHaveAttribute('aria-pressed', 'true');
   await shot(page2, 'sign-in-settings-open');
+  // XAIBO-PROD-587 (unit 5): B's current block says Gateway (with its provenance); its request, made before the declaration, stays in an
+  // earlier-epoch block under that epoch's method (never relabelled Gateway); Review integration opens B's panel
+  await page2.getByRole('navigation', { name: 'Areas' }).getByRole('link', { name: 'Dashboard' }).click();
+  await page2.getByRole('group', { name: 'Dashboard view' }).getByRole('button', { name: 'Usage and history' }).click();
+  const block = page2.getByRole('region', { name: `Codex · ${b}`, exact: true });
+  await expect(block).toContainText('Sign-in method: Gateway', { timeout: 20_000 });
+  await expect(block).toContainText(/Owner declaration: Gateway · declared \d{4}-/);
+  const earlier = page2.getByRole('region', { name: `Codex · ${b} · earlier usage epoch` });
+  await expect(earlier).toContainText('Sign-in method: Unknown (an earlier usage epoch)');
+  const cons = earlier.getByRole('list', { name: `Observed consumption, Codex · ${b} · earlier usage epoch` });
+  await expect(cons).toContainText('Observed tokens: 150');
+  await expect(cons).toContainText('Estimated cost: ~$0.25');
+  await expect(cons).not.toContainText('list-price'); // that epoch was not a gateway
+  await expect(page2.getByRole('region', { name: `Codex · ${a}`, exact: true })).toContainText('Sign-in method: Unknown'); // A: explicit Unknown, no lead
+  await shot(page2, 'sign-in-dashboard-usage');
+  await block.getByRole('button', { name: `Review integration: Codex · ${b}` }).click();
+  await expect(page2.getByRole('region', { name: 'Integration: Codex' }).getByRole('heading', { level: 2 })).toBeFocused();
+  await expect(page2.getByRole('region', { name: 'Integration: Codex' }).getByRole('group', { name: 'Sign-in method' })).toContainText(/Owner declaration: Gateway/, { timeout: 20_000 });
   await xaibo.quit(again);
 });

@@ -4,7 +4,8 @@
 // (totals.ts, queue.ts, usage/presentation.ts); while the collector is not running every live label reads "Last known".
 // Service-supplied strings go through visible() (EC-55).
 import { useEffect, useReducer, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
-import type { AgentStatus, Banner, HistoryCursor, LedgerFilter, LiveStatus, SessionRow, UsageRecord, UsageScope } from '../../shared/ipc.ts';
+import { uuid, type AgentStatus, type Banner, type HistoryCursor, type IntegrationKey, type LedgerFilter, type LiveStatus, type SessionRow, type UsageProfile, type UsageRecord, type UsageScope } from '../../shared/ipc.ts';
+import { METHOD_TEXT, provenanceLines } from '../usage/sign-in-view.ts';
 import { LoadingLine, RetryNotice } from '../components/RetryNotice.tsx';
 import { VirtualList } from '../components/VirtualList.tsx';
 import { retryIdle, retryStep, type Retry } from '../retry.ts';
@@ -17,13 +18,14 @@ import { Record as SessionRecord } from '../SessionList.tsx';
 import { lifecycleName } from '../status/presentation.ts';
 import { Icon, StatusLine } from '../status/StatusBadge.tsx';
 import { visible } from '../text.ts';
-import { dayRange, historyBounds, scopeBlocks, shiftDay, usageRefreshDue, usageView, usageWakeIn } from '../usage/presentation.ts';
+import { blockName, consumptionLines, dayRange, historyBounds, shiftDay, usageBlocks, usageRefreshDue, usageView, usageWakeIn } from '../usage/presentation.ts';
 import { attentionQueue, attentionState, sinceText } from './queue.ts';
 import { barGeometry, historyGeometry, quotaArc, tileSeries, type Datum } from './charts.ts';
 import { abbreviate, liveSetSummary, type Summary } from './totals.ts';
 
 export interface UsageApi {
-  usage(): Promise<UsageScope[]>;
+  /** XAIBO-PROD-587: the scopes and the per-profile list (sign-in method, consumption). */
+  usage(): Promise<{ scopes: UsageScope[]; profiles: UsageProfile[] }>;
   history(scope: number, stream: string, from: number, to: number, cursor: HistoryCursor | null): Promise<{ records: UsageRecord[]; next: HistoryCursor | null }>;
   /** P5-T17b: the monthly usage ledger (optional where a caller has no service, e.g. render tests). */
   monthly?: MonthlyApi;
@@ -43,6 +45,8 @@ export function Dashboard(p: {
   /** XAIBO-PROD-438: the live-set Retry state (Retrying…, Still couldn't … · HH:MM) */
   liveRetry?: Retry; lastKnown: string | null; agents: AgentStatus[] | null; banners: Banner[];
   api: UsageApi; tick: number; onSetPath: (agent: string) => void;
+  /** XAIBO-PROD-587 (design line 351, review R11): Change sign-in declaration and Review integration open that profile's panel. */
+  onOpenIntegration?: (key: IntegrationKey) => void;
   /** P4-T05d: a live record's Open session button opens it in the Session area. */
   onOpen?: (row: SessionRow) => void;
   /** XAIBO-PROD-555: the monthly ledger's retained-sessions link and the ledger state Return to Dashboard restores. */
@@ -94,7 +98,7 @@ export function Dashboard(p: {
           {view === 'live' ? <LiveView live={p.live} lastKnown={lastKnown} focusId={p.focusId} onOpen={p.onOpen} />
             : view === 'attention' ? <AttentionView queue={queue} loaded={p.live.loaded} failed={p.liveFailed} lastKnown={lastKnown} name={name} onShowLive={showLive} onOpen={p.onOpen} />
               : <>
-                <UsageView api={p.api} tick={p.tick} name={name} lastKnown={lastKnown} />
+                <UsageView api={p.api} tick={p.tick} name={name} lastKnown={lastKnown} onOpenIntegration={p.onOpenIntegration} />
                 {/* P5-T17b (design §6.1.1): the ledger lives in this view below usage scopes, at the view's full width */}
                 <section aria-labelledby="monthly-heading">
                   <h2 id="monthly-heading" tabIndex={-1}>Monthly usage</h2>
@@ -229,9 +233,10 @@ function AttentionView({ queue, loaded, failed, lastKnown, name, onShowLive, onO
   );
 }
 
-function UsageView({ api, tick, name, lastKnown }: { api: UsageApi; tick: number; name: (id: string) => string; lastKnown: string | null }) {
+function UsageView({ api, tick, name, lastKnown, onOpenIntegration }: { api: UsageApi; tick: number; name: (id: string) => string; lastKnown: string | null; onOpenIntegration?: (key: IntegrationKey) => void }) {
   const now = useNow(1000);
   const [scopes, setScopes] = useState<UsageScope[] | null>(null);
+  const [profiles, setProfiles] = useState<UsageProfile[]>([]);
   const [failed, setFailed] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const last = useRef(0);
@@ -255,7 +260,7 @@ function UsageView({ api, tick, name, lastKnown }: { api: UsageApi; tick: number
     retrying.current ||= retry;
     const n = ++seq.current;
     const done = () => { if (retry) retrying.current = false; };
-    api.usage().then((s) => { done(); failures.current = 0; if (mounted.current && n === seq.current) { setScopes(s); setFailed(false); } },
+    api.usage().then((u) => { done(); failures.current = 0; if (mounted.current && n === seq.current) { setScopes(u.scopes); setProfiles(u.profiles); setFailed(false); } },
       () => {
         done(); failures.current++;
         if (mounted.current && n === seq.current) setFailed(true);
@@ -275,13 +280,37 @@ function UsageView({ api, tick, name, lastKnown }: { api: UsageApi; tick: number
       {/* XAIBO-PROD-438 (D-P4-10): short notices; usage retries on its own at the next tick */}
       {failed && scopes !== null ? <p className="x-gap"><Icon id="finding" /><span>Couldn't refresh usage · showing last known</span></p> : null}
       {failed && scopes === null ? <p className="x-gap"><Icon id="finding" /><span>Couldn't load usage</span></p> : scopes === null ? <LoadingLine text="Loading usage…" />
-        : scopes.length === 0 ? <p>No usage scopes yet.</p> : scopeBlocks(scopes).map((b) => (
-          <section key={b.key} className="x-scope" aria-label={`${name(b.agent)} · ${visible(b.profile)}`}>
-            <h3>{name(b.agent)} · {visible(b.profile)}</h3>
-            {b.unverified ? <p className="x-tone-warning">Account scope unverified</p> : null}
-            {b.rows.map((s, i) => <ScopeRow key={`${s.stream ?? 'none'}-${i}`} s={s} now={now} api={api} lastKnown={lastKnown} selected={choice !== undefined && scopeKey(choice) === scopeKey(s)} onSelect={() => setSelected(scopeKey(s))} />)}
-          </section>
-        ))}
+        : (() => {
+          // XAIBO-PROD-587 (PRD §6.9): each block says its sign-in method and leads by it; consumption is never summed with quota
+          const blocks = usageBlocks(scopes, profiles), linked = new Set<string>();
+          if (!blocks.length) return <p>No usage scopes yet.</p>;
+          return blocks.map((b) => {
+            const label = blockName(b, name(b.agent));
+            const n = b.consumption.length;
+            const cons = n ? b.consumption.map((c, i) => ( // review L5: each list its own name
+              <ul key={i} className="x-integration-list" aria-label={`Observed consumption, ${label}${n > 1 ? `, ${i + 1} of ${n}` : ''}`}>{consumptionLines(c, b.method).map((l, j) => <li key={j}>{l}</li>)}</ul>
+            )) : null;
+            const first = b.profileId !== null && !linked.has(b.profileId);
+            const link = first && onOpenIntegration && uuid(b.profileId) ? b.profileId : null;
+            if (b.profileId !== null) linked.add(b.profileId);
+            return (
+              <section key={b.key} className="x-scope" aria-label={label}>
+                <h3>{label}</h3>
+                {b.signIn ? <ul className="x-integration-list x-tone-muted" aria-label={`Sign-in method, ${label}`}>{provenanceLines(b.signIn).map((l, i) => <li key={i}>{visible(l)}</li>)}</ul> /* review M2: source and time */
+                  : <p className="x-tone-muted">Sign-in method: {METHOD_TEXT[b.method]}{b.current ? '' : ' (an earlier usage epoch)'}</p>}
+                {first && b.limited && !n ? <p className="x-tone-muted">Older requests beyond the read limit are not counted.</p> : null /* review M3 */}
+                {b.unverified ? <p className="x-tone-warning">Account scope unverified</p> : null}
+                {b.lead === 'consumption' ? cons : null}
+                {b.rows.map((s, i) => <ScopeRow key={`${s.stream ?? 'none'}-${i}`} s={s} now={now} api={api} lastKnown={lastKnown} selected={choice !== undefined && scopeKey(choice) === scopeKey(s)} onSelect={() => setSelected(scopeKey(s))} />)}
+                {b.lead !== 'consumption' ? cons : null}
+                {link ? <div className="x-integration-actions">
+                  <button type="button" className="x-btn x-btn-quiet" aria-label={`Change sign-in declaration: ${label}`} onClick={() => onOpenIntegration!({ agent: b.agent, profileId: link })}>Change sign-in declaration</button>
+                  <button type="button" className="x-btn x-btn-quiet" aria-label={`Review integration: ${label}`} onClick={() => onOpenIntegration!({ agent: b.agent, profileId: link })}>Review integration</button>
+                </div> : null}
+              </section>
+            );
+          });
+        })()}
     </>
   );
 }

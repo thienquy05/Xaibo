@@ -3,8 +3,8 @@
 // scopes stay separate and labelled; agy exactly "Unavailable from passive sources" with no values.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { countdownText, dayRange, HISTORY_DAYS, historyBounds, scopeBlocks, shiftDay, usageView } from '../../../src/renderer/usage/presentation.ts';
-import type { UsageScope } from '../../../src/shared/ipc.ts';
+import { blockName, countdownText, dayRange, HISTORY_DAYS, historyBounds, scopeBlocks, shiftDay, usageBlocks, usageView } from '../../../src/renderer/usage/presentation.ts';
+import type { SignInView, UsageConsumption, UsageProfile, UsageScope } from '../../../src/shared/ipc.ts';
 
 const NOW = new Date(2026, 0, 2, 12, 0, 0).getTime();
 const MIN = 60_000;
@@ -147,4 +147,56 @@ test('usage wake: the ms until the 5 s window ends, never negative, never above 
   assert.equal(usageWakeIn(10_000, 9_000), 5000, 'clock moved back');
   const last = 10_000, now = 12_000;
   assert.equal(usageRefreshDue(last, now + usageWakeIn(last, now), 0, false), true, 'the wake lands on a due refresh');
+});
+
+// XAIBO-PROD-587 (P6-T10a unit 5; PRD §6.9, review R1/R11, D-P6-17): blocks carry their sign-in method and lead and their consumption
+test('usageBlocks: method per epoch, lead, consumption once per profile and epoch, consumption-only profiles', () => {
+  const C = '00000000-0000-4000-8000-0000000c8701', X = '00000000-0000-4000-8000-0000000c8702', K = '00000000-0000-4000-8000-0000000c8703';
+  const view = (profileId: string, method: SignInView['method'], generation: number): SignInView => ({ profileId, revision: 1, method, source: method === 'unknown' ? null : 'owner', at: 1,
+    declaration: method === 'unknown' ? null : { method, at: 1 }, evidence: null, conflict: false, usingDeclaration: method !== 'unknown', outputStatus: 'unavailable', generation, boundary: null });
+  const g = (generation: number, scope: number | null, usd: number): UsageConsumption => ({ generation, scope, tokens: 10, estimatedUsd: usd, coverage: 'full', from: 1, to: 2, limited: false });
+  const prof = (profileId: string, agent: string, label: string, signIn: SignInView, consumption: UsageConsumption[]): UsageProfile => ({ profileId, agent, label, signIn, consumption, consumptionLimited: false });
+  const scopes = [
+    s({ scope: 7, agent: 'codex', profile: 'Default profile', profileId: X, verified: true, generation: 1, boundary: { method: 'subscription', at: 1, reason: 'method' } }), // an earlier epoch
+    s({ scope: 9, agent: 'codex', profile: 'Default profile', profileId: X, verified: true, generation: 2, boundary: { method: 'api-key', at: 5, reason: 'declared-account' } }),
+    s({ scope: 3, agent: 'claude', profile: 'Default profile', profileId: C, verified: false, generation: 0 }),
+  ];
+  const profiles = [
+    prof(C, 'claude', 'Default profile', view(C, 'unknown', 0), [g(0, null, 1)]),
+    prof(X, 'codex', 'Default profile', view(X, 'api-key', 2), [g(2, 9, 4), g(1, 7, 2)]),
+    prof(K, 'claude', '~/keys', view(K, 'api-key', 0), [g(0, null, 8)]), // no quota scope at all
+  ];
+  const b = usageBlocks(scopes, profiles);
+  const pick = (x: (typeof b)[number]) => [x.key, x.method, x.lead, x.current, x.consumption.map((c) => c.estimatedUsd)];
+  assert.deepEqual(b.map(pick), [
+    ['scope:7', 'subscription', 'quota', false, [2]], // its own epoch's method, not today's
+    ['scope:9', 'api-key', 'consumption', true, [4]],
+    ['scope:3', 'unknown', 'none', true, []], // a per-session unverified scope: Session Cost covers its requests
+    ['consumption:' + C + ':0', 'unknown', 'none', true, [1]], // the profile's requests, once, apart from the session scope
+    ['consumption:' + K + ':0', 'api-key', 'consumption', true, [8]], // consumption-only: no quota observed
+  ]);
+  assert.deepEqual(b.map((x) => x.profileId), [X, X, C, C, K]);
+  assert.deepEqual(usageBlocks(scopes, []).map((x) => [x.method, x.lead, x.consumption.length]), [['unknown', 'none', 0], ['unknown', 'none', 0], ['unknown', 'none', 0]], 'no profile list: nothing guessed');
+});
+
+test('unit 5 review M1-M3: an older epoch keeps its own method for scope-less consumption; current blocks carry provenance; a capped read is said', () => {
+  const C = '00000000-0000-4000-8000-0000000c8711';
+  const v = (method: SignInView['method'], generation: number): SignInView => ({ profileId: C, revision: 2, method, source: 'owner', at: 5, declaration: { method, at: 5 }, evidence: null,
+    conflict: false, usingDeclaration: true, outputStatus: 'unavailable', generation, boundary: { at: 5, reason: 'method' } });
+  const g = (generation: number, usd: number): UsageConsumption => ({ generation, scope: null, tokens: 1, estimatedUsd: usd, coverage: 'full', from: 1, to: 2, limited: false });
+  const p: UsageProfile = { profileId: C, agent: 'claude', label: 'Default profile', signIn: v('api-key', 1), consumption: [g(1, 3), g(0, 1)], consumptionLimited: true };
+  const scopes = [s({ scope: null, agent: 'claude', profile: 'Default profile', profileId: C, verified: null, stream: null, unavailable: 'no-observation', generation: null })];
+  const b = usageBlocks(scopes, [p]);
+  assert.deepEqual(b.map((x) => [x.key, x.method, x.current, x.consumption.map((c) => c.estimatedUsd), x.signIn?.method ?? null, x.limited]), [
+    ['profile:' + C, 'api-key', true, [3], 'api-key', true], // the current epoch's requests under today's method, with its provenance
+    ['consumption:' + C + ':0', 'unknown', false, [1], null, true], // generation 0 had no recorded method: never relabelled API key
+  ]);
+});
+
+test('unit 5: an earlier-epoch block has its own name, so two blocks of one profile never share a region name', () => {
+  const C = '00000000-0000-4000-8000-0000000c8721';
+  const view: SignInView = { profileId: C, revision: 2, method: 'gateway', source: 'owner', at: 5, declaration: { method: 'gateway', at: 5 }, evidence: null, conflict: false, usingDeclaration: true, outputStatus: 'unavailable', generation: 1, boundary: { at: 5, reason: 'method' } };
+  const b = usageBlocks([s({ scope: null, agent: 'codex', profile: '~/b', profileId: C, verified: null, stream: null, unavailable: 'no-observation', generation: null })],
+    [{ profileId: C, agent: 'codex', label: '~/b', signIn: view, consumption: [{ generation: 0, scope: null, tokens: 150, estimatedUsd: 0.25, coverage: 'full', from: 1, to: 2, limited: false }], consumptionLimited: false }]);
+  assert.deepEqual(b.map((x) => blockName(x, 'Codex')), ['Codex · ~/b', 'Codex · ~/b · earlier usage epoch']);
 });

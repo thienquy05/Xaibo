@@ -176,7 +176,7 @@ function App() {
       signIn: (profileId: string, c: SignInCommand) => client.current?.signIn(profileId, c) ?? (c.op === 'read' ? gone() : Promise.resolve({ code: 'unavailable' as const, view: null })) };
   }, [browseApi]);
   const api = useMemo<UsageApi>(() => ({
-    usage: () => client.current?.usage() ?? Promise.reject(new Error('no service')),
+    usage: () => client.current?.usageAll() ?? Promise.reject(new Error('no service')), // XAIBO-PROD-587: scopes and profiles
     history: (scope, stream, from, to, cursor) => client.current?.usageHistory(scope, stream, from, to, cursor, PAGE) ?? Promise.reject(new Error('no service')),
     monthly: (filter, end, limit) => client.current?.monthly(filter, end, limit) ?? Promise.reject(new Error('no service')),
   }), []);
@@ -332,7 +332,7 @@ function App() {
           : area === 'dashboard'
           ? <Dashboard live={liveSet} liveFailed={liveFailed} liveRetry={liveRetry} onRetryLive={retryLive} lastKnown={lastKnown} agents={agents} banners={banners} api={api} tick={tick}
             onSetPath={(agent) => window.xaibo?.setAgentPath(agent)} onOpen={openSession} view={dashView} onView={(v) => { setLedgerRestore(null); setDashView(v); }} focusId={focusId}
-            onMonthSessions={openMonth} ledgerRestore={ledgerRestore} />
+            onMonthSessions={openMonth} ledgerRestore={ledgerRestore} onOpenIntegration={toIntegration} />
           : <Workspace list={list} changes={changes} browse={browseApi} agents={agents ?? []} live={{ rows: liveSet.rows, loaded: liveSet.loaded, failed: liveFailed, more: liveSet.more }} lastKnown={lastKnown !== null} api={workspaceApi} request={request} onRequestDone={clearRequest}
             returnFor={returnFor} onReturn={returnTo === 'Agent Map' ? returnToMap : returnToDashboard} returnTo={returnTo} onListOpen={clearReturn}
             preset={preset} onReturnList={preset ? returnToLedger : null} />}

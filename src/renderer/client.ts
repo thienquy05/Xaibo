@@ -5,7 +5,7 @@
 import { accept, IPC_VERSION, isObj, parsePortMessage } from '../shared/ipc.ts';
 import type { SignInCommand } from './usage/sign-in-view.ts';
 import type { CleanupReply, ConnectReply, IntegrationDetailResult, IntegrationKey, IntegrationPageResult, PriceOp, RemovalReply, RetentionSetting, SearchKey, SuppressedCursor } from '../shared/ipc.ts';
-import type { AgentStatus, Banner, CostDetail, Cursor, FileItem, HistoryCursor, HistoryFilter, HistoryKey, HistoryRow, LedgerFilter, MapGroup, MapNode, MCursor, ModelMarker, Named, OverlayOp, OverlayResult, Page, PortMessage, PortRequest, SessionDetail, SessionRow, SubagentItem, TCursor, ToolItem, TranscriptAt, TranscriptItem, UsageRecord, UsageScope } from '../shared/ipc.ts';
+import type { AgentStatus, Banner, CostDetail, Cursor, FileItem, HistoryCursor, HistoryFilter, HistoryKey, HistoryRow, LedgerFilter, MapGroup, MapNode, MCursor, ModelMarker, Named, OverlayOp, OverlayResult, Page, PortMessage, PortRequest, SessionDetail, SessionRow, SubagentItem, TCursor, ToolItem, TranscriptAt, TranscriptItem, UsageRecord } from '../shared/ipc.ts';
 
 export interface LiveSet { rows: SessionRow[]; more: boolean }
 export interface PortLike { onmessage: ((e: { data: unknown }) => void) | null; postMessage(m: unknown): void; close(): void }
@@ -66,8 +66,6 @@ export function createClient(port: PortLike, push: Pushes) {
     },
     /** XAIBO-PROD-586: the whole usage reply (scopes and the per-profile list; Settings' sign-in profiles). */
     async usageAll() { const m = await ask({ type: 'usage' }, 'usage'); return { scopes: m.scopes, profiles: m.profiles }; },
-    /** P4-T04b1: usage scopes with their newest measurements. */
-    async usage(): Promise<UsageScope[]> { return (await ask({ type: 'usage' }, 'usage')).scopes; },
     /** P5-T17a/b: one page of the monthly usage ledger (failed = the store could not answer). */
     async monthly(filter: LedgerFilter, end: string | null, limit: number) {
       const { v: _v, type: _t, id: _i, ...page } = await ask({ type: 'monthly', filter, end, limit }, 'monthly');
