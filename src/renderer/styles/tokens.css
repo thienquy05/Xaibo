@@ -704,6 +704,15 @@ html, .x-shell.x-fixed { scroll-padding-top: var(--x-frame-pad, 8px); } /* clear
 .x-map { display: grid; gap: var(--x-space-6); }
 @media (min-width: 1200px) { .x-map { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); align-items: start; } }
 .x-map-tree .x-vlist { min-height: 18rem; }
+/* XAIBO-PROD-575 (P6-T10 unit 2b): Agents mode, the list alone across the map until unit 4's panel */
+@media (min-width: 1200px) { .x-map-single { grid-template-columns: minmax(0, 1fr); } }
+.x-agent-row { display: grid; gap: 2px; padding: var(--x-space-2) var(--x-space-3); border-bottom: 1px solid var(--x-divider); overflow-wrap: anywhere; }
+.x-agent-name { font-weight: var(--x-weight-strong); }
+.x-agent-sub { color: var(--x-muted); font-size: var(--x-text-small); }
+.x-agent-state { display: inline-flex; align-items: center; gap: var(--x-space-1); font-weight: var(--x-weight-strong); }
+.x-agent-state[data-tone="ok"] .x-icon { color: var(--x-success); }
+.x-agent-state[data-tone="warn"] .x-icon { color: var(--x-warning); }
+.x-agent-state[data-tone="muted"] { color: var(--x-muted); }
 .x-map-note { margin: 0; padding: var(--x-space-4); }
 .x-map-node { display: flex; align-items: flex-start; min-width: 0; cursor: pointer; }
 .x-map-cell { flex: 1; display: flex; align-items: flex-start; gap: var(--x-space-1); min-width: 0; }

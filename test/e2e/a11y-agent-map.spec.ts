@@ -60,6 +60,10 @@ for (const [layout, [w, h]] of Object.entries(LAYOUTS)) {
     const items = tree.getByRole('treeitem');
     await expect(items).toHaveCount(3, { timeout: 20_000 }); // two folders and the shared fixture's
     await expect(tree.locator('[tabindex="0"]')).toHaveCount(1); // one roving tab stop
+    // XAIBO-PROD-575 (design §6.5.2 tab order): the mode group's one tab stop, the selected mode, comes before the tree
+    const modes = page.getByRole('group', { name: 'Agent Map view' });
+    await page.keyboard.press('Tab');
+    await expectVisibleFocus(modes.getByRole('button', { name: 'Repositories', pressed: true }));
     await page.keyboard.press('Tab');
     const first = items.first();
     await expectVisibleFocus(first);
@@ -88,6 +92,23 @@ for (const [layout, [w, h]] of Object.entries(LAYOUTS)) {
     await page.keyboard.press('Shift+Tab');
     await expect(first).toBeFocused();
 
+    await expectNamed(page);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+
+    // XAIBO-PROD-575: Agents by keyboard: Shift+Tab to the selected mode, Right then Enter selects Agents (focus stays), Tab
+    // enters the list at its one roving row; Down moves; every control named; no horizontal scrolling
+    await page.keyboard.press('Shift+Tab');
+    await expect(modes.getByRole('button', { name: 'Repositories' })).toBeFocused();
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('Enter');
+    const agents = modes.getByRole('button', { name: 'Agents', pressed: true });
+    await expectVisibleFocus(agents);
+    const rows = page.getByRole('list', { name: 'Agents and profiles' }).getByRole('listitem');
+    await expect(rows).toHaveCount(3, { timeout: 20_000 }); // claude, codex and agy (not detected)
+    await page.keyboard.press('Tab');
+    await expectVisibleFocus(rows.first());
+    await page.keyboard.press('ArrowDown');
+    await expectVisibleFocus(rows.nth(1));
     await expectNamed(page);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   });

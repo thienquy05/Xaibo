@@ -3,7 +3,7 @@
 // are counted; an invalid reply rejects its request, so the caller can recover. A service restart brings a new port
 // and a new client; replies owed on the old one never arrive.
 import { accept, IPC_VERSION, isObj, parsePortMessage } from '../shared/ipc.ts';
-import type { PriceOp, RetentionSetting, SearchKey, SuppressedCursor } from '../shared/ipc.ts';
+import type { IntegrationKey, IntegrationPageResult, PriceOp, RetentionSetting, SearchKey, SuppressedCursor } from '../shared/ipc.ts';
 import type { AgentStatus, Banner, CostDetail, Cursor, FileItem, HistoryCursor, HistoryFilter, HistoryKey, HistoryRow, LedgerFilter, MapGroup, MapNode, MCursor, ModelMarker, Named, OverlayOp, OverlayResult, Page, PortMessage, PortRequest, SessionDetail, SessionRow, SubagentItem, TCursor, ToolItem, TranscriptAt, TranscriptItem, UsageRecord, UsageScope } from '../shared/ipc.ts';
 
 export interface LiveSet { rows: SessionRow[]; more: boolean }
@@ -148,6 +148,10 @@ export function createClient(port: PortLike, push: Pushes) {
       const m = await ask({ type: 'mapGroups', parent, cursor, limit }, 'mapGroups');
       if (m.failed) throw new Error('map groups unavailable');
       return { groups: m.groups, next: m.next };
+    },
+    /** XAIBO-PROD-575 (P6-T10 unit 2b): one Agents list page, forward from `cursor`; a refusal is a result, not a throw. */
+    async integrationPage(cursor: IntegrationKey | null, limit: number): Promise<IntegrationPageResult> {
+      return (await ask({ type: 'integrationPage', cursor, direction: 'next', limit }, 'integrationPage')).result;
     },
     async overlay(op: OverlayOp): Promise<OverlayResult> { return (await ask({ type: 'overlay', op }, 'overlay')).result; },
     /** P4-T07a: the session's cost breakdown; null for an unknown session. */

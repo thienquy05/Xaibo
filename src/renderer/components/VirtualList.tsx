@@ -30,6 +30,10 @@ export interface VirtualListProps<T> {
    *  index; null = not handled); each new `focus.n` moves the tab stop and focus to that key (collapse, eviction). Its
    *  paging items live inside the tree, so no list continuation is shown. */
   tree?: { attrs: (item: T) => Record<string, string | number | boolean | undefined>; onKey: (e: KeyboardEvent<HTMLUListElement>, index: number) => number | null; focus: { key: Key; n: number } | null };
+  /** XAIBO-PROD-575: a list's focus request, as the tree's (each new `n` brings that record into view and focuses it). */
+  focus?: { key: Key; n: number } | null;
+  /** XAIBO-PROD-575 review L2: records before the first loaded one were dropped, so positions and the size are unknown. */
+  moreBefore?: boolean;
 }
 
 const OVERSCAN = 3;
@@ -50,7 +54,8 @@ function showStart(el: Element, from: EventTarget | null) {
   if (startHidden(el.getBoundingClientRect(), revealPort(sc.getBoundingClientRect(), innerHeight, framePadPx()), from !== null)) el.scrollIntoView({ block: 'start' });
 }
 
-export function VirtualList<T>({ items, getKey, render, label, itemLabel, initialFocusKey = null, estimateSize, hasMore, loading, onLoadMore, anchor = null, tree }: VirtualListProps<T>) {
+export function VirtualList<T>({ items, getKey, render, label, itemLabel, initialFocusKey = null, estimateSize, hasMore, loading, onLoadMore, anchor = null, tree, focus = null, moreBefore = false }: VirtualListProps<T>) {
+  const focusReq = tree?.focus ?? focus;
   const scrollRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
   const endRef = useRef<HTMLParagraphElement>(null);
@@ -127,17 +132,17 @@ export function VirtualList<T>({ items, getKey, render, label, itemLabel, initia
     v.scrollToIndex(anchor.to === 'end' ? count - 1 : 0, { align: anchor.to });
   }, [anchor?.n, count]);
   useLayoutEffect(() => { // XAIBO-PROD-538: a tree's focus request brings its record into view
-    const i = tree?.focus ? keys.indexOf(tree.focus.key) : -1;
+    const i = focusReq ? keys.indexOf(focusReq.key) : -1;
     if (i >= 0) v.scrollToIndex(i, { align: 'auto' });
-  }, [tree?.focus?.n]);
+  }, [focusReq?.n]);
   useEffect(() => {
     record();
     // XAIBO-PROD-538 review L3: a tree's focus request is taken in a committed render only, ahead of the removed-record
     // neighbour rule (collapse hands focus to the ancestor, not to whatever took the old index)
-    if (tree?.focus && tree.focus.n !== seenFocus.current) {
-      seenFocus.current = tree.focus.n;
-      pendingFocus.current = tree.focus.key;
-      if (focusedKey !== tree.focus.key) setFocusedKey(tree.focus.key);
+    if (focusReq && focusReq.n !== seenFocus.current) {
+      seenFocus.current = focusReq.n;
+      pendingFocus.current = focusReq.key;
+      if (focusedKey !== focusReq.key) setFocusedKey(focusReq.key);
     } else if (focusedKey !== null && !keys.includes(focusedKey) && focused >= 0 && listHadFocus.current) { // L1: neighbour
       pendingFocus.current = keys[focused]!;
       setFocusedKey(keys[focused]!);
@@ -174,7 +179,7 @@ export function VirtualList<T>({ items, getKey, render, label, itemLabel, initia
     if (n === null) return;
     e.preventDefault();
     pendingFocus.current = null;
-    if (!loading && edge(e.key, focused, count, hasMore)) onLoadMore(); // latch only when it fetches (L2)
+    if (!loading && edge(e.key, focused, count, hasMore, keys[count - 1])) onLoadMore(); // latch only when it fetches (L2)
     if (n < 0 || n === focused) return;
     pendingFocus.current = keys[n]!;
     setFocusedKey(keys[n]!);
@@ -205,7 +210,7 @@ export function VirtualList<T>({ items, getKey, render, label, itemLabel, initia
           {v.getVirtualItems().map((vi) => (
             <li
               key={vi.key} data-index={vi.index} ref={v.measureElement} className="x-vlist-item"
-              tabIndex={vi.index === tabStop ? 0 : -1} aria-posinset={vi.index + 1} aria-setsize={hasMore ? -1 : count} aria-label={itemLabel(items[vi.index]!)}
+              tabIndex={vi.index === tabStop ? 0 : -1} aria-posinset={moreBefore ? undefined : vi.index + 1} aria-setsize={hasMore || moreBefore ? -1 : count} aria-label={itemLabel(items[vi.index]!)}
               {...(tree ? { role: 'treeitem', 'aria-posinset': undefined, 'aria-setsize': undefined, ...tree.attrs(items[vi.index]!) } : {})}
               onFocus={() => setFocusedKey(keys[vi.index]!)} style={{ transform: `translateY(${vi.start}px)` }}
             >

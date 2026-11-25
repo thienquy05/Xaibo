@@ -4,7 +4,7 @@ import { StrictMode, useCallback, useEffect, useLayoutEffect, useMemo, useReduce
 import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { parseHealth, parseStartupReply } from '../shared/ipc.ts';
-import type { AgentStatus, Banner, Health, LedgerFilter, SessionRow, StartupRequest } from '../shared/ipc.ts';
+import type { AgentStatus, Banner, Health, IntegrationKey, LedgerFilter, SessionRow, StartupRequest } from '../shared/ipc.ts';
 import { createClient, parseVisible, type Client, type PortLike } from './client.ts';
 import { HealthStatus } from './Health.tsx';
 import { Icon } from './status/StatusBadge.tsx';
@@ -157,6 +157,8 @@ function App() {
     };
   }, []);
 
+  // XAIBO-PROD-575: the Agent Map adds the Agents list page to the browse requests
+  const mapApi = useMemo(() => ({ ...browseApi, integrationPage: (cursor: IntegrationKey | null, limit: number) => client.current?.integrationPage(cursor, limit) ?? Promise.reject(new Error('no service connection')) }), [browseApi]);
   const api = useMemo<UsageApi>(() => ({
     usage: () => client.current?.usage() ?? Promise.reject(new Error('no service')),
     history: (scope, stream, from, to, cursor) => client.current?.usageHistory(scope, stream, from, to, cursor, PAGE) ?? Promise.reject(new Error('no service')),
@@ -303,7 +305,7 @@ function App() {
       <div className="x-health"><HealthStatus health={health} banners={banners} /></div>
       <main id="main" className="x-main" tabIndex={-1}>
         {area === 'settings' ? <Settings api={settingsApi} readOnly={!!health?.readOnly} />
-          : area === 'map' ? <AgentMap api={browseApi} agents={agents ?? []} lastKnown={lastKnown} tick={tick} onOpen={openFromMap}
+          : area === 'map' ? <AgentMap api={mapApi} agents={agents ?? []} lastKnown={lastKnown} tick={tick} onOpen={openFromMap}
             saved={mapSaved.current} restoreId={mapReturn} onSave={(m) => { mapSaved.current = m; }} />
           : area === 'dashboard'
           ? <Dashboard live={liveSet} liveFailed={liveFailed} liveRetry={liveRetry} onRetryLive={retryLive} lastKnown={lastKnown} agents={agents} banners={banners} api={api} tick={tick}

@@ -2,12 +2,14 @@
 // (Repositories, worktrees and sessions) over the part 1 model in tree.ts, rendered by the shared VirtualList, and a
 // Details pane for the selected item with Open in Session for a session leaf. Every label and count is service evidence
 // (exact or an unavailable word); every untrusted string goes through visible(). Part 2b adds the wide connectors and
-// Return to Agent Map.
+// Return to Agent Map. XAIBO-PROD-575 (P6-T10 unit 2b; D-PD-02, design §6.5): Repositories | Agents mode buttons; Agents
+// shows AgentsList.tsx in the leading pane (no detail pane until unit 4's panel); each mode keeps its own anchor.
 // ponytail: collapse discards a branch's pages without keeping its cursor (design allows reloading it explicitly);
 // keep the cursor when users ask to reopen deep pages.
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type RefObject } from 'react';
 import type { AgentStatus, HistoryFilter, HistoryKey, HistoryRow, MapGroup, MapNode } from '../../shared/ipc.ts';
 import { VirtualList } from '../components/VirtualList.tsx';
+import { rovingKey } from '../components/virtual-list-model.ts';
 import { formatTime } from '../model.ts';
 import { Icon } from '../status/StatusBadge.tsx';
 import { Title } from '../SessionList.tsx';
@@ -17,17 +19,21 @@ import {
   collapse, cursorFor, emptyLevel, evictedText, expand, groupDetail, holdsSessions, kindOf, loadedText, nodeText, nounOf, pageArrived, pageFailed, pageSize,
   dropSession, pageRefreshed, pagingAnchor, refocus, replyApplies, resumeLevel, startRefresh, settleRefresh, REFUSED, returnTarget, sessionKey, connectorPath, rowLabel, rows as flatten, sessionDetail, setPositions, touch, treeKey, typeLabel, type Detail, type RefreshGate, type Dir, type Expansion, type Kids, type Level, type Row,
 } from './tree.ts';
+import { AgentsList, type AgentsSnapshot, type PageFetch } from './AgentsList.tsx';
+import { MODES, type Mode } from './integrations-state.ts';
 
 export interface MapApi {
   mapGroups(parent: MapGroup | null, cursor: MapGroup | null, limit: number): Promise<{ groups: MapNode[]; next: MapGroup | null }>;
   history(filter: HistoryFilter, cursor: HistoryKey | null, limit: number): Promise<{ rows: HistoryRow[]; next: HistoryKey | null }>;
   historyRow(session: number): Promise<HistoryRow | null>;
+  /** XAIBO-PROD-575: one Agents list page. */
+  integrationPage: PageFetch;
 }
 
 type Child = MapNode | HistoryRow;
 interface State { roots: Level<MapNode, MapGroup>; kids: Kids; exp: Expansion; selected: string | null }
 /** XAIBO-PROD-539: the map as it was left for a session (bounded: the resident pages and four paths of State). */
-export interface MapSnapshot { state: State }
+export interface MapSnapshot { state: State; mode: Mode; agents: AgentsSnapshot | null }
 /** A request in flight when the map was left never answers this instance (review M1: resumeLevel). */
 const resume = (x: State): State => ({ ...x, roots: resumeLevel(x.roots), kids: Object.fromEntries(Object.entries(x.kids).map(([k, l]) => [k, resumeLevel(l)])) });
 const start = (): State => ({ roots: { ...(emptyLevel() as Level<MapNode, MapGroup>), loading: 'first' }, kids: {}, exp: { expanded: [], visit: {}, tick: 0 }, selected: null });
@@ -43,6 +49,12 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
   const name = useMemo(() => { const m = new Map(agents.map((a) => [a.agent, a.name])); return (id: string) => m.get(id) ?? id; }, [agents]);
   const [s, setS] = useState<State>(() => (saved ? resume(saved.state) : start()));
   const [notice, setNotice] = useState<string | null>(null);
+  // XAIBO-PROD-575: the mode as left (nav link); Return from Session always shows Repositories (design §6.5.1)
+  const [mode, setMode] = useState<Mode>(() => (saved && restoreId === null ? saved.mode : 'repositories'));
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+  const agentsStore = useRef<AgentsSnapshot | null>(saved?.agents ?? null);
+  const modeRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const sRef = useRef(s);
   sRef.current = s;
   const [announce, setAnnounce] = useState('');
@@ -93,7 +105,7 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
     });
   };
   useEffect(() => { if (!saved) load(null, null, 'first'); }, []); // the root page loads on first show
-  useEffect(() => () => onSave?.({ state: sRef.current }), []); // kept for Return to Agent Map
+  useEffect(() => () => onSave?.({ state: sRef.current, mode: modeRef.current, agents: agentsStore.current }), []); // kept for Return to Agent Map
   // XAIBO-PROD-539 (design §6.5.1): Return focuses the source leaf, selected; a deleted, trashed or moved session leaves
   // its former group focused with a notice
   useEffect(() => {
@@ -249,16 +261,25 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
       <h1 id="agent-map-heading" tabIndex={-1}>Agent Map</h1>
       {lastKnown ? <p className="x-hint">Last known {lastKnown}: live counts may be out of date.</p> : null}
       {notice ? <p className="x-hint x-map-notice">{notice}</p> : null}
-      <div className="x-map">
+      <div className={mode === 'agents' ? 'x-map x-map-single' : 'x-map'}>
         <section className="x-pane x-map-tree" aria-labelledby="map-tree-heading">
-          <div className="x-pane-head"><h2 id="map-tree-heading">Repositories</h2></div>
-          {rootsEmpty && s.roots.loading && s.roots.pages.length === 0 ? <p className="x-hint x-map-note">Loading…</p>
+          <div className="x-pane-head">
+            <h2 id="map-tree-heading">{mode === 'agents' ? 'Agents' : 'Repositories'}</h2>
+            <div role="group" aria-label="Agent Map view" className="x-modes">
+              {MODES.map((m, i) => (
+                <button key={m.mode} ref={(el) => { modeRefs.current[i] = el; }} type="button" className="x-mode" aria-pressed={mode === m.mode} tabIndex={mode === m.mode ? 0 : -1}
+                  onKeyDown={(e) => rovingKey(e, i, MODES.length, modeRefs.current)} onClick={() => { if (mode !== m.mode) { setFocusReq(null); setMode(m.mode); } }}>{m.label}</button>
+              ))}
+            </div>
+          </div>
+          {mode === 'agents' ? <AgentsList fetchPage={api.integrationPage} lastKnown={lastKnown} store={agentsStore} />
+            : rootsEmpty && s.roots.loading && s.roots.pages.length === 0 ? <p className="x-hint x-map-note">Loading…</p>
             : rootsEmpty && s.roots.failed ? <p className="x-hint x-map-note">Groups could not be loaded. <button type="button" className="x-btn x-btn-quiet" onClick={() => load(null, null, 'first')}>Retry</button></p>
             : rootsEmpty ? <p className="x-hint x-map-note">No sessions yet.</p>
             : (
               <div className="x-map-host" ref={hostRef} onFocus={(e) => { const k = (e.target as HTMLElement).dataset.key; if (k) { focusKey.current = k; setS((x) => ({ ...x, exp: touch(x.exp, k, parentOf) })); } }}>
                 <VirtualList
-                  items={list} getKey={(r) => r.key} label="Repositories, worktrees and sessions" itemLabel={(r) => rowLabel(r, name)} estimateSize={64}
+                  items={list} getKey={(r) => r.key} label="Repositories, worktrees and sessions" initialFocusKey={focusKey.current || null} itemLabel={(r) => rowLabel(r, name)} estimateSize={64}
                   hasMore={false} loading={false} onLoadMore={() => undefined}
                   render={(r) => <Node r={r} name={name} lastKnown={lastKnown !== null} onToggle={toggle(r)} onActivate={() => activate(r)} />}
                   tree={{
@@ -271,6 +292,7 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
               </div>
             )}
         </section>
+        {mode === 'agents' ? null : (
         <section className="x-pane x-map-detail" aria-labelledby="map-detail-heading">
           <div className="x-pane-head"><h2 id="map-detail-heading">Details</h2></div>
           <div className="x-map-detail-body">
@@ -285,6 +307,7 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
             ) : <p className="x-hint">Select a repository, worktree, folder or session to see its details.</p>}
           </div>
         </section>
+        )}
       </div>
       <p className="x-sr-only" aria-live="polite">{announce}</p>
     </div>

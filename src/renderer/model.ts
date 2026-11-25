@@ -149,7 +149,7 @@ export function costText(usd: number | null, coverage: CostCoverage): string {
   return `~$${amount}${coverage === 'full' ? '' : ' known subtotal'}`;
 }
 
-const GAP: Record<Extract<Banner, { kind: 'hook-gap' }>['reason'], string> = {
+export const GAP: Record<Extract<Banner, { kind: 'hook-gap' }>['reason'], string> = {
   'spool-overflow': 'spool overflow', 'spool-saturated': 'spool overflow, count unknown', 'spool-torn': 'damaged spool file', 'disk-full': 'disk full',
 };
 /** Banner text; `name` maps a catalog agent id to its display name. */
