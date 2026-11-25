@@ -77,6 +77,15 @@ test('Codex awaiting trust carries its trust steps; a profile-less agent has a d
   assert.deepEqual(agy.status === 'ready' ? [agy.value.row.state, agy.value.profiles, agy.value.entries, agy.value.boundary] : null, ['not-detected', [], [], null]);
 });
 
+// found by the unit 4b E2E: Codex's change boundary carries a file's fractional mtime; the reply still parses, rounded up so a
+// receipt from before the true boundary never counts
+test('a fractional install boundary is rounded up and the reply parses', async () => {
+  const d = await deps({ installedAt: (p) => (p.id === C1 ? 1_000.4 : null) });
+  const r = ask(d, { agent: 'claude', profileId: C1 });
+  assert.equal(r.status === 'ready' ? r.value.boundary : null, 1_001);
+  assert.ok(M(r), 'the renderer parser accepts it');
+});
+
 test('refusals: unknown key, a null profile for an agent with profiles, starting, no catalog, a throw', async () => {
   assert.deepEqual(ask(await deps(), { agent: 'claude', profileId: '00000000-0000-4000-8000-0000000c77ff' }), { status: 'refused', code: 'not-found' });
   assert.deepEqual(ask(await deps(), { agent: 'claude', profileId: null }), { status: 'refused', code: 'not-found' }, 'never an invented profile');

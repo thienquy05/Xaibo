@@ -12,7 +12,8 @@ type Key = string | number; // our keys; the library's own key type also allows 
 export interface VirtualListProps<T> {
   items: readonly T[];
   getKey: (item: T) => string | number;
-  render: (item: T, index: number) => ReactNode;
+  /** XAIBO-PROD-578: `tabStop` = this record is the list's one tab stop (its own controls join the Tab order only then). */
+  render: (item: T, index: number, tabStop: boolean) => ReactNode;
   label: string;
   /** XAIBO-PROD-437 (design §8.1): each focusable row's short, stable name (never its whole content). */
   itemLabel: (item: T) => string;
@@ -214,7 +215,7 @@ export function VirtualList<T>({ items, getKey, render, label, itemLabel, initia
               {...(tree ? { role: 'treeitem', 'aria-posinset': undefined, 'aria-setsize': undefined, ...tree.attrs(items[vi.index]!) } : {})}
               onFocus={() => setFocusedKey(keys[vi.index]!)} style={{ transform: `translateY(${vi.start}px)` }}
             >
-              {render(items[vi.index]!, vi.index)}
+              {render(items[vi.index]!, vi.index, vi.index === tabStop)}
             </li>
           ))}
         </ul>

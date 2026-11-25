@@ -158,7 +158,8 @@ function App() {
   }, []);
 
   // XAIBO-PROD-575: the Agent Map adds the Agents list page to the browse requests
-  const mapApi = useMemo(() => ({ ...browseApi, integrationPage: (cursor: IntegrationKey | null, limit: number) => client.current?.integrationPage(cursor, limit) ?? Promise.reject(new Error('no service connection')) }), [browseApi]);
+  const mapApi = useMemo(() => ({ ...browseApi, integrationPage: (cursor: IntegrationKey | null, limit: number) => client.current?.integrationPage(cursor, limit) ?? Promise.reject(new Error('no service connection')),
+    integrationDetail: (key: IntegrationKey) => client.current?.integrationDetail(key) ?? Promise.reject(new Error('no service connection')) }), [browseApi]);
   const api = useMemo<UsageApi>(() => ({
     usage: () => client.current?.usage() ?? Promise.reject(new Error('no service')),
     history: (scope, stream, from, to, cursor) => client.current?.usageHistory(scope, stream, from, to, cursor, PAGE) ?? Promise.reject(new Error('no service')),

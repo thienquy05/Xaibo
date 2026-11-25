@@ -330,6 +330,13 @@ test('Agent Map: wide fan-out with connectors and stacked rows, light and dark',
       await expect(page.getByRole('list', { name: 'Agents and profiles' }).getByRole('listitem')).toHaveCount(3, { timeout: 20_000 });
       await page.mouse.move(0, 0);
       await shoot(page, `agents-${size[0]}x${size[1]}`, [page.getByText(/^Evidence checked/)]);
+      // XAIBO-PROD-578 (unit 4b): the integration panel for Claude Code's default profile (times masked), then Back to map
+      await page.getByRole('button', { name: 'Open integration: Claude Code · Default profile' }).click();
+      const pane = page.getByRole('region', { name: 'Integration: Claude Code' });
+      await expect(pane.getByText('Lifecycle receipt')).toBeVisible({ timeout: 20_000 });
+      await page.mouse.move(0, 0);
+      await shoot(page, `agents-panel-${size[0]}x${size[1]}`, [page.getByText(/^Evidence checked/), pane.locator('dd').filter({ hasText: /\d{4}-\d{2}-\d{2}/ })]);
+      await pane.getByRole('button', { name: 'Back to map' }).click();
       await modes.getByRole('button', { name: 'Repositories' }).click();
       await openSessions(page); // the nav link returns to the kept map at the next size (G5d-2)
     }

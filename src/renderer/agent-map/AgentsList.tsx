@@ -6,18 +6,22 @@
 // Open integration and its panel are unit 4 (no inert control ships here).
 // ponytail: evidence refreshes on mode entry and service return only; unit 4 adds the refresh after an action.
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
-import type { IntegrationKey, IntegrationPageResult } from '../../shared/ipc.ts';
+import type { IntegrationKey, IntegrationPageResult, IntegrationRow } from '../../shared/ipc.ts';
 import { VirtualList } from '../components/VirtualList.tsx';
 import { formatTime } from '../model.ts';
 import { Icon } from '../status/StatusBadge.tsx';
 import { visible } from '../text.ts';
-import { AGENTS_PAGE, agentItems, agentKey, agentLabel, contentText, pageReply, pageRequest, reasonsText, receiptText, REFUSAL_TEXT, STATE, stateText, type AgentLevel } from './integrations-state.ts';
+import { AGENTS_PAGE, agentItems, agentKey, agentLabel, profileName, contentText, pageReply, pageRequest, reasonsText, receiptText, REFUSAL_TEXT, STATE, stateText, type AgentLevel } from './integrations-state.ts';
 import { emptyLevel, pageFailed, pageRefreshed, resumeLevel, type Dir } from './tree.ts';
 
 export type PageFetch = (cursor: IntegrationKey | null, limit: number) => Promise<IntegrationPageResult>;
 export interface AgentsSnapshot { level: AgentLevel; observedAt: number | null; focus: string | null }
 
-export function AgentsList({ fetchPage, lastKnown, store }: { fetchPage: PageFetch; lastKnown: string | null; store: MutableRefObject<AgentsSnapshot | null> }) {
+/** XAIBO-PROD-578: `onOpen` opens a row's integration panel (its named button, or Enter on the row); `focusTo` moves focus to a
+ *  row (Back to map). */
+export function AgentsList({ fetchPage, lastKnown, store, onOpen, focusTo = null }: {
+  fetchPage: PageFetch; lastKnown: string | null; store: MutableRefObject<AgentsSnapshot | null>; onOpen: (row: IntegrationRow) => void; focusTo?: { key: string; n: number } | null;
+}) {
   const [s, setS] = useState<AgentsSnapshot>(() => (store.current ? { ...store.current, level: resumeLevel(store.current.level) }
     : { level: { ...(emptyLevel() as AgentLevel), loading: 'first' }, observedAt: null, focus: null }));
   const sRef = useRef(s);
@@ -34,6 +38,13 @@ export function AgentsList({ fetchPage, lastKnown, store }: { fetchPage: PageFet
   const say = (t: string) => setAnnounce((a) => (a === t ? `${t} ` : t));
   const prevFocused = useRef(false);
   const [focusReq, setFocusReq] = useState<{ key: string; n: number } | null>(null);
+  // code review M2: a request is taken once; a remount (a mode switch) never replays an old one
+  const seenTo = useRef(focusTo?.n ?? null);
+  useEffect(() => {
+    if (!focusTo || focusTo.n === seenTo.current) return;
+    seenTo.current = focusTo.n;
+    setFocusReq((f) => ({ key: focusTo.key, n: (f?.n ?? 0) + 1 }));
+  }, [focusTo?.n]);
 
   const load = (dir: Dir) => {
     const l = sRef.current.level;
@@ -91,7 +102,11 @@ export function AgentsList({ fetchPage, lastKnown, store }: { fetchPage: PageFet
   const lost = lastKnown !== null;
   const empty = items.length === 0;
   return (
-    <div className="x-map-agents" onFocus={(e) => {
+    <div className="x-map-agents" onKeyDown={(e) => { // Enter on a row opens its integration (the row's own button keeps its keys)
+      if (e.key !== 'Enter' || !(e.target as HTMLElement).matches('li[data-index]')) return;
+      const r = items[Number((e.target as HTMLElement).dataset.index)];
+      if (r) { e.preventDefault(); onOpen(r); }
+    }} onFocus={(e) => {
       const i = Number((e.target as HTMLElement).closest('li[data-index]')?.getAttribute('data-index'));
       const r = Number.isInteger(i) ? items[i] : undefined;
       if (r) { focusRef.current = agentKey(r.key); store.current = { ...sRef.current, focus: focusRef.current }; }
@@ -111,7 +126,7 @@ export function AgentsList({ fetchPage, lastKnown, store }: { fetchPage: PageFet
             <VirtualList
               items={items} getKey={(r) => agentKey(r.key)} label="Agents and profiles" itemLabel={agentLabel} estimateSize={112} initialFocusKey={focusRef.current} focus={focusReq} moreBefore={l.before.length > 0}
               hasMore={l.next !== null} loading={l.loading === 'more'} onLoadMore={() => load('more')}
-              render={(r) => {
+              render={(r, _i, tabStop) => {
                 const st = STATE[r.state], why = reasonsText(r);
                 return (
                   <div className="x-agent-row">
@@ -121,6 +136,7 @@ export function AgentsList({ fetchPage, lastKnown, store }: { fetchPage: PageFet
                     {why ? <span className="x-agent-sub">{why}</span> : null}
                     <span className="x-agent-sub">{visible(receiptText(r))}</span>
                     <span className="x-agent-sub">{visible(contentText(r.content))}</span>
+                    <button type="button" className="x-btn x-btn-quiet x-agent-open" tabIndex={tabStop ? 0 : -1} aria-label={`Open integration: ${profileName(r)}`} onClick={() => onOpen(r)}>Open integration</button>
                   </div>
                 );
               }}

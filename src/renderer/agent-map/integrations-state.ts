@@ -80,4 +80,6 @@ export function contentText(c: IntegrationRow['content']): string {
 /** A row's accessible name: short and stable, never its whole content; a long profile path keeps its end, where profiles
  *  differ. */
 const tail = (s: string, n: number) => ([...s].length > n ? `…${[...s].slice(-(n - 1)).join('')}` : s);
-export const agentLabel = (r: IntegrationRow) => `${capText(r.name, 60)} · ${r.profileLabel === null ? 'No profile' : visible(tail(r.profileLabel, 80))} · ${STATE[r.state].text}`;
+/** XAIBO-PROD-578: agent and profile, as Open integration is named. */
+export const profileName = (r: IntegrationRow) => `${capText(r.name, 60)} · ${r.profileLabel === null ? 'No profile' : visible(tail(r.profileLabel, 80))}`;
+export const agentLabel = (r: IntegrationRow) => `${profileName(r)} · ${STATE[r.state].text}`;

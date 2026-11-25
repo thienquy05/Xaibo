@@ -20,7 +20,10 @@ import {
   dropSession, pageRefreshed, pagingAnchor, refocus, replyApplies, resumeLevel, startRefresh, settleRefresh, REFUSED, returnTarget, sessionKey, connectorPath, rowLabel, rows as flatten, sessionDetail, setPositions, touch, treeKey, typeLabel, type Detail, type RefreshGate, type Dir, type Expansion, type Kids, type Level, type Row,
 } from './tree.ts';
 import { AgentsList, type AgentsSnapshot, type PageFetch } from './AgentsList.tsx';
-import { MODES, type Mode } from './integrations-state.ts';
+import { agentItems, agentKey, MODES, type Mode } from './integrations-state.ts';
+import { IntegrationPanel, type DetailFetch } from './IntegrationPanel.tsx';
+import { restoreTarget } from './integration-panel.ts';
+import type { IntegrationKey } from '../../shared/ipc.ts';
 
 export interface MapApi {
   mapGroups(parent: MapGroup | null, cursor: MapGroup | null, limit: number): Promise<{ groups: MapNode[]; next: MapGroup | null }>;
@@ -28,12 +31,15 @@ export interface MapApi {
   historyRow(session: number): Promise<HistoryRow | null>;
   /** XAIBO-PROD-575: one Agents list page. */
   integrationPage: PageFetch;
+  /** XAIBO-PROD-578: the integration panel's read. */
+  integrationDetail: DetailFetch;
 }
 
 type Child = MapNode | HistoryRow;
 interface State { roots: Level<MapNode, MapGroup>; kids: Kids; exp: Expansion; selected: string | null }
 /** XAIBO-PROD-539: the map as it was left for a session (bounded: the resident pages and four paths of State). */
-export interface MapSnapshot { state: State; mode: Mode; agents: AgentsSnapshot | null }
+type Panel = { key: IntegrationKey; origin: string } | null;
+export interface MapSnapshot { state: State; mode: Mode; agents: AgentsSnapshot | null; panel: Panel }
 /** A request in flight when the map was left never answers this instance (review M1: resumeLevel). */
 const resume = (x: State): State => ({ ...x, roots: resumeLevel(x.roots), kids: Object.fromEntries(Object.entries(x.kids).map(([k, l]) => [k, resumeLevel(l)])) });
 const start = (): State => ({ roots: { ...(emptyLevel() as Level<MapNode, MapGroup>), loading: 'first' }, kids: {}, exp: { expanded: [], visit: {}, tick: 0 }, selected: null });
@@ -54,6 +60,18 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
   const modeRef = useRef(mode);
   modeRef.current = mode;
   const agentsStore = useRef<AgentsSnapshot | null>(saved?.agents ?? null);
+  // XAIBO-PROD-578: the open integration panel (Agents mode) and the row it was opened from
+  const [panel, setPanel] = useState<Panel>(saved?.panel ?? null);
+  const panelRef = useRef(panel);
+  panelRef.current = panel;
+  const [agentsFocus, setAgentsFocus] = useState<{ key: string; n: number } | null>(null);
+  const backToMap = () => {
+    const origin = panelRef.current?.origin;
+    setPanel(null);
+    const to = origin ? restoreTarget(agentItems(agentsStore.current?.level ?? (emptyLevel() as AgentsSnapshot['level'])).map((r) => agentKey(r.key)), origin) : null;
+    if (to) setAgentsFocus((f) => ({ key: to, n: (f?.n ?? 0) + 1 }));
+    else requestAnimationFrame(() => document.getElementById('map-tree-heading')?.focus());
+  };
   const modeRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const sRef = useRef(s);
   sRef.current = s;
@@ -105,7 +123,7 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
     });
   };
   useEffect(() => { if (!saved) load(null, null, 'first'); }, []); // the root page loads on first show
-  useEffect(() => () => onSave?.({ state: sRef.current, mode: modeRef.current, agents: agentsStore.current }), []); // kept for Return to Agent Map
+  useEffect(() => () => onSave?.({ state: sRef.current, mode: modeRef.current, agents: agentsStore.current, panel: panelRef.current }), []); // kept for Return to Agent Map
   // XAIBO-PROD-539 (design §6.5.1): Return focuses the source leaf, selected; a deleted, trashed or moved session leaves
   // its former group focused with a notice
   useEffect(() => {
@@ -261,10 +279,10 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
       <h1 id="agent-map-heading" tabIndex={-1}>Agent Map</h1>
       {lastKnown ? <p className="x-hint">Last known {lastKnown}: live counts may be out of date.</p> : null}
       {notice ? <p className="x-hint x-map-notice">{notice}</p> : null}
-      <div className={mode === 'agents' ? 'x-map x-map-single' : 'x-map'}>
+      <div className={mode !== 'agents' ? 'x-map' : panel ? 'x-map x-map-panel-open' : 'x-map x-map-single'}>
         <section className="x-pane x-map-tree" aria-labelledby="map-tree-heading">
           <div className="x-pane-head">
-            <h2 id="map-tree-heading">{mode === 'agents' ? 'Agents' : 'Repositories'}</h2>
+            <h2 id="map-tree-heading" tabIndex={-1}>{mode === 'agents' ? 'Agents' : 'Repositories'}</h2>
             <div role="group" aria-label="Agent Map view" className="x-modes">
               {MODES.map((m, i) => (
                 <button key={m.mode} ref={(el) => { modeRefs.current[i] = el; }} type="button" className="x-mode" aria-pressed={mode === m.mode} tabIndex={mode === m.mode ? 0 : -1}
@@ -272,7 +290,7 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
               ))}
             </div>
           </div>
-          {mode === 'agents' ? <AgentsList fetchPage={api.integrationPage} lastKnown={lastKnown} store={agentsStore} />
+          {mode === 'agents' ? <AgentsList fetchPage={api.integrationPage} lastKnown={lastKnown} store={agentsStore} focusTo={agentsFocus} onOpen={(r) => setPanel({ key: r.key, origin: agentKey(r.key) })} />
             : rootsEmpty && s.roots.loading && s.roots.pages.length === 0 ? <p className="x-hint x-map-note">Loading…</p>
             : rootsEmpty && s.roots.failed ? <p className="x-hint x-map-note">Groups could not be loaded. <button type="button" className="x-btn x-btn-quiet" onClick={() => load(null, null, 'first')}>Retry</button></p>
             : rootsEmpty ? <p className="x-hint x-map-note">No sessions yet.</p>
@@ -292,7 +310,10 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
               </div>
             )}
         </section>
-        {mode === 'agents' ? null : (
+        {mode === 'agents' ? (panel ? (
+          <IntegrationPanel key={panel.origin} fetchDetail={api.integrationDetail} target={panel.key} lastKnown={lastKnown} onBack={backToMap}
+            onProfile={(id) => setPanel((p) => (p ? { ...p, key: { agent: p.key.agent, profileId: id } } : p))} />
+        ) : null) : (
         <section className="x-pane x-map-detail" aria-labelledby="map-detail-heading">
           <div className="x-pane-head"><h2 id="map-detail-heading">Details</h2></div>
           <div className="x-map-detail-body">

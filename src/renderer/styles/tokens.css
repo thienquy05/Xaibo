@@ -713,6 +713,13 @@ html, .x-shell.x-fixed { scroll-padding-top: var(--x-frame-pad, 8px); } /* clear
 .x-agent-state[data-tone="ok"] .x-icon { color: var(--x-success); }
 .x-agent-state[data-tone="warn"] .x-icon { color: var(--x-warning); }
 .x-agent-state[data-tone="muted"] { color: var(--x-muted); }
+/* XAIBO-PROD-578: the integration panel beside the list (wide), instead of it below 800 px (design §6.5) */
+@media (max-width: 799px) { .x-map-panel-open .x-map-tree { display: none; } }
+.x-agent-open { justify-self: start; margin-top: var(--x-space-1); }
+.x-integration .x-pane-head { flex-wrap: wrap; }
+.x-integration h3 { margin: 0; font-size: var(--x-text-body); }
+.x-integration-list { margin: 0; padding-left: var(--x-space-4); display: grid; gap: var(--x-space-1); overflow-wrap: anywhere; }
+.x-receipt-test { display: grid; gap: var(--x-space-1); justify-items: start; }
 .x-map-note { margin: 0; padding: var(--x-space-4); }
 .x-map-node { display: flex; align-items: flex-start; min-width: 0; cursor: pointer; }
 .x-map-cell { flex: 1; display: flex; align-items: flex-start; gap: var(--x-space-1); min-width: 0; }

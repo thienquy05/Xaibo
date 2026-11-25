@@ -137,7 +137,8 @@ test('Agents mode: 31 rows, every FR-06 state, bounded paging, mode anchors, res
   await expect(list(page)).toHaveAttribute('data-count', '30');
   await expect(previous).toHaveCount(0);
   await expect(row(page, /Not detected$/)).toBeFocused(); // nothing earlier left: the first row takes focus
-  await expect(list(page).locator('[tabindex="0"]')).toHaveCount(1);
+  await expect(list(page).locator('li[tabindex="0"]')).toHaveCount(1); // one roving row
+  await expect(list(page).locator('button[tabindex="0"]')).toHaveCount(1); // and only its own Open integration joins the Tab order
 
   // anchors: a focused row survives a round trip to Repositories, which keeps its own state
   await page.keyboard.press('ArrowDown');
@@ -160,11 +161,64 @@ test('Agents mode: 31 rows, every FR-06 state, bounded paging, mode anchors, res
   await page.keyboard.press('Tab');
   await expect(anchor).toBeFocused();
 
+  // XAIBO-PROD-578 (unit 4b): Enter on the focused row opens its integration panel; heading focused; status only, no write control
+  await page.keyboard.press('Enter');
+  const pane = page.getByRole('region', { name: 'Integration: Codex' });
+  await expect(pane.getByRole('heading', { level: 2, name: 'Integration: Codex' })).toBeFocused();
+  await expect(pane).toContainText('Hooks installed, awaiting trust');
+  await expect(pane.getByText(/Open Codex once/)).toBeVisible();
+  await expect(pane).toContainText('Codex hooks: intact');
+  await expect(pane).toContainText('Codex notify wrapper: unavailable');
+  await expect(pane.getByRole('button', { name: /Connect|Disconnect|Uninstall/ })).toHaveCount(0);
+  // the Profile select is scoped to Codex; a change keeps focus there
+  const select = pane.getByRole('combobox', { name: 'Profile' });
+  await expect(select.locator('option')).toHaveCount(29);
+  await select.focus(); // as a keyboard user is (selectOption alone never focuses)
+  await select.selectOption(P(2));
+  await expect(pane).toContainText('Codex hooks: changed outside Xaibo');
+  await expect(select).toBeFocused();
+  // Test receipt: waiting, then a lifecycle delivery stored after the click is observed (nothing is run)
+  await pane.getByRole('button', { name: 'Test receipt' }).click();
+  await expect(pane).toContainText('Waiting for test receipt…');
+  for (let i = 0; ; i++) {
+    try {
+      const w = new DatabaseSync(path.join(dataDir, 'xaibo.db'));
+      try { w.prepare("INSERT INTO hook_delivery (delivery_id, agent, profile_key, native_session_id, event, received_ts, committed_ts, unattributed) VALUES ('d-c752', 'codex', ?, ?, 'Stop', ?, ?, NULL)").run(P(2), S, Date.now() + 1, Date.now() + 1); } finally { w.close(); }
+      break;
+    } catch (e) { if (i > 20) throw e; await page.waitForTimeout(100); } // the service may hold a write briefly
+  }
+  await expect(pane).toContainText(/Receipt observed: Stop hook, \d{4}-/, { timeout: 15_000 });
+  // code review M1: opening another row while the panel is open shows that row's integration, heading focused
+  await page.getByRole('button', { name: 'Open integration: Claude Code · Default profile' }).click();
+  const claudePane = page.getByRole('region', { name: 'Integration: Claude Code' });
+  await expect(claudePane.getByRole('heading', { level: 2 })).toBeFocused();
+  await expect(claudePane.getByRole('combobox', { name: 'Profile' })).toHaveCount(0); // never Codex's profiles
+  await claudePane.getByRole('button', { name: 'Back to map' }).click();
+  await expect(row(page, /^Claude Code · Default profile · Unsupported version$/)).toBeFocused();
+  // code review M2: a later mode round trip leaves focus on the mode button (no old focus request replays)
+  await page.keyboard.press('Shift+Tab'); // nothing earlier is loaded, so no Load previous: the mode group
+  await expect(agents).toBeFocused();
+  await page.keyboard.press('ArrowLeft');
+  await page.keyboard.press('Enter');
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('Enter');
+  await expect(list(page)).toBeVisible();
+  await expect(agents).toBeFocused();
+  await anchor.focus();
+
   // narrow: the list wraps, no horizontal scrolling
   await run.app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(720, 640));
   await expect(anchor).toBeVisible();
   expect(await page.evaluate(() => document.scrollingElement!.scrollWidth <= document.scrollingElement!.clientWidth)).toBe(true);
   await shot(page, 'agents-narrow');
+  // below 800 px the panel replaces the list; Back to map brings the list and the row back
+  await anchor.focus();
+  await page.keyboard.press('Enter');
+  await expect(pane.getByRole('heading', { level: 2 })).toBeFocused();
+  await expect(list(page)).toBeHidden();
+  await pane.getByRole('button', { name: 'Back to map' }).click();
+  await expect(anchor).toBeFocused();
+  await shot(page, 'agents-narrow-back');
   expect(errors).toEqual([]);
   await xaibo.quit(run);
 

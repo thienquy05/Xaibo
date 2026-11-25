@@ -175,7 +175,9 @@ export function answerIntegrationDetail(d: PageDeps, key: IntegrationKey): Integ
     const entries = p && report?.status === 'ready' ? report.entries.filter((e) => e.profileId === p.id).slice(0, REMOVAL_LIMIT)
       .map((e) => ({ entry: e.entry, route: e.route, state: e.state, reason: e.reason ?? null })) : [];
     const trustSteps = p && row.state === 'awaiting-trust' ? d.trustSteps(p).slice(0, CONNECT_LIMITS.trust) : [];
-    return { status: 'ready', observedAt: d.now, value: { row, profiles, entries, trustSteps, boundary: p ? d.installedAt(p) : null } };
+    // a boundary can carry a file's fractional mtime (Codex's change boundary): rounded up, so an earlier receipt never counts
+    const at = p ? d.installedAt(p) : null;
+    return { status: 'ready', observedAt: d.now, value: { row, profiles, entries, trustSteps, boundary: at === null ? null : Math.ceil(at) } };
   } catch {
     return { status: 'refused', code: 'failed' };
   }
