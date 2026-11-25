@@ -104,11 +104,13 @@ export const statuslineCost = (record: Obj): number | null => (isObj(record['cos
 export const accountMarker = (salt: Buffer, id: string) => createHmac('sha256', salt).update('xaibo-usage-epoch-v1\0').update(id).digest('hex').slice(0, 32);
 
 /** Claude has no account identifier: one unverified scope per session. Codex with a marker: one scope per profile and
- *  marker, across sessions. Profiles never merge. */
-export function scopeKey(o: { profileId: string; agent: string; epoch: string | null; nativeSessionId: string }): { key: string; epoch: string | null; verified: boolean } {
+ *  marker, across sessions. Profiles never merge. P6-T01a (XAIBO-PROD-571): a sign-in generation above 0 (a method or
+ *  declared account change) splits the scope; generation 0 keeps the existing key bytes; it never changes `verified`. */
+export function scopeKey(o: { profileId: string; agent: string; epoch: string | null; nativeSessionId: string; generation?: number }): { key: string; epoch: string | null; verified: boolean } {
+  const g = o.generation ? [o.generation] : [];
   return o.epoch
-    ? { key: JSON.stringify([o.profileId, o.agent, o.epoch, null]), epoch: o.epoch, verified: true }
-    : { key: JSON.stringify([o.profileId, o.agent, null, o.nativeSessionId]), epoch: null, verified: false };
+    ? { key: JSON.stringify([o.profileId, o.agent, o.epoch, null, ...g]), epoch: o.epoch, verified: true }
+    : { key: JSON.stringify([o.profileId, o.agent, null, o.nativeSessionId, ...g]), epoch: null, verified: false };
 }
 
 const SALT_FILE = 'usage-scope.salt';

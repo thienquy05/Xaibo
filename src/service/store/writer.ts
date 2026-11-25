@@ -20,6 +20,10 @@ export const SCHEMA_VERSION = 1;
 export const FTS_MAX_BYTES = 64 * 1024;
 /** P4-T08: model evidence relayed by Xaibo's own channels (not the agent's file) and the effort fill window. */
 const RELAYED = new Set(['hook', 'report', 'statusline']);
+// P6-T01a review M4: sources only ever delivered live; their events take the profile's current sign-in generation (no
+// source time to place them by). Anything that can be replayed or re-imported keeps generation 0 unless its source time says otherwise.
+// ponytail: a Codex reading with no trusted timestamp after a declared change lands in generation 0 unflagged (code review L4).
+const LIVE_ONLY = new Set(['statusline']);
 const FILL_MS = 60_000;
 
 export interface SourceFileCheckpoint {
@@ -160,8 +164,8 @@ function prepare(db: DatabaseSync) {
       WHERE ? IS NULL OR source_files.epoch = ?
       RETURNING id`),
     insertEvent: db.prepare(`INSERT INTO events (session_id, schema_version, source, confidence, native_id, parent_native_id, message_id,
-        kind, role, subagent_native_id, file_id, byte_offset, source_seq, source_ts, file_mtime, received_ts, ingest_id, injected, content, raw)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        kind, role, subagent_native_id, file_id, byte_offset, source_seq, source_ts, file_mtime, received_ts, ingest_id, injected, content, raw, sign_in_generation)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (session_id, source, native_id) DO NOTHING RETURNING id`),
     insertFts: db.prepare('INSERT INTO event_fts (rowid, content) VALUES (?, ?)'),
     delivery: db.prepare(`INSERT INTO hook_delivery (delivery_id, agent, profile_key, native_session_id, event, received_ts, committed_ts, unattributed)
@@ -244,7 +248,11 @@ function prepare(db: DatabaseSync) {
     markDirty: db.prepare("UPDATE cost_estimates SET dirty = 1 WHERE session_id = ? AND covered_scope = ?"),
     markSessionDirty: db.prepare("UPDATE cost_estimates SET dirty = 1 WHERE session_id = ? AND source = ?"),
     sessionEpoch: db.prepare('SELECT account_epoch FROM sessions WHERE id = ?'),
-    scope: db.prepare(`INSERT INTO usage_scopes (scope_key, profile_id, agent, epoch, session_id, verified) VALUES (?, ?, ?, ?, ?, ?)
+    // P6-T01a: the profile's current sign-in generation; the generation in force at a source time; an event's own
+    signInGen: db.prepare('SELECT generation FROM profile_sign_in WHERE profile_id = ?'),
+    genAt: db.prepare('SELECT coalesce(max(generation), 0) AS g FROM sign_in_boundaries WHERE profile_id = ? AND at <= ?'),
+    eventGen: db.prepare('SELECT sign_in_generation AS g FROM events WHERE id = ?'),
+    scope: db.prepare(`INSERT INTO usage_scopes (scope_key, profile_id, agent, epoch, session_id, verified, sign_in_generation) VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (scope_key) DO UPDATE SET scope_key = excluded.scope_key RETURNING id`),
     prevHistory: db.prepare(`SELECT used_percent, window_minutes, resets_at, plan, credits, as_of, first_observed_at, measured_at FROM usage_history
       WHERE usage_scope_id = ? AND limit_id = ? AND measured_at <= ? ORDER BY measured_at DESC, id DESC LIMIT 1`),
@@ -307,12 +315,21 @@ function unsuppressed(st: ReturnType<typeof prepare>, batch: Batch): { batch: Ba
 type HistRow = { used_percent: number | null; window_minutes: number | null; resets_at: number | null; plan: string | null; credits: string | null;
   as_of: number | null; first_observed_at: number; measured_at: number };
 /** P3-T15 (§5.11, EC-91, EC-92): readings of one newly stored event into its usage scope's minute history. The scope is
- *  the Codex account marker when the session has one, else the session itself (account unverified). */
-function history(st: ReturnType<typeof prepare>, batch: Batch, sid: number | bigint, e: EventRow, readings: Reading[]) {
+ *  the Codex account marker when the session has one, else the session itself (account unverified). P6-T01a (R1 revised):
+ *  each reading's sign-in generation is the one in force at its trusted source time, else the event's stored generation;
+ *  a generation above 0 is its own scope. */
+function history(st: ReturnType<typeof prepare>, batch: Batch, sid: number | bigint, eventId: number | bigint, e: EventRow, readings: Reading[]) {
   if (!readings.length) return;
   const epoch = batch.agent === 'codex' ? (st.sessionEpoch.get(sid) as { account_epoch: string | null } | undefined)?.account_epoch ?? null : null;
   const k = scopeKey({ profileId: batch.profileId, agent: batch.agent, epoch, nativeSessionId: e.nativeSessionId });
-  const scope = (st.scope.get(k.key, batch.profileId, batch.agent, k.epoch, k.verified ? null : sid, k.verified ? 1 : 0) as { id: number }).id;
+  const eventGen = (st.eventGen.get(eventId) as { g: number } | undefined)?.g ?? 0;
+  const scopes = new Map<number, number>();
+  const scopeOf = (g: number) => scopes.get(g) ?? (() => {
+    const kg = scopeKey({ profileId: batch.profileId, agent: batch.agent, epoch, nativeSessionId: e.nativeSessionId, generation: g });
+    const id = (st.scope.get(kg.key, batch.profileId, batch.agent, kg.epoch, kg.verified ? null : sid, kg.verified ? 1 : 0, g) as { id: number }).id;
+    scopes.set(g, id);
+    return id;
+  })();
   // P5-T11 (EC-99): an account-level reading the last retention run already expired is never stored again (a re-import or
   // rescan of an old rollout); NaN (no run yet) keeps everything. Session-linked readings follow their session instead.
   // Review M3: a last run later than the wall clock (stored while the clock was set ahead) is ignored, so new readings
@@ -320,7 +337,9 @@ function history(st: ReturnType<typeof prepare>, batch: Batch, sid: number | big
   const lastRun = k.verified ? Number((st.kv.get(LAST_RUN_KEY) as { value: string } | undefined)?.value) : NaN;
   const expiredUpTo = lastRun <= Date.now() ? lastRun - QUOTA_MS : NaN;
   for (const r of readings) {
-    const p = st.prevHistory.get(scope, r.stream, sourceTime(r, e.receivedTs) ?? e.receivedTs) as HistRow | undefined;
+    const at = sourceTime(r, e.receivedTs);
+    const scope = scopeOf(at !== null ? (st.genAt.get(batch.profileId, at) as { g: number }).g : eventGen);
+    const p = st.prevHistory.get(scope, r.stream, at ?? e.receivedTs) as HistRow | undefined;
     const prev: Stored | null = p ? { stream: r.stream, usedPercent: p.used_percent, windowMinutes: p.window_minutes, resetsAt: p.resets_at, plan: p.plan,
       credits: p.credits, asOf: p.as_of, firstObservedAt: p.first_observed_at, measuredAt: p.measured_at } : null;
     const step = historyStep(prev, r, e.receivedTs);
@@ -382,7 +401,7 @@ function usage(st: ReturnType<typeof prepare>, batch: Batch, sid: number | bigin
       const r = codexRateLimits(u.rateLimits);
       st.snapshot.run(SCHEMA_VERSION, batch.agent, batch.profileId, sid, e.source, e.nativeId, r.limitId, r.plan,
         r.credits === null ? null : JSON.stringify(r.credits), JSON.stringify(r.windows), e.sourceTs ?? null, e.receivedTs);
-      history(st, batch, sid, e, codexReadings(u.rateLimits, e.sourceTs ?? null));
+      history(st, batch, sid, eventId, e, codexReadings(u.rateLimits, e.sourceTs ?? null));
     }
   }
 }
@@ -507,6 +526,7 @@ export function commitBatch(db: DatabaseSync, input: Batch): Batch {
     const bump = (id: number | bigint, i: 0 | 1 | 2) => { const c = added.get(id) ?? [0, 0, 0]; c[i]++; added.set(id, c); };
 
     type Fts = { id: number; content: string | null };
+    const signInGen = (st.signInGen.get(batch.profileId) as { generation: number } | undefined)?.generation ?? 0;
     for (const e of batch.events) {
       const sid = sessionId(e.nativeSessionId);
       if (e.revise) { // FTS holds current rows only; deletes pass the indexed text (external-content table)
@@ -515,7 +535,7 @@ export function commitBatch(db: DatabaseSync, input: Batch): Batch {
       }
       const row = st.insertEvent.get(sid, SCHEMA_VERSION, e.source, e.confidence, e.nativeId, e.parentNativeId ?? null, e.messageId ?? null,
         e.kind, e.role ?? null, e.subagentNativeId ?? null, file.id, e.byteOffset ?? null, e.sourceSeq, e.sourceTs ?? null,
-        e.fileMtime ?? null, e.receivedTs, e.ingestId ?? null, e.injected ? 1 : 0, e.content ?? null, e.raw ?? null) as { id: number } | undefined;
+        e.fileMtime ?? null, e.receivedTs, e.ingestId ?? null, e.injected ? 1 : 0, e.content ?? null, e.raw ?? null, LIVE_ONLY.has(e.source) ? signInGen : 0) as { id: number } | undefined;
       if (!row) { // already stored (reparse after truncation or rotation); a revised row seen again is current again
         if (e.revise) {
           for (const r of st.revive.all(sid, e.source, e.nativeId) as Fts[]) {
@@ -547,7 +567,7 @@ export function commitBatch(db: DatabaseSync, input: Batch): Batch {
         else if (fresh && ts !== undefined) st.latestTurnModel.run(e.model.id, effort, sid, ts);
       }
       if (e.context) context(st, sid, e, e.context);
-      if (e.quota) history(st, batch, sid, e, e.quota);
+      if (e.quota) history(st, batch, sid, row.id, e, e.quota);
       if (e.reportedCost !== undefined) st.reportedCost.run(sid, SCHEMA_VERSION, e.source, e.reportedCost);
       if (batch.agent === 'codex' && e.kind === 'settings' && codexTierIn(e.raw)) st.markSessionDirty.run(sid, e.source); // G2-2: tier evidence arrived
       if (e.kind.endsWith('-chunk')) continue; // storage of an oversized record (EC-15), not a record: keeps EC-04's ratio
