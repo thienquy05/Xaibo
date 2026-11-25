@@ -260,6 +260,7 @@ body {
 .x-storage td.x-bar-cell { width: 40%; }
 .x-storage .x-meter { display: block; height: 8px; max-width: none; }
 .x-storage .x-un { color: var(--x-muted); }
+.x-storage td .x-rate { display: block; } /* XAIBO-PROD-568: one owner-set fallback rate per line */
 @media (max-width: 479px) { .x-storage th { width: 55%; } .x-storage td.x-bar-cell { width: 15%; } }
 .x-dialog { max-width: min(560px, calc(100vw - 32px)); padding: var(--x-space-5); color: var(--x-ink); background: var(--x-surface); border: 1px solid var(--x-line); border-radius: var(--x-radius-panel); }
 .x-dialog::backdrop { background: transparent; }

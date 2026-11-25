@@ -1,18 +1,19 @@
 // Main process (P1-T04): private data dir, single instance, locked-down window, tray, the service process.
 // Close hides the window and collection continues; Quit stops the service, then exits. The service is supervised
 // (P1-T06): restarted with backoff, a fresh port brokered to the renderer after every start and every page load.
-import { app, BrowserWindow, dialog, ipcMain, Menu, MessageChannelMain, Notification, powerMonitor, utilityProcess } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, MessageChannelMain, Notification, powerMonitor, shell, utilityProcess } from 'electron';
 import type { MessagePortMain, Tray } from 'electron';
 import { appendFileSync } from 'node:fs';
 import { release } from 'node:os';
 import path from 'node:path';
 import { installCrashPolicy } from '../shared/crash.ts';
-import { AGENT_ID, IPC_VERSION, type ServiceMetrics } from '../shared/ipc.ts';
+import { AGENT_ID, IPC_VERSION, type RevealResult, type ServiceMetrics } from '../shared/ipc.ts';
 import { appendQuiet, createLogger, loadInstallSecret } from '../shared/log.ts';
 import { initDataDir, serviceEnv } from './app-paths.ts';
 import { buildBundle, foldMetrics, readLogTail, writeBundle } from './diagnostics.ts';
 import { notificationText, showNotification } from './notifications.ts';
 import { forwardPower } from './power.ts';
+import { fromOurWindow, revealOverride } from './reveal.ts';
 import { APP_ORIGIN, devOrigin } from './policy.ts';
 import { lockDown, registerAppScheme, webPreferences } from './security.ts';
 import { Supervisor } from './service-supervisor.ts';
@@ -114,6 +115,16 @@ function start(dataDir: string) {
       const file = r.filePaths[0];
       if (!r.canceled && file) supervisor.send({ v: IPC_VERSION, type: 'setPath', agent, path: file });
     });
+  });
+
+  // XAIBO-PROD-568 (P6-T11, SEC1; review R1-R3): Reveal override file. Our window's main frame only, no argument read; the
+  // path is fixed in reveal.ts; Finder only selects. XAIBO_REVEAL_STUB=1 (E2E) records the kind only, never calls Finder.
+  const revealStub = process.env.XAIBO_REVEAL_STUB === '1' ? path.join(app.getPath('logs'), 'reveal-stub.jsonl') : null;
+  ipcMain.handle('reveal-price-override', (e): RevealResult => {
+    if (!fromOurWindow(e, win)) return 'failed';
+    const kind = revealOverride(dataDir, revealStub ? () => {} : (p) => shell.showItemInFolder(p));
+    if (revealStub) appendQuiet(revealStub, `${JSON.stringify({ kind })}\n`);
+    return kind;
   });
 
   void app.whenReady().then(() => {

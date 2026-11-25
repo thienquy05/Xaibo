@@ -141,3 +141,32 @@ test('a read-only store: prices load in memory, nothing is written', async () =>
   assert.equal(p.revisionId, null);
   assert.equal(s.revisions(), 0);
 });
+
+// XAIBO-PROD-568 (P6-T11, review R4): Validate reads and checks the override only; it never writes or switches a revision.
+test('checkOverride: absent, valid and each error, without touching price_revisions or the current revision', async () => {
+  const { checkOverride } = await import('../../src/service/usage/prices.ts');
+  const s = await setup();
+  const current = loadPrices({ db: s.db, overridePath: s.file });
+  const kv = () => (s.db.prepare("SELECT value FROM kv WHERE key = 'prices.current'").get() as { value: string }).value;
+  const before = { n: s.revisions(), kv: kv() };
+  assert.equal(checkOverride(s.file), 'absent');
+  s.write(override());
+  assert.equal(checkOverride(s.file), 'valid');
+  s.write(override({ extra: true }));
+  assert.equal(checkOverride(s.file), 'override_schema');
+  s.write('{ not json');
+  assert.equal(checkOverride(s.file), 'override_json');
+  s.write('x'.repeat((1 << 20) + 1));
+  assert.equal(checkOverride(s.file), 'override_too_large');
+  const target = join(s.tmp, 'target.json');
+  writeFileSync(target, JSON.stringify(override()));
+  const link = join(s.tmp, 'link.json');
+  symlinkSync(target, link);
+  assert.equal(checkOverride(link), 'override_not_regular');
+  assert.deepEqual({ n: s.revisions(), kv: kv() }, before, 'nothing written, current unchanged');
+  // Validate then Reload of an invalid file: the last valid revision stays
+  s.write('{ not json');
+  assert.equal(checkOverride(s.file), 'override_json');
+  const after = loadPrices({ db: s.db, overridePath: s.file, previous: current });
+  assert.deepEqual([after.error, after.revisionId], ['override_json', current.revisionId]);
+});

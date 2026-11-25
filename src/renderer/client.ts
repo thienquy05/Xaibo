@@ -3,7 +3,7 @@
 // are counted; an invalid reply rejects its request, so the caller can recover. A service restart brings a new port
 // and a new client; replies owed on the old one never arrive.
 import { accept, IPC_VERSION, isObj, parsePortMessage } from '../shared/ipc.ts';
-import type { RetentionSetting, SearchKey, SuppressedCursor } from '../shared/ipc.ts';
+import type { PriceOp, RetentionSetting, SearchKey, SuppressedCursor } from '../shared/ipc.ts';
 import type { AgentStatus, Banner, CostDetail, Cursor, FileItem, HistoryCursor, HistoryFilter, HistoryKey, HistoryRow, LedgerFilter, MapGroup, MapNode, MCursor, ModelMarker, Named, OverlayOp, OverlayResult, Page, PortMessage, PortRequest, SessionDetail, SessionRow, SubagentItem, TCursor, ToolItem, TranscriptAt, TranscriptItem, UsageRecord, UsageScope } from '../shared/ipc.ts';
 
 export interface LiveSet { rows: SessionRow[]; more: boolean }
@@ -91,6 +91,8 @@ export function createClient(port: PortLike, push: Pushes) {
     async reimport(key: string) { return (await ask({ type: 'reimport', key }, 'reimport')).result; },
     async retention() { const { setting, lastRunAt } = await ask({ type: 'retention' }, 'retention'); return { setting, lastRunAt }; },
     async setRetention(value: RetentionSetting) { return (await ask({ type: 'setRetention', value }, 'setRetention')).result; },
+    /** XAIBO-PROD-568 (P6-T11): Local prices (get, Validate, Reload). */
+    async prices(op: PriceOp) { const { view, check } = await ask({ type: 'prices', op }, 'prices'); return { view, check }; },
     async storage(refresh: boolean) { const { report, failed } = await ask({ type: 'storage', refresh }, 'storage'); return { report, failed: failed === true }; },
     /** P4-T04b1: one scope+stream's observations in [from, to). */
     async usageHistory(scope: number, stream: string, from: number, to: number, cursor: HistoryCursor | null, limit: number): Promise<{ records: UsageRecord[]; next: HistoryCursor | null }> {

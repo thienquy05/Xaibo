@@ -5,7 +5,7 @@
 // listens and the spool replays, before the file backfill; a full disk is logged and its hook-only gap written on recovery.
 import { statSync } from 'node:fs';
 import path from 'node:path';
-import { isActive, OUTCOMES, REASONS, RULES, type AgentStatus, type Banner, type ClearUsageResult, type PurgeResult, type ReimportResult, type RetentionSetting, type SaveRetentionResult, type LiveStatus, type NotifyState, type ServiceMetrics } from '../shared/ipc.ts';
+import { isActive, OUTCOMES, REASONS, RULES, type AgentStatus, type Banner, type ClearUsageResult, type PurgeResult, type ReimportResult, type RetentionSetting, type SaveRetentionResult, type LiveStatus, type NotifyState, type PriceCheck, type ServiceMetrics } from '../shared/ipc.ts';
 import type { Logger } from '../shared/log.ts';
 import { AgyAdapter } from './adapters/agy/index.ts';
 import { ClaudeAdapter } from './adapters/claude/index.ts';
@@ -21,7 +21,7 @@ import { loadImports } from './catalog/import.ts';
 import { deniedRootsFrom } from './config/bounds.ts';
 import type { ModelEntry } from './usage/models.ts';
 import { priceUsage } from './usage/cost.ts';
-import { loadPrices, type Prices } from './usage/prices.ts';
+import { checkOverride, loadPrices, type Prices } from './usage/prices.ts';
 import { errorCode } from '../shared/crash.ts';
 import { approvedLabel } from './history/overlay.ts';
 import { holdDeletes, resumePurges, spoolResumeDelay } from './history/purge.ts';
@@ -78,6 +78,8 @@ export interface Service {
   prices(): Prices | null;
   /** Re-reads <dataDir>/models.override.json (the reloadPrices command). */
   reloadPrices(): Prices | null;
+  /** XAIBO-PROD-568 (P6-T11 Validate): the override as Reload would read it; writes and switches nothing. */
+  checkPrices(): PriceCheck;
   /** P3-T10: live status of a session by agent, native id and profile (§5.5); null without evidence (or a read-only store). */
   status(agent: string, nativeSessionId: string, profileId: string): LiveStatus | null;
   /** Session keys (`agent\0profile\0native id`) whose status changed with time alone since the last call (settle,
@@ -435,6 +437,7 @@ export async function boot(o: BootOptions): Promise<Service> {
     models: () => prices?.table.models ?? [],
     prices: () => prices,
     reloadPrices: () => reloadPrices(),
+    checkPrices: () => checkOverride(path.join(o.dataDir, 'models.override.json')),
     status,
     ticking,
     coverage: () => {

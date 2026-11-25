@@ -16,6 +16,7 @@ import { framePad } from './frame-pad.ts';
 import { openOrder } from './overview/queue.ts';
 import { retryIdle, retryStep } from './retry.ts';
 import { firstUsablePage, LONG_FRAME, watchLongFrames } from './perf-marks.ts';
+import { parseReveal } from './settings/prices-view.ts';
 import { Settings, type SettingsApi } from './settings/Settings.tsx';
 import type { BrowseApi } from './history/SessionBrowser.tsx';
 import { AgentMap, type MapSnapshot } from './agent-map/AgentMap.tsx';
@@ -27,7 +28,7 @@ import type { WorkspaceApi } from './workspace/OpenSession.tsx';
 import { workspaceApiOf } from './workspace/workspace-api.ts';
 import './styles/tokens.css';
 
-declare global { interface Window { xaibo?: { setAgentPath(agent: string): void; paintAck(delta: number): void } } }
+declare global { interface Window { xaibo?: { setAgentPath(agent: string): void; paintAck(delta: number): void; revealPriceOverride?(): Promise<unknown> } } }
 
 // M3 marks (P1-T14): read through the Performance API by test/perf.
 // ponytail: distinct sessions changed within one frame before the batch is dropped for a cursor resync; raise if a
@@ -170,6 +171,9 @@ function App() {
       retention: () => client.current?.retention() ?? none(),
       setRetention: (v) => client.current?.setRetention(v) ?? Promise.resolve('failed' as const),
       storage: (refresh) => client.current?.storage(refresh) ?? none(),
+      // XAIBO-PROD-568 (P6-T11): main's reveal answer is checked here too (anything else is a failure)
+      prices: (op) => client.current?.prices(op) ?? none(),
+      reveal: async () => parseReveal(await (window.xaibo?.revealPriceOverride?.() ?? 'failed')),
     };
   }, []);
   // P4-T05d: the Session workspace's page requests go to the current client (a restart brings a new one).

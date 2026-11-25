@@ -346,6 +346,8 @@ export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Curs
   | { v: 1; type: 'retention'; id: number }
   | { v: 1; type: 'setRetention'; id: number; value: RetentionSetting }
   | { v: 1; type: 'storage'; id: number; refresh: boolean }
+  /** XAIBO-PROD-568 (P6-T11): Settings > Local prices: the current table, a Validate that switches nothing, a Reload. */
+  | { v: 1; type: 'prices'; id: number; op: PriceOp }
   | { v: 1; type: 'history'; id: number; filter: HistoryFilter; cursor: HistoryKey | null; limit: number }
   | { v: 1; type: 'projects'; id: number; cursor: number | null; limit: number }
   | { v: 1; type: 'folders'; id: number; project: number; cursor: number | null; limit: number }
@@ -387,6 +389,8 @@ export type PortMessage =
   | { v: 1; type: 'retention'; id: number; setting: RetentionSetting | null; lastRunAt: number | null }
   | { v: 1; type: 'setRetention'; id: number; result: SaveRetentionResult }
   | { v: 1; type: 'storage'; id: number; report: StorageReport | null; failed?: true }
+  /** view null = the service has no prices (a bundled-list build error); check is set only by validate. */
+  | { v: 1; type: 'prices'; id: number; view: PriceView | null; check: PriceCheck | null }
   | { v: 1; type: 'history'; id: number; rows: HistoryRow[]; next: HistoryKey | null; failed?: true }
   | { v: 1; type: 'projects'; id: number; projects: Named[]; next: number | null; failed?: true }
   | { v: 1; type: 'folders'; id: number; folders: Named[]; next: number | null; failed?: true }
@@ -891,6 +895,7 @@ export function parsePortRequest(x: unknown): PortRequest | null {
     return count(m.id) && value ? { v: 1, type: 'setRetention', id: m.id, value } : null;
   }
   if (m?.type === 'storage') return count(m.id) && typeof m.refresh === 'boolean' ? { v: 1, type: 'storage', id: m.id, refresh: m.refresh } : null;
+  if (m?.type === 'prices') return count(m.id) && oneOf(PRICE_OPS, m.op) ? { v: 1, type: 'prices', id: m.id, op: m.op } : null;
   if (m?.type === 'monthly') {
     const filter = parseLedgerFilter(m.filter);
     return count(m.id) && filter && monthOrNull(m.end) && Number.isSafeInteger(m.limit) && (m.limit as number) >= 1 && (m.limit as number) <= LEDGER_MONTHS
@@ -991,6 +996,12 @@ export function parsePortMessage(x: unknown): PortMessage | null {
     const setting = m.setting === null ? null : parseRetentionSetting(m.setting);
     return count(m.id) && m.failed === undefined && (m.setting === null || setting) && timeOrNull(m.lastRunAt) ? { v: 1, type: 'retention', id: m.id, setting, lastRunAt: m.lastRunAt } : null;
   }
+  if (m.type === 'prices') {
+    const view = m.view === null ? null : parsePriceView(m.view);
+    const check = m.check === null || oneOf(PRICE_CHECKS, m.check) ? m.check : undefined;
+    return count(m.id) && exactKeys(m, ['v', 'type', 'id', 'view', 'check']) && view !== undefined && check !== undefined
+      ? { v: 1, type: 'prices', id: m.id, view, check } : null;
+  }
   if (m.type === 'storage') {
     const report = parseStorage(m.report), failed = failedOf(true); // a failed refresh still carries the last report
     return count(m.id) && report !== undefined && failed ? { v: 1, type: 'storage', id: m.id, report, ...failed } : null;
@@ -1059,4 +1070,50 @@ export function accept<T, A extends unknown[] = []>(parse: (x: unknown) => T | n
   };
   receive.dropped = 0;
   return receive;
+}
+
+// XAIBO-PROD-568 (P6-T11; design §6.6 Local prices, C30; review R5): the price view Settings shows. Bounds equal the price
+// schema's (integrations/models.schema.json: revision 1..64, dates YYYY-MM-DD, 32 fallbacks of 1..64 exact model ids, rates
+// 0..100000, 8 cache-write classes), so every table the service accepted gets through.
+export const PRICE_ERRORS = ['override_unreadable', 'override_not_regular', 'override_too_large', 'override_json', 'override_schema'] as const;
+export type PriceError = (typeof PRICE_ERRORS)[number];
+const PRICE_CHECKS = ['absent', 'valid', ...PRICE_ERRORS] as const;
+/** Validate's answer: no override file, a valid one (not yet in use), or why it would be refused. */
+export type PriceCheck = (typeof PRICE_CHECKS)[number];
+const PRICE_OPS = ['get', 'validate', 'reload'] as const;
+export type PriceOp = (typeof PRICE_OPS)[number];
+export interface PriceRatesView { input: number; output: number; cache_read?: number; cache_write?: Record<string, number> }
+export interface PriceFallback { models: string[]; agent: string | null; rates: PriceRatesView }
+/** error: the override was refused at the last load; the table shown is then the last valid one. */
+export interface PriceView { source: 'bundled' | 'override'; revision: string; pricesAsOf: string; error: PriceError | null; fallbacks: PriceFallback[] }
+/** Reveal override file (main, SEC1): what Finder was asked to select. */
+export type RevealResult = 'file' | 'missing' | 'folder' | 'failed';
+
+const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const PRICE_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const CACHE_CLASS = /^[0-9]{1,3}[mh]$/;
+const rateOk = (x: unknown): x is number => finite(x) && (x as number) >= 0 && (x as number) <= 100_000;
+
+function parseRates(x: unknown): PriceRatesView | undefined {
+  if (!isObj(x) || !rateOk(x.input) || !rateOk(x.output) || Object.keys(x).some((k) => !['input', 'output', 'cache_read', 'cache_write'].includes(k))) return undefined;
+  if (x.cache_read !== undefined && !rateOk(x.cache_read)) return undefined;
+  const cw = x.cache_write;
+  if (cw !== undefined && (!isObj(cw) || Object.keys(cw).length > 8 || Object.entries(cw).some(([k, v]) => !CACHE_CLASS.test(k) || !rateOk(v)))) return undefined;
+  return { input: x.input, output: x.output, ...(x.cache_read !== undefined ? { cache_read: x.cache_read } : {}),
+    ...(cw !== undefined ? { cache_write: { ...(cw as Record<string, number>) } } : {}) };
+}
+
+function parsePriceView(x: unknown): PriceView | undefined {
+  if (!exactKeys(x, ['source', 'revision', 'pricesAsOf', 'error', 'fallbacks']) || !oneOf(['bundled', 'override'] as const, x.source)) return undefined;
+  if (!text(x.revision, 64) || !x.revision || !text(x.pricesAsOf, 10) || !PRICE_DATE.test(x.pricesAsOf)) return undefined;
+  if (!(x.error === null || oneOf(PRICE_ERRORS, x.error)) || !Array.isArray(x.fallbacks) || x.fallbacks.length > 32) return undefined;
+  const fallbacks: PriceFallback[] = [];
+  for (const f of x.fallbacks as unknown[]) {
+    if (!exactKeys(f, ['models', 'agent', 'rates']) || !Array.isArray(f.models) || !f.models.length || f.models.length > 64) return undefined;
+    if (!f.models.every((m) => typeof m === 'string' && MODEL_ID.test(m)) || !(f.agent === null || agentOk(f.agent))) return undefined;
+    const rates = parseRates(f.rates);
+    if (!rates) return undefined;
+    fallbacks.push({ models: [...(f.models as string[])], agent: f.agent, rates });
+  }
+  return { source: x.source, revision: x.revision, pricesAsOf: x.pricesAsOf, error: x.error, fallbacks };
 }

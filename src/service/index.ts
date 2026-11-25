@@ -16,6 +16,7 @@ import { mapGroups } from './history/map.ts';
 import type { Batch } from './store/writer.ts';
 import { traceableIds } from './trace-ids.ts';
 import { answerMonthly, MonthlyCache } from './usage/ledger.ts';
+import { priceView } from './usage/prices.ts';
 import { answerHistoryRow, answerSearch, retentionState, suppressedPage } from './history/tools.ts';
 import { StorageMeter } from './storage/meter.ts';
 import { takePerf } from './perf-counters.ts';
@@ -114,6 +115,13 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
       case 'reimport': port.postMessage({ v: IPC_VERSION, type: 'reimport', id: req.id, result: s.reimport(req.key) } satisfies PortMessage); break;
       case 'retention': reply('retention', { setting: null, lastRunAt: null }, () => retentionState(db)); break; // unreadable: no setting
       case 'setRetention': port.postMessage({ v: IPC_VERSION, type: 'setRetention', id: req.id, result: s.saveRetention(req.value) } satisfies PortMessage); break;
+      // XAIBO-PROD-568 (P6-T11): Validate switches nothing; Reload keeps the last valid revision on an invalid file.
+      // ponytail (review R6): a read-only store reloads in memory only (not kept across a restart), as reloadPrices does.
+      case 'prices': {
+        const p = req.op === 'reload' ? s.reloadPrices() : s.prices();
+        port.postMessage({ v: IPC_VERSION, type: 'prices', id: req.id, view: p ? priceView(p) : null, check: req.op === 'validate' ? s.checkPrices() : null } satisfies PortMessage);
+        break;
+      }
       case 'storage': { // measured in the meter's worker on request; at most once a minute (design review M4)
         const last = meter!.latest(), now = Date.now();
         const fresh = last !== null && last.measuredAt <= now && now - last.measuredAt < STORAGE_MIN_MS;

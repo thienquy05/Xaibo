@@ -9,9 +9,10 @@
 // with a matching aria-invalid, and are never clamped; a failed Save focuses the invalid field. Storage is passive service
 // data (one measurement per 60 s at most in the service) and never shows a disk capacity.
 import { useEffect, useId, useReducer, useRef, useState } from 'react';
-import type { ClearUsageResult, RetentionSetting, SaveRetentionResult, StorageReport } from '../../shared/ipc.ts';
+import type { ClearUsageResult, PriceCheck, PriceOp, PriceView, RetentionSetting, RevealResult, SaveRetentionResult, StorageReport } from '../../shared/ipc.ts';
 import { ConfirmDialog } from '../components/ConfirmDialog.tsx';
 import { APPLYING, RESULT_UNAVAILABLE } from '../model.ts';
+import { asOfText, checkText, fallbackRows, reloadText, revealText, sourceText } from './prices-view.ts';
 import { initialRetention, lastRunText, measureStorage, retentionReducer, saveText, storageView, storageWhen, toSend, type Draft, type RetentionState, type StorageRow } from './retention-view.ts';
 
 export interface SettingsApi {
@@ -19,6 +20,9 @@ export interface SettingsApi {
   retention(): Promise<{ setting: RetentionSetting | null; lastRunAt: number | null }>;
   setRetention(value: RetentionSetting): Promise<SaveRetentionResult>;
   storage(refresh: boolean): Promise<{ report: StorageReport | null; failed: boolean }>;
+  /** XAIBO-PROD-568 (P6-T11): Local prices; reveal asks main to select the override file in Finder. */
+  prices(op: PriceOp): Promise<{ view: PriceView | null; check: PriceCheck | null }>;
+  reveal(): Promise<RevealResult>;
 }
 type Phase = 'applying' | ClearUsageResult | 'unavailable' | null;
 
@@ -78,6 +82,7 @@ export function Settings({ api, readOnly }: { api: SettingsApi; readOnly: boolea
         <div className="x-settings-controls"><p>Auto-empty after <strong>30 days</strong></p></div>
       </section>
       <StorageSection api={api} />
+      <PricesSection api={api} />
       <section className="x-settings-section" aria-labelledby="usage-history-heading">
         <div>
           <h2 id="usage-history-heading">Usage history</h2>
@@ -227,6 +232,86 @@ function StorageSection({ api }: { api: SettingsApi }) {
           {v.inside ? <StorageTable caption="Inside the database" rows={v.inside} />
             : state !== 'loading' && v.disk.length ? <p className="x-hint">Inside the database: Unavailable</p> : null}
         </div>
+      </div>
+    </section>
+  );
+}
+
+/** XAIBO-PROD-568 (P6-T11; design §6.6 Local prices / Owner-set fallback, §529, A6): the current table and its revision,
+ *  Reveal override file -> Validate -> Reload. Validate switches nothing; an error from a Reload is announced once (alert),
+ *  an error already present on load is shown without one. Focus stays on the invoking button; a running action is
+ *  aria-disabled. No editor and no network: the owner edits the private file. */
+export function PricesSection({ api }: { api: SettingsApi }) {
+  const [view, setView] = useState<PriceView | null | 'loading' | 'failed'>('loading');
+  const [busy, setBusy] = useState<PriceOp | 'reveal' | null>(null);
+  const [note, setNote] = useState('');
+  const [reloads, setReloads] = useState(0); // > 0: the error shown came from a Reload
+  const live = useRef(true);
+  useEffect(() => {
+    live.current = true;
+    api.prices('get').then((r) => { if (live.current) setView(r.view); }, () => { if (live.current) setView('failed'); });
+    return () => { live.current = false; };
+  }, [api]);
+  const run = (op: PriceOp | 'reveal') => {
+    if (busy) return;
+    setBusy(op);
+    setNote('');
+    const done = (text: string) => { if (live.current) { setBusy(null); setNote(text); } };
+    if (op === 'reveal') { api.reveal().then((r) => done(revealText(r)), () => done(revealText('failed'))); return; }
+    api.prices(op).then((r) => {
+      if (!live.current) return;
+      setView(r.view);
+      if (op === 'reload') setReloads((n) => n + 1);
+      // a Reload error is the alert below, not also this polite line
+      done(!r.view ? RESULT_UNAVAILABLE : op === 'validate' ? (r.check ? checkText(r.check) : RESULT_UNAVAILABLE) : r.view.error ? '' : reloadText(r.view));
+    }, () => done(RESULT_UNAVAILABLE));
+  };
+  const v = typeof view === 'object' ? view : null;
+  const rows = v ? fallbackRows(v) : [];
+  const action = (op: PriceOp | 'reveal', label: string) => (
+    <button type="button" className="x-btn x-btn-secondary" aria-disabled={busy !== null || undefined} aria-busy={busy === op || undefined}
+      onClick={() => run(op)}>{label}</button>
+  );
+  return (
+    <section className="x-settings-section" aria-labelledby="prices-heading">
+      <div>
+        <h2 id="prices-heading">Local prices</h2>
+        <p className="x-hint">
+          Estimated costs use this price table. To change a rate, edit the private override file, then Validate and Reload. Xaibo
+          never fetches prices; an old date is not a market check, and existing estimates keep the prices they were made with.
+        </p>
+      </div>
+      <div className="x-settings-controls x-stack">
+        {view === 'loading' ? <p>Loading prices…</p> : view === 'failed' || view === null ? <p>Prices are unavailable.</p> : (
+          <>
+            <p>{asOfText(view)}</p>
+            <p className="x-hint">Source: {sourceText(view)}</p>
+          </>
+        )}
+        {v?.error ? <p key={reloads} className="x-error" role={reloads > 0 ? 'alert' : undefined}>{reloadText(v)}</p> : null}
+        <div className="x-save-row">
+          {action('reveal', 'Reveal override file')}
+          {action('validate', 'Validate')}
+          {action('reload', 'Reload')}
+          <span aria-live="polite">{busy === 'validate' ? 'Validating…' : note}</span>
+        </div>
+        {v ? (
+          <div className="x-storage">
+            {rows.length ? (
+              <table>
+                <caption>Owner-set fallback</caption>
+                <tbody>
+                  {rows.map((r) => (
+                    <tr key={r.key}>
+                      <th scope="row">{r.models}<br /><span className="x-hint">{r.scope}</span></th>
+                      <td>{r.rates.map((x) => <span key={x.label} className="x-rate">{x.label}: {x.text}</span>)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : <p className="x-hint">No owner-set fallback rates.</p>}
+          </div>
+        ) : null}
       </div>
     </section>
   );
