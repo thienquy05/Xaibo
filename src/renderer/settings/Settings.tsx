@@ -9,10 +9,11 @@
 // with a matching aria-invalid, and are never clamped; a failed Save focuses the invalid field. Storage is passive service
 // data (one measurement per 60 s at most in the service) and never shows a disk capacity.
 import { useEffect, useId, useReducer, useRef, useState } from 'react';
-import type { ClearUsageResult, PriceCheck, PriceOp, PriceView, RetentionSetting, RevealResult, SaveRetentionResult, StorageReport } from '../../shared/ipc.ts';
+import type { ClearUsageResult, PriceCheck, PriceOp, PriceView, RetentionSetting, RevealResult, SaveRetentionResult, StartupReply, StartupRequest, StorageReport } from '../../shared/ipc.ts';
 import { ConfirmDialog } from '../components/ConfirmDialog.tsx';
 import { APPLYING, RESULT_UNAVAILABLE } from '../model.ts';
 import { asOfText, checkText, fallbackRows, reloadText, revealText, sourceText } from './prices-view.ts';
+import { canSave, startupText } from './startup-view.ts';
 import { initialRetention, lastRunText, measureStorage, retentionReducer, saveText, storageView, storageWhen, toSend, type Draft, type RetentionState, type StorageRow } from './retention-view.ts';
 
 export interface SettingsApi {
@@ -23,6 +24,8 @@ export interface SettingsApi {
   /** XAIBO-PROD-568 (P6-T11): Local prices; reveal asks main to select the override file in Finder. */
   prices(op: PriceOp): Promise<{ view: PriceView | null; check: PriceCheck | null }>;
   reveal(): Promise<RevealResult>;
+  /** XAIBO-PROD-569: Start at login through main; null = no answer or a malformed one. */
+  startup(request: StartupRequest): Promise<StartupReply | null>;
 }
 type Phase = 'applying' | ClearUsageResult | 'unavailable' | null;
 
@@ -104,6 +107,7 @@ export function Settings({ api, readOnly }: { api: SettingsApi; readOnly: boolea
         body={'The monthly totals are removed and every usage record already observed is left out of them from now on. Usage observed'
           + ' afterwards appears as usual. Sessions, account usage snapshots and quotas are not deleted.'}
         onConfirm={confirm} onDismiss={close} onClosed={closed} />
+      <StartupSection api={api} />
     </div>
   );
 }
@@ -312,6 +316,57 @@ export function PricesSection({ api }: { api: SettingsApi }) {
             ) : <p className="x-hint">No owner-set fallback rates.</p>}
           </div>
         ) : null}
+      </div>
+    </section>
+  );
+}
+
+/** XAIBO-PROD-569 (P6-T10 unit 1; design §6.6 Startup): Start at login, off by default. The checkbox is a draft until Save;
+ *  the result line says what macOS has afterwards (Save keeps focus). */
+export function StartupSection({ api }: { api: SettingsApi }) {
+  const [loaded, setLoaded] = useState<boolean | null | 'loading'>('loading');
+  const [draft, setDraft] = useState(false);
+  const [touched, setTouched] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState('');
+  const live = useRef(true);
+  useEffect(() => {
+    live.current = true;
+    api.startup({ op: 'read' }).then((r) => {
+      if (!live.current) return;
+      const on = r?.status === 'ready' ? r.enabled : null;
+      setLoaded(on);
+      setDraft(on === true);
+    }, () => { if (live.current) setLoaded(null); });
+    return () => { live.current = false; };
+  }, [api]);
+  const blocked = busy || !canSave(loaded, touched);
+  const save = () => {
+    if (blocked) return;
+    setBusy(true);
+    setNote('');
+    const done = (r: StartupReply | null) => {
+      if (!live.current) return;
+      setBusy(false);
+      setNote(startupText(r));
+      if (r && r.enabled !== null) { setLoaded(r.enabled); setDraft(r.enabled); }
+    };
+    api.startup({ op: 'save', enabled: draft }).then(done, () => done(null));
+  };
+  return (
+    <section className="x-settings-section" aria-labelledby="startup-heading">
+      <div>
+        <h2 id="startup-heading">Startup</h2>
+        <p className="x-hint" id="startup-hint">Off by default. Closing the window keeps collection running; Quit stops it.</p>
+      </div>
+      <div className="x-settings-controls x-stack">
+        {loaded === 'loading' ? <p>Loading the current setting…</p> : loaded === null ? <p>The current setting is unavailable.</p> : null}
+        <label className="x-radio"><input type="checkbox" checked={draft} aria-describedby="startup-hint" disabled={loaded === 'loading'}
+          onChange={(e) => { setTouched(true); setDraft(e.target.checked); }} /> Start Xaibo at login</label>
+        <div className="x-save-row">
+          <button type="button" className="x-btn x-btn-primary" aria-disabled={blocked || undefined} aria-busy={busy || undefined} onClick={save}>Save</button>
+          <span aria-live="polite">{busy ? 'Saving…' : note}</span>
+        </div>
       </div>
     </section>
   );

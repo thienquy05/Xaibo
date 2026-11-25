@@ -1117,3 +1117,18 @@ function parsePriceView(x: unknown): PriceView | undefined {
   }
   return { source: x.source, revision: x.revision, pricesAsOf: x.pricesAsOf, error: x.error, fallbacks };
 }
+
+// XAIBO-PROD-569 (P6-T10 unit 1; design §6.6 Startup): renderer <-> main through the preload, parsed on both sides.
+export type StartupRequest = { op: 'read' } | { op: 'save'; enabled: boolean };
+/** failed: platform = the OS refused or read back another value (enabled = that value, null when unreadable); invalid = a
+ *  malformed request (nothing done). */
+export type StartupReply = { status: 'ready'; enabled: boolean } | { status: 'failed'; code: 'platform' | 'invalid'; enabled: boolean | null };
+export function parseStartupRequest(x: unknown): StartupRequest | null {
+  if (exactKeys(x, ['op']) && x.op === 'read') return { op: 'read' };
+  return exactKeys(x, ['op', 'enabled']) && x.op === 'save' && typeof x.enabled === 'boolean' ? { op: 'save', enabled: x.enabled } : null;
+}
+export function parseStartupReply(x: unknown): StartupReply | null {
+  if (exactKeys(x, ['status', 'enabled']) && x.status === 'ready' && typeof x.enabled === 'boolean') return { status: 'ready', enabled: x.enabled };
+  return exactKeys(x, ['status', 'code', 'enabled']) && x.status === 'failed' && oneOf(['platform', 'invalid'] as const, x.code)
+    && (x.enabled === null || typeof x.enabled === 'boolean') ? { status: 'failed', code: x.code, enabled: x.enabled } : null;
+}

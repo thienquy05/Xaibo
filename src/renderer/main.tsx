@@ -3,8 +3,8 @@
 import { StrictMode, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type MouseEvent } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
-import { parseHealth } from '../shared/ipc.ts';
-import type { AgentStatus, Banner, Health, LedgerFilter, SessionRow } from '../shared/ipc.ts';
+import { parseHealth, parseStartupReply } from '../shared/ipc.ts';
+import type { AgentStatus, Banner, Health, LedgerFilter, SessionRow, StartupRequest } from '../shared/ipc.ts';
 import { createClient, parseVisible, type Client, type PortLike } from './client.ts';
 import { HealthStatus } from './Health.tsx';
 import { Icon } from './status/StatusBadge.tsx';
@@ -28,7 +28,7 @@ import type { WorkspaceApi } from './workspace/OpenSession.tsx';
 import { workspaceApiOf } from './workspace/workspace-api.ts';
 import './styles/tokens.css';
 
-declare global { interface Window { xaibo?: { setAgentPath(agent: string): void; paintAck(delta: number): void; revealPriceOverride?(): Promise<unknown> } } }
+declare global { interface Window { xaibo?: { setAgentPath(agent: string): void; paintAck(delta: number): void; revealPriceOverride?(): Promise<unknown>; startup?(request: StartupRequest): Promise<unknown> } } }
 
 // M3 marks (P1-T14): read through the Performance API by test/perf.
 // ponytail: distinct sessions changed within one frame before the batch is dropped for a cursor resync; raise if a
@@ -174,6 +174,8 @@ function App() {
       // XAIBO-PROD-568 (P6-T11): main's reveal answer is checked here too (anything else is a failure)
       prices: (op) => client.current?.prices(op) ?? none(),
       reveal: async () => parseReveal(await (window.xaibo?.revealPriceOverride?.() ?? 'failed')),
+      // XAIBO-PROD-569: main's answer is parsed here too; anything malformed or no bridge is unavailable (null)
+      startup: async (request) => parseStartupReply(await (window.xaibo?.startup?.(request) ?? null)),
     };
   }, []);
   // P4-T05d: the Session workspace's page requests go to the current client (a restart brings a new one).

@@ -7,13 +7,14 @@ import { appendFileSync } from 'node:fs';
 import { release } from 'node:os';
 import path from 'node:path';
 import { installCrashPolicy } from '../shared/crash.ts';
-import { AGENT_ID, IPC_VERSION, type RevealResult, type ServiceMetrics } from '../shared/ipc.ts';
+import { AGENT_ID, IPC_VERSION, type RevealResult, type ServiceMetrics, type StartupReply } from '../shared/ipc.ts';
 import { appendQuiet, createLogger, loadInstallSecret } from '../shared/log.ts';
 import { initDataDir, serviceEnv } from './app-paths.ts';
 import { buildBundle, foldMetrics, readLogTail, writeBundle } from './diagnostics.ts';
 import { notificationText, showNotification } from './notifications.ts';
 import { forwardPower } from './power.ts';
 import { fromOurWindow, revealOverride } from './reveal.ts';
+import { answerStartup, stubLoginItems, type LoginItems } from './startup.ts';
 import { APP_ORIGIN, devOrigin } from './policy.ts';
 import { lockDown, registerAppScheme, webPreferences } from './security.ts';
 import { Supervisor } from './service-supervisor.ts';
@@ -126,6 +127,12 @@ function start(dataDir: string) {
     if (revealStub) appendQuiet(revealStub, `${JSON.stringify({ kind })}\n`);
     return kind;
   });
+
+  // XAIBO-PROD-569 (P6-T10 unit 1, design §6.6 Startup): read or save Start at login for our main frame only; the request is
+  // parsed in startup.ts. XAIBO_LOGIN_ITEM_STUB=1 (every E2E run) keeps it in a file, never the machine's login items.
+  const loginItems: LoginItems = process.env.XAIBO_LOGIN_ITEM_STUB === '1' ? stubLoginItems(path.join(app.getPath('logs'), 'login-item-stub.json'))
+    : { get: () => app.getLoginItemSettings().openAtLogin, set: (on) => app.setLoginItemSettings({ openAtLogin: on }) };
+  ipcMain.handle('startup', (e, request: unknown): StartupReply => (fromOurWindow(e, win) ? answerStartup(request, loginItems) : { status: 'failed', code: 'invalid', enabled: null }));
 
   void app.whenReady().then(() => {
     lockDown(path.join(here, '..', '..', 'dist', 'renderer'), dev, (count) => { blocked = count; log.log('request_blocked', { count }); });

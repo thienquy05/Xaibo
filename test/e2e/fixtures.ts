@@ -108,6 +108,7 @@ export const test = base.extend<{ xaibo: Xaibo }>({
       const env: Record<string, string> = {
         HOME: home, PATH: `${bin}:/usr/bin:/bin`, SHELL: shell, TMPDIR: path.join(root, 'tmp'), LANG: 'en_US.UTF-8',
         CLAUDE_CONFIG_DIR: path.join(home, '.claude'), CODEX_HOME: path.join(home, '.codex'), GEMINI_CLI_HOME: home,
+        XAIBO_LOGIN_ITEM_STUB: '1', // P6-T10 unit 1: E2E never touches the machine's login items
         XAIBO_DATA_DIR: dataDir, XAIBO_AUDIT_PROFILE: o.logOnly ? logOnlyProfile : PROFILE, XAIBO_AUDIT_BIN: o.unpackaged ? ELECTRON : PACKAGED,
         ...o.env,
       };
