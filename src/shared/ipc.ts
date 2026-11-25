@@ -310,7 +310,7 @@ export type ClearUsageResult = (typeof CLEAR_USAGE_RESULTS)[number];
 /** XAIBO-PROD-558 (P6-T03 part 1b; design review L1/L2): Connect replies, bounded; never an op, a plan or a foreign value
  *  (diff lines carry Xaibo's values and a replaced value's type + 12-hex hash only). An over-bound reply is refused by the
  *  service (too-large), never truncated. */
-export const CONNECT_TYPES = ['connectPreview', 'connectApply', 'disconnect', 'uninstall'] as const;
+export const CONNECT_TYPES = ['connectPreview', 'connectApply'] as const;
 export const CONNECT_ROUTES = ['claude-plugin', 'claude-settings-fallback', 'claude-retention', 'claude-tee', 'codex-hooks', 'agy-hooks'] as const;
 export type ConnectRoute = (typeof CONNECT_ROUTES)[number];
 export const CONNECT_LIMITS = { steps: 3, diff: 64, value: 16_384, text: 8_192, trust: 8, entries: 8, list: 256 } as const;
@@ -331,6 +331,18 @@ export interface ConnectOutcome {
 }
 export type ConnectReply = ConnectPreview | ConnectRefused | { status: 'applied'; entries: string[]; trustSteps: string[] }
   | { status: 'needs-preview'; preview: ConnectPreview | ConnectRefused } | ConnectOutcome;
+/** XAIBO-PROD-576 (P6-T10 unit 3; review R1/R4/R5, plan review H1/L4): Disconnect (a profile) and Full Uninstall (profileId
+ *  null) are previewed and applied by preview id; cleanup by profile. Items name an entry, its route, the profile it maps to
+ *  and its reconcile state (reason: why it is unreadable, e.g. refused for a target outside the writable roots); no path or
+ *  value. At most REMOVAL_LIMIT items, the core's own cap. */
+export const RECONCILE_STATES = ['connected', 'disconnected-externally', 'drifted', 'pending-recovery', 'unreadable'] as const;
+export const LEFTOVERS = ['manifest-entry', 'backup', 'plugin-copy', 'marketplace'] as const;
+export const REMOVAL_LIMIT = 256;
+export interface RemovalItem { entry: string; route: ConnectRoute; profileId: string | null; state: (typeof RECONCILE_STATES)[number]; reason: string | null }
+export type RemovalPreview = { status: 'preview'; previewId: string; profileId: string | null; ttlMs: number; items: RemovalItem[] };
+export type RemovalReply = RemovalPreview | ConnectRefused | { status: 'needs-preview'; preview: RemovalPreview | ConnectRefused } | ConnectOutcome;
+export type CleanupReply = { status: 'preview'; previewId: string; ttlMs: number; items: { entry: string; cleanup: (typeof LEFTOVERS)[number][] }[] }
+  | { status: 'cleaned'; removed: string[]; left: string[] } | { status: 'needs-preview' } | { status: 'partial'; removed: string[]; left: string[]; code: string } | ConnectRefused;
 export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Cursor | null; limit: number }
   /** P5-T17a: the ledger page of at most `limit` (1..12) observed months ending at `end` (null = the latest). */
   | { v: 1; type: 'monthly'; id: number; filter: LedgerFilter; end: string | null; limit: number }
@@ -373,10 +385,14 @@ export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Curs
   /** XAIBO-PROD-558 (P6-T03 part 1b): Connect at the renderer trust boundary: a profile id, selections or a preview id only. */
   | { v: 1; type: 'connectPreview'; id: number; profileId: string; selections: ConnectSelections }
   | { v: 1; type: 'connectApply'; id: number; previewId: string }
-  | { v: 1; type: 'disconnect'; id: number; profileId: string }
-  | { v: 1; type: 'uninstall'; id: number };
+  | { v: 1; type: 'removalPreview'; id: number; profileId: string | null }
+  | { v: 1; type: 'removalApply'; id: number; previewId: string }
+  | { v: 1; type: 'cleanupPreview'; id: number; profileId: string }
+  | { v: 1; type: 'cleanupApply'; id: number; previewId: string };
 export type PortMessage =
   | { v: 1; type: (typeof CONNECT_TYPES)[number]; id: number; result: ConnectReply }
+  | { v: 1; type: 'removalPreview' | 'removalApply'; id: number; result: RemovalReply }
+  | { v: 1; type: 'cleanupPreview' | 'cleanupApply'; id: number; result: CleanupReply }
   // P5-T17a: failed = the store could not answer (the renderer offers Retry), never an empty ledger
   | ({ v: 1; type: 'monthly'; id: number; failed?: true } & LedgerPage)
   | { v: 1; type: 'clearUsage'; id: number; result: ClearUsageResult }
@@ -822,6 +838,33 @@ export function parseConnectReply(x: unknown): ConnectReply | null {
     && bounded(x.remaining, L) && x.remaining.every((r) => exactKeys(r, ['entry', 'route', 'reason']) && uuid(r.entry) && route(r.route) && connectCode(r.reason));
   return ok ? x as unknown as ConnectOutcome : null;
 }
+const refusal = (x: unknown) => exactKeys(x, ['status', 'code']) && x.status === 'refused' && connectCode(x.code);
+function removalPreview(x: unknown): RemovalPreview | null {
+  if (!exactKeys(x, ['status', 'previewId', 'profileId', 'ttlMs', 'items']) || x.status !== 'preview' || !uuid(x.previewId) || !(x.profileId === null || uuid(x.profileId)) || !count(x.ttlMs)) return null;
+  return bounded(x.items, REMOVAL_LIMIT) && x.items.every((i) => exactKeys(i, ['entry', 'route', 'profileId', 'state', 'reason']) && uuid(i.entry) && route(i.route)
+    && (i.profileId === null || uuid(i.profileId)) && oneOf(RECONCILE_STATES, i.state) && (i.reason === null || connectCode(i.reason))) ? x as unknown as RemovalPreview : null;
+}
+/** XAIBO-PROD-576: a preview request answers a preview or a refusal; an apply answers an outcome, a fresh preview or a refusal. */
+export function parseRemovalReply(type: 'removalPreview' | 'removalApply', x: unknown): RemovalReply | null {
+  if (refusal(x)) return x as ConnectRefused;
+  if (type === 'removalPreview') return removalPreview(x);
+  if (isObj(x) && x.status === 'needs-preview') {
+    return exactKeys(x, ['status', 'preview']) && (refusal(x.preview) || removalPreview(x.preview)) ? x as unknown as RemovalReply : null;
+  }
+  return isObj(x) && (x.status === 'disconnected' || x.status === 'partial') ? parseConnectReply(x) as ConnectOutcome | null : null;
+}
+export function parseCleanupReply(type: 'cleanupPreview' | 'cleanupApply', x: unknown): CleanupReply | null {
+  if (refusal(x)) return x as ConnectRefused;
+  if (!isObj(x)) return null;
+  if (type === 'cleanupPreview') {
+    return exactKeys(x, ['status', 'previewId', 'ttlMs', 'items']) && x.status === 'preview' && uuid(x.previewId) && count(x.ttlMs) && bounded(x.items, REMOVAL_LIMIT)
+      && x.items.every((i) => exactKeys(i, ['entry', 'cleanup']) && uuid(i.entry) && bounded(i.cleanup, LEFTOVERS.length) && i.cleanup.every((c) => oneOf(LEFTOVERS, c))) ? x as unknown as CleanupReply : null;
+  }
+  if (x.status === 'needs-preview') return exactKeys(x, ['status']) ? { status: 'needs-preview' } : null;
+  const ids = (v: unknown) => bounded(v, REMOVAL_LIMIT) && v.every(uuid);
+  if (x.status === 'cleaned') return exactKeys(x, ['status', 'removed', 'left']) && ids(x.removed) && ids(x.left) ? x as unknown as CleanupReply : null;
+  return x.status === 'partial' && exactKeys(x, ['status', 'removed', 'left', 'code']) && ids(x.removed) && ids(x.left) && connectCode(x.code) ? x as unknown as CleanupReply : null;
+}
 
 export function parsePortRequest(x: unknown): PortRequest | null {
   const m = envelope(x);
@@ -833,8 +876,10 @@ export function parsePortRequest(x: unknown): PortRequest | null {
       ? { v: 1, type: 'connectPreview', id: m.id, profileId: m.profileId, selections: { retention: sel.retention, tee: sel.tee } } : null;
   }
   if (m?.type === 'connectApply') return exactKeys(m, ['v', 'type', 'id', 'previewId']) && count(m.id) && uuid(m.previewId) ? { v: 1, type: 'connectApply', id: m.id, previewId: m.previewId } : null;
-  if (m?.type === 'disconnect') return exactKeys(m, ['v', 'type', 'id', 'profileId']) && count(m.id) && uuid(m.profileId) ? { v: 1, type: 'disconnect', id: m.id, profileId: m.profileId } : null;
-  if (m?.type === 'uninstall') return exactKeys(m, ['v', 'type', 'id']) && count(m.id) ? { v: 1, type: 'uninstall', id: m.id } : null;
+  // XAIBO-PROD-576 (review R1): no bare Disconnect or Uninstall; removal and cleanup by profile id (null: every profile) or preview id
+  if (m?.type === 'removalPreview') return exactKeys(m, ['v', 'type', 'id', 'profileId']) && count(m.id) && (m.profileId === null || uuid(m.profileId)) ? { v: 1, type: 'removalPreview', id: m.id, profileId: m.profileId } : null;
+  if (m?.type === 'cleanupPreview') return exactKeys(m, ['v', 'type', 'id', 'profileId']) && count(m.id) && uuid(m.profileId) ? { v: 1, type: 'cleanupPreview', id: m.id, profileId: m.profileId } : null;
+  if (m?.type === 'removalApply' || m?.type === 'cleanupApply') return exactKeys(m, ['v', 'type', 'id', 'previewId']) && count(m.id) && uuid(m.previewId) ? { v: 1, type: m.type, id: m.id, previewId: m.previewId } : null;
   if (m?.type === 'history') {
     const filter = parseFilter(m.filter), cursor = parseHistoryKey(m.cursor);
     return count(m.id) && filter && cursor !== undefined && pageLimit(m.limit) ? { v: 1, type: 'history', id: m.id, filter, cursor, limit: m.limit } : null;
@@ -923,6 +968,14 @@ export function parsePortMessage(x: unknown): PortMessage | null {
   if (!m) return null;
   if (oneOf(CONNECT_TYPES, m.type)) {
     const result = parseConnectReply(m.result);
+    return exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) && result ? { v: 1, type: m.type, id: m.id, result } : null;
+  }
+  if (m.type === 'removalPreview' || m.type === 'removalApply') {
+    const result = parseRemovalReply(m.type, m.result);
+    return exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) && result ? { v: 1, type: m.type, id: m.id, result } : null;
+  }
+  if (m.type === 'cleanupPreview' || m.type === 'cleanupApply') {
+    const result = parseCleanupReply(m.type, m.result);
     return exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) && result ? { v: 1, type: m.type, id: m.id, result } : null;
   }
   // review L1: failed only where it is defined; a failed page carries nothing

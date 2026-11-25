@@ -16,6 +16,7 @@ import { lstatSync, realpathSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isProfileKey } from '../../shared/hook-protocol.ts';
+import { REMOVAL_LIMIT, type RemovalItem } from '../../shared/ipc.ts';
 import { agyHooksFile, checkAgyInstall } from '../adapters/agy/setup.ts';
 import { deployShim, installPlugin, PLUGIN_REF, pluginHooks, previewPlugin, teePlan, uninstallPlugin, type PluginOptions, type PluginPreview } from '../adapters/claude/setup.ts';
 import { codexHookOps, codexTrustSteps, shimPath } from '../adapters/codex/setup.ts';
@@ -58,6 +59,9 @@ export type Refused = { status: 'refused'; code: string };
 export type CleanupPreview = { status: 'preview'; previewId: string; ttlMs: number; items: { entry: string; cleanup: Leftover[] }[] };
 export type CleanupResult = { status: 'cleaned'; removed: string[]; left: string[] } | { status: 'needs-preview' }
   | { status: 'partial'; removed: string[]; left: string[]; code: string } | Refused;
+/** XAIBO-PROD-576 (P6-T10 unit 3): a removal preview; profileId null = Full Uninstall (every recorded entry). */
+export type RemovalPreview = { status: 'preview'; previewId: string; profileId: string | null; ttlMs: number; items: RemovalItem[] };
+export type RemovalResult = Outcome | { status: 'needs-preview'; preview: RemovalPreview | Refused } | Refused;
 export type Preview = { status: 'preview'; previewId: string; profileId: string; ttlMs: number; steps: StepView[]; retention: RetentionOffer | null; trustSteps: string[] };
 export type ConnectResult = { status: 'applied'; entries: string[]; trustSteps: string[] } | { status: 'needs-preview'; preview: Preview | Refused }
   | Refused | (Outcome & { status: 'partial'; code: string });
@@ -321,6 +325,7 @@ export function createConnect(ctx: ConnectContext) {
   const dropOwner = (owner: unknown) => {
     for (const [id, h] of previews) if (h.owner === owner) previews.delete(id);
     for (const [id, c] of cleanups) if (c.owner === owner) cleanups.delete(id); // part 2 review C7
+    for (const [id, r] of removals) if (r.owner === owner) removals.delete(id); // XAIBO-PROD-576 plan review L5
   };
 
   /** XAIBO-PROD-562 (P6-T04 part 1, EC-26): the read-only reconcile over the current profiles; the latest report is kept for
@@ -334,10 +339,11 @@ export function createConnect(ctx: ConnectContext) {
   // clean up entries a fresh reconcile reports disconnected-externally: their manifest record, then their backup. Their owned
   // values are already gone, so no agent profile file is written and no CLI runs; the plugin copy and a still-registered
   // marketplace stay manual (P6-T12). Previews as Connect's (TTL, single use, owner-bound, max 32) in their own map (C7).
-  const cleanups = new Map<string, { profiles: readonly Profile[]; entries: ManifestEntry[]; owner: unknown; expiresAt: number }>();
+  const cleanups = new Map<string, { profiles: readonly Profile[]; entries: ManifestEntry[]; owner: unknown; expiresAt: number; scope?: string }>();
   const current = (profiles: readonly Profile[], held: boolean) => scan({ dataDir: ctx.dataDir, denied, profiles, target: targetOf, permitted, held });
 
-  function previewCleanup(profiles: readonly Profile[], ids: readonly string[], owner?: unknown): CleanupPreview | Refused {
+  /** `scope` (XAIBO-PROD-576 plan review M2): the profile the IPC asked for; one held preview per scope, busy checked first. */
+  function previewCleanup(profiles: readonly Profile[], ids: readonly string[], owner?: unknown, scope?: string): CleanupPreview | Refused {
     if (!denied) return refused('bounds-unavailable');
     if (!ids.length || new Set(ids).size !== ids.length) return refused('ops'); // C8
     const r = current(profiles, false);
@@ -349,9 +355,11 @@ export function createConnect(ctx: ConnectContext) {
     if (items.some((x) => !x) || entries.some((e) => !e)) return refused('not-removed'); // never a silent partial selection
     const at = now();
     for (const [id, c] of cleanups) if (c.expiresAt < at) cleanups.delete(id);
-    if (cleanups.size >= MAX_PREVIEWS) return refused('busy');
+    const own = scope === undefined ? [] : [...cleanups].filter(([, c]) => c.scope === scope).map(([id]) => id);
+    if (cleanups.size - own.length >= MAX_PREVIEWS) return refused('busy');
+    for (const id of own) cleanups.delete(id);
     const previewId = randomUUID();
-    cleanups.set(previewId, { profiles, entries: structuredClone(entries as ManifestEntry[]), owner, expiresAt: at + TTL_MS });
+    cleanups.set(previewId, { profiles, entries: structuredClone(entries as ManifestEntry[]), owner, expiresAt: at + TTL_MS, ...(scope === undefined ? {} : { scope }) });
     return { status: 'preview', previewId, ttlMs: TTL_MS, items: items.map((x) => ({ entry: x!.entry, cleanup: x!.cleanup })) };
   }
 
@@ -407,5 +415,87 @@ export function createConnect(ctx: ConnectContext) {
     });
   }
 
-  return { previewConnect, applyConnect, disconnect, uninstall, dropOwner, reconcile, reconciled, previewCleanup, applyCleanup };
+  // XAIBO-PROD-576 (P6-T10 unit 3; design R1/R4/R5; plan review H1, M1, M2, L1-L5): Disconnect (one profile's exact file and
+  // routes) and Full Uninstall (every recorded entry) are previewed read-only and applied by preview id. A preview pins the
+  // in-scope manifest entries, each target's identity {sha256, dev, ino, mode} and the items the owner saw (reconcile state
+  // and profile mapping). A target outside the writable roots is never read (H1): pinned as refused and shown unreadable,
+  // and revertAll leaves it. Apply, under the lock, writes nothing when any of it changed and answers a fresh preview.
+  // Previews as Connect's (TTL, single use, owner-bound, max 32), one held per scope (M2).
+  type Pin = { hash: string; dev: number; ino: number; mode: number } | null | 'refused' | { error: string };
+  const removals = new Map<string, { scope: string | null; profile: Profile | null; target: Target | null; entries: ManifestEntry[]; pins: [string, Pin][]; items: RemovalItem[]; owner: unknown; expiresAt: number }>();
+  const pinOf = (file: string, d: string[]): Pin => {
+    if (!writable(path.dirname(file), ctx.allowed, d)) return 'refused';
+    // diff review M1: a target that cannot be read safely (a link, not ours, too large) is named per target; revertAll stops there
+    try { const f = readFile(file); return f ? { hash: sha256(f.bytes), dev: f.dev, ino: f.ino, mode: f.mode } : null; } catch (err) { if (err instanceof ConfigError) return { error: err.code }; throw err; }
+  };
+  type Scope = { entries: ManifestEntry[]; pins: [string, Pin][]; items: RemovalItem[] } | Refused;
+  /** What a removal within target `t` (null: every entry) would touch now; read-only. `held`: the caller holds the lock. */
+  function removalScope(profiles: readonly Profile[], t: Target | null, held: boolean): Scope {
+    const d = denied!;
+    const r = current(profiles, held);
+    if (r.status === 'blocked') return refused(r.code); // L3: busy, stale-lock, bounds-unavailable or manifest as they are
+    let manifest: ManifestEntry[];
+    try { manifest = readManifest(ctx.dataDir); } catch { return refused('manifest'); }
+    const entries = t ? manifest.filter((e) => e.target === t.file && t.routes.includes(e.route)) : manifest;
+    if (!entries.length) return refused('not-connected');
+    // L4: never stored when it could not cross the wire. ponytail (diff review L4): more than 256 recorded entries refuses Full
+    // Uninstall (a few per profile today); page it if that ever happens
+    if (entries.length > REMOVAL_LIMIT) return refused('too-large');
+    const pins = new Map<string, Pin>();
+    try { for (const e of entries) if (!pins.has(e.target)) pins.set(e.target, pinOf(e.target, d)); } catch (err) { return refused(err instanceof ConfigError ? err.code : 'failed'); }
+    const items = entries.map((e): RemovalItem => {
+      const x = r.entries.find((y) => y.entry === e.id);
+      const pin = pins.get(e.target);
+      if (pin === 'refused') return { entry: e.id, route: e.route, profileId: x?.profileId ?? null, state: 'unreadable', reason: 'refused' };
+      if (pin && 'error' in pin) return { entry: e.id, route: e.route, profileId: x?.profileId ?? null, state: 'unreadable', reason: pin.error };
+      const state = x?.state ?? 'unreadable';
+      return { entry: e.id, route: e.route, profileId: x?.profileId ?? null, state, reason: state === 'unreadable' ? (x?.reason ?? 'unreadable') : null };
+    });
+    return { entries, pins: [...pins], items };
+  }
+  function previewRemoval(profiles: readonly Profile[], p: Profile | null, owner?: unknown, held = false): RemovalPreview | Refused {
+    if (!denied) return refused('bounds-unavailable');
+    let t: Target | null = null;
+    if (p) {
+      t = targetOf(p);
+      if (!t) return refused('unverified');
+      if (!permitted(t)) return refused('real-profile'); // H1: before any read
+    }
+    const s = removalScope(profiles, t, held);
+    if ('status' in s) return s;
+    const at = now(), scope = p?.id ?? null;
+    for (const [id, h] of removals) if (h.expiresAt < at) removals.delete(id);
+    const own = [...removals].filter(([, h]) => h.scope === scope).map(([id]) => id);
+    if (removals.size - own.length >= MAX_PREVIEWS) return refused('busy'); // M2: checked before the scope's own is dropped
+    for (const id of own) removals.delete(id);
+    const previewId = randomUUID();
+    removals.set(previewId, { scope, profile: p, target: t, entries: structuredClone(s.entries), pins: s.pins, items: s.items, owner, expiresAt: at + TTL_MS });
+    return { status: 'preview', previewId, profileId: scope, ttlMs: TTL_MS, items: s.items };
+  }
+  /** `profiles`: the live synced profiles (M1: a profile gone since the preview changes the mapping). */
+  async function applyRemoval(previewId: string, owner: unknown, profiles: readonly Profile[]): Promise<RemovalResult> {
+    if (!denied) return refused('bounds-unavailable');
+    const d = denied;
+    return locked(async (): Promise<RemovalResult> => {
+      const h = removals.get(previewId);
+      removals.delete(previewId); // consumed on first lookup, a wrong owner included
+      if (!h || h.owner !== owner) return refused('preview-invalid');
+      if (now() > h.expiresAt) return refused('preview-expired');
+      // diff review L2: the live profile (same id, maybe a new root) for the recheck and the fresh preview
+      const live = h.profile ? profiles.find((x) => x.id === h.profile!.id) : null;
+      const again = (): RemovalResult => ({ status: 'needs-preview', preview: previewRemoval(profiles, live ?? null, owner, true) });
+      if (h.profile) {
+        if (!live) return refused('profile-not-found');
+        const t = targetOf(live);
+        if (!t || !permitted(t) || !isDeepStrictEqual(t, h.target)) return again(); // L2
+      }
+      const s = removalScope(profiles, h.target, true);
+      if ('status' in s) return s.code === 'not-connected' ? again() : s;
+      // R5, M1, L1: the same entries (deep-equal), target identities and items (state, profile) as previewed
+      if (!isDeepStrictEqual(s.entries, h.entries) || !isDeepStrictEqual(s.pins, h.pins) || !isDeepStrictEqual(s.items, h.items)) return again();
+      return revertAll(s.entries, d);
+    });
+  }
+
+  return { previewConnect, applyConnect, disconnect, uninstall, dropOwner, reconcile, reconciled, previewCleanup, applyCleanup, previewRemoval, applyRemoval };
 }

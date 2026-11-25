@@ -20,7 +20,7 @@ import { priceView } from './usage/prices.ts';
 import { answerHistoryRow, answerSearch, retentionState, suppressedPage } from './history/tools.ts';
 import { StorageMeter } from './storage/meter.ts';
 import { takePerf } from './perf-counters.ts';
-import { answerIntegrations, connectContext, type Connect } from './integrations-ipc.ts';
+import { afterDispatch, answerIntegrations, connectContext, type Connect } from './integrations-ipc.ts';
 import { answerIntegrationPage, pageEvidence } from './integrations/state.ts';
 import { createConnect } from './integrations/connect.ts';
 
@@ -165,11 +165,11 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
         break;
       }
       // XAIBO-PROD-558 (P6-T03 part 1b): Connect, Disconnect, Uninstall; a preview belongs to this port
-      case 'connectPreview': case 'connectApply': case 'disconnect': case 'uninstall':
+      case 'connectPreview': case 'connectApply': case 'removalPreview': case 'removalApply': case 'cleanupPreview': case 'cleanupApply': // XAIBO-PROD-576: no bare removal (R1)
         // part 2a: awaited (the lock is released before the reply); a closed port drops the reply
-        void answerIntegrations({ readOnly: s.store.readOnly, connect: () => integrationsFor(s), profile: (id) => s.profiles()?.find((p) => p.id === id) }, req, port)
+        void answerIntegrations({ readOnly: s.store.readOnly, connect: () => integrationsFor(s), profile: (id) => s.profiles()?.find((p) => p.id === id), profiles: () => s.profiles() ?? [] }, req, port)
           .then((m) => { try { port.postMessage(m); } catch { /* the window closed */ } }, () => { // code review L-a: never unanswered
-            try { port.postMessage({ v: IPC_VERSION, type: req.type, id: req.id, result: { status: 'partial', reverted: [], conflicts: [], remaining: [], code: 'failed' } } satisfies PortMessage); } catch { /* closed */ }
+            try { port.postMessage({ v: IPC_VERSION, type: req.type, id: req.id, result: afterDispatch(req.type) } as PortMessage); } catch { /* closed */ }
           });
         break;
       default: port.postMessage(db.isOpen ? answer(db, req, s.kinds(), s.models(), live) : { v: IPC_VERSION, type: 'page', id: req.id, rows: [], next: null });

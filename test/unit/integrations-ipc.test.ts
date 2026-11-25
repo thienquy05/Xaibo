@@ -12,8 +12,14 @@ const req = (m: object) => parsePortRequest({ v: 1, id: 3, ...m });
 test('requests: exact shapes only; never paths, ops, routes or plans', () => {
   assert.deepEqual(req({ type: 'connectPreview', profileId: P, selections: { retention: true, tee: false } }), { v: 1, type: 'connectPreview', id: 3, profileId: P, selections: { retention: true, tee: false } });
   assert.deepEqual(req({ type: 'connectApply', previewId: V }), { v: 1, type: 'connectApply', id: 3, previewId: V });
-  assert.deepEqual(req({ type: 'disconnect', profileId: P }), { v: 1, type: 'disconnect', id: 3, profileId: P });
-  assert.deepEqual(req({ type: 'uninstall' }), { v: 1, type: 'uninstall', id: 3 });
+  // XAIBO-PROD-576 (P6-T10 unit 3, review R1/R4): removal and cleanup are previewed; a bare Disconnect or Uninstall is gone
+  assert.deepEqual(req({ type: 'removalPreview', profileId: P }), { v: 1, type: 'removalPreview', id: 3, profileId: P });
+  assert.deepEqual(req({ type: 'removalPreview', profileId: null }), { v: 1, type: 'removalPreview', id: 3, profileId: null });
+  assert.deepEqual(req({ type: 'removalApply', previewId: V }), { v: 1, type: 'removalApply', id: 3, previewId: V });
+  assert.deepEqual(req({ type: 'cleanupPreview', profileId: P }), { v: 1, type: 'cleanupPreview', id: 3, profileId: P });
+  assert.deepEqual(req({ type: 'cleanupApply', previewId: V }), { v: 1, type: 'cleanupApply', id: 3, previewId: V });
+  assert.equal(req({ type: 'disconnect', profileId: P }), null, 'R1: no write without a preview');
+  assert.equal(req({ type: 'uninstall' }), null, 'R1');
   for (const m of [
     { type: 'connectPreview', profileId: 'claude-1', selections: { retention: true, tee: false } }, // not a UUID
     { type: 'connectPreview', profileId: P, selections: { retention: 1, tee: false } },
@@ -24,6 +30,15 @@ test('requests: exact shapes only; never paths, ops, routes or plans', () => {
     { type: 'connectApply', previewId: V, plan: {} },
     { type: 'disconnect', profileId: P, route: 'claude-tee' },
     { type: 'uninstall', all: true },
+    { type: 'removalPreview', profileId: 'all' },
+    { type: 'removalPreview' },
+    { type: 'removalPreview', profileId: P, route: 'claude-tee' },
+    { type: 'removalPreview', profileId: P, entries: [V] },
+    { type: 'removalApply', previewId: 'x' },
+    { type: 'removalApply', previewId: V, selected: [V] },
+    { type: 'cleanupPreview', profileId: null },
+    { type: 'cleanupPreview', profileId: P, entries: [V] },
+    { type: 'cleanupApply', previewId: V, all: true },
   ]) assert.equal(req(m), null, JSON.stringify(m));
   assert.equal(parsePortRequest(JSON.parse(`{"v":1,"id":3,"type":"connectApply","previewId":"${V}","__proto__":{"x":1}}`)), null, 'an own __proto__ key');
 });
@@ -40,8 +55,9 @@ test('replies: bounded, no ops anywhere', () => {
   assert.ok(reply('connectApply', { status: 'applied', entries: [V], trustSteps: ['Open Codex once'] }));
   assert.ok(reply('connectApply', { status: 'needs-preview', preview: preview() }));
   assert.ok(reply('connectApply', { status: 'needs-preview', preview: { status: 'refused', code: 'duplicate' } }));
-  assert.ok(reply('disconnect', { status: 'partial', reverted: [{ entry: V, route: 'claude-tee', result: 'restored' }], conflicts: [{ entry: V, route: 'claude-retention', pointer: '/cleanupPeriodDays' }], remaining: [{ entry: V, route: 'claude-settings-fallback', reason: 'blocked' }] }));
-  assert.ok(reply('uninstall', { status: 'refused', code: 'bounds-unavailable' }));
+  assert.ok(reply('removalApply', { status: 'partial', reverted: [{ entry: V, route: 'claude-tee', result: 'restored' }], conflicts: [{ entry: V, route: 'claude-retention', pointer: '/cleanupPeriodDays' }], remaining: [{ entry: V, route: 'claude-settings-fallback', reason: 'blocked' }] }));
+  assert.ok(reply('removalPreview', { status: 'refused', code: 'bounds-unavailable' }));
+  assert.equal(reply('disconnect', { status: 'refused', code: 'failed' }), null, 'R1: no such reply type');
   for (const bad of [
     preview({ retention: { offered: true, from: 10, to: 45, layer: 'user', ops: [{ op: 'set', pointer: '/x', value: 1 }] } }),
     preview({ steps: [1, 2, 3, 4].map(() => preview().steps[0]) }),
@@ -54,6 +70,36 @@ test('replies: bounded, no ops anywhere', () => {
     preview({ steps: [{ route: 'claude-retention', target: '/x', diff: [{ pointer: '/a', new: 1, replaced: { type: 'number', sha256: 123456789012 } }] }] }),
   ]) assert.equal(reply('connectPreview', bad), null, JSON.stringify(bad).slice(0, 120));
   assert.equal(reply('connectApply', { status: 'refused', code: 'Not A Code!' }), null);
+});
+
+// XAIBO-PROD-576 (plan review L4): removal and cleanup replies: ids and enums only, at most 256 items (the core's cap)
+test('removal and cleanup replies: bounded, fixed states and codes, no paths', () => {
+  const item = { entry: V, route: 'claude-tee', profileId: P, state: 'connected', reason: null };
+  const rp = (o: object = {}) => ({ status: 'preview', previewId: V, profileId: P, ttlMs: 300_000, items: [item], ...o });
+  assert.ok(reply('removalPreview', rp()));
+  assert.ok(reply('removalPreview', rp({ profileId: null, items: [{ ...item, profileId: null, state: 'unreadable', reason: 'refused' }] })));
+  assert.ok(reply('removalPreview', rp({ items: Array(256).fill(item) })));
+  assert.ok(reply('removalApply', { status: 'needs-preview', preview: rp() }));
+  assert.ok(reply('removalApply', { status: 'needs-preview', preview: { status: 'refused', code: 'busy' } }));
+  assert.ok(reply('removalApply', { status: 'disconnected', reverted: [{ entry: V, route: 'claude-tee', result: 'restored' }], conflicts: [], remaining: [] }));
+  assert.ok(reply('cleanupPreview', { status: 'preview', previewId: V, ttlMs: 300_000, items: [{ entry: V, cleanup: ['manifest-entry', 'backup'] }] }));
+  assert.ok(reply('cleanupApply', { status: 'cleaned', removed: [V], left: [] }));
+  assert.ok(reply('cleanupApply', { status: 'needs-preview' }));
+  assert.ok(reply('cleanupApply', { status: 'partial', removed: [], left: [], code: 'failed' }));
+  for (const [type, bad] of [
+    ['removalPreview', rp({ items: Array(257).fill(item) })],
+    ['removalPreview', rp({ items: [{ ...item, state: 'guess' }] })],
+    ['removalPreview', rp({ items: [{ ...item, reason: 'Permission denied: /tmp/x' }] })],
+    ['removalPreview', rp({ items: [{ ...item, target: '/tmp/p/.claude/settings.json' }] })],
+    ['removalPreview', rp({ profileId: 'claude' })],
+    ['removalPreview', preview()],
+    ['removalApply', { status: 'needs-preview', preview: preview() }],
+    ['removalApply', { status: 'applied', entries: [V], trustSteps: [] }],
+    ['cleanupPreview', { status: 'preview', previewId: V, ttlMs: 1, items: [{ entry: V, cleanup: ['everything'] }] }],
+    ['cleanupPreview', { status: 'preview', previewId: V, ttlMs: 1, items: Array(257).fill({ entry: V, cleanup: [] }) }],
+    ['cleanupApply', { status: 'needs-preview', preview: { status: 'refused', code: 'busy' } }],
+    ['cleanupApply', { status: 'cleaned', removed: ['x'], left: [] }],
+  ] as const) assert.equal(reply(type, bad), null, `${type} ${JSON.stringify(bad).slice(0, 100)}`);
 });
 
 test('main always sets the service helper folder itself: packaged resources/bin, unpackaged empty (the repo helpers)', () => {

@@ -33,7 +33,7 @@ async function world(o: { helpers?: boolean } = {}) {
     helpers: { hook: join(helpers, 'xaibo-hook'), forwarder: join(helpers, 'xaibo-forwarder'), statusline: join(helpers, 'xaibo-statusline') } };
   const profile: Profile = { id: PID, agent: 'claude', root: claude, origin: 'default' };
   const c = createConnect(ctx);
-  const deps: IntegrationsDeps = { readOnly: false, connect: () => c, profile: (id) => (id === PID ? profile : undefined) };
+  const deps: IntegrationsDeps = { readOnly: false, connect: () => c, profile: (id) => (id === PID ? profile : undefined), profiles: () => [profile] };
   return { base, file, dataDir, ctx, deps, c };
 }
 type R = { status: string; [k: string]: unknown };
@@ -53,7 +53,8 @@ test('preview, apply and disconnect through the IPC handler; the retention offer
   assert.deepEqual(pv['retention'], { offered: true, from: 10, to: 45, layer: 'user' });
   assert.equal((await ask(w.deps, { type: 'connectApply', previewId: pv['previewId'] }, A)).status, 'applied');
   assert.equal(JSON.parse(readFileSync(w.file, 'utf8')).cleanupPeriodDays, 45);
-  assert.equal((await ask(w.deps, { type: 'disconnect', profileId: PID }, A)).status, 'disconnected');
+  const rm = await ask(w.deps, { type: 'removalPreview', profileId: PID }, A); // XAIBO-PROD-576: Disconnect is previewed
+  assert.equal((await ask(w.deps, { type: 'removalApply', previewId: rm['previewId'] }, A)).status, 'disconnected');
   assert.equal(readFileSync(w.file, 'utf8'), '{\n  "cleanupPeriodDays": 10\n}\n');
 });
 
@@ -88,8 +89,8 @@ test('a closed port drops its previews', async () => {
 test('refusals that still reply: unknown profile, read-only store, still starting, a throwing handler, missing helpers', async () => {
   const w = await world();
   assert.deepEqual(await ask(w.deps, { type: 'connectPreview', profileId: OTHER, selections: SEL }, A), { status: 'refused', code: 'profile-not-found' });
-  assert.deepEqual(await ask(w.deps, { type: 'disconnect', profileId: OTHER }, A), { status: 'refused', code: 'profile-not-found' });
-  for (const m of [{ type: 'connectPreview', profileId: PID, selections: SEL }, { type: 'uninstall' }, { type: 'disconnect', profileId: PID }]) {
+  assert.deepEqual(await ask(w.deps, { type: 'removalPreview', profileId: OTHER }, A), { status: 'refused', code: 'profile-not-found' });
+  for (const m of [{ type: 'connectPreview', profileId: PID, selections: SEL }, { type: 'removalPreview', profileId: null }, { type: 'removalPreview', profileId: PID }]) {
     assert.deepEqual(await ask({ ...w.deps, readOnly: true }, m, A), { status: 'refused', code: 'read-only' });
     assert.deepEqual(await ask({ ...w.deps, connect: () => null }, m, A), { status: 'refused', code: 'starting' });
     assert.deepEqual(await ask({ ...w.deps, connect: () => 'unavailable' }, m, A), { status: 'refused', code: 'unavailable' }, 'review L-2: startup failed');
@@ -113,11 +114,10 @@ test('an over-bound preview is refused, never truncated', async () => {
 test('an over-bound reply after a write is partial with too-large, never a refusal', async () => {
   const w = await world();
   const many = { status: 'partial' as const, reverted: [], conflicts: [], remaining: Array.from({ length: 300 }, () => ({ entry: OTHER, route: 'claude-tee' as const, reason: 'refused' })) };
-  const stub = { ...w.deps, connect: () => ({ ...w.c, disconnect: async () => many, uninstall: async () => many,
+  const stub = { ...w.deps, connect: () => ({ ...w.c, applyRemoval: async () => many,
     applyConnect: async () => ({ status: 'applied' as const, entries: Array.from({ length: 9 }, () => OTHER), trustSteps: [] }) }) };
   const partial = { status: 'partial', reverted: [], conflicts: [], remaining: [], code: 'too-large' };
-  assert.deepEqual(await ask(stub, { type: 'disconnect', profileId: PID }, A), partial);
-  assert.deepEqual(await ask(stub, { type: 'uninstall' }, A), partial);
+  assert.deepEqual(await ask(stub, { type: 'removalApply', previewId: OTHER }, A), partial);
   assert.deepEqual(await ask(stub, { type: 'connectApply', previewId: OTHER }, A), partial);
 });
 
@@ -125,11 +125,11 @@ test('an over-bound reply after a write is partial with too-large, never a refus
 test('an escaped failure after dispatch replies partial; before dispatch refused', async () => {
   const w = await world();
   const boom = () => Promise.reject(new Error('boom'));
-  const stub = { ...w.deps, connect: () => ({ ...w.c, applyConnect: boom, disconnect: boom, uninstall: boom }) };
+  const stub = { ...w.deps, connect: () => ({ ...w.c, applyConnect: boom, applyRemoval: boom, applyCleanup: boom }) };
   const partial = { status: 'partial', reverted: [], conflicts: [], remaining: [], code: 'failed' };
   assert.deepEqual(await ask(stub, { type: 'connectApply', previewId: OTHER }, A), partial);
-  assert.deepEqual(await ask(stub, { type: 'disconnect', profileId: PID }, A), partial);
-  assert.deepEqual(await ask(stub, { type: 'uninstall' }, A), partial);
+  assert.deepEqual(await ask(stub, { type: 'removalApply', previewId: OTHER }, A), partial);
+  assert.deepEqual(await ask(stub, { type: 'cleanupApply', previewId: OTHER }, A), { status: 'partial', removed: [], left: [], code: 'failed' });
   const pre = { ...w.deps, connect: () => ({ ...w.c, previewConnect: () => { throw new Error('boom'); } }) };
   assert.deepEqual(await ask(pre, { type: 'connectPreview', profileId: PID, selections: SEL }, A), { status: 'refused', code: 'failed' }, 'a preview writes nothing');
 });
