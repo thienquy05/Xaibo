@@ -5,26 +5,31 @@
 // re-derives it (declared, realpath === resolved, writable()). A corrupt or unsafe store is refused and never rewritten;
 // loading is read-only and never throws. Importing authorizes nothing: imported entries never probe (part 3 adds grants).
 // ponytail: synchronous and single-threaded (the service has one caller); add a queue if an async caller appears. Store
-// tampering by the same user is out of scope (review R13); the digest for grant binding arrives with part 3.
+// tampering by the same user is out of scope (review R13). XAIBO-PROD-567 (part 3, review P3-1..P3-8): grantProbe stores an
+// owner's grant to run one binary's version probe; every load keeps a grant only while its entry digest, declared binary
+// and approved root still hold (each rescan reloads; a grants map is never reused, P3-3); grants die with their entry (P3-8).
+import { createHash } from 'node:crypto';
 import { lstatSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { isObj } from '../../shared/ipc.ts';
 import { writable } from '../config/bounds.ts';
-import { readFile } from '../config/transaction.ts';
+import { readFile, within } from '../config/transaction.ts';
 import { atomicWrite, fsyncDir, privateDir } from '../fs-private.ts';
+import { probeable, type ProbeGrant } from './detect.ts';
 import { catalogIssues, type AgentEntry, type Catalog, type CatalogCode } from './validate.ts';
 
 export type ImportCode = CatalogCode | 'too-large' | 'invalid-json' | 'store-corrupt';
 export interface ImportIssue { code: ImportCode; at: string }
 /** Where an imported profile root may be: disposable roots only until P6-T12 (production passes allowed = []). */
 export interface RootPolicy { home: string; allowed: string[]; denied: string[] | null }
-export interface LoadedImports { catalog: Catalog; imported: Map<string, Record<string, string>>; issues: ImportIssue[] }
-interface Entry { catalog: Catalog; roots: Record<string, string> }
+export interface LoadedImports { catalog: Catalog; imported: Map<string, Record<string, string>>; grants: Map<string, ProbeGrant[]>; issues: ImportIssue[] }
+interface Entry { catalog: Catalog; roots: Record<string, string>; grants?: unknown }
 
 const MAX_INPUT = 256 * 1024;
 const MAX_STORE = 1 << 20;
 const MAX_AGENTS = 16, MAX_KINDS = 64; // the schema's limits, for the merged catalog
 const CORRUPT: ImportIssue[] = [{ code: 'store-corrupt', at: '/' }];
+const ENTRY_KEYS = new Set(['catalog', 'roots', 'grants']); // grants optional: a part 2 store has none
 const uid = process.getuid?.();
 const dirOf = (dataDir: string) => path.join(dataDir, 'catalog');
 
@@ -45,7 +50,7 @@ function readStore(dataDir: string): Entry[] | null {
   try { doc = JSON.parse(f.bytes.toString('utf8')); } catch { return corrupt(); }
   if (!isObj(doc) || Object.keys(doc).length !== 2 || doc['version'] !== 1 || !Array.isArray(doc['entries'])) return corrupt();
   for (const e of doc['entries'] as unknown[]) {
-    if (!isObj(e) || Object.keys(e).length !== 2 || !Object.hasOwn(e, 'catalog') || !isObj(e['roots'])) corrupt();
+    if (!isObj(e) || Object.keys(e).some((k) => !ENTRY_KEYS.has(k)) || !Object.hasOwn(e, 'catalog') || !isObj(e['roots'])) corrupt();
     if (Object.values((e as Record<string, object>)['roots']!).some((v) => typeof v !== 'string')) corrupt();
   }
   return doc['entries'] as Entry[];
@@ -94,6 +99,32 @@ function rootDir(declared: AgentEntry['profileRoots'][number], o: RootPolicy): s
 const approved = (e: Entry, o: RootPolicy): Record<string, string> => Object.fromEntries(e.catalog.agents[0]!.profileRoots.flatMap((r) =>
   (Object.hasOwn(e.roots, r.id) && rootDir(r, o) === e.roots[r.id] ? [[r.id, e.roots[r.id]!]] : [])));
 
+const digestOf = (c: Catalog) => createHash('sha256').update(JSON.stringify(c)).digest('hex');
+/** Strictly below `dir` (review P3-4), and every directory from the file up to `dir` is this user's and closed to group/world
+ *  writes (code review 1: the root itself passed writable(), the folders inside it did not). */
+const inside = (p: string, dir: string) => {
+  if (p === dir || !within(p, dir)) return false;
+  for (let d = path.dirname(p); ; d = path.dirname(d)) {
+    const st = lstatSync(d, { throwIfNoEntry: false });
+    if (!st?.isDirectory() || (uid !== undefined && st.uid !== uid) || st.mode & 0o022) return false;
+    if (d === dir) return true;
+  }
+};
+const num = (v: unknown) => typeof v === 'number' && Number.isFinite(v);
+const isGrant = (g: unknown): g is ProbeGrant => isObj(g) && typeof g['binary'] === 'string' && typeof g['path'] === 'string'
+  && path.isAbsolute(g['path']) && typeof g['digest'] === 'string' && isObj(g['id'])
+  && ['dev', 'ino', 'size', 'mtimeMs', 'ctimeMs'].every((k) => num((g['id'] as Record<string, unknown>)[k]));
+
+/** The entry's grants that still bind: well formed, its current digest, a declared binary, inside an approved root. A malformed
+ *  grants value, or more grants than declared binaries, drops them all, silently (review P3-2; same-user robustness, R13). */
+function validGrants(e: Entry, roots: Record<string, string>): ProbeGrant[] {
+  const bins = e.catalog.agents[0]!.detection.binaries;
+  if (!Array.isArray(e.grants) || e.grants.length > bins.length) return [];
+  const digest = digestOf(e.catalog), dirs = Object.values(roots);
+  return e.grants.filter((g): g is ProbeGrant => isGrant(g) && g.digest === digest && bins.some((b) => b.id === g.binary)
+    && dirs.some((d) => inside(g.path, d)));
+}
+
 export function importCatalog(dataDir: string, bytes: Uint8Array, bundled: Catalog): { status: 'imported'; agent: string } | { status: 'rejected'; issues: ImportIssue[] } {
   const rejected = (issues: ImportIssue[]) => ({ status: 'rejected' as const, issues });
   if (bytes.byteLength > MAX_INPUT) return rejected([{ code: 'too-large', at: '/' }]); // before decoding
@@ -111,11 +142,12 @@ export function importCatalog(dataDir: string, bytes: Uint8Array, bundled: Catal
 export function loadImports(dataDir: string, bundled: Catalog, o: RootPolicy): LoadedImports {
   try {
     const entries = readStore(dataDir);
-    if (!entries) return { catalog: bundled, imported: new Map(), issues: [] };
+    if (!entries) return { catalog: bundled, imported: new Map(), grants: new Map(), issues: [] };
     const { ok, merged, issues } = accept(entries, bundled);
-    return { catalog: merged, imported: new Map(ok.map((e) => [e.catalog.agents[0]!.id, approved(e, o)])), issues };
+    const roots = ok.map((e) => [e.catalog.agents[0]!.id, approved(e, o)] as const);
+    return { catalog: merged, imported: new Map(roots), grants: new Map(roots.map(([id, r], i) => [id, validGrants(ok[i]!, r)])), issues };
   } catch {
-    return { catalog: bundled, imported: new Map(), issues: CORRUPT };
+    return { catalog: bundled, imported: new Map(), grants: new Map(), issues: CORRUPT };
   }
 }
 
@@ -129,6 +161,29 @@ export function approveRoot(dataDir: string, bundled: Catalog, agentId: string, 
     const dir = declared ? rootDir(declared, o) : null;
     if (!e || !dir) return false;
     e.roots = { ...e.roots, [rootId]: dir };
+    writeStore(dataDir, entries);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Grants the owner's choice of executable for one declared binary of an imported agent (trusted service callers only, as
+ *  approveRoot; review R6: no renderer object, no confirmed flag). `file` must be exactly a private regular executable
+ *  (probeable), named as the binary declares, strictly inside a root approved under this policy. Replaces that binary's
+ *  earlier grant; runs nothing (detection probes at the next load). */
+export function grantProbe(dataDir: string, bundled: Catalog, agentId: string, binaryId: string, file: string, o: RootPolicy): boolean {
+  try {
+    const entries = readStore(dataDir);
+    if (!entries) return false;
+    const e = accept(entries, bundled).ok.find((x) => x.catalog.agents[0]!.id === agentId);
+    const b = e?.catalog.agents[0]!.detection.binaries.find((x) => x.id === binaryId);
+    if (!e || !b || !path.isAbsolute(file) || !b.names.includes(path.basename(file))) return false;
+    if (!Object.values(approved(e, o)).some((d) => inside(file, d))) return false;
+    const id = probeable(file);
+    if (!id) return false;
+    const others = Array.isArray(e.grants) ? e.grants.filter((g) => isGrant(g) && g.binary !== binaryId) : [];
+    e.grants = [...others, { binary: binaryId, path: file, id, digest: digestOf(e.catalog) }];
     writeStore(dataDir, entries);
     return true;
   } catch {

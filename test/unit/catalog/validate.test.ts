@@ -89,7 +89,8 @@ test('FR-01/SEC5 probe gate: an imported entry never runs a probe without a gran
     let calls = 0;
     const run = async (): Promise<RunResult> => { calls++; return { code: 0, signal: null, stdout: Buffer.from('synthagent 1.2.3\n'), timedOut: false, overflow: false, error: false }; };
     const o = { env: { PATH: bin }, home: dir, manualPath: join(bin, 'synthagent'), run };
-    assert.deepEqual(await detectAgent(entry, { ...o, access: { origin: 'imported' } }), { agent: 'synthagent', state: 'not-detected', reason: 'probe-not-granted' });
+    assert.deepEqual(await detectAgent(entry, { ...o, access: { origin: 'imported', grants: [] } }), { agent: 'synthagent', state: 'not-detected', reason: 'probe-not-granted' });
+    assert.deepEqual(await detectAgent(entry, { ...o, access: { origin: 'imported' } as never }), { agent: 'synthagent', state: 'not-detected', reason: 'probe-not-granted' }, 'P6-T07 part 3: missing grants run nothing');
     assert.equal(calls, 0, 'PATH, known locations and a manual path: none is probed');
     assert.equal((await detectAgent(entry, { ...o, access: undefined as never })).state, 'not-detected', 'code review 6: no provenance never defaults to bundled');
     assert.equal(calls, 0);

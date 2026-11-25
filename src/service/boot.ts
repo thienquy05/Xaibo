@@ -108,9 +108,8 @@ export interface Service {
 
 /** The turn-settle interval (PRD §6.2/§6.3, Q8 default; a setting with the Settings screen after Gate D, Q3-14). */
 const SETTLE_MS = 4000;
-// XAIBO-PROD-565/566 (P6-T07): bundled entries probe; imported ones never do without a grant (part 3).
+// XAIBO-PROD-565/566/567 (P6-T07): bundled entries probe; imported ones run only their granted executables (part 3).
 const BUNDLED = { origin: 'bundled' } as const;
-const IMPORTED = { origin: 'imported' } as const;
 /** P5-T09: the first retention run waits this long after the backfill, off readiness and behind start-up work. */
 const RETENTION_DELAY_MS = 10 * 60_000;
 /** Gate 5 (perf probes): XAIBO_RETENTION_DELAY_MS overrides that wait, only under XAIBO_PERF_TRACE=1 (test only) and only
@@ -309,9 +308,10 @@ export async function boot(o: BootOptions): Promise<Service> {
       if (loaded.issues.length) o.log?.log('catalog_imports', { codes: [...new Set(loaded.issues.map((i) => i.code))].join(',') });
       catalog = loaded.catalog;
       imported = loaded.imported;
+      const grants = loaded.grants; // reloaded per scan, never cached (review P3-3)
       // A read-only store may lack kv (failed first migration): detect without manual paths then.
       detections.push(...await Promise.all(catalog.agents.map((a) => detectAgent(a, { env, home: o.home,
-        manualPath: readOnly || imported.has(a.id) ? undefined : manualPath(db, a.id), access: imported.has(a.id) ? IMPORTED : BUNDLED, ...(o.log ? { log: o.log } : {}) }))));
+        manualPath: readOnly || imported.has(a.id) ? undefined : manualPath(db, a.id), access: imported.has(a.id) ? { origin: 'imported', grants: grants.get(a.id) ?? [] } : BUNDLED, ...(o.log ? { log: o.log } : {}) }))));
       o.log?.log('detect', Object.fromEntries(detections.map((d) => [d.agent, d.state === 'detected'])));
     } finally { // a failed detection (e.g. a bad catalog) announces an empty list, never "detecting" forever
       detected = true;
