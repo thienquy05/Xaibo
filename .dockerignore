@@ -1,0 +1,65 @@
+# Docker build context filter. Treat this repo as PUBLIC and the build context as published: nothing secret, local or
+# user-specific may enter an image. Note: this filters `docker build` only, never bind mounts (-v) or `docker cp`.
+# Docker matches from the context root, so every pattern carries **/ to apply at any depth. If an image needs a file
+# excluded here, re-include that exact path with a ! line and say why.
+
+# Secrets and credentials
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/secrets/
+**/credentials*.json
+**/.npmrc
+
+# Agent and assistant configuration (local permissions, tokens, worktrees, hook state)
+**/.claude/
+**/.codex/
+**/.claude-flow/
+**/.swarm/
+**/.hive-mind/
+**/.playwright-mcp/
+**/.handoff/
+**/CLAUDE.local.md
+**/agentdb.rvf*
+**/ruvector.db
+
+# Git metadata (config can hold remote credentials) and local hooks
+**/.git/
+.githooks/
+.gitleaksignore
+
+# Agent data and Xaibo data (real sessions never leave the machine); synthetic fixtures are public
+**/*.jsonl
+**/*.jsonl.zst
+!test/fixtures/synthetic/**/*.jsonl
+**/*.sqlite
+**/*.sqlite-*
+**/*.db
+**/*.db-*
+**/private
+**/exports/
+**/spool/
+
+# Caches (incl. disposable agent profiles under .cache/profiles), build output, reports
+**/.cache/
+**/node_modules/
+**/dist/
+**/out/
+**/release/
+**/build/
+**/.vite/
+**/*.tsbuildinfo
+**/coverage/
+**/test-results/
+**/playwright-report/
+**/blob-report/
+**/graphify-out/
+**/*.log
+
+# OS / editors
+**/.DS_Store
+**/.vscode/
+**/.idea/
