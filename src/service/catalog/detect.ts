@@ -83,14 +83,22 @@ const realDir = (p: string) => {
   try { return statSync(p).isDirectory() ? realpathSync(p) : null; } catch { return null; }
 };
 
-/** Existing profile roots per agent, in order default, env, manual; one entry per realpath. */
-export function profileRoots(catalog: Catalog, env: LoginEnv, home: string, manual: Record<string, string[]>): ProfileRoot[] {
+/** Existing profile roots per agent, in order default, env, manual; one entry per realpath. XAIBO-PROD-566 (P6-T07 part 2,
+ *  review P2-1/P2-3): an imported agent (a key of `imported`) gets only its approved roots, still real directories, never
+ *  default, env override or manual ones. ponytail: env overrides of imported entries need their own grant. */
+export function profileRoots(catalog: Catalog, env: LoginEnv, home: string, manual: Record<string, string[]>,
+  imported: ReadonlyMap<string, Record<string, string>> = new Map()): ProfileRoot[] {
   const out: ProfileRoot[] = [];
   const add = (agent: string, p: string, origin: Origin) => {
     const root = realDir(p);
     if (root && !out.some((r) => r.agent === agent && r.root === root)) out.push({ agent, root, origin });
   };
   for (const a of catalog.agents) {
+    const approved = imported.get(a.id);
+    if (approved) {
+      for (const p of Object.values(approved)) if (realDir(p) === p) add(a.id, p, 'default');
+      continue;
+    }
     for (const r of a.profileRoots) add(a.id, path.join(home, r.relative), 'default');
     for (const r of a.profileRoots) {
       const v = r.envOverride ? (env as Record<string, string | undefined>)[r.envOverride.name] : undefined;

@@ -17,6 +17,8 @@ import { createEngine, type StatusEngine } from './status/engine.ts';
 import { fileObservations } from './status/feed.ts';
 import { readLoginEnv, type LoginEnv } from './catalog/env.ts';
 import { loadCatalog, type Catalog, type SessionKind } from './catalog/validate.ts';
+import { loadImports } from './catalog/import.ts';
+import { deniedRootsFrom } from './config/bounds.ts';
 import type { ModelEntry } from './usage/models.ts';
 import { priceUsage } from './usage/cost.ts';
 import { loadPrices, type Prices } from './usage/prices.ts';
@@ -34,6 +36,9 @@ import { purgeLimit, purgeManual, reimportKey, rerunner, saveRetention } from '.
 
 export interface BootOptions {
   dataDir: string; home: string; shell?: string | undefined; catalog?: Catalog; intervalMs?: number; log?: Logger;
+  /** XAIBO-PROD-566 (P6-T07 part 2): disposable roots an approved imported profile root must stay inside (bounds.ts
+   *  writable()). None by default, so production drops every imported root until P6-T12. */
+  allowedRoots?: string[];
   /** Status clock (tests); Date.now by default. */
   now?: () => number;
   onCommit?: (batch: Batch) => void;
@@ -103,8 +108,9 @@ export interface Service {
 
 /** The turn-settle interval (PRD §6.2/§6.3, Q8 default; a setting with the Settings screen after Gate D, Q3-14). */
 const SETTLE_MS = 4000;
-// XAIBO-PROD-565 (P6-T07 part 1): every catalog entry is bundled until imports are merged (part 2), so detection probes.
+// XAIBO-PROD-565/566 (P6-T07): bundled entries probe; imported ones never do without a grant (part 3).
 const BUNDLED = { origin: 'bundled' } as const;
+const IMPORTED = { origin: 'imported' } as const;
 /** P5-T09: the first retention run waits this long after the backfill, off readiness and behind start-up work. */
 const RETENTION_DELAY_MS = 10 * 60_000;
 /** Gate 5 (perf probes): XAIBO_RETENTION_DELAY_MS overrides that wait, only under XAIBO_PERF_TRACE=1 (test only) and only
@@ -276,6 +282,8 @@ export async function boot(o: BootOptions): Promise<Service> {
   let profiles: Profile[] = [];
   let stopped = false;
   let catalog: Catalog | undefined;
+  let bundled: Catalog | undefined;
+  let imported = new Map<string, Record<string, string>>();
   let env: LoginEnv = {};
   let synced = false; // XAIBO-PROD-558: Connect answers `starting` until profiles are synced
   let detected = false;
@@ -290,11 +298,20 @@ export async function boot(o: BootOptions): Promise<Service> {
 
   const start = async () => {
     try {
-      catalog = o.catalog ?? loadCatalog();
+      catalog = bundled = o.catalog ?? loadCatalog();
       env = await readLoginEnv({ shell: o.shell, ...(o.log ? { log: o.log } : {}) });
+      // XAIBO-PROD-566 (P6-T07 part 2): private imports merged onto the base catalog (read-only load, never throws; a store
+      // issue is logged as codes only). Merged onto an injected catalog too (deviation from review P2-6), so tests keep
+      // their temp-home locations and no installed agent is probed; no store leaves the catalog as it was.
+      // ponytail: the status engine keeps the bundled hook maps; imported hookMappings apply once generic setup can install
+      // their hooks (P6-T08/T09). Report events do not use the maps.
+      const loaded = loadImports(o.dataDir, bundled, { home: o.home, allowed: o.allowedRoots ?? [], denied: deniedRootsFrom(env) });
+      if (loaded.issues.length) o.log?.log('catalog_imports', { codes: [...new Set(loaded.issues.map((i) => i.code))].join(',') });
+      catalog = loaded.catalog;
+      imported = loaded.imported;
       // A read-only store may lack kv (failed first migration): detect without manual paths then.
-      detections.push(...await Promise.all(catalog.agents.map((a) =>
-        detectAgent(a, { env, home: o.home, manualPath: readOnly ? undefined : manualPath(db, a.id), access: BUNDLED, ...(o.log ? { log: o.log } : {}) }))));
+      detections.push(...await Promise.all(catalog.agents.map((a) => detectAgent(a, { env, home: o.home,
+        manualPath: readOnly || imported.has(a.id) ? undefined : manualPath(db, a.id), access: imported.has(a.id) ? IMPORTED : BUNDLED, ...(o.log ? { log: o.log } : {}) }))));
       o.log?.log('detect', Object.fromEntries(detections.map((d) => [d.agent, d.state === 'detected'])));
     } finally { // a failed detection (e.g. a bad catalog) announces an empty list, never "detecting" forever
       detected = true;
@@ -303,7 +320,7 @@ export async function boot(o: BootOptions): Promise<Service> {
     }
     if (stopped || readOnly) return;
     const manual = Object.fromEntries(catalog.agents.map((a) => [a.id, manualRoots(db, a.id)]));
-    profiles = syncProfiles(db, profileRoots(catalog, env, o.home, manual));
+    profiles = syncProfiles(db, profileRoots(catalog, env, o.home, manual, imported)); // imported ids: approved roots only (P2-1)
     synced = true;
     hooks = await startHooks({
       dataDir: o.dataDir, db, writer, ...(o.log ? { log: o.log } : {}),
@@ -313,7 +330,8 @@ export async function boot(o: BootOptions): Promise<Service> {
         try { engine.ingest({ source: 'hook', envelope: e }); watch(e.agent, e.profile_key, e.session_id); } catch (err) { o.log?.log('status_feed_failed', { error: errorCode(err) }); }
       },
       // Report deliveries arrive durable only when attributed to a profile of the registration's agent (P3-T13b/b2).
-      customAgent: (a) => !catalog?.agents.some((x) => x.id === a),
+      // P6-T07 part 2 (P2-5): not bundled, so an imported id keeps the attribution an unknown id had before imports
+      customAgent: (a) => !bundled?.agents.some((x) => x.id === a),
       publishReport: (e, durable) => {
         if (!durable || !engine || e.session_id === null) return;
         try { engine.ingest({ source: 'report', envelope: e }); } catch (err) { o.log?.log('status_feed_failed', { error: errorCode(err) }); }
@@ -437,7 +455,8 @@ export async function boot(o: BootOptions): Promise<Service> {
       await Promise.race([detection, done.catch(() => undefined)]); // detection, not the whole backfill
       const entry = catalog?.agents.find((a) => a.id === agent);
       const i = detections.findIndex((d) => d.agent === agent);
-      if (stopped || readOnly || !entry || i < 0 || !(await setManualPath(db, agent, file))) return false;
+      // P6-T07 part 2 (P2-2): an imported id never gets a manual path (no stat, no kv write) until the part 3 grant
+      if (stopped || readOnly || !entry || i < 0 || imported.has(agent) || !(await setManualPath(db, agent, file))) return false;
       detections[i] = await detectAgent(entry, { env, home: o.home, manualPath: manualPath(db, agent), access: BUNDLED, ...(o.log ? { log: o.log } : {}) });
       announce();
       return true;
