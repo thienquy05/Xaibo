@@ -174,6 +174,7 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
       }
       // XAIBO-PROD-558 (P6-T03 part 1b): Connect, Disconnect, Uninstall; a preview belongs to this port
       case 'connectPreview': case 'connectApply': case 'removalPreview': case 'removalApply': case 'cleanupPreview': case 'cleanupApply': // XAIBO-PROD-576: no bare removal (R1)
+      case 'teePreview': case 'teeRemovalPreview': // XAIBO-PROD-580: the separate tee (R6)
         // part 2a: awaited (the lock is released before the reply); a closed port drops the reply
         void answerIntegrations({ readOnly: s.store.readOnly, connect: () => integrationsFor(s), profile: (id) => s.profiles()?.find((p) => p.id === id), profiles: () => s.profiles() ?? [] }, req, port)
           .then((m) => { try { port.postMessage(m); } catch { /* the window closed */ } }, () => { // code review L-a: never unanswered

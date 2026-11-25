@@ -50,7 +50,8 @@ export interface ConnectContext {
    *  connectContext() never sets it. */
   afterRename?: (file: string) => void;
 }
-export interface Selections { retention: boolean; tee: boolean }
+/** teeOnly (XAIBO-PROD-580, R6): the claude-tee step alone (the separate tee); never set from a renderer selection. */
+export interface Selections { retention: boolean; tee: boolean; teeOnly?: boolean }
 /** cli (the plugin step only): the detected version, the argv with the plugin folder as `<plugin-dir>` (review H2) and what
  *  the CLI writes, relative to the config dir. */
 export interface StepView { route: Route; target: string; diff: DiffLine[]; cli?: { version: string; argv: string[][]; writes: string[] } }
@@ -148,6 +149,8 @@ export function createConnect(ctx: ConnectContext) {
     const d = ctx.detection('claude');
     const route = ctx.catalog ? claudeConnectRoute(ctx.catalog, d) : null; // D-2, D-P6-07: no chooser, never a fallback after a failure
     if (!route || d?.state !== 'detected') return fail('unverified');
+    // XAIBO-PROD-580 (R6): the separate tee: its step alone, no hooks or retention
+    if (sel.teeOnly) return { plugin: null, list: [['claude-tee', () => teePlan({ dataDir: ctx.dataDir, profileKey: key, configDir: t.dir, bounds })]], retention: null, trust: [] };
     const list: Builder[] = [];
     let plugin: Plugin | null = null;
     if (route === 'claude-plugin') {
@@ -180,6 +183,7 @@ export function createConnect(ctx: ConnectContext) {
   }
   function preview(p: Profile, sel: Selections, owner?: unknown): Preview | Refused {
     if (!denied) return refused('bounds-unavailable');
+    if (sel.teeOnly && p.agent !== 'claude') return refused('unsupported'); // XAIBO-PROD-580: only Claude has the statusLine tee
     const t = targetOf(p);
     if (!t) return refused('unverified');
     if (!permitted(t)) return refused('real-profile'); // before any offer read (review H3, M4)
@@ -195,7 +199,8 @@ export function createConnect(ctx: ConnectContext) {
     } catch (e) { if (e instanceof ConfigError) return refused(e.code); throw e; }
     const at = now();
     for (const [id, h] of previews) if (h.expiresAt < at) previews.delete(id);
-    const own = [...previews].filter(([, h]) => h.profile.id === p.id).map(([id]) => id);
+    // one per profile, the separate tee its own scope (unit 6a review L2: opening it never evicts a held Connect preview)
+    const own = [...previews].filter(([, h]) => h.profile.id === p.id && !!h.sel.teeOnly === !!sel.teeOnly).map(([id]) => id);
     if (previews.size - own.length >= MAX_PREVIEWS) return refused('busy'); // checked before the profile's own is dropped
     for (const id of own) previews.delete(id); // one per profile
     const previewId = randomUUID();
@@ -422,7 +427,8 @@ export function createConnect(ctx: ConnectContext) {
   // and revertAll leaves it. Apply, under the lock, writes nothing when any of it changed and answers a fresh preview.
   // Previews as Connect's (TTL, single use, owner-bound, max 32), one held per scope (M2).
   type Pin = { hash: string; dev: number; ino: number; mode: number } | null | 'refused' | { error: string };
-  const removals = new Map<string, { scope: string | null; profile: Profile | null; target: Target | null; entries: ManifestEntry[]; pins: [string, Pin][]; items: RemovalItem[]; owner: unknown; expiresAt: number }>();
+  // XAIBO-PROD-580 (R6): `route` limits a profile's removal to one route (the separate tee off); its own scope
+  const removals = new Map<string, { scope: string | null; profile: Profile | null; target: Target | null; route: Route | null; entries: ManifestEntry[]; pins: [string, Pin][]; items: RemovalItem[]; owner: unknown; expiresAt: number }>();
   const pinOf = (file: string, d: string[]): Pin => {
     if (!writable(path.dirname(file), ctx.allowed, d)) return 'refused';
     // diff review M1: a target that cannot be read safely (a link, not ours, too large) is named per target; revertAll stops there
@@ -430,13 +436,13 @@ export function createConnect(ctx: ConnectContext) {
   };
   type Scope = { entries: ManifestEntry[]; pins: [string, Pin][]; items: RemovalItem[] } | Refused;
   /** What a removal within target `t` (null: every entry) would touch now; read-only. `held`: the caller holds the lock. */
-  function removalScope(profiles: readonly Profile[], t: Target | null, held: boolean): Scope {
+  function removalScope(profiles: readonly Profile[], t: Target | null, held: boolean, route: Route | null = null): Scope {
     const d = denied!;
     const r = current(profiles, held);
     if (r.status === 'blocked') return refused(r.code); // L3: busy, stale-lock, bounds-unavailable or manifest as they are
     let manifest: ManifestEntry[];
     try { manifest = readManifest(ctx.dataDir); } catch { return refused('manifest'); }
-    const entries = t ? manifest.filter((e) => e.target === t.file && t.routes.includes(e.route)) : manifest;
+    const entries = t ? manifest.filter((e) => e.target === t.file && (route ? e.route === route : t.routes.includes(e.route))) : manifest;
     if (!entries.length) return refused('not-connected');
     // L4: never stored when it could not cross the wire. ponytail (diff review L4): more than 256 recorded entries refuses Full
     // Uninstall (a few per profile today); page it if that ever happens
@@ -453,24 +459,25 @@ export function createConnect(ctx: ConnectContext) {
     });
     return { entries, pins: [...pins], items };
   }
-  function previewRemoval(profiles: readonly Profile[], p: Profile | null, owner?: unknown, held = false): RemovalPreview | Refused {
+  function previewRemoval(profiles: readonly Profile[], p: Profile | null, owner?: unknown, held = false, route: Route | null = null): RemovalPreview | Refused {
     if (!denied) return refused('bounds-unavailable');
+    if (route && !p) return refused('ops'); // a route limits one profile's removal only
     let t: Target | null = null;
     if (p) {
       t = targetOf(p);
       if (!t) return refused('unverified');
       if (!permitted(t)) return refused('real-profile'); // H1: before any read
     }
-    const s = removalScope(profiles, t, held);
+    const s = removalScope(profiles, t, held, route);
     if ('status' in s) return s;
-    const at = now(), scope = p?.id ?? null;
+    const at = now(), scope = p ? (route ? `${p.id}|${route}` : p.id) : null;
     for (const [id, h] of removals) if (h.expiresAt < at) removals.delete(id);
     const own = [...removals].filter(([, h]) => h.scope === scope).map(([id]) => id);
     if (removals.size - own.length >= MAX_PREVIEWS) return refused('busy'); // M2: checked before the scope's own is dropped
     for (const id of own) removals.delete(id);
     const previewId = randomUUID();
-    removals.set(previewId, { scope, profile: p, target: t, entries: structuredClone(s.entries), pins: s.pins, items: s.items, owner, expiresAt: at + TTL_MS });
-    return { status: 'preview', previewId, profileId: scope, ttlMs: TTL_MS, items: s.items };
+    removals.set(previewId, { scope, profile: p, target: t, route, entries: structuredClone(s.entries), pins: s.pins, items: s.items, owner, expiresAt: at + TTL_MS });
+    return { status: 'preview', previewId, profileId: p?.id ?? null, ttlMs: TTL_MS, items: s.items };
   }
   /** `profiles`: the live synced profiles (M1: a profile gone since the preview changes the mapping). */
   async function applyRemoval(previewId: string, owner: unknown, profiles: readonly Profile[]): Promise<RemovalResult> {
@@ -483,13 +490,13 @@ export function createConnect(ctx: ConnectContext) {
       if (now() > h.expiresAt) return refused('preview-expired');
       // diff review L2: the live profile (same id, maybe a new root) for the recheck and the fresh preview
       const live = h.profile ? profiles.find((x) => x.id === h.profile!.id) : null;
-      const again = (): RemovalResult => ({ status: 'needs-preview', preview: previewRemoval(profiles, live ?? null, owner, true) });
+      const again = (): RemovalResult => ({ status: 'needs-preview', preview: previewRemoval(profiles, live ?? null, owner, true, h.route) });
       if (h.profile) {
         if (!live) return refused('profile-not-found');
         const t = targetOf(live);
         if (!t || !permitted(t) || !isDeepStrictEqual(t, h.target)) return again(); // L2
       }
-      const s = removalScope(profiles, h.target, true);
+      const s = removalScope(profiles, h.target, true, h.route);
       if ('status' in s) return s.code === 'not-connected' ? again() : s;
       // R5, M1, L1: the same entries (deep-equal), target identities and items (state, profile) as previewed
       if (!isDeepStrictEqual(s.entries, h.entries) || !isDeepStrictEqual(s.pins, h.pins) || !isDeepStrictEqual(s.items, h.items)) return again();

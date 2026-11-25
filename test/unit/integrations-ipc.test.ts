@@ -18,6 +18,11 @@ test('requests: exact shapes only; never paths, ops, routes or plans', () => {
   assert.deepEqual(req({ type: 'removalApply', previewId: V }), { v: 1, type: 'removalApply', id: 3, previewId: V });
   assert.deepEqual(req({ type: 'cleanupPreview', profileId: P }), { v: 1, type: 'cleanupPreview', id: 3, profileId: P });
   assert.deepEqual(req({ type: 'cleanupApply', previewId: V }), { v: 1, type: 'cleanupApply', id: 3, previewId: V });
+  // XAIBO-PROD-580 (unit 6a, R6): the separate tee is previewed by profile id only; it is applied by connectApply / removalApply
+  assert.deepEqual(req({ type: 'teePreview', profileId: P }), { v: 1, type: 'teePreview', id: 3, profileId: P });
+  assert.deepEqual(req({ type: 'teeRemovalPreview', profileId: P }), { v: 1, type: 'teeRemovalPreview', id: 3, profileId: P });
+  for (const m of [{ type: 'teePreview', profileId: null }, { type: 'teePreview', profileId: P, enabled: true }, { type: 'teeRemovalPreview', profileId: 'x' },
+    { type: 'teeRemovalPreview', profileId: P, route: 'claude-tee' }, { type: 'teeApply', previewId: V }]) assert.equal(req(m), null, JSON.stringify(m));
   assert.equal(req({ type: 'disconnect', profileId: P }), null, 'R1: no write without a preview');
   assert.equal(req({ type: 'uninstall' }), null, 'R1');
   for (const m of [
@@ -58,6 +63,16 @@ test('replies: bounded, no ops anywhere', () => {
   assert.ok(reply('removalApply', { status: 'partial', reverted: [{ entry: V, route: 'claude-tee', result: 'restored' }], conflicts: [{ entry: V, route: 'claude-retention', pointer: '/cleanupPeriodDays' }], remaining: [{ entry: V, route: 'claude-settings-fallback', reason: 'blocked' }] }));
   assert.ok(reply('removalPreview', { status: 'refused', code: 'bounds-unavailable' }));
   assert.equal(reply('disconnect', { status: 'refused', code: 'failed' }), null, 'R1: no such reply type');
+  // XAIBO-PROD-580: a tee-on preview is a Connect preview; a tee-off preview a removal preview
+  assert.ok(reply('teePreview', preview({ steps: [{ route: 'claude-tee', target: '/tmp/p/.claude/settings.json', diff: [{ pointer: '/statusLine', new: { type: 'command', command: 'x' } }] }], retention: null })));
+  assert.ok(reply('teeRemovalPreview', { status: 'preview', previewId: V, profileId: P, ttlMs: 1, items: [{ entry: V, route: 'claude-tee', profileId: P, state: 'connected', reason: null }] }));
+  assert.equal(reply('teeRemovalPreview', { status: 'preview', previewId: V, profileId: null, ttlMs: 1, items: [] }), null, 'tee off is always one profile');
+  // unit 6a review L1: a preview request answers a preview or a refusal, never an outcome
+  for (const type of ['connectPreview', 'teePreview']) {
+    assert.equal(reply(type, { status: 'applied', entries: [V], trustSteps: [] }), null, type);
+    assert.equal(reply(type, { status: 'needs-preview', preview: preview() }), null, type);
+    assert.ok(reply(type, { status: 'refused', code: 'duplicate' }), type);
+  }
   for (const bad of [
     preview({ retention: { offered: true, from: 10, to: 45, layer: 'user', ops: [{ op: 'set', pointer: '/x', value: 1 }] } }),
     preview({ steps: [1, 2, 3, 4].map(() => preview().steps[0]) }),

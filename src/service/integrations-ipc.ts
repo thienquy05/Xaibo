@@ -15,7 +15,7 @@ import { deniedRootsFrom, real } from './config/bounds.ts';
 import type { ConnectContext, createConnect } from './integrations/connect.ts';
 
 export type Connect = ReturnType<typeof createConnect>;
-export type IntegrationsRequest = Extract<PortRequest, { type: 'connectPreview' | 'connectApply' | 'removalPreview' | 'removalApply' | 'cleanupPreview' | 'cleanupApply' }>;
+export type IntegrationsRequest = Extract<PortRequest, { type: 'connectPreview' | 'connectApply' | 'removalPreview' | 'removalApply' | 'cleanupPreview' | 'cleanupApply' | 'teePreview' | 'teeRemovalPreview' }>;
 export interface IntegrationsDeps {
   /** The store refused writes (a newer schema may own the manifest): every request is refused. */
   readOnly: boolean;
@@ -56,7 +56,7 @@ function wire(r: unknown, wrote: boolean): ConnectReply {
 /** Part 2a review M3: a rejection escaping after dispatch may follow a write: partial (re-read), never refused. */
 const AFTER_DISPATCH: ConnectReply = { status: 'partial', reverted: [], conflicts: [], remaining: [], code: 'failed' };
 /** XAIBO-PROD-576: removal and cleanup replies through their own bound checks; over-bound after a write is partial, before it refused. */
-function wireOther(type: 'removalPreview' | 'removalApply' | 'cleanupPreview' | 'cleanupApply', r: unknown, wrote: boolean): RemovalReply | CleanupReply {
+function wireOther(type: 'removalPreview' | 'removalApply' | 'teeRemovalPreview' | 'cleanupPreview' | 'cleanupApply', r: unknown, wrote: boolean): RemovalReply | CleanupReply {
   if (type === 'cleanupPreview' || type === 'cleanupApply') {
     return parseCleanupReply(type, r) ?? (wrote ? { status: 'partial', removed: [], left: [], code: 'too-large' } : refused('too-large') as CleanupReply);
   }
@@ -76,10 +76,14 @@ export async function answerIntegrations(d: IntegrationsDeps, req: IntegrationsR
     if (got === null) return send(refused('starting'));
     if (got === 'unavailable') return send(refused('unavailable'));
     c = got;
-    if ((req.type === 'connectPreview' || req.type === 'removalPreview' || req.type === 'cleanupPreview') && req.profileId !== null) {
+    if ((req.type === 'connectPreview' || req.type === 'removalPreview' || req.type === 'cleanupPreview' || req.type === 'teePreview' || req.type === 'teeRemovalPreview') && req.profileId !== null) {
       p = d.profile(req.profileId) ?? null;
       if (!p) return send(refused('profile-not-found'));
     }
+    // XAIBO-PROD-580 (R6): the separate tee, Claude only: on is a tee-only Connect preview, off the removal of its tee entry alone
+    if ((req.type === 'teePreview' || req.type === 'teeRemovalPreview') && p!.agent !== 'claude') return send(refused('unsupported'));
+    if (req.type === 'teePreview') return send(wire(c.previewConnect(p!, { retention: false, tee: true, teeOnly: true }, owner), false));
+    if (req.type === 'teeRemovalPreview') return send(wireOther(req.type, c.previewRemoval(d.profiles(), p, owner, false, 'claude-tee'), false));
     if (req.type === 'connectPreview') return send(wire(c.previewConnect(p!, req.selections, owner), false));
     // XAIBO-PROD-576 (review R1/R4): read-only previews; Full Uninstall when no profile is named
     if (req.type === 'removalPreview') return send(wireOther(req.type, c.previewRemoval(d.profiles(), p, owner), false));
