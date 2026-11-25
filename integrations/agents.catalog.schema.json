@@ -86,6 +86,13 @@
         "method": { "enum": ["subscription", "api-key", "cloud-provider", "gateway", "mixed"] }
       }
     },
+    "reportValue": {
+      "description": "P6-T09a (D-P6-18, review M1): a reportSetup value: a boolean, number or null literal, or a value Xaibo supplies. No strings, so catalog data never writes a command or a path of its own.",
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["literal"], "properties": { "literal": { "anyOf": [{ "type": "boolean" }, { "type": "number" }, { "type": "null" }] } } },
+        { "type": "object", "additionalProperties": false, "required": ["xaibo"], "properties": { "xaibo": { "enum": ["report-helper", "profile-key", "agent-id"] } } }
+      ]
+    },
     "agent": {
       "type": "object",
       "additionalProperties": false,
@@ -93,6 +100,31 @@
       "properties": {
         "id": { "$ref": "#/$defs/refId" },
         "displayName": { "$ref": "#/$defs/displayText" },
+        "reportSetup": {
+          "description": "P6-T09a (D-P6-12, D-P6-18): data-only setup for a report-v1 agent: set ops on one JSON file under one declared profile root, applied only through the FR-32 engine after a preview, and for an imported entry only with its setup grant. Plain name pointers (no array indexes, escapes or prototype names); never executed.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["root", "file", "ops"],
+          "properties": {
+            "root": { "$ref": "#/$defs/refId" },
+            "file": { "type": "string", "maxLength": 256, "pattern": "^\\.?[A-Za-z0-9_-][A-Za-z0-9._-]*(/\\.?[A-Za-z0-9_-][A-Za-z0-9._-]*)*\\.json$" },
+            "ops": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 16,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["op", "pointer", "value"],
+                "properties": {
+                  "op": { "const": "set" },
+                  "pointer": { "type": "string", "maxLength": 256, "pattern": "^(?!.*/(?:__proto__|prototype|constructor)(?:/|$))(?:/[A-Za-z_][A-Za-z0-9_.-]{0,63}){1,8}$" },
+                  "value": { "$ref": "#/$defs/reportValue" }
+                }
+              }
+            }
+          }
+        },
         "signInRules": { "description": "P6-T01a: sign-in method rules (bundled catalog only; an imported entry may carry none). The bundled catalog ships none (S14 Pass-narrowed).", "type": "array", "maxItems": 32, "items": { "$ref": "#/$defs/signInRule" } },
         "detection": {
           "type": "object",

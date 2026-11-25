@@ -22,14 +22,15 @@ export type ImportCode = CatalogCode | 'too-large' | 'invalid-json' | 'store-cor
 export interface ImportIssue { code: ImportCode; at: string }
 /** Where an imported profile root may be: disposable roots only until P6-T12 (production passes allowed = []). */
 export interface RootPolicy { home: string; allowed: string[]; denied: string[] | null }
-export interface LoadedImports { catalog: Catalog; imported: Map<string, Record<string, string>>; grants: Map<string, ProbeGrant[]>; issues: ImportIssue[] }
-interface Entry { catalog: Catalog; roots: Record<string, string>; grants?: unknown }
+/** setup (XAIBO-PROD-588): the imported agents whose setup grant still binds (current digest, setup root approved). */
+export interface LoadedImports { catalog: Catalog; imported: Map<string, Record<string, string>>; grants: Map<string, ProbeGrant[]>; setup: Set<string>; issues: ImportIssue[] }
+interface Entry { catalog: Catalog; roots: Record<string, string>; grants?: unknown; setup?: unknown }
 
 const MAX_INPUT = 256 * 1024;
 const MAX_STORE = 1 << 20;
 const MAX_AGENTS = 16, MAX_KINDS = 64; // the schema's limits, for the merged catalog
 const CORRUPT: ImportIssue[] = [{ code: 'store-corrupt', at: '/' }];
-const ENTRY_KEYS = new Set(['catalog', 'roots', 'grants']); // grants optional: a part 2 store has none
+const ENTRY_KEYS = new Set(['catalog', 'roots', 'grants', 'setup']); // grants, setup optional: older stores have none
 const uid = process.getuid?.();
 const dirOf = (dataDir: string) => path.join(dataDir, 'catalog');
 
@@ -125,6 +126,15 @@ function validGrants(e: Entry, roots: Record<string, string>): ProbeGrant[] {
     && dirs.some((d) => inside(g.path, d)));
 }
 
+/** XAIBO-PROD-588 (P6-T09a, D-P6-18, SEC5): the setup grant {digest, root} binds only to the entry it was given for (its
+ *  digest) and to the root path it was given for (code review 1), while that root is still the approved one; anything else, a
+ *  malformed value included, grants nothing, silently (as validGrants). ponytail: the root is matched by its realpath, not by
+ *  device and inode (as approved roots, P6-T07); add an identity if a same-path swap ever matters. */
+const setupBinds = (e: Entry, roots: Record<string, string>) => {
+  const rs = e.catalog.agents[0]!.reportSetup, g = e.setup;
+  return !!rs && isObj(g) && g['digest'] === digestOf(e.catalog) && Object.hasOwn(roots, rs.root) && g['root'] === roots[rs.root];
+};
+
 export function importCatalog(dataDir: string, bytes: Uint8Array, bundled: Catalog): { status: 'imported'; agent: string } | { status: 'rejected'; issues: ImportIssue[] } {
   const rejected = (issues: ImportIssue[]) => ({ status: 'rejected' as const, issues });
   if (bytes.byteLength > MAX_INPUT) return rejected([{ code: 'too-large', at: '/' }]); // before decoding
@@ -142,12 +152,15 @@ export function importCatalog(dataDir: string, bytes: Uint8Array, bundled: Catal
 export function loadImports(dataDir: string, bundled: Catalog, o: RootPolicy): LoadedImports {
   try {
     const entries = readStore(dataDir);
-    if (!entries) return { catalog: bundled, imported: new Map(), grants: new Map(), issues: [] };
+    if (!entries) return { catalog: bundled, imported: new Map(), grants: new Map(), setup: new Set(), issues: [] };
     const { ok, merged, issues } = accept(entries, bundled);
     const roots = ok.map((e) => [e.catalog.agents[0]!.id, approved(e, o)] as const);
-    return { catalog: merged, imported: new Map(roots), grants: new Map(roots.map(([id, r], i) => [id, validGrants(ok[i]!, r)])), issues };
+    return {
+      catalog: merged, imported: new Map(roots), grants: new Map(roots.map(([id, r], i) => [id, validGrants(ok[i]!, r)])),
+      setup: new Set(roots.filter(([, r], i) => setupBinds(ok[i]!, r)).map(([id]) => id)), issues,
+    };
   } catch {
-    return { catalog: bundled, imported: new Map(), grants: new Map(), issues: CORRUPT };
+    return { catalog: bundled, imported: new Map(), grants: new Map(), setup: new Set(), issues: CORRUPT };
   }
 }
 
@@ -184,6 +197,28 @@ export function grantProbe(dataDir: string, bundled: Catalog, agentId: string, b
     if (!id) return false;
     const others = Array.isArray(e.grants) ? e.grants.filter((g) => isGrant(g) && g.binary !== binaryId) : [];
     e.grants = [...others, { binary: binaryId, path: file, id, digest: digestOf(e.catalog) }];
+    writeStore(dataDir, entries);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** XAIBO-PROD-588 (P6-T09a, D-P6-18, SEC5): the owner's authorization for an imported agent's declared reportSetup writes
+ *  (trusted service callers only, as approveRoot; no renderer object, no confirmed flag). Needs an accepted entry with a
+ *  reportSetup whose root is approved under this policy; stores the entry digest and that root, so any later change to the
+ *  entry, or another root approved later, voids it.
+ *  Separate from root approval and probe grants: it implies neither, and neither implies it. Writes no agent config and runs
+ *  nothing (the Connect preview and apply do the writing, P6-T09a slice B). */
+export function grantSetup(dataDir: string, bundled: Catalog, agentId: string, o: RootPolicy): boolean {
+  try {
+    const entries = readStore(dataDir);
+    if (!entries) return false;
+    const e = accept(entries, bundled).ok.find((x) => x.catalog.agents[0]!.id === agentId);
+    const rs = e?.catalog.agents[0]!.reportSetup;
+    const roots = e ? approved(e, o) : {};
+    if (!e || !rs || !Object.hasOwn(roots, rs.root)) return false;
+    e.setup = { digest: digestOf(e.catalog), root: roots[rs.root] };
     writeStore(dataDir, entries);
     return true;
   } catch {

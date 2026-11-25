@@ -19,7 +19,14 @@ export interface AgentEntry {
   hookMappings?: HookMappings;
   /** P6-T01a (S-38, FR-54): sign-in method rules; bundled only, none shipped (S14 Pass-narrowed, D-P6-15). */
   signInRules?: MethodRule[];
+  /** XAIBO-PROD-588 (P6-T09a, D-P6-18): data-only report-v1 setup, set ops on one JSON file under one declared root. */
+  reportSetup?: ReportSetup;
 }
+/** P6-T09a review M1: a literal is never a string; strings come only from Xaibo (its report helper path, the profile key, the
+ *  agent id). ponytail (slice A code review nit): a number has no range beyond finite (Ajv strictNumbers); add min/max if an
+ *  agent ever misreads a huge value. */
+export type ReportValue = { literal: boolean | number | null } | { xaibo: 'report-helper' | 'profile-key' | 'agent-id' };
+export interface ReportSetup { root: string; file: string; ops: { op: 'set'; pointer: string; value: ReportValue }[] }
 export interface HookRule {
   event: string;
   /** Dotted payload path -> exact value; null = absent or null. */
@@ -68,6 +75,9 @@ const binaryName = (n: string) => n.toLowerCase().replace(/\.exe$/, '');
 // code review 1: compared case-folded, since the default macOS and Windows volumes are case-insensitive (.CLAUDE is .claude)
 const rootKey = (relative: string) => path.posix.normalize(relative).toLowerCase();
 const overlaps = (a: string, b: string) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+// XAIBO-PROD-588 (P6-T09a review M2): agy keeps its hooks in <home>/.gemini/config/hooks.json, outside its catalog root
+// (connect.ts targetOf), so an imported root anywhere under .gemini is shadow too.
+const RESERVED_ROOTS = ['.gemini'];
 
 export function catalogIssues(value: unknown, bundled?: Catalog): CatalogIssue[] {
   // P6-T01a review M1: a pointer below a rule's record would carry a submitted key, so it stops at /record.
@@ -78,7 +88,7 @@ export function catalogIssues(value: unknown, bundled?: Catalog): CatalogIssue[]
   const dup = (ids: string[], at: (j: number) => string) => ids.forEach((id, j) => { if (ids.indexOf(id) < j) add('duplicate-id', at(j)); });
   dup(c.agents.map((a) => a.id), (j) => `/agents/${j}/id`);
   const names = new Set(bundled?.agents.flatMap((b) => b.detection.binaries.flatMap((x) => x.names.map(binaryName))) ?? []);
-  const roots = bundled?.agents.flatMap((b) => b.profileRoots.map((r) => rootKey(r.relative))) ?? [];
+  const roots = bundled ? [...bundled.agents.flatMap((b) => b.profileRoots.map((r) => rootKey(r.relative))), ...RESERVED_ROOTS] : [];
   c.agents.forEach((a, i) => {
     const p = `/agents/${i}`;
     dup(a.detection.binaries.map((b) => b.id), (j) => `${p}/detection/binaries/${j}/id`);
@@ -89,6 +99,10 @@ export function catalogIssues(value: unknown, bundled?: Catalog): CatalogIssue[]
       a[key]?.forEach((x, j) => { if (x.versions.max !== undefined && older(x.versions.max, x.versions.min)) add('unsafe-value', `${p}/${key}/${j}/versions`); });
     }
     if (a.connectRoutes && a.id !== 'claude') add('unsafe-value', `${p}/connectRoutes`); // Claude's routes belong to Claude only
+    // P6-T09a: the setup names a declared root, and no two ops touch the same value or one inside another (one owner per value)
+    const rs = a.reportSetup;
+    if (rs && !declared.has(rs.root)) add('unknown-reference', `${p}/reportSetup/root`);
+    rs?.ops.forEach((o, j) => { if (rs.ops.slice(0, j).some((x) => overlaps(x.pointer, o.pointer))) add('unsafe-value', `${p}/reportSetup/ops/${j}/pointer`); });
     // P6-T01a (review H2): sign-in rules are bundled data only; an imported entry may carry none. Bundled: unique ids, the
     // agent's own surface, and only the allowlisted fields and discriminators (sign-in.ts).
     if (a.signInRules?.length && bundled) add('unsafe-value', `${p}/signInRules`);

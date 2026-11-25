@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { boot } from '../../../src/service/boot.ts';
 import { profileRoots } from '../../../src/service/catalog/detect.ts';
-import { approveRoot, importCatalog, loadImports } from '../../../src/service/catalog/import.ts';
+import { approveRoot, grantProbe, grantSetup, importCatalog, loadImports } from '../../../src/service/catalog/import.ts';
 import { loadCatalog, type Catalog } from '../../../src/service/catalog/validate.ts';
 import { deniedRootsFrom } from '../../../src/service/config/bounds.ts';
 import { openStore } from '../../../src/service/store/db.ts';
@@ -224,4 +224,119 @@ test('boot: an imported agent is merged, never probed, gets only approved roots;
   } finally {
     plain.stop();
   }
+});
+
+// XAIBO-PROD-588 (P6-T09a slice A; D-P6-18, SEC5): a setup grant is the owner's authorization for an imported entry's declared
+// reportSetup writes. Only grantSetup stores it (trusted callers), bound to the entry digest and needing the declared root
+// approved; loadImports keeps it only while both still hold. Import, root approval and probe grants never imply it, and it
+// never implies a probe.
+const SETUP_ENTRY = variant((c) => {
+  (c.agents[0] as unknown as Record<string, unknown>)['reportSetup'] = { root: 'user', file: 'config.json', ops: [{ op: 'set', pointer: '/xaibo/helper', value: { xaibo: 'report-helper' } }] };
+});
+function granted() {
+  const s = setup();
+  assert.equal(importCatalog(s.dataDir, SETUP_ENTRY, bundled).status, 'imported');
+  const root = join(s.home, '.synthagent');
+  mkdirSync(root, { mode: 0o755 });
+  assert.equal(approveRoot(s.dataDir, bundled, 'synthagent', 'user', s.o), true);
+  return { ...s, root, setupOf: (o = s.o) => [...loadImports(s.dataDir, bundled, o).setup] };
+}
+
+test('P6-T09a setup grant: only grantSetup grants it, for an imported entry with reportSetup and an approved root', () => {
+  const s = setup();
+  assert.equal(importCatalog(s.dataDir, SETUP_ENTRY, bundled).status, 'imported');
+  const setupOf = (o = s.o) => [...loadImports(s.dataDir, bundled, o).setup];
+  assert.deepEqual(setupOf(), [], 'import alone grants nothing');
+  assert.equal(grantSetup(s.dataDir, bundled, 'synthagent', s.o), false, 'root not approved');
+  const root = join(s.home, '.synthagent');
+  mkdirSync(root, { mode: 0o755 });
+  assert.equal(approveRoot(s.dataDir, bundled, 'synthagent', 'user', s.o), true);
+  assert.deepEqual(setupOf(), [], 'root approval alone grants nothing');
+  mkdirSync(join(root, 'bin'), { mode: 0o755 });
+  const exe = join(root, 'bin', 'synthagent');
+  writeFileSync(exe, '#!/bin/sh\necho 1.2.3\n', { mode: 0o755 });
+  assert.equal(grantProbe(s.dataDir, bundled, 'synthagent', 'main', exe, s.o), true);
+  assert.deepEqual(setupOf(), [], 'a probe grant is not a setup grant');
+  assert.equal(grantSetup(s.dataDir, bundled, 'claude', s.o), false, 'bundled agent');
+  assert.equal(grantSetup(s.dataDir, bundled, 'nope', s.o), false, 'unknown agent');
+  assert.equal(grantSetup(s.dataDir, bundled, 'synthagent', { ...s.o, allowed: [] }), false, 'production: nothing allowed');
+  assert.equal(grantSetup(s.dataDir, bundled, 'synthagent', { ...s.o, denied: null }), false, 'no denylist');
+  assert.equal(grantSetup(s.dataDir, bundled, 'synthagent', s.o), true);
+  const l = loadImports(s.dataDir, bundled, s.o);
+  assert.deepEqual([...l.setup], ['synthagent']);
+  assert.equal(l.grants.get('synthagent')?.length, 1, 'the probe grant is untouched');
+  assert.deepEqual(setupOf({ ...s.o, allowed: [] }), [], 'root approval rechecked at every load');
+});
+
+test('P6-T09a: a setup grant never authorizes a probe; an entry without reportSetup cannot get one', () => {
+  const s = granted();
+  assert.equal(grantSetup(s.dataDir, bundled, 'synthagent', s.o), true);
+  assert.deepEqual(loadImports(s.dataDir, bundled, s.o).grants.get('synthagent'), [], 'no probe grant');
+  const plain = variant((c) => { c.agents[0]!.id = 'plain'; c.agents[0]!.detection.binaries[0]!.names = ['plain']; c.agents[0]!.profileRoots[0]!.relative = '.plain'; });
+  assert.equal(importCatalog(s.dataDir, plain, bundled).status, 'imported');
+  mkdirSync(join(s.home, '.plain'));
+  assert.equal(approveRoot(s.dataDir, bundled, 'plain', 'user', s.o), true);
+  const before = snapshot(s.store);
+  assert.equal(grantSetup(s.dataDir, bundled, 'plain', s.o), false, 'nothing declared to grant');
+  assert.equal(snapshot(s.store), before, 'store unchanged on refusal');
+  assert.deepEqual(s.setupOf(), ['synthagent']);
+});
+
+test('P6-T09a: a setup grant dies with a changed entry or a moved root; a malformed one never corrupts the store; old stores load', () => {
+  const s = granted();
+  assert.equal(grantSetup(s.dataDir, bundled, 'synthagent', s.o), true);
+  const good = readFileSync(s.store, 'utf8');
+  const doc = () => JSON.parse(good) as { entries: Record<string, unknown>[] };
+  assert.deepEqual(s.setupOf(), ['synthagent']);
+
+  const old = doc();
+  delete old.entries[0]!['setup'];
+  writeFileSync(s.store, JSON.stringify(old));
+  let l = loadImports(s.dataDir, bundled, s.o);
+  assert.deepEqual([l.issues, [...l.setup], l.imported.get('synthagent')], [[], [], { user: s.root }], 'a store without setup grants');
+
+  for (const bad of [1, null, {}, ['x'], 'not-a-digest']) {
+    const d = doc();
+    d.entries[0]!['setup'] = bad;
+    writeFileSync(s.store, JSON.stringify(d));
+    l = loadImports(s.dataDir, bundled, s.o);
+    assert.deepEqual([l.issues, [...l.setup]], [[], []], JSON.stringify(bad));
+  }
+
+  const changed = doc();
+  (changed.entries[0]!['catalog'] as Catalog).agents[0]!.displayName = 'Changed';
+  writeFileSync(s.store, JSON.stringify(changed));
+  l = loadImports(s.dataDir, bundled, s.o);
+  assert.deepEqual([l.issues, [...l.setup]], [[], []], 'a changed entry voids it');
+
+  writeFileSync(s.store, good);
+  assert.deepEqual(s.setupOf(), ['synthagent']);
+  renameSync(s.root, join(s.tmp, 'moved'));
+  assert.deepEqual(s.setupOf(), [], 'a moved root voids it');
+});
+
+test('P6-T09a code review 1: a setup grant is bound to the root it was given for, not to whichever root is approved later', () => {
+  const s = granted();
+  assert.equal(grantSetup(s.dataDir, bundled, 'synthagent', s.o), true);
+  const homeB = join(s.tmp, 'homeB');
+  mkdirSync(join(homeB, '.synthagent'), { recursive: true });
+  const oB = { ...s.o, home: homeB };
+  assert.equal(approveRoot(s.dataDir, bundled, 'synthagent', 'user', oB), true);
+  assert.deepEqual(loadImports(s.dataDir, bundled, oB).imported.get('synthagent'), { user: join(homeB, '.synthagent') });
+  assert.deepEqual(s.setupOf(oB), [], 'a root approved later needs its own setup grant');
+  assert.equal(grantSetup(s.dataDir, bundled, 'synthagent', oB), true);
+  assert.deepEqual(s.setupOf(oB), ['synthagent']);
+});
+
+test('P6-T09a code review: grantSetup refuses a stored entry the validator rejects (a string literal written into the store)', () => {
+  const s = granted();
+  const doc = JSON.parse(readFileSync(s.store, 'utf8')) as { entries: { catalog: Catalog }[] };
+  (doc.entries[0]!.catalog.agents[0] as unknown as { reportSetup: { ops: { value: unknown }[] } }).reportSetup.ops[0]!.value = { literal: 'sh -c x' };
+  writeFileSync(s.store, JSON.stringify(doc));
+  const before = snapshot(s.store);
+  assert.equal(grantSetup(s.dataDir, bundled, 'synthagent', s.o), false);
+  assert.equal(snapshot(s.store), before);
+  const l = loadImports(s.dataDir, bundled, s.o);
+  assert.deepEqual([...l.setup], []);
+  assert.ok(l.issues.some((i) => i.code === 'schema-invalid'));
 });

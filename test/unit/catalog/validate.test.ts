@@ -100,3 +100,86 @@ test('FR-01/SEC5 probe gate: an imported entry never runs a probe without a gran
     assert.equal(calls, 1);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+// XAIBO-PROD-588 (P6-T09a slice A; D-P6-18, design .handoff/p6-t09a-design.md with the fresh review): reportSetup is data
+// only: one .json file under one declared root, up to 16 set ops whose values are boolean/number/null literals or one of three
+// Xaibo placeholders (review M1: no strings, so imported data never writes a command); pointers are plain name paths that
+// never overlap. Review M2: an imported root under .gemini (agy's hooks file sits in .gemini/config) is shadow.
+const REPORT = {
+  root: 'user', file: 'config.json', ops: [
+    { op: 'set', pointer: '/reporting/xaibo/helper', value: { xaibo: 'report-helper' } },
+    { op: 'set', pointer: '/reporting/xaibo/profileKey', value: { xaibo: 'profile-key' } },
+    { op: 'set', pointer: '/reporting/xaibo/agentId', value: { xaibo: 'agent-id' } },
+    { op: 'set', pointer: '/reporting/xaibo/enabled', value: { literal: true } },
+    { op: 'set', pointer: '/reporting/interval_s', value: { literal: 5 } },
+    { op: 'set', pointer: '/reporting/label', value: { literal: null } },
+  ],
+};
+const withSetup = (f: (r: typeof REPORT & Record<string, unknown>) => void = () => {}) => {
+  const c = read('valid/synthagent.json') as Catalog;
+  const r = structuredClone(REPORT) as typeof REPORT & Record<string, unknown>;
+  f(r);
+  return { ...c, agents: [{ ...c.agents[0]!, reportSetup: r }] };
+};
+
+test('P6-T09a: a reportSetup of scalar literals and Xaibo placeholders is valid, imported or not', () => {
+  assert.deepEqual(catalogIssues(withSetup(), bundled), []);
+  assert.deepEqual(catalogIssues(withSetup()), []);
+  assert.deepEqual(catalogIssues(withSetup((r) => { r.file = 'sub/xaibo.json'; })), []);
+});
+
+test('P6-T09a: strings, append, nested or unknown values, bad files and pointers, too many ops are schema-invalid', () => {
+  const op = (o: Record<string, unknown>) => (r: typeof REPORT) => { r.ops[0] = { ...r.ops[0]!, ...o } as (typeof REPORT)['ops'][number]; };
+  const cases: [string, (r: typeof REPORT & Record<string, unknown>) => void, string][] = [
+    ['string literal (review M1)', op({ value: { literal: 'curl https://example.invalid' } }), '/agents/0/reportSetup/ops/0/value'],
+    ['object literal', op({ value: { literal: { a: 1 } } }), '/agents/0/reportSetup/ops/0/value'],
+    ['array literal', op({ value: { literal: [1] } }), '/agents/0/reportSetup/ops/0/value'],
+    ['unknown placeholder', op({ value: { xaibo: 'home' } }), '/agents/0/reportSetup/ops/0/value'],
+    ['literal and placeholder together', op({ value: { literal: true, xaibo: 'agent-id' } }), '/agents/0/reportSetup/ops/0/value'],
+    ['append', op({ op: 'append' }), '/agents/0/reportSetup/ops/0/op'],
+    ['extra op key', op({ when: 'always' }), '/agents/0/reportSetup/ops/0'],
+    ['prototype segment', op({ pointer: '/__proto__/x' }), '/agents/0/reportSetup/ops/0/pointer'],
+    ['array index segment', op({ pointer: '/hooks/0' }), '/agents/0/reportSetup/ops/0/pointer'],
+    ['escaped segment', op({ pointer: '/a~1b' }), '/agents/0/reportSetup/ops/0/pointer'],
+    ['relative pointer', op({ pointer: 'reporting' }), '/agents/0/reportSetup/ops/0/pointer'],
+    ['nine segments', op({ pointer: '/a/b/c/d/e/f/g/h/i' }), '/agents/0/reportSetup/ops/0/pointer'],
+    // code review (slice A) test gaps: each pinned so a later pattern edit cannot quietly drop one
+    ...['/constructor', '/a/prototype/b', '/a/', '//a', '/0a', `/${'a'.repeat(65)}`, '/é'].map((pointer) =>
+      [`pointer ${pointer.slice(0, 12)}`, op({ pointer }), '/agents/0/reportSetup/ops/0/pointer'] as [string, (r: typeof REPORT) => void, string]),
+    ...['a/../b.json', './x.json', 'x.json/', 'a//b.json', '.json', 'é.json'].map((file) =>
+      [`file ${file}`, (r: typeof REPORT & Record<string, unknown>) => { r.file = file; }, '/agents/0/reportSetup/file'] as [string, (r: typeof REPORT) => void, string]),
+    ['not .json', (r) => { r.file = 'config.toml'; }, '/agents/0/reportSetup/file'],
+    ['traversal', (r) => { r.file = '../x.json'; }, '/agents/0/reportSetup/file'],
+    ['absolute', (r) => { r.file = '/etc/x.json'; }, '/agents/0/reportSetup/file'],
+    ['no ops', (r) => { r.ops = []; }, '/agents/0/reportSetup/ops'],
+    ['17 ops', (r) => { r.ops = Array.from({ length: 17 }, (_, i) => ({ op: 'set', pointer: `/k${i}`, value: { literal: i } })); }, '/agents/0/reportSetup/ops'],
+    ['extra key', (r) => { r['command'] = 'x'; }, '/agents/0/reportSetup'],
+  ];
+  for (const [why, f, at] of cases) {
+    const issues = catalogIssues(withSetup(f), bundled);
+    assert.ok(issues.length > 0 && issues.every((i) => i.code === 'schema-invalid' && i.at.startsWith(at)), `${why}: ${JSON.stringify(issues)}`);
+    assert.ok(!JSON.stringify(issues).includes('example.invalid'), why);
+  }
+});
+
+test('P6-T09a: an undeclared root is unknown; a repeated or overlapping pointer is unsafe', () => {
+  assert.deepEqual(catalogIssues(withSetup((r) => { r.root = 'other'; }), bundled), [{ code: 'unknown-reference', at: '/agents/0/reportSetup/root' }]);
+  assert.deepEqual(catalogIssues(withSetup((r) => { r.ops[2] = { ...r.ops[2]!, pointer: '/reporting/xaibo/helper' }; }), bundled),
+    [{ code: 'unsafe-value', at: '/agents/0/reportSetup/ops/2/pointer' }]);
+  assert.deepEqual(catalogIssues(withSetup((r) => { r.ops.push({ op: 'set', pointer: '/reporting', value: { literal: false } }); }), bundled),
+    [{ code: 'unsafe-value', at: '/agents/0/reportSetup/ops/6/pointer' }], 'an ancestor of an earlier pointer');
+  assert.deepEqual(catalogIssues(withSetup((r) => { r.ops.unshift({ op: 'set', pointer: '/reporting/interval_s/unit', value: { literal: 1 } }); }), bundled),
+    [{ code: 'unsafe-value', at: '/agents/0/reportSetup/ops/5/pointer' }], 'a descendant of an earlier pointer');
+  assert.deepEqual(catalogIssues(withSetup((r) => { r.ops.push({ op: 'set', pointer: '/reporting/xaibo/helperPath', value: { literal: 1 } }); }), bundled), [], 'a name prefix is not overlap');
+});
+
+test('P6-T09a review M2: an imported profile root under .gemini is shadow (agy keeps its hooks in .gemini/config)', () => {
+  const c = read('valid/synthagent.json') as Catalog;
+  const rooted = (relative: string) => ({ ...c, agents: [{ ...c.agents[0]!, profileRoots: [{ ...c.agents[0]!.profileRoots[0]!, relative }] }] });
+  for (const rel of ['.gemini', '.gemini/config', '.GEMINI/config', '.gemini/x/y']) {
+    assert.deepEqual(catalogIssues(rooted(rel), bundled), [{ code: 'shadow', at: '/agents/0/profileRoots/0/relative' }], rel);
+    assert.deepEqual(catalogIssues(rooted(rel)), [], `${rel}: shadow needs the bundled catalog`);
+  }
+  assert.deepEqual(catalogIssues(rooted('.gemini2')), [], 'a name prefix is not shadow');
+  assert.deepEqual(catalogIssues(rooted('.gemini2'), bundled), []);
+});
