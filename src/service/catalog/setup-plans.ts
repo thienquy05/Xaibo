@@ -41,11 +41,12 @@ export const retentionOps = (offer: RetentionOffer, selected = true): Op[] => (o
 /** XAIBO-PROD-560 (P6-T03 part 2b; D-2, owner D-P6-07): Claude's Connect route from the catalog and the detected version: the
  *  plugin where a range qualifies it, else the settings fallback where one qualifies that; null (unverified) for an undetected
  *  Claude, no or a prerelease version, or a version in no range. No chooser, no override; never a fallback after a failure. */
-export function claudeConnectRoute(catalog: Catalog, d: Detection | undefined): 'claude-plugin' | 'claude-settings-fallback' | null {
+/** XAIBO-PROD-599 (D-P6-21 decision A): `plugin` false (a real profile) never offers the plugin route; the fallback where it qualifies. */
+export function claudeConnectRoute(catalog: Catalog, d: Detection | undefined, plugin = true): 'claude-plugin' | 'claude-settings-fallback' | null {
   if (d?.state !== 'detected') return null;
   // part 2c review H1: a manually chosen executable never gets the plugin route, which runs it; the fallback runs nothing
   const ok = (catalog.agents.find((a) => a.id === 'claude')?.connectRoutes ?? [])
-    .filter((r) => inRange(d.version, r.versions) && !(d.manual && r.route === 'claude-plugin')).map((r) => r.route);
+    .filter((r) => inRange(d.version, r.versions) && !((d.manual || !plugin) && r.route === 'claude-plugin')).map((r) => r.route);
   return ok.includes('claude-plugin') ? 'claude-plugin' : ok.includes('claude-settings-fallback') ? 'claude-settings-fallback' : null;
 }
 

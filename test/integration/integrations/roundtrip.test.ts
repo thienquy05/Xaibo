@@ -217,11 +217,11 @@ test('Disconnect touches only its own profile; Uninstall reverts every entry and
   assert.equal((await w.c.disconnect(w.profiles.claude)).status, 'disconnected');
   assert.equal(sha(w.files.codex), codexConnected, 'the other profile is untouched');
   await connect(w, w.profiles.claude, { retention: true, tee: false });
-  const locked = await createConnect({ ...w.ctx, allowed: [] }).uninstall();
+  const locked = await createConnect({ ...w.ctx, allowed: [] }).uninstall([]);
   assert.equal(locked.status, 'partial');
   assert.ok(locked.remaining.length >= 2 && locked.remaining.every((r) => r.reason === 'refused'));
   assert.equal(readManifest(w.dataDir).length, 3);
-  const u = await w.c.uninstall();
+  const u = await w.c.uninstall([]);
   assert.equal(u.status, 'disconnected', JSON.stringify(u));
   assert.deepEqual(hashes(w), before);
   assert.deepEqual(readManifest(w.dataDir), []);
@@ -242,7 +242,7 @@ test('unavailable bounds: every call is refused', async () => {
     const c = createConnect({ ...w.ctx, denied });
     assert.deepEqual(c.previewConnect(w.profiles.claude, { retention: true, tee: false }), { status: 'refused', code: 'bounds-unavailable' });
     assert.deepEqual(await c.disconnect(w.profiles.claude), { status: 'refused', code: 'bounds-unavailable' });
-    assert.deepEqual(await c.uninstall(), { status: 'refused', code: 'bounds-unavailable' });
+    assert.deepEqual(await c.uninstall([]), { status: 'refused', code: 'bounds-unavailable' });
   }
   assert.equal(existsSync(join(w.dataDir, 'integrations')), false);
 });
@@ -477,11 +477,11 @@ test('2c Uninstall with Claude no longer detected: the plugin entry stays remain
   const w = await world({ route: 'plugin' });
   await connect(w, w.profiles.claude, { retention: false, tee: false });
   const gone = createConnect({ ...w.ctx, detection: () => ({ agent: 'claude', state: 'not-detected' }) });
-  const u = await gone.uninstall();
+  const u = await gone.uninstall([]);
   assert.deepEqual(u.status === 'partial' && u.remaining.map((x) => [x.route, x.reason]), [['claude-plugin', 'unverified']]);
   const l = await world({ route: 'plugin' });
   recordEntry(l.dataDir, { id: '00000000-0000-4000-8000-0000000000c1', target: realpathSync(l.files.claude), route: 'claude-plugin', state: 'applied', existed: true, preHash: null, postHash: 'x', owned: [], created: [], backup: null, at: '2026-11-01T00:00:00.000Z' });
-  const lu = await l.c.uninstall();
+  const lu = await l.c.uninstall([]);
   assert.deepEqual(lu.status === 'partial' && lu.remaining.map((x) => [x.route, x.reason]), [['claude-plugin', 'legacy']]);
   assert.deepEqual(l.log(), []);
 });

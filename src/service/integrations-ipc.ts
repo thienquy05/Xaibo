@@ -11,7 +11,7 @@ import type { LoginEnv } from './catalog/env.ts';
 import type { Detection, Profile } from './catalog/detect.ts';
 import type { Catalog } from './catalog/validate.ts';
 import type { RetentionOffer } from './catalog/setup-plans.ts';
-import { deniedRootsFrom, real } from './config/bounds.ts';
+import { agentRootsFrom, deniedRootsFrom, real } from './config/bounds.ts';
 import type { ConnectContext, createConnect } from './integrations/connect.ts';
 
 export type Connect = ReturnType<typeof createConnect>;
@@ -38,7 +38,7 @@ export function connectContext(o: { dataDir: string; login: LoginEnv | null; bin
   // the packaged build keeps the temp dir only for the isolated E2E profiles (review L6); resolved once
   const allowed = [real(os.tmpdir()), ...(o.bin ? [] : [path.join(REPO, '.cache', 'profiles')])];
   return {
-    dataDir: o.dataDir, denied: o.login ? deniedRootsFrom(o.login) : null, allowed, claudeManagedDir: CLAUDE_MANAGED_DIR, helpers,
+    dataDir: o.dataDir, denied: o.login ? deniedRootsFrom(o.login) : null, realRoots: o.login ? agentRootsFrom(o.login) : null, allowed, claudeManagedDir: CLAUDE_MANAGED_DIR, helpers,
     catalog: o.catalog, detection: o.detection, cliPath: o.login?.PATH ?? null, // part 2b: Claude route selection and the plugin CLI
     ...(o.setupAccess ? { setupAccess: o.setupAccess } : {}), // XAIBO-PROD-589: report agents' setup, read fresh per call
   };

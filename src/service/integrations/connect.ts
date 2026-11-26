@@ -1,5 +1,6 @@
 // XAIBO-PROD-557 (P6-T03 part 1a; FR-30..FR-34, FR-45, EC-48, EC-73; design: Codex, .handoff/p6-t03-design.md; owner D-P6-06):
-// Connect, Disconnect and Uninstall over the FR-32 engine routes, for disposable profiles only (real profiles: P6-T12).
+// Connect, Disconnect and Uninstall over the FR-32 engine routes, for disposable profiles; real profiles only while
+// REAL_PROFILE_ENABLED (XAIBO-PROD-599, P6-T12 slice 1, D-P6-21: realBounds).
 // previewConnect builds a profile's steps (Claude: settings-fallback hooks, then the retention raise, then the default-off
 // tee; Codex: hooks plus guided trust steps, trust never written; agy: hooks; Gemini: not offered until S11) and holds them
 // in memory by preview id. applyConnect applies step 1's stored Plan unchanged and rebuilds each later step, applying it
@@ -13,6 +14,7 @@
 // plugin entry last on its file (after tee and retention) through the hardened uninstallPlugin.
 import { createHash, randomUUID } from 'node:crypto';
 import { lstatSync, realpathSync, unlinkSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isProfileKey } from '../../shared/hook-protocol.ts';
@@ -23,10 +25,10 @@ import { codexHookOps, codexTrustSteps, shimPath } from '../adapters/codex/setup
 import type { Detection, Profile } from '../catalog/detect.ts';
 import type { Catalog } from '../catalog/validate.ts';
 import { claudeConnectRoute, claudeRetentionOffer, reportOps, retentionOps, type RetentionOffer, type SetupAccess } from '../catalog/setup-plans.ts';
-import { real, writable } from '../config/bounds.ts';
+import { privateDir, real, REAL_PROFILE_ENABLED, writable } from '../config/bounds.ts';
 import { acquireLock, lockState } from '../config/lock.ts';
 import {
-  apply, BACKUP_NAME, ConfigError, dropEntry, plan, privateDirs, readFile, readManifest, revert, type Bounds, type DiffLine, type ManifestEntry, type Op, type Plan, type Route,
+  apply, BACKUP_NAME, ConfigError, dropEntry, plan, privateDirs, readFile, readManifest, revert, within, type Bounds, type DiffLine, type ManifestEntry, type Op, type Plan, type Route,
 } from '../config/transaction.ts';
 import { reconcile as scan, runsShim, XAIBO_SHIM, type Leftover, type ReconcileReport, type Target } from './reconcile.ts';
 
@@ -52,6 +54,10 @@ export interface ConnectContext {
   /** Test only (part 2a review L4): passed to the engine's apply() to inject a failure after a step's rename. The service's
    *  connectContext() never sets it. */
   afterRename?: (file: string) => void;
+  /** XAIBO-PROD-599 (code review M1): each agent's own real roots (bounds.ts agentRootsFrom); absent or null: no real profile. */
+  realRoots?: Record<string, string[]> | null;
+  /** Test only (XAIBO-PROD-599, review L8): overrides REAL_PROFILE_ENABLED. The service's connectContext() never sets it. */
+  realProfiles?: boolean;
 }
 /** teeOnly (XAIBO-PROD-580, R6): the claude-tee step alone (the separate tee); never set from a renderer selection. */
 export interface Selections { retention: boolean; tee: boolean; teeOnly?: boolean }
@@ -132,6 +138,45 @@ export function createConnect(ctx: ConnectContext) {
   const denied = ctx.denied?.length ? ctx.denied : null;
   /** The profile's own dir and the folder of the file written are both private and disposable (code review M-d: agy). */
   const permitted = (t: Target) => !!denied && writable(t.dir, ctx.allowed, denied) && writable(path.dirname(t.file), ctx.allowed, denied);
+  // XAIBO-PROD-599 (P6-T12 slice 1, D-P6-21; design review H1-H3, M6): with REAL_PROFILE_ENABLED, a real profile's native
+  // target: a default- or env-origin profile (never a renderer-chosen manual folder) whose own root is a known real root
+  // (on the denylist), never one holding a home. Bounds: the file's own folder, with every other real root and Xaibo's data
+  // dir still denied (a denied root holding the file refuses: overlapping roots), and every folder from the file's up to its
+  // own root private to this user (a link refuses). ponytail: folders above the own root are not checked (the home, or an env
+  // root's parents); check them if an env root ever sits in a shared folder.
+  const realOn = ctx.realProfiles ?? REAL_PROFILE_ENABLED;
+  const homes = [os.homedir(), os.userInfo().homedir].map(real);
+  function realBounds(p: Profile, t: Target): Bounds | null {
+    if (!realOn || !denied || (p.origin !== 'default' && p.origin !== 'env')) return null;
+    const native = targetOf(p);
+    if (!native || native.file !== t.file) return null;
+    const own = p.agent === 'agy' ? path.dirname(real(p.root)) : native.dir; // agy: <home>/.gemini
+    // code review M1: this agent's own root (never another agent's, e.g. CLAUDE_CONFIG_DIR=~/.codex), still on the denylist
+    if (!ctx.realRoots?.[p.agent]?.includes(own) || !denied.includes(own) || homes.some((h) => within(h, own))) return null;
+    const rest = [...denied.filter((x) => x !== own), real(ctx.dataDir)];
+    if (rest.some((x) => within(t.file, x))) return null;
+    for (let cur = path.dirname(t.file); ; cur = path.dirname(cur)) {
+      if (!within(cur, own) || !privateDir(cur)) return null;
+      if (cur === own) break;
+    }
+    return { root: path.dirname(t.file), denied: rest };
+  }
+  /** The disposable bounds as before, else a real profile's, else null (refused before any read). */
+  const boundsFor = (p: Profile, t: Target): Bounds | null => (permitted(t) ? { root: t.dir, denied: denied! } : realBounds(p, t));
+  const refusal = () => refused(realOn ? 'unsafe-profile' : 'real-profile');
+  /** H3: a recorded entry's bounds: disposable by its folder, else only as a currently resolved real target of one of
+   *  `profiles` (never the manifest alone; never the plugin route on a real root, decision A). */
+  const entryBounds = (e: ManifestEntry, d: string[], profiles: readonly Profile[]): Bounds | null => {
+    const dir = path.dirname(e.target);
+    if (writable(dir, ctx.allowed, d)) return { root: real(dir), denied: d };
+    if (e.route === 'claude-plugin') return null;
+    for (const p of profiles) {
+      const t = targetOf(p);
+      const b = t && t.file === e.target && t.routes.includes(e.route) ? realBounds(p, t) : null;
+      if (b) return b;
+    }
+    return null;
+  };
   /** XAIBO-PROD-589: a native agent's file, else a report agent's declared file under its profile root, only while that root is
    *  the approved one (Disconnect and removal need no grant: reversal is authorized by the manifest, design §3), and never
    *  through a linked folder (code review M2: the manifest records the resolved path, so Disconnect would miss the entry).
@@ -155,9 +200,9 @@ export function createConnect(ctx: ConnectContext) {
   const recorded = (file: string, routes: Route[]) => readManifest(ctx.dataDir).some((e) => e.target === file && routes.includes(e.route));
 
   /** Selections, profile key and helper paths are captured here, never taken from an apply request (review L1). */
-  function builders(p: Profile, t: Target, sel: Selections, report: SetupAccess | null): { plugin: Plugin | null; list: Builder[]; retention: RetentionOffer | null; trust: string[] } {
+  function builders(p: Profile, t: Target, sel: Selections, report: SetupAccess | null, bounds: Bounds): { plugin: Plugin | null; list: Builder[]; retention: RetentionOffer | null; trust: string[] } {
     const key = isProfileKey(p.id) ? p.id : fail('ops');
-    const bounds: Bounds = { root: t.dir, denied: denied! };
+    const isReal = !permitted(t); // boundsFor gave the real profile's bounds
     const shim = shimPath(ctx.dataDir);
     if (t.routes[0] === 'report-setup') {
       const a = report ?? fail('unverified'); // code review L1: the access read once by the preview, never a second store read
@@ -182,7 +227,8 @@ export function createConnect(ctx: ConnectContext) {
         plugin: null, retention: null, trust: [] }; // ponytail: no project selected, so a project's .agents/hooks.json is not inspected
     }
     const d = ctx.detection('claude');
-    const route = ctx.catalog ? claudeConnectRoute(ctx.catalog, d) : null; // D-2, D-P6-07: no chooser, never a fallback after a failure
+    // D-2, D-P6-07: no chooser, never a fallback after a failure; D-P6-21 A: never the plugin route on a real profile
+    const route = ctx.catalog ? claudeConnectRoute(ctx.catalog, d, !isReal) : null;
     if (!route || d?.state !== 'detected') return fail('unverified');
     // XAIBO-PROD-580 (R6): the separate tee: its step alone, no hooks or retention
     if (sel.teeOnly) return { plugin: null, list: [['claude-tee', () => teePlan({ dataDir: ctx.dataDir, profileKey: key, configDir: t.dir, bounds })]], retention: null, trust: [] };
@@ -229,14 +275,15 @@ export function createConnect(ctx: ConnectContext) {
     }
     const t = targetFor(p);
     if (!t) return refused('unverified');
-    if (!permitted(t)) return refused('real-profile'); // before any offer read (review H3, M4)
+    const bounds = boundsFor(p, t);
+    if (!bounds) return refusal(); // before any offer read (review H3, M4)
     if (p.agent === 'claude' && !ctx.cliPath) return refused('bounds-unavailable'); // no login PATH: like no denylist
     // part 1b review M2: the helpers apply will deploy exist, before the owner confirms (xaibo-report ships beside the hook)
     const helpers = [ctx.helpers.hook, path.join(path.dirname(ctx.helpers.hook), 'xaibo-report'), ctx.helpers.forwarder, ...(sel.tee && p.agent === 'claude' ? [ctx.helpers.statusline] : [])];
     if (!helpers.every(regularFile)) return refused('helpers-unavailable');
     let b, steps, pp: PluginPreview | null = null;
     try {
-      b = builders(p, t, sel, report);
+      b = builders(p, t, sel, report, bounds);
       if (b.plugin) pp = previewPlugin(b.plugin.o); // nothing runs, nothing is written
       steps = b.list.map(([route, build]) => ({ route, build, plan: build() }));
     } catch (e) { if (e instanceof ConfigError) return refused(e.code); throw e; }
@@ -282,7 +329,8 @@ export function createConnect(ctx: ConnectContext) {
       if (!a?.granted || a.root !== h.report.root || !isDeepStrictEqual(a.setup, h.report.setup)) return again();
     }
     const t = targetFor(h.profile);
-    if (!t || !permitted(t)) return refused('real-profile');
+    const bounds = t && boundsFor(h.profile, t);
+    if (!t || !bounds) return refusal();
     // checked before any helper is deployed: bytes, file identity and mode, as apply() / installPlugin will (review L2)
     const first = h.plugin ? h.plugin.pp.settings : h.steps[0]!.plan.preHash === null ? null : { hash: h.steps[0]!.plan.preHash, dev: h.steps[0]!.plan.dev, ino: h.steps[0]!.plan.ino, mode: h.steps[0]!.plan.mode };
     const cur = readFile(h.plugin ? h.plugin.pp.target : h.steps[0]!.plan.target);
@@ -290,7 +338,7 @@ export function createConnect(ctx: ConnectContext) {
     deployShim(ctx.dataDir, { hook: ctx.helpers.hook, forwarder: ctx.helpers.forwarder, ...(h.steps.some((s) => s.route === 'claude-tee') ? { statusline: ctx.helpers.statusline } : {}) });
     const done: ManifestEntry[] = [];
     const undo = async (code: string | null, extra: ManifestEntry[] = []): Promise<ConnectResult> => {
-      const u = await revertAll([...done, ...extra], denied);
+      const u = await revertAll([...done, ...extra], denied, [h.profile]);
       if (u.status === 'partial') return { ...u, status: 'partial', code: code ?? 'mismatch' };
       return code === null ? again() : refused(code);
     };
@@ -315,7 +363,7 @@ export function createConnect(ctx: ConnectContext) {
       if (rebuilt && !same(next, step.plan)) return await undo(null);
       let known: Set<string>;
       try { known = new Set(readManifest(ctx.dataDir).map((e) => e.id)); } catch { return await undo('failed'); } // review L-5: undone, never left half applied
-      try { done.push(apply(next, { dataDir: ctx.dataDir, bounds: { root: t.dir, denied: next.route === 'report-setup' ? reportDenied(denied) : denied }, ...(ctx.afterRename ? { afterRename: ctx.afterRename } : {}) })); } catch (e) {
+      try { done.push(apply(next, { dataDir: ctx.dataDir, bounds: next.route === 'report-setup' ? { root: t.dir, denied: reportDenied(denied) } : bounds, ...(ctx.afterRename ? { afterRename: ctx.afterRename } : {}) })); } catch (e) {
         // review M1: a step that threw after recording its entry leaves a pending entry: it is undone first
         const residue = readManifest(ctx.dataDir).filter((x) => !known.has(x.id));
         return await undo(e instanceof ConfigError ? e.code : 'failed', residue);
@@ -325,17 +373,18 @@ export function createConnect(ctx: ConnectContext) {
   }
 
   /** Newest first (manifest order is creation order, review M2); per entry: writable roots (review H3), then stop rules (L3). */
-  async function revertAll(list: ManifestEntry[], d: string[]): Promise<Outcome> {
+  async function revertAll(list: ManifestEntry[], d: string[], profiles: readonly Profile[]): Promise<Outcome> {
     const out: Outcome = { status: 'disconnected', reverted: [], conflicts: [], remaining: [] };
     const stopped = new Set<string>();
     for (const e of [...list].reverse()) {
       const at = { entry: e.id, route: e.route }, dir = path.dirname(e.target);
       const stop = (reason: string) => { out.remaining.push({ ...at, reason }); stopped.add(e.target); };
-      if (!writable(dir, ctx.allowed, d)) { stop('refused'); continue; }
+      const b = entryBounds(e, d, profiles);
+      if (!b) { stop('refused'); continue; }
       if (stopped.has(e.target)) { out.remaining.push({ ...at, reason: 'blocked' }); continue; }
       if (e.route === 'claude-plugin') { await removePlugin(e, dir, d, out, stop, () => stopped.add(e.target)); continue; }
       try {
-        const r = revert(e, { dataDir: ctx.dataDir, bounds: { root: real(dir), denied: d } });
+        const r = revert(e, { dataDir: ctx.dataDir, bounds: b });
         out.reverted.push({ ...at, result: r.result });
         if (r.conflicts.length) { out.conflicts.push(...r.conflicts.map((c) => ({ ...at, pointer: c.pointer }))); stopped.add(e.target); }
       } catch (err) { stop(err instanceof ConfigError ? err.code : 'failed'); }
@@ -367,11 +416,12 @@ export function createConnect(ctx: ConnectContext) {
     if (!denied) return refused('bounds-unavailable');
     const t = targetFor(p);
     if (!t) return refused('unverified');
-    return locked(() => revertAll(readManifest(ctx.dataDir).filter((e) => e.target === t.file && t.routes.includes(e.route)), denied));
+    return locked(() => revertAll(readManifest(ctx.dataDir).filter((e) => e.target === t.file && t.routes.includes(e.route)), denied, [p]));
   }
 
-  /** Every recorded entry, including profiles no longer detected; history and the shim stay (FR-34; orphan shim: P6-T05). */
-  const uninstall = async (): Promise<Outcome | Refused> => (denied ? locked(() => revertAll(readManifest(ctx.dataDir), denied)) : refused('bounds-unavailable'));
+  /** Every recorded entry, including profiles no longer detected; history and the shim stay (FR-34; orphan shim: P6-T05).
+   *  XAIBO-PROD-599 H3: an entry on a real root only for one of `profiles` (the live ones). */
+  const uninstall = async (profiles: readonly Profile[]): Promise<Outcome | Refused> => (denied ? locked(() => revertAll(readManifest(ctx.dataDir), denied, profiles)) : refused('bounds-unavailable'));
 
   /** A closed port's previews can never be applied: drop them (part 1b review L5). */
   const dropOwner = (owner: unknown) => {
@@ -384,7 +434,8 @@ export function createConnect(ctx: ConnectContext) {
    *  the IPC read (P6-T10). Same denylist and writable roots as every write. */
   // ponytail (code review 6): kept for its first reader, the P6-T10 IPC read; only tests read it until then
   let latest: ReconcileReport | null = null;
-  const reconcile = (profiles: readonly Profile[]) => (latest = scan({ dataDir: ctx.dataDir, denied, profiles, target: targetFor, permitted }));
+  const allowedTarget = (t: Target, p: Profile) => !!boundsFor(p, t);
+  const reconcile = (profiles: readonly Profile[]) => (latest = scan({ dataDir: ctx.dataDir, denied, profiles, target: targetFor, permitted: allowedTarget }));
   const reconciled = () => latest;
 
   // XAIBO-PROD-563 (P6-T04 part 2; slice and review C1-C8 in .handoff/p6-t04-design.md): one preview and one confirmation
@@ -392,7 +443,7 @@ export function createConnect(ctx: ConnectContext) {
   // values are already gone, so no agent profile file is written and no CLI runs; the plugin copy and a still-registered
   // marketplace stay manual (P6-T12). Previews as Connect's (TTL, single use, owner-bound, max 32) in their own map (C7).
   const cleanups = new Map<string, { profiles: readonly Profile[]; entries: ManifestEntry[]; owner: unknown; expiresAt: number; scope?: string }>();
-  const current = (profiles: readonly Profile[], held: boolean) => scan({ dataDir: ctx.dataDir, denied, profiles, target: targetFor, permitted, held });
+  const current = (profiles: readonly Profile[], held: boolean) => scan({ dataDir: ctx.dataDir, denied, profiles, target: targetFor, permitted: allowedTarget, held });
 
   /** `scope` (XAIBO-PROD-576 plan review M2): the profile the IPC asked for; one held preview per scope, busy checked first. */
   function previewCleanup(profiles: readonly Profile[], ids: readonly string[], owner?: unknown, scope?: string): CleanupPreview | Refused {
@@ -476,8 +527,9 @@ export function createConnect(ctx: ConnectContext) {
   type Pin = { hash: string; dev: number; ino: number; mode: number } | null | 'refused' | { error: string };
   // XAIBO-PROD-580 (R6): `route` limits a profile's removal to one route (the separate tee off); its own scope
   const removals = new Map<string, { scope: string | null; profile: Profile | null; target: Target | null; route: Route | null; entries: ManifestEntry[]; pins: [string, Pin][]; items: RemovalItem[]; owner: unknown; expiresAt: number }>();
-  const pinOf = (file: string, d: string[]): Pin => {
-    if (!writable(path.dirname(file), ctx.allowed, d)) return 'refused';
+  const pinOf = (e: ManifestEntry, d: string[], profiles: readonly Profile[]): Pin => {
+    const file = e.target;
+    if (!entryBounds(e, d, profiles)) return 'refused';
     // diff review M1: a target that cannot be read safely (a link, not ours, too large) is named per target; revertAll stops there
     try { const f = readFile(file); return f ? { hash: sha256(f.bytes), dev: f.dev, ino: f.ino, mode: f.mode } : null; } catch (err) { if (err instanceof ConfigError) return { error: err.code }; throw err; }
   };
@@ -495,7 +547,7 @@ export function createConnect(ctx: ConnectContext) {
     // Uninstall (a few per profile today); page it if that ever happens
     if (entries.length > REMOVAL_LIMIT) return refused('too-large');
     const pins = new Map<string, Pin>();
-    try { for (const e of entries) if (!pins.has(e.target)) pins.set(e.target, pinOf(e.target, d)); } catch (err) { return refused(err instanceof ConfigError ? err.code : 'failed'); }
+    try { for (const e of entries) if (!pins.has(e.target)) pins.set(e.target, pinOf(e, d, profiles)); } catch (err) { return refused(err instanceof ConfigError ? err.code : 'failed'); }
     const items = entries.map((e): RemovalItem => {
       const x = r.entries.find((y) => y.entry === e.id);
       const pin = pins.get(e.target);
@@ -513,7 +565,7 @@ export function createConnect(ctx: ConnectContext) {
     if (p) {
       t = targetFor(p);
       if (!t) return refused('unverified');
-      if (!permitted(t)) return refused('real-profile'); // H1: before any read
+      if (!boundsFor(p, t)) return refusal(); // H1: before any read
     }
     const s = removalScope(profiles, t, held, route);
     if ('status' in s) return s;
@@ -541,13 +593,13 @@ export function createConnect(ctx: ConnectContext) {
       if (h.profile) {
         if (!live) return refused('profile-not-found');
         const t = targetFor(live);
-        if (!t || !permitted(t) || !isDeepStrictEqual(t, h.target)) return again(); // L2
+        if (!t || !boundsFor(live, t) || !isDeepStrictEqual(t, h.target)) return again(); // L2
       }
       const s = removalScope(profiles, h.target, true, h.route);
       if ('status' in s) return s.code === 'not-connected' ? again() : s;
       // R5, M1, L1: the same entries (deep-equal), target identities and items (state, profile) as previewed
       if (!isDeepStrictEqual(s.entries, h.entries) || !isDeepStrictEqual(s.pins, h.pins) || !isDeepStrictEqual(s.items, h.items)) return again();
-      return revertAll(s.entries, d);
+      return revertAll(s.entries, d, profiles);
     });
   }
 

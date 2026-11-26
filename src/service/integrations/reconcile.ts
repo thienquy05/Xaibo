@@ -75,7 +75,8 @@ function plugin(t: Target, copy: string | null) {
 
 export function reconcile(o: {
   dataDir: string; denied: string[] | null; profiles: readonly Profile[];
-  target: (p: Profile) => Target | null; permitted: (t: Target) => boolean;
+  /** XAIBO-PROD-599: the profile too, for the real-profile policy (connect.ts boundsFor). */
+  target: (p: Profile) => Target | null; permitted: (t: Target, p: Profile) => boolean;
   /** Part 2 review C1: the caller holds the operation lock itself (cleanup's recheck), so its state is not checked. */
   held?: boolean;
 }): ReconcileReport {
@@ -90,7 +91,7 @@ export function reconcile(o: {
     const r: Reconciled = { entry: e.id, route: e.route, profileId: hit?.[0].id ?? null, state: 'unreadable', cleanup: [], manual: [] };
     if (!hit?.[1]) return { ...r, reason: 'profile-unavailable' };
     if (e.state === 'pending') return { ...r, state: 'pending-recovery' };
-    if (!o.permitted(hit[1])) return { ...r, reason: 'refused' }; // a real (non-disposable) root is never read
+    if (!o.permitted(hit[1], hit[0])) return { ...r, reason: 'refused' }; // a root outside the write policy is never read
     if (e.partial) return { ...r, state: 'drifted' };
     // code review (run 197) 2: a legacy plugin entry names no plugin folder to compare (as removePlugin, never inferred)
     if (e.route === 'claude-plugin' && !(e.profileKey && isProfileKey(e.profileKey))) return { ...r, reason: 'legacy' };

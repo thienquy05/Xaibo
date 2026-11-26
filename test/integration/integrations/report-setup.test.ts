@@ -210,7 +210,7 @@ test('Full Uninstall reverts a report-setup entry after the catalog entry and it
   const before = sha(w.file);
   assert.equal((await connect(w)).r.status, 'applied');
   w.access.value = null;
-  const u = await w.c.uninstall();
+  const u = await w.c.uninstall([]);
   assert.equal(u.status, 'disconnected', JSON.stringify(u));
   assert.equal(sha(w.file), before);
   const pv = w.c.previewRemoval([w.profile], null);
