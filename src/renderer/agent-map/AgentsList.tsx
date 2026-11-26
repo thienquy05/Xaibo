@@ -11,8 +11,8 @@ import { VirtualList } from '../components/VirtualList.tsx';
 import { formatTime } from '../model.ts';
 import { Icon } from '../status/StatusBadge.tsx';
 import { visible } from '../text.ts';
-import { AGENTS_PAGE, agentItems, agentKey, agentLabel, profileName, contentText, pageReply, pageRequest, reasonsText, receiptText, REFUSAL_TEXT, STATE, stateText, type AgentLevel } from './integrations-state.ts';
-import { emptyLevel, pageFailed, pageRefreshed, resumeLevel, type Dir } from './tree.ts';
+import { AGENTS_PAGE, agentItems, agentKey, agentLabel, profileName, contentText, pageReply, pageRequest, refreshWindow, reasonsText, receiptText, REFUSAL_TEXT, STATE, stateText, type AgentLevel } from './integrations-state.ts';
+import { emptyLevel, pageFailed, resumeLevel, type Dir } from './tree.ts';
 
 export type PageFetch = (cursor: IntegrationKey | null, limit: number) => Promise<IntegrationPageResult>;
 export interface AgentsSnapshot { level: AgentLevel; observedAt: number | null; focus: string | null }
@@ -36,6 +36,7 @@ export function AgentsList({ fetchPage, lastKnown, store, onOpen, focusTo = null
   const retry = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (retry.current) clearTimeout(retry.current); }, []);
   const seq = useRef(0); // the latest request: an older reply is dropped
+  const queued = useRef(false); // Gate 6 G6D1-2: a refresh asked for while a page loads
   const [announce, setAnnounce] = useState('');
   const say = (t: string) => setAnnounce((a) => (a === t ? `${t} ` : t));
   const prevFocused = useRef(false);
@@ -72,21 +73,19 @@ export function AgentsList({ fetchPage, lastKnown, store, onOpen, focusTo = null
    *  failure keeps what is shown. */
   const refresh = () => {
     const l = sRef.current.level;
-    if (l.loading) return;
+    if (l.loading) { queued.current = true; return; } // Gate 6 G6D1-2: run once the page settles
     if (!l.pages.length) { load('first'); return; }
     const token = ++seq.current;
-    Promise.all(l.pages.map((p) => fetchPage(p.from, AGENTS_PAGE).then((r) => ({ from: p.from, r })))).then((all) => {
+    // Gate 6 G6D1-1: the window again in sequence from fresh cursors (refreshWindow), never each page from its old cursor
+    refreshWindow(l, fetchPage).then((out) => {
       if (seq.current !== token) return;
-      if (all.some((a) => a.r.status !== 'ready')) { load('first'); return; }
-      setS((x) => ({
-        ...x,
-        level: all.reduce((lv, a) => (a.r.status === 'ready' ? pageRefreshed(lv, a.from, a.r.value.rows, a.r.value.next) : lv), x.level),
-        observedAt: Math.max(x.observedAt ?? 0, ...all.map((a) => (a.r.status === 'ready' ? a.r.observedAt : 0))),
-      }));
+      if (!out) { load('first'); return; }
+      setS((x) => ({ ...x, level: { ...out.level, loading: x.level.loading, failed: x.level.failed }, observedAt: Math.max(x.observedAt ?? 0, out.observedAt) }));
     }, () => undefined);
   };
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
+  useEffect(() => { if (!s.level.loading && queued.current) { queued.current = false; refreshRef.current(); } }, [s.level.loading]);
   useEffect(() => { if (s.level.pages.length) refresh(); else load('first'); }, []);
   const seenTick = useRef(refreshTick);
   useEffect(() => { if (refreshTick !== seenTick.current) { seenTick.current = refreshTick; refreshRef.current(); } }, [refreshTick]);

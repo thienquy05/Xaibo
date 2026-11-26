@@ -139,6 +139,8 @@ const SETTLE_MS = 4000;
 const BUNDLED = { origin: 'bundled' } as const;
 // XAIBO-PROD-590: natively ingested agents (out of start, so a rescan can start an adapter for a new profile)
 const ADAPTERS: Record<string, typeof ClaudeAdapter | typeof CodexAdapter | typeof AgyAdapter> = { claude: ClaudeAdapter, codex: CodexAdapter, agy: AgyAdapter };
+/** Gate 6 G6B-2: own entries only, so an imported id such as `constructor` never resolves to an inherited Object member. */
+const adapterClass = (agent: string) => (Object.hasOwn(ADAPTERS, agent) ? ADAPTERS[agent] : undefined);
 const RESCAN_MS = 5_000;
 /** P5-T09: the first retention run waits this long after the backfill, off readiness and behind start-up work. */
 const RETENTION_DELAY_MS = 10 * 60_000;
@@ -353,7 +355,7 @@ export async function boot(o: BootOptions): Promise<Service> {
   const adapterFor = (p: Profile) => {
     // P6-T01a slice 4 (review M6): sign-in rules from the bundled catalog only, never the merged imports (none shipped)
     const signInRules = p.agent === 'codex' ? bundled?.agents.find((x) => x.id === 'codex')?.signInRules ?? [] : [];
-    const a = new ADAPTERS[p.agent]!({ db, writer, profileId: p.id, root: p.root, accountSalt: p.agent === 'codex' ? salt : null, signInRules,
+    const a = new (adapterClass(p.agent)!)({ db, writer, profileId: p.id, root: p.root, accountSalt: p.agent === 'codex' ? salt : null, signInRules,
       ...(o.intervalMs ? { intervalMs: o.intervalMs } : {}) });
     adapters.push(a);
     adapted.add(p.id);
@@ -377,7 +379,7 @@ export async function boot(o: BootOptions): Promise<Service> {
     profiles = syncProfiles(db, profileRoots(catalog!, env, o.home, manualOf(), imported)); // stable ids; hook status reads it
     announce();
     // ponytail (code review L3): a profile gone since startup keeps its adapter until restart (ingest goes on; status drops it)
-    for (const p of profiles.filter((x) => ADAPTERS[x.agent] && !adapted.has(x.id))) {
+    for (const p of profiles.filter((x) => adapterClass(x.agent) && !adapted.has(x.id))) {
       if (stopped) break;
       const a = adapterFor(p);
       await a.watch();
@@ -483,7 +485,7 @@ export async function boot(o: BootOptions): Promise<Service> {
     salt = loadScopeSalt(o.dataDir, o.log);
     // P3-T16e: every adapter watches before any backfills, so appends to one agent's files are seen while another
     // agent's backfill runs; backfills stay one at a time.
-    for (const p of profiles.filter((x) => ADAPTERS[x.agent])) {
+    for (const p of profiles.filter((x) => adapterClass(x.agent))) {
       if (stopped) return;
       await adapterFor(p).watch();
     }

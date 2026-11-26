@@ -17,6 +17,7 @@ import { readManifest, within, type ManifestEntry } from '../config/transaction.
 import { REPORT_EVENTS } from '../../shared/report/schema.ts';
 import { GAP_WINDOW_MS } from '../status/coverage.ts';
 import type { ReconcileReport, ReconcileState } from './reconcile.ts';
+import { targetOf } from './connect.ts';
 
 const LIFECYCLE_ROUTES = new Set(['claude-plugin', 'claude-settings-fallback', 'codex-hooks', 'agy-hooks', 'report-setup']);
 /** XAIBO-PROD-589 (P6-T09a slice B): a report agent's receipt is a report lifecycle event; content chunks and usage snapshots
@@ -197,7 +198,9 @@ export function answerIntegrationDetail(d: PageDeps, key: IntegrationKey): Integ
 export function pageEvidence(o: { db: DatabaseSync; dataDir: string }): Pick<PageDeps, 'installedAt' | 'trust' | 'policy' | 'trustSteps'> {
   let manifest: ManifestEntry[] = [];
   try { manifest = readManifest(o.dataDir).filter((e) => e.state === 'applied'); } catch { /* none: nothing installed shows as such */ }
-  const lifecycle = (p: Profile) => manifest.filter((e) => LIFECYCLE_ROUTES.has(e.route) && within(e.target, p.root));
+  // Gate 6 G6A-2: a native agent's entries by the exact file Connect writes (agy's sits outside its catalog root); a report
+  // agent's under its root
+  const lifecycle = (p: Profile) => { const t = targetOf(p); return manifest.filter((e) => LIFECYCLE_ROUTES.has(e.route) && (t ? e.target === t.file : within(e.target, p.root))); };
   // code review L1: one Codex status read per profile per request, so the trust state and its steps always agree
   const codex = new Map<string, ReturnType<typeof codexHookStatus> | null>();
   const codexOf = (p: Profile) => {

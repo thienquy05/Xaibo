@@ -10,6 +10,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { consumptionByProfile } from '../../src/service/usage/consumption.ts';
+import { scopeKey } from '../../src/service/usage/snapshots.ts';
 import { answerUsage } from '../../src/service/api.ts';
 import { openStore } from '../../src/service/store/db.ts';
 import { parsePortMessage } from '../../src/shared/ipc.ts';
@@ -66,7 +67,7 @@ test('generation from the boundary at the trusted source time, else the event ge
 
 test('Codex account epochs stay apart; the epoch never leaves the service; a matching verified scope is the join key', async () => {
   const { db, session, request } = await store();
-  const verified = Number(db.prepare("INSERT INTO usage_scopes (scope_key, profile_id, agent, epoch, verified, sign_in_generation) VALUES ('kx', ?, 'codex', 'epoch-a', 1, 0)").run(X).lastInsertRowid);
+  const verified = Number(db.prepare("INSERT INTO usage_scopes (scope_key, profile_id, agent, epoch, verified, sign_in_generation) VALUES (?, ?, 'codex', 'epoch-a', 1, 0)").run(scopeKey({ profileId: X, agent: 'codex', epoch: 'epoch-a', nativeSessionId: '' }).key, X).lastInsertRowid);
   request(session(X, 'codex', 'epoch-a'), { usd: 1 });
   request(session(X, 'codex', 'epoch-b'), { usd: 2 });
   const c = consumptionByProfile(db).groups.get(X)!;
@@ -137,4 +138,12 @@ test('the usage reply lists consumption per profile (a consumption-only profile 
   assert.equal(reply.profiles.find((p) => p.profileId === C)!.consumption[0]!.estimatedUsd, 0.25, 'no quota scope needed');
   assert.deepEqual(reply.profiles.find((p) => p.profileId === X)!.consumption, []);
   assert.ok(parsePortMessage(reply));
+});
+
+test('G6E-1: the cap bounds the rows scanned, not only those returned: newer non-message rows count and mark the read limited', async () => {
+  const { db, session, request } = await store();
+  const s = session(C, 'claude');
+  request(s, { usd: 1 }); // the only message row, the oldest
+  for (let i = 0; i < 3; i++) request(s, { scope: 'turn', usd: 1 });
+  assert.equal(consumptionByProfile(db, 2).limited, true);
 });

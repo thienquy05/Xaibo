@@ -20,6 +20,26 @@ export const agentKey = (k: IntegrationKey) => `a:${k.agent}|${k.profileId ?? ''
 /** Forward cursors only: Load previous asks again from the dropped page's own cursor, as the tree does. */
 export const pageRequest = (l: AgentLevel, dir: Dir) => ({ cursor: cursorFor(l, dir), direction: 'next' as const, limit: AGENTS_PAGE });
 
+/** Gate 6 G6D1-1: a refresh refetches the resident window in sequence from its first page's cursor, each later page from the
+ *  fresh page's next (never an old cursor), as many pages as were resident; a row inserted before a boundary moves to a
+ *  later page instead of hiding one. null: a refusal (the caller starts over from the first page). */
+export async function refreshWindow(l: AgentLevel, fetch: (cursor: IntegrationKey | null, limit: number) => Promise<IntegrationPageResult>): Promise<{ level: AgentLevel; observedAt: number } | null> {
+  if (!l.pages.length) return null;
+  const pages: AgentLevel['pages'] = [];
+  let cursor = l.pages[0]!.from, next: IntegrationKey | null = null, observedAt = 0;
+  for (let i = 0; i < l.pages.length; i++) {
+    const r = await fetch(cursor, AGENTS_PAGE);
+    if (r.status !== 'ready') return null;
+    pages.push({ items: r.value.rows, from: cursor });
+    next = r.value.next;
+    observedAt = Math.max(observedAt, r.observedAt);
+    if (next === null) break;
+    cursor = next;
+  }
+  return { level: { ...l, pages, next }, observedAt };
+}
+
+
 export const REFUSAL_TEXT: Record<Refusal, string> = {
   starting: 'Agents are still being detected', unavailable: 'Agent evidence is unavailable', 'stale-cursor': 'The agent list changed; reloading',
   'too-large': 'Too many agent profiles to list', failed: "Couldn't load agents",

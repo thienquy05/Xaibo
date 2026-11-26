@@ -33,6 +33,8 @@ export type Code =
   | 'duplicate' | 'exclusive' | 'not-installed' | 'cli' | 'shim-missing' | 'route'
   // P3-T14 (claude-tee): an existing statusLine that is not a command statusLine cannot be teed.
   | 'statusline'
+  // Gate 6 G6A-1 (D-P6-08): a Claude plugin registry or settings file in a layout Xaibo does not support (never "removed").
+  | 'layout'
   // P6-T02 (EC-73): the claude-retention route only raises cleanupPeriodDays to 45 over an absent or lower readable value.
   | 'retention'
   // P6-T03 part 2a (config/lock.ts): another writer holds the operation lock; its holder is gone (never taken over).

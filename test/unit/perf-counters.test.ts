@@ -1,13 +1,16 @@
 // XAIBO-PROD-552 (D-P5-20/22 investigation, Codex round 2): content-free service counters for the perf trace. Changes
 // found by the reconciliation scan vs by a watch callback, sync failures and the in-flight count, writer commits with
 // SQL vs callback time; takePerf() resets only the per-interval sums and maxima.
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFileSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { counters, takePerf, timed } from '../../src/service/perf-counters.ts';
 import { Watcher, type Closable } from '../../src/service/watch.ts';
+
+const dirs: string[] = [];
+after(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); }); // Gate 6 G6F-2: no leaked temp folders
 import { ClaudeAdapter } from '../../src/service/adapters/claude/index.ts';
 import { claudeProfile } from '../helpers/claude-profile.ts';
 import { envelope, hookStore } from '../helpers/hook-store.ts';
@@ -24,7 +27,9 @@ test('takePerf: the counters plus per-interval timing; only the interval sums an
 });
 
 test('Watcher: a change found by the scan counts scanChanges; one reported by a watch callback counts watchChanges', async () => {
-  const f = join(mkdtempSync(join(tmpdir(), 'xperf-')), 'a.jsonl');
+  const dir = mkdtempSync(join(tmpdir(), 'xperf-'));
+  dirs.push(dir);
+  const f = join(dir, 'a.jsonl');
   writeFileSync(f, 'x\n');
   const callbacks: (() => void)[] = [];
   const watch = (_p: string, cb: () => void): Closable => { callbacks.push(cb); return { close: () => undefined, on: () => undefined }; };

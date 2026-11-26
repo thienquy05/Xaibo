@@ -16,6 +16,7 @@ import { readManifest, recordEntry, type ManifestEntry } from '../../../src/serv
 import { acquireLock } from '../../../src/service/config/lock.ts';
 import { claudeContext, writeFakeClaude } from '../../helpers/fake-claude.ts';
 import type { Profile } from '../../../src/service/catalog/detect.ts';
+import { pageEvidence } from '../../../src/service/integrations/state.ts';
 
 const dirs: string[] = [];
 after(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
@@ -439,4 +440,34 @@ test('no entries -> an empty ready report', async () => {
   const w = await world();
   assert.deepEqual(w.restart(), { status: 'ready', entries: [] });
   assert.equal(w.c.reconciled(), null, 'nothing kept before the first reconcile');
+});
+
+test('G6A-1 (D-P6-08): an unsupported registry or settings layout is unreadable, never removed, no cleanup; the v2 registry layout is read', async () => {
+  const w = await world({ route: 'plugin' });
+  await connect(w, w.profiles.claude);
+  const s = json(w.files.claude);
+  const reg = join(w.home, '.claude', 'plugins', 'installed_plugins.json'), known = join(w.home, '.claude', 'plugins', 'known_marketplaces.json');
+  const regBytes = readFileSync(reg), knownBytes = readFileSync(known);
+  put(w.files.claude, { ...s, enabledPlugins: {} }); // our key gone: only the registries decide
+  for (const [f, v] of [[reg, ['unrelated']], [reg, 'scalar'], [reg, { version: 2, plugins: ['x'] }], [known, ['xaibo']], [known, { xaibo: 'here' }]] as const) {
+    writeFileSync(f, JSON.stringify(v));
+    const r = w.restart();
+    assert.deepEqual(r.status === 'ready' && r.entries.map((e) => [e.state, e.reason, e.cleanup]), [['unreadable', 'layout', []]], JSON.stringify(v));
+    writeFileSync(reg, regBytes);
+    writeFileSync(known, knownBytes);
+  }
+  put(w.files.claude, { ...s, enabledPlugins: ['xaibo-hooks@xaibo'] });
+  const r = w.restart();
+  assert.deepEqual(r.status === 'ready' && r.entries.map((e) => [e.state, e.reason]), [['unreadable', 'layout']], 'enabledPlugins not an object');
+  put(w.files.claude, { ...s, enabledPlugins: {} });
+  writeFileSync(reg, JSON.stringify({ version: 2, plugins: JSON.parse(regBytes.toString('utf8')) }));
+  assert.deepEqual(states(w.restart()), [['claude-plugin', 'drifted']], 'v2: still installed, key gone');
+});
+
+test('G6A-2: an applied agy entry counts as installed for the agy profile (the file Connect writes, outside its catalog root)', async () => {
+  const w = await world();
+  await connect(w, w.profiles.agy);
+  const ev = pageEvidence({ db: {} as never, dataDir: w.dataDir });
+  assert.notEqual(ev.installedAt(w.profiles.agy), null);
+  assert.equal(ev.installedAt(w.profiles.codex), null);
 });

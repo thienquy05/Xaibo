@@ -1,13 +1,16 @@
 // XAIBO-PROD-569 (P6-T10 unit 1; design §6.6 Startup, plan P6-T10, OQ-P1-16; review R9): Start at login. Off by default;
 // Save sets the OS login item and reads it back (a mismatch is a failure, never a claimed success); E2E uses a file stub, never
 // the machine's login items. Both IPC directions are parsed with exact keys.
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { answerStartup, stubLoginItems, type LoginItems } from '../../src/main/startup.ts';
 import { parseStartupReply, parseStartupRequest } from '../../src/shared/ipc.ts';
+
+const dirs: string[] = [];
+after(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); }); // Gate 6 G6F-2: no leaked temp folders
 import { canSave, startupText } from '../../src/renderer/settings/startup-view.ts';
 
 const fake = (initial = false, o: { drop?: boolean; throws?: boolean } = {}) => {
@@ -43,6 +46,7 @@ test('read reports the OS value; Save sets it, reads it back, and calls a mismat
 
 test('the E2E stub keeps the value in its own file, off when absent or unreadable', () => {
   const dir = mkdtempSync(join(tmpdir(), 'xstartup-'));
+  dirs.push(dir);
   const file = join(dir, 'login-item-stub.json');
   const s = stubLoginItems(file);
   assert.equal(s.get(), false);

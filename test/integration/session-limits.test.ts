@@ -1,17 +1,21 @@
 // XAIBO-PROD-594 (P6-T08 slice E; US-8, design §6.5.2 "a reason string in the session view", D-P6-19): the open session names the
 // surfaces Xaibo has not verified for the agent's detected version (VS Code extension, Desktop app), from the catalog's
 // compatibility rows; bounded on the wire; no limits when none are known.
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, realpathSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { answerSession } from '../../src/service/api.ts';
 import { openStore } from '../../src/service/store/db.ts';
 import { parsePortMessage } from '../../src/shared/ipc.ts';
 
+const dirs: string[] = [];
+after(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); }); // Gate 6 G6F-2: no leaked temp folders
+
 test('the session detail carries the unverified surface lines for its agent; the reply is bounded', async () => {
   const d = realpathSync(mkdtempSync(join(tmpdir(), 'xsl-')));
+  dirs.push(d);
   const { db } = await openStore({ file: join(d, 'xaibo.db'), backupDir: join(d, 'b') });
   db.prepare("INSERT INTO profiles (id, agent, root, origin) VALUES ('p1', 'codex', '/tmp/xaibo-fixture/sl', 'manual')").run();
   const id = Number(db.prepare("INSERT INTO sessions (agent, profile_id, native_session_id) VALUES ('codex', 'p1', 'sl-1')").run().lastInsertRowid);

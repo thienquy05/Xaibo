@@ -386,3 +386,43 @@ test('P6-T08 import review M1: the broadcast outcome is capped so the window can
   assert.ok(parsePortMessage({ v: 1, type: 'catalogImport', result: b }));
   assert.deepEqual(boundedOutcome({ status: 'imported', agent: 'synthagent' }), { status: 'imported', agent: 'synthagent' });
 });
+
+test('G6B-1: a store write over the load limit (1 MiB) is refused too-large; the store stays byte-identical and loadable', () => {
+  const s = setup();
+  const big = (i: number) => variant((c) => {
+    const a = c.agents[0]!;
+    a.id = `big${i}`; a.detection.binaries[0]!.names = [`big${i}`]; a.profileRoots[0]!.relative = `.big${i}`;
+    a.detection.binaries[0]!.versionArgs = Array.from({ length: 4 }, () => 'a'.repeat(55_000));
+  });
+  let refused = false;
+  for (let i = 0; i < 6 && !refused; i++) {
+    const before = snapshot(s.store);
+    const r = importCatalog(s.dataDir, big(i), bundled);
+    if (r.status === 'rejected') {
+      assert.deepEqual(r.issues, [{ code: 'too-large', at: '/' }], JSON.stringify(r));
+      assert.equal(snapshot(s.store), before, 'store unchanged');
+      refused = true;
+    }
+  }
+  assert.ok(refused, 'an import past the store limit is refused');
+  assert.ok(statSync(s.store).size <= 1 << 20);
+  assert.deepEqual(loadImports(s.dataDir, bundled, s.o).issues, [], 'still loadable');
+});
+
+test('G6B-2: an imported agent id naming an Object member (constructor) gets no adapter; boot, rescan and stop work', async () => {
+  const s = setup();
+  const shell = join(s.tmp, 'login-shell');
+  writeFileSync(shell, "#!/bin/sh\nprintf 'PATH=/nonexistent-xaibo\\0'\n", { mode: 0o755 });
+  const c = variant((x) => { const a = x.agents[0]!; a.id = 'constructor'; a.detection.binaries[0]!.names = ['constructor']; a.profileRoots[0]!.relative = '.constructor'; });
+  assert.equal(importCatalog(s.dataDir, c, bundled).status, 'imported');
+  mkdirSync(join(s.home, '.constructor'));
+  assert.equal(approveRoot(s.dataDir, bundled, 'constructor', 'user', s.o), true);
+  const svc = await boot({ dataDir: s.dataDir, home: s.home, shell, catalog: bundled, allowedRoots: [s.tmp], intervalMs: 60_000 });
+  try {
+    await svc.done;
+    assert.ok(svc.profiles()?.some((p) => p.agent === 'constructor'), 'the profile is listed');
+    await svc.rescan();
+  } finally {
+    svc.stop();
+  }
+});

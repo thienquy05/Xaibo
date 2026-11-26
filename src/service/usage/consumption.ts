@@ -12,6 +12,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import type { UsageConsumption } from '../../shared/ipc.ts';
 import { notPurging } from '../history/suppression.ts';
+import { scopeKey } from './snapshots.ts';
 
 export const CONSUMPTION_ROWS = 10_000;
 export const MAX_CONSUMPTION = 64;
@@ -28,12 +29,12 @@ export function consumptionByProfile(db: DatabaseSync, cap = CONSUMPTION_ROWS, e
   const rows = db.prepare(`SELECT s.profile_id, s.account_epoch AS epoch, u.uncached_input, u.cache_read, u.cache_write, u.output, u.source_ts AS src_ts,
       coalesce(u.source_ts, ev.source_ts, ev.received_ts) AS ts, ev.received_ts AS received, ${epochs ? 'coalesce(ev.sign_in_generation, 0)' : '0'} AS eg,
       e.amount_usd, json_extract(e.coverage, '$.coverage') AS cov, (r.id IS NOT NULL) AS reported
-    FROM usage u JOIN sessions s ON s.id = u.session_id LEFT JOIN events ev ON ev.id = u.event_id
+    FROM (SELECT id FROM usage ORDER BY id DESC LIMIT ?) c JOIN usage u ON u.id = c.id JOIN sessions s ON s.id = u.session_id LEFT JOIN events ev ON ev.id = u.event_id
     LEFT JOIN cost_estimates e ON e.session_id = u.session_id AND e.covered_scope = 'usage:' || u.source || ':' || u.identity
     LEFT JOIN cost_estimates r ON r.session_id = u.session_id AND r.covered_scope = 'session:statusline' AND r.amount_usd IS NOT NULL
-    WHERE u.scope = 'message' AND ${notPurging(db)} ORDER BY u.id DESC LIMIT ?`).all(cap + 1) as Row[];
-  const limited = rows.length > cap;
-  if (limited) rows.length = cap;
+    WHERE u.scope = 'message' AND ${notPurging(db)} ORDER BY u.id DESC`).all(cap) as Row[];
+  // Gate 6 G6E-1: the cap bounds the rows scanned (any scope, purging included), not only those returned
+  const limited = db.prepare('SELECT 1 FROM usage ORDER BY id DESC LIMIT 1 OFFSET ?').get(cap) !== undefined;
   const bounds = new Map<string, { generation: number; at: number }[]>();
   if (epochs) {
     for (const b of db.prepare('SELECT profile_id, generation, at FROM sign_in_boundaries ORDER BY profile_id, generation').all() as { profile_id: string; generation: number; at: number }[]) {
@@ -41,7 +42,7 @@ export function consumptionByProfile(db: DatabaseSync, cap = CONSUMPTION_ROWS, e
     }
   }
   const genAt = (profile: string, t: number) => (bounds.get(profile) ?? []).reduce((g, b) => (b.at <= t && b.generation > g ? b.generation : g), 0);
-  const scopeOf = db.prepare(`SELECT id FROM usage_scopes WHERE profile_id = ? AND agent = 'codex' AND epoch = ? AND verified = 1${epochs ? ' AND sign_in_generation = ?' : ''}`);
+  const scopeOf = db.prepare('SELECT id FROM usage_scopes WHERE scope_key = ? AND verified = 1'); // G6E-1: the indexed key
   const groups = new Map<string, Group>();
   for (const r of rows) {
     const trusted = r.src_ts !== null && r.received !== null && r.src_ts <= r.received + SKEW_MS;
@@ -60,7 +61,8 @@ export function consumptionByProfile(db: DatabaseSync, cap = CONSUMPTION_ROWS, e
   const out = new Map<string, UsageConsumption[]>(), cut = new Set<string>();
   for (const [key, g] of groups) {
     const profile = key.slice(0, key.indexOf('|'));
-    const scope = g.epoch === null ? null : (scopeOf.get(...(epochs ? [profile, g.epoch, g.generation] : [profile, g.epoch])) as { id: number } | undefined)?.id ?? null;
+    const scope = g.epoch === null ? null
+      : (scopeOf.get(scopeKey({ profileId: profile, agent: 'codex', epoch: g.epoch, nativeSessionId: '', generation: epochs ? g.generation : 0 }).key) as { id: number } | undefined)?.id ?? null;
     const list = out.get(profile) ?? [];
     if (list.length >= MAX_CONSUMPTION) { cut.add(profile); continue; } // review L5: newest groups first; the oldest dropped, said
     list.push({ generation: g.generation, scope, tokens: g.tokens, estimatedUsd: g.estimatedUsd, coverage: g.gap || limited ? 'partial' : 'full', from: g.from, to: g.to, limited });

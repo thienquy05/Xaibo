@@ -91,7 +91,7 @@ const sha256 = (b: Buffer) => createHash('sha256').update(b).digest('hex');
 const uid = process.getuid?.();
 
 /** Design review H1: each agent's exact file and routes, used by preview and by Disconnect (never "anything under the root"). */
-function targetOf(p: Profile): Target | null {
+export function targetOf(p: Profile): Target | null {
   let root: string;
   try { root = realpathSync.native(p.root); } catch { return null; }
   if (p.agent === 'claude') return { dir: root, file: path.join(root, 'settings.json'), routes: ['claude-plugin', 'claude-settings-fallback', 'claude-retention', 'claude-tee'] };

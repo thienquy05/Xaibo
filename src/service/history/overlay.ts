@@ -126,7 +126,7 @@ export function scopeWhere(f: HistoryFilter, overlay: boolean): { where: string[
   if (f.folder !== null) { where.push('o.folder_id = ?'); args.push(f.folder); }
   if (f.group) { const g = groupWhere(f.group); where.push(...g.where); args.push(...g.args); } // P5-T01c: one map group's scope
   // XAIBO-PROD-554 (design §6.4, D-P6-05): the folder and below on a path boundary (substr, so no LIKE wildcard applies)
-  if (f.cwd !== undefined) { const c = f.cwd.replace(/\/+$/, ''); where.push('(s.cwd = ? OR substr(s.cwd, 1, ?) = ?)'); args.push(c, c.length + 1, `${c}/`); }
+  if (f.cwd !== undefined) { const c = f.cwd.replace(/\/+$/, ''); where.push('(s.cwd = ? OR substr(s.cwd, 1, ?) = ?)'); args.push(c, [...c].length + 1, `${c}/`); } // Gate 6 G6E-2: characters, as substr counts
   // activity overlapping [from, to): a start-only or activity-only session counts at the time it has
   if (f.from !== undefined && f.to !== undefined) { where.push('coalesce(s.started_at, s.last_activity) < ? AND coalesce(s.last_activity, s.started_at) >= ?'); args.push(f.to, f.from); }
   if (f.state !== undefined) {

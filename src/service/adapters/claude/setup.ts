@@ -415,13 +415,21 @@ export function pluginEvidence(configDir: string, dir: string): { enabled: unkno
     if (!c) return null;
     try { return JSON.parse(c.bytes.toString('utf8')) as unknown; } catch { return fail('invalid-json'); }
   };
-  const doc = json('settings.json'), known = json('plugins/known_marketplaces.json'), installed = json('plugins/installed_plugins.json');
-  const ep = isObj(doc) && isObj(doc['enabledPlugins']) ? doc['enabledPlugins'] : null;
-  const ours = known ? under(known, MARKETPLACE) : [];
+  // Gate 6 G6A-1 (D-P6-08): supported layouts only, exact keys; any other shape is `layout` (unreadable), never "removed":
+  // each file a JSON object; enabledPlugins absent or an object; installed_plugins keyed by plugin ref at the top level or
+  // under an object `plugins` (version 2); known_marketplaces keyed by name, ours an object.
+  const obj = (v: unknown): Record<string, unknown> | null => (v === null ? null : isObj(v) ? v : fail('layout'));
+  const doc = obj(json('settings.json')), known = obj(json('plugins/known_marketplaces.json')), reg = obj(json('plugins/installed_plugins.json'));
+  if (doc && doc['enabledPlugins'] !== undefined && !isObj(doc['enabledPlugins'])) fail('layout');
+  const ep = doc && isObj(doc['enabledPlugins']) ? doc['enabledPlugins'] : null;
+  const plugins = reg === null ? null : Object.hasOwn(reg, 'plugins') ? reg['plugins'] : reg;
+  if (plugins !== null && !isObj(plugins)) fail('layout');
+  const m = known && Object.hasOwn(known, MARKETPLACE) ? known[MARKETPLACE] : undefined;
+  if (m !== undefined && !isObj(m)) fail('layout');
   return {
     enabled: ep && Object.hasOwn(ep, PLUGIN_REF) ? ep[PLUGIN_REF] : undefined,
-    installed: !!installed && mentions(installed, PLUGIN_REF),
-    marketplace: !ours.length ? 'absent' : ours.every((t) => namesDir(t, dir)) ? 'ours' : 'foreign',
+    installed: !!plugins && Object.hasOwn(plugins, PLUGIN_REF),
+    marketplace: m === undefined ? 'absent' : namesDir(m, dir) ? 'ours' : 'foreign',
   };
 }
 

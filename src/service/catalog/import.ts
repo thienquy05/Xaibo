@@ -57,10 +57,14 @@ function readStore(dataDir: string): Entry[] | null {
   return doc['entries'] as Entry[];
 }
 
+/** Gate 6 G6B-1: a write that would exceed what loads accept (MAX_STORE) is refused; the store stays as it was. */
+class StoreFull extends Error {}
 function writeStore(dataDir: string, entries: Entry[]): void {
+  const text = JSON.stringify({ version: 1, entries });
+  if (Buffer.byteLength(text) > MAX_STORE) throw new StoreFull();
   const dir = dirOf(dataDir);
   privateDir(dir);
-  atomicWrite(path.join(dir, 'imports.json'), JSON.stringify({ version: 1, entries }), 0o600);
+  atomicWrite(path.join(dir, 'imports.json'), text, 0o600);
   fsyncDir(dir);
 }
 
@@ -144,7 +148,7 @@ export function importCatalog(dataDir: string, bytes: Uint8Array, bundled: Catal
   try { entries = readStore(dataDir) ?? []; } catch { return rejected(CORRUPT); }
   const issues = single(value, accept(entries, bundled).merged);
   if (issues.length) return rejected(issues);
-  try { writeStore(dataDir, [...entries, { catalog: value as Catalog, roots: {} }]); } catch { return rejected(CORRUPT); }
+  try { writeStore(dataDir, [...entries, { catalog: value as Catalog, roots: {} }]); } catch (e) { return rejected(e instanceof StoreFull ? [{ code: 'too-large', at: '/' }] : CORRUPT); }
   return { status: 'imported', agent: (value as Catalog).agents[0]!.id };
 }
 
