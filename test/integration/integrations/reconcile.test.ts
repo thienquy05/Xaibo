@@ -449,7 +449,8 @@ test('G6A-1 (D-P6-08): an unsupported registry or settings layout is unreadable,
   const reg = join(w.home, '.claude', 'plugins', 'installed_plugins.json'), known = join(w.home, '.claude', 'plugins', 'known_marketplaces.json');
   const regBytes = readFileSync(reg), knownBytes = readFileSync(known);
   put(w.files.claude, { ...s, enabledPlugins: {} }); // our key gone: only the registries decide
-  for (const [f, v] of [[reg, ['unrelated']], [reg, 'scalar'], [reg, { version: 2, plugins: ['x'] }], [known, ['xaibo']], [known, { xaibo: 'here' }]] as const) {
+  for (const [f, v] of [[reg, ['unrelated']], [reg, 'scalar'], [reg, { version: 2, plugins: ['x'] }], [known, ['xaibo']], [known, { xaibo: 'here' }],
+    [reg, null], [reg, { version: 2, plugins: null }], [known, null]] as const) { // G6R-1: a JSON null is not a missing file
     writeFileSync(f, JSON.stringify(v));
     const r = w.restart();
     assert.deepEqual(r.status === 'ready' && r.entries.map((e) => [e.state, e.reason, e.cleanup]), [['unreadable', 'layout', []]], JSON.stringify(v));
@@ -459,6 +460,9 @@ test('G6A-1 (D-P6-08): an unsupported registry or settings layout is unreadable,
   put(w.files.claude, { ...s, enabledPlugins: ['xaibo-hooks@xaibo'] });
   const r = w.restart();
   assert.deepEqual(r.status === 'ready' && r.entries.map((e) => [e.state, e.reason]), [['unreadable', 'layout']], 'enabledPlugins not an object');
+  writeFileSync(w.files.claude, 'null');
+  const rn = w.restart();
+  assert.deepEqual(rn.status === 'ready' && rn.entries.map((e) => [e.state, e.reason, e.cleanup]), [['unreadable', 'layout', []]], 'G6R-1: settings.json null');
   put(w.files.claude, { ...s, enabledPlugins: {} });
   writeFileSync(reg, JSON.stringify({ version: 2, plugins: JSON.parse(regBytes.toString('utf8')) }));
   assert.deepEqual(states(w.restart()), [['claude-plugin', 'drifted']], 'v2: still installed, key gone');

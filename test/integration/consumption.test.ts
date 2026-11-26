@@ -145,5 +145,7 @@ test('G6E-1: the cap bounds the rows scanned, not only those returned: newer non
   const s = session(C, 'claude');
   request(s, { usd: 1 }); // the only message row, the oldest
   for (let i = 0; i < 3; i++) request(s, { scope: 'turn', usd: 1 });
-  assert.equal(consumptionByProfile(db, 2).limited, true);
+  const r = consumptionByProfile(db, 2);
+  assert.equal(r.limited, true);
+  assert.equal(r.groups.get(C), undefined, 'G6R-3: the older message row lies past the scanned candidates');
 });

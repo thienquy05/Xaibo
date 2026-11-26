@@ -412,18 +412,19 @@ export function pluginEvidence(configDir: string, dir: string): { enabled: unkno
   try { if (lstatSync(path.join(configDir, 'plugins')).isSymbolicLink()) fail('symlink'); } catch (e) { if (e instanceof ConfigError) throw e; }
   const json = (f: string): unknown => {
     const c = readFile(path.join(configDir, f));
-    if (!c) return null;
+    if (!c) return undefined; // missing: absent (a JSON null is a value, G6R-1)
     try { return JSON.parse(c.bytes.toString('utf8')) as unknown; } catch { return fail('invalid-json'); }
   };
   // Gate 6 G6A-1 (D-P6-08): supported layouts only, exact keys; any other shape is `layout` (unreadable), never "removed":
   // each file a JSON object; enabledPlugins absent or an object; installed_plugins keyed by plugin ref at the top level or
   // under an object `plugins` (version 2); known_marketplaces keyed by name, ours an object.
-  const obj = (v: unknown): Record<string, unknown> | null => (v === null ? null : isObj(v) ? v : fail('layout'));
-  const doc = obj(json('settings.json')), known = obj(json('plugins/known_marketplaces.json')), reg = obj(json('plugins/installed_plugins.json'));
+  // G6R-1: a missing file is absent; any present document, a JSON null included, must be an object
+  const obj = (f: string): Record<string, unknown> | null => { const v = json(f); return v === undefined ? null : isObj(v) ? v : fail('layout'); };
+  const doc = obj('settings.json'), known = obj('plugins/known_marketplaces.json'), reg = obj('plugins/installed_plugins.json');
   if (doc && doc['enabledPlugins'] !== undefined && !isObj(doc['enabledPlugins'])) fail('layout');
   const ep = doc && isObj(doc['enabledPlugins']) ? doc['enabledPlugins'] : null;
   const plugins = reg === null ? null : Object.hasOwn(reg, 'plugins') ? reg['plugins'] : reg;
-  if (plugins !== null && !isObj(plugins)) fail('layout');
+  if (reg !== null && !isObj(plugins)) fail('layout'); // G6R-1: `plugins: null` too
   const m = known && Object.hasOwn(known, MARKETPLACE) ? known[MARKETPLACE] : undefined;
   if (m !== undefined && !isObj(m)) fail('layout');
   return {
