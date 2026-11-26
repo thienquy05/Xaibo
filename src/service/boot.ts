@@ -5,13 +5,13 @@
 // listens and the spool replays, before the file backfill; a full disk is logged and its hook-only gap written on recovery.
 import { statSync } from 'node:fs';
 import path from 'node:path';
-import { isActive, OUTCOMES, REASONS, RULES, type AgentStatus, type Banner, type ClearUsageResult, type PurgeResult, type ReimportResult, type RetentionSetting, type SaveRetentionResult, type LiveStatus, type NotifyState, type PriceCheck, type ServiceMetrics } from '../shared/ipc.ts';
+import { isActive, OUTCOMES, REASONS, RULES, type AgentStatus, type Banner, type ClearUsageResult, type PurgeResult, type ReimportResult, type RetentionSetting, type SaveRetentionResult, type LiveStatus, type NotifyState, type PriceCheck, type RescanResult, type ServiceMetrics } from '../shared/ipc.ts';
 import type { Logger } from '../shared/log.ts';
 import { AgyAdapter } from './adapters/agy/index.ts';
 import { ClaudeAdapter } from './adapters/claude/index.ts';
 import { CodexAdapter } from './adapters/codex/index.ts';
 import type { Ingester } from './adapters/tail-adapter.ts';
-import { detectAgent, manualPath, manualRoots, profileRoots, setManualPath, syncProfiles, type Detection, type Profile } from './catalog/detect.ts';
+import { detectAgent, manualPath, manualRoots, profileRoots, setManualPath, syncProfiles, type Detection, type ProbeGrant, type Profile } from './catalog/detect.ts';
 import { coverageBanners } from './status/coverage.ts';
 import { createEngine, type StatusEngine } from './status/engine.ts';
 import { fileObservations } from './status/feed.ts';
@@ -42,6 +42,8 @@ export interface BootOptions {
   /** XAIBO-PROD-566 (P6-T07 part 2): disposable roots an approved imported profile root must stay inside (bounds.ts
    *  writable()). None by default, so production drops every imported root until P6-T12. */
   allowedRoots?: string[];
+  /** XAIBO-PROD-590 (P6-T08 slice A): least time between rescans (monotonic ms; default 5 s). Tests only lower it. */
+  rescanCooldownMs?: number;
   /** Status clock (tests); Date.now by default. */
   now?: () => number;
   onCommit?: (batch: Batch) => void;
@@ -97,6 +99,8 @@ export interface Service {
   metrics(): Omit<ServiceMetrics, 'deltaResyncs'>;
   /** Validates and stores a manual executable path, then re-detects that agent; false if refused. */
   setPath(agent: string, file: string): Promise<boolean>;
+  /** XAIBO-PROD-590 (P6-T08 slice A; EC-79, FR-01): re-detects agents and re-syncs profiles without a restart. */
+  rescan(): Promise<RescanResult>;
   /** P3-T12: the machine sleeps from `at` (main's clock); the status engine excludes the gap from R1/R5. */
   suspend(at?: number): void;
   /** Resumes the status engine now, then reconciles every adapter at once (FR-02, bounded scans). */
@@ -120,6 +124,9 @@ export interface Service {
 const SETTLE_MS = 4000;
 // XAIBO-PROD-565/566/567 (P6-T07): bundled entries probe; imported ones run only their granted executables (part 3).
 const BUNDLED = { origin: 'bundled' } as const;
+// XAIBO-PROD-590: natively ingested agents (out of start, so a rescan can start an adapter for a new profile)
+const ADAPTERS: Record<string, typeof ClaudeAdapter | typeof CodexAdapter | typeof AgyAdapter> = { claude: ClaudeAdapter, codex: CodexAdapter, agy: AgyAdapter };
+const RESCAN_MS = 5_000;
 /** P5-T09: the first retention run waits this long after the backfill, off readiness and behind start-up work. */
 const RETENTION_DELAY_MS = 10 * 60_000;
 /** Gate 5 (perf probes): XAIBO_RETENTION_DELAY_MS overrides that wait, only under XAIBO_PERF_TRACE=1 (test only) and only
@@ -306,6 +313,69 @@ export async function boot(o: BootOptions): Promise<Service> {
   })));
   const announce = () => { const a = agents(); if (a) o.onAgents?.(a); };
 
+  // XAIBO-PROD-590 (P6-T08 slice A; EC-79, FR-01; D-P6-19, design .handoff/p6-t08-design.md with the fresh review): shared by
+  // startup and rescan. Bundled entries probe (manual path, login PATH, known locations); imported ones only through the grants
+  // loaded for this scan (P6-T07 part 3).
+  const detectAll = (grants: Map<string, ProbeGrant[]>, imp = imported) => Promise.all(catalog!.agents.map((a) => detectAgent(a, { env, home: o.home,
+    manualPath: readOnly || imp.has(a.id) ? undefined : manualPath(db, a.id), access: imp.has(a.id) ? { origin: 'imported', grants: grants.get(a.id) ?? [] } : BUNDLED, ...(o.log ? { log: o.log } : {}) })));
+  const manualOf = () => Object.fromEntries(catalog!.agents.map((a) => [a.id, manualRoots(db, a.id)]));
+  let salt: Buffer | null = null;
+  const adapted = new Set<string>(); // profile ids with an adapter
+  /** A new adapter for a profile of a natively ingested agent (watch it, then backfill). */
+  const adapterFor = (p: Profile) => {
+    // P6-T01a slice 4 (review M6): sign-in rules from the bundled catalog only, never the merged imports (none shipped)
+    const signInRules = p.agent === 'codex' ? bundled?.agents.find((x) => x.id === 'codex')?.signInRules ?? [] : [];
+    const a = new ADAPTERS[p.agent]!({ db, writer, profileId: p.id, root: p.root, accountSalt: p.agent === 'codex' ? salt : null, signInRules,
+      ...(o.intervalMs ? { intervalMs: o.intervalMs } : {}) });
+    adapters.push(a);
+    adapted.add(p.id);
+    return a;
+  };
+  let chain: Promise<unknown> = Promise.resolve();
+  const serial = <T>(fn: () => Promise<T>): Promise<T> => { const r = chain.then(fn); chain = r.catch(() => undefined); return r; };
+  let settled = false, started = false, scan: Promise<RescanResult> | null = null, lastScan = -Infinity, bg: Promise<void> = Promise.resolve();
+  /** One scan at a time (callers join it), at most one per cooldown, never while starting, read-only or stopped. The catalog
+   *  and login environment stay as loaded at startup (review M1/M2; ponytail: a PATH or env change needs a restart, and an
+   *  import added at runtime arrives with P6-T08a); grants and approved roots are reloaded for every scan (P3-3). */
+  const rescan = (): Promise<RescanResult> => {
+    const no = (code: Exclude<RescanResult, { status: 'ready' }>['code']) => Promise.resolve<RescanResult>({ status: 'refused', code });
+    if (readOnly) return no('read-only');
+    if (stopped || !db.isOpen) return no('unavailable');
+    if (!settled) return no('starting');
+    if (!started) return no('unavailable'); // code review M1: a failed startup has no hooks, salt or scheduler to scan onto
+    if (!catalog || !bundled) return no('unavailable');
+    if (scan) return scan;
+    const now = performance.now(), cooldown = o.rescanCooldownMs ?? RESCAN_MS;
+    if (now - lastScan < cooldown) return Promise.resolve({ status: 'refused', code: 'rate-limited', retryAfterMs: Math.min(60_000, Math.ceil(cooldown - (now - lastScan))) });
+    lastScan = now;
+    scan = serial(async (): Promise<RescanResult> => {
+      if (stopped || !db.isOpen) return { status: 'refused', code: 'unavailable' }; // code review L2: stopped while queued
+      const loaded = loadImports(o.dataDir, bundled!, { home: o.home, allowed: o.allowedRoots ?? [], denied: deniedRootsFrom(env) });
+      // code review H1: what is imported comes from the startup catalog, never from this load: a store that reads as corrupt
+      // now (mode, size, EMFILE) leaves its entries imported with no roots and no grants, never bundled
+      const fresh = new Map(catalog!.agents.filter((a) => !bundled!.agents.some((b) => b.id === a.id)).map((a) => [a.id, loaded.imported.get(a.id) ?? {}]));
+      const next = await detectAll(loaded.grants, fresh);
+      if (stopped) return { status: 'refused', code: 'unavailable' };
+      imported = fresh;
+      detections.splice(0, detections.length, ...next); // review M4: index.ts and Connect read this array live
+      profiles = syncProfiles(db, profileRoots(catalog!, env, o.home, manualOf(), imported)); // stable ids; hook status reads it
+      announce();
+      // ponytail (code review L3): a profile gone since startup keeps its adapter until restart (ingest goes on; status drops it)
+      for (const p of profiles.filter((x) => ADAPTERS[x.agent] && !adapted.has(x.id))) {
+        if (stopped) break;
+        const a = adapterFor(p);
+        await a.watch();
+        if (stopped) break; // code review L1
+        // the new profile's backfill runs after the reply, one at a time (code review L4; P3-T16e), never after a stop
+        bg = bg.then(() => (stopped ? undefined : a.backfill())).catch((e: unknown) => o.log?.log('rescan_backfill_failed', { error: errorCode(e) }));
+      }
+      o.log?.log('rescan', { agents: next.length, profiles: profiles.length });
+      return { status: 'ready' };
+    }).catch((e: unknown): RescanResult => { o.log?.log('rescan_failed', { error: errorCode(e) }); return { status: 'refused', code: 'failed' }; })
+      .finally(() => { scan = null; });
+    return scan;
+  };
+
   const start = async () => {
     try {
       catalog = bundled = o.catalog ?? loadCatalog();
@@ -321,8 +391,7 @@ export async function boot(o: BootOptions): Promise<Service> {
       imported = loaded.imported;
       const grants = loaded.grants; // reloaded per scan, never cached (review P3-3)
       // A read-only store may lack kv (failed first migration): detect without manual paths then.
-      detections.push(...await Promise.all(catalog.agents.map((a) => detectAgent(a, { env, home: o.home,
-        manualPath: readOnly || imported.has(a.id) ? undefined : manualPath(db, a.id), access: imported.has(a.id) ? { origin: 'imported', grants: grants.get(a.id) ?? [] } : BUNDLED, ...(o.log ? { log: o.log } : {}) }))));
+      detections.push(...await detectAll(grants));
       o.log?.log('detect', Object.fromEntries(detections.map((d) => [d.agent, d.state === 'detected'])));
     } finally { // a failed detection (e.g. a bad catalog) announces an empty list, never "detecting" forever
       detected = true;
@@ -330,8 +399,7 @@ export async function boot(o: BootOptions): Promise<Service> {
       announce();
     }
     if (stopped || readOnly) return;
-    const manual = Object.fromEntries(catalog.agents.map((a) => [a.id, manualRoots(db, a.id)]));
-    profiles = syncProfiles(db, profileRoots(catalog, env, o.home, manual, imported)); // imported ids: approved roots only (P2-1)
+    profiles = syncProfiles(db, profileRoots(catalog, env, o.home, manualOf(), imported)); // imported ids: approved roots only (P2-1)
     synced = true;
     hooks = await startHooks({
       dataDir: o.dataDir, db, writer, ...(o.log ? { log: o.log } : {}),
@@ -353,19 +421,13 @@ export async function boot(o: BootOptions): Promise<Service> {
     // redone off readiness (review M: ingest never waits for its row batches); G5a-2: again shortly after each UTC
     // midnight (today's spool file a purge still owes)
     void resume();
-    const Adapters: Record<string, typeof ClaudeAdapter | typeof CodexAdapter | typeof AgyAdapter> = { claude: ClaudeAdapter, codex: CodexAdapter, agy: AgyAdapter };
     // P3-T15: the account-marker salt (created on first boot; review L1); null = no marker, Codex scopes stay unverified
-    const salt = loadScopeSalt(o.dataDir, o.log);
+    salt = loadScopeSalt(o.dataDir, o.log);
     // P3-T16e: every adapter watches before any backfills, so appends to one agent's files are seen while another
     // agent's backfill runs; backfills stay one at a time.
-    for (const p of profiles.filter((x) => Adapters[x.agent])) {
+    for (const p of profiles.filter((x) => ADAPTERS[x.agent])) {
       if (stopped) return;
-      // P6-T01a slice 4 (review M6): sign-in rules from the bundled catalog only, never the merged imports (none shipped)
-      const signInRules = p.agent === 'codex' ? bundled?.agents.find((x) => x.id === 'codex')?.signInRules ?? [] : [];
-      const a = new Adapters[p.agent]!({ db, writer, profileId: p.id, root: p.root, accountSalt: p.agent === 'codex' ? salt : null, signInRules,
-        ...(o.intervalMs ? { intervalMs: o.intervalMs } : {}) });
-      adapters.push(a);
-      await a.watch();
+      await adapterFor(p).watch();
     }
     for (const a of adapters) {
       if (stopped) return;
@@ -373,6 +435,7 @@ export async function boot(o: BootOptions): Promise<Service> {
     }
     o.log?.log('backfill_done', { profiles: profiles.length });
     if (!stopped) scheduler.start();
+    started = !stopped; // XAIBO-PROD-590 code review M1
   };
 
   // P5-T09 (FR-12): retention after the backfill (review H1: a session continued while Xaibo was off has its new records
@@ -438,6 +501,7 @@ export async function boot(o: BootOptions): Promise<Service> {
     log: logTo });
 
   const done = start();
+  void done.then(() => { settled = true; }, () => { settled = true; }); // XAIBO-PROD-590: rescan waits for startup (review M3)
   done.catch(() => undefined); // callers observe it; this only keeps an early failure from being unhandled meanwhile
   return {
     store, detections, adapters, done, agents,
@@ -468,14 +532,17 @@ export async function boot(o: BootOptions): Promise<Service> {
     },
     async setPath(agent, file) {
       await Promise.race([detection, done.catch(() => undefined)]); // detection, not the whole backfill
-      const entry = catalog?.agents.find((a) => a.id === agent);
-      const i = detections.findIndex((d) => d.agent === agent);
-      // P6-T07 part 2 (P2-2): an imported id never gets a manual path (no stat, no kv write) until the part 3 grant
-      if (stopped || readOnly || !entry || i < 0 || imported.has(agent) || !(await setManualPath(db, agent, file))) return false;
-      detections[i] = await detectAgent(entry, { env, home: o.home, manualPath: manualPath(db, agent), access: BUNDLED, ...(o.log ? { log: o.log } : {}) });
-      announce();
-      return true;
+      return serial(async () => { // XAIBO-PROD-590 (review L1): never interleaved with a rescan
+        const entry = catalog?.agents.find((a) => a.id === agent);
+        const i = detections.findIndex((d) => d.agent === agent);
+        // P6-T07 part 2 (P2-2): an imported id never gets a manual path (no stat, no kv write) until the part 3 grant
+        if (stopped || readOnly || !entry || i < 0 || imported.has(agent) || !(await setManualPath(db, agent, file))) return false;
+        detections[i] = await detectAgent(entry, { env, home: o.home, manualPath: manualPath(db, agent), access: BUNDLED, ...(o.log ? { log: o.log } : {}) });
+        announce();
+        return true;
+      });
     },
+    rescan,
     suspend: (at) => engine?.suspend(at ?? clock()),
     wake: async () => { scheduler.wake(); engine?.resume(clock()); await Promise.all(adapters.map((a) => a.wake())); }, // sleep is no clock jump
     retention,

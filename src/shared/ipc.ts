@@ -316,6 +316,9 @@ export interface LedgerPage { months: LedgerMonth[]; quota: LedgerQuota[]; older
 export interface LedgerFilter { agent: string | null; model: string | null }
 /** P5-T16: cleared; read-only = the store refused writes; failed = the transaction did not commit (nothing changed). */
 export const CLEAR_USAGE_RESULTS = ['cleared', 'read-only', 'failed'] as const;
+/** XAIBO-PROD-590 (P6-T08 slice A, EC-79): a rescan's answer; retryAfterMs (rate-limited only) is at most a minute. */
+export const RESCAN_CODES = ['starting', 'read-only', 'rate-limited', 'unavailable', 'failed'] as const;
+export type RescanResult = { status: 'ready' } | { status: 'refused'; code: (typeof RESCAN_CODES)[number]; retryAfterMs?: number };
 export type ClearUsageResult = (typeof CLEAR_USAGE_RESULTS)[number];
 /** XAIBO-PROD-558 (P6-T03 part 1b; design review L1/L2): Connect replies, bounded; never an op, a plan or a foreign value
  *  (diff lines carry Xaibo's values and a replaced value's type + 12-hex hash only). An over-bound reply is refused by the
@@ -358,6 +361,8 @@ export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Curs
   | { v: 1; type: 'monthly'; id: number; filter: LedgerFilter; end: string | null; limit: number }
   /** P5-T16: Clear usage history (Settings, after the owner's confirmation). */
   | { v: 1; type: 'clearUsage'; id: number }
+  /** XAIBO-PROD-590: rescan agents and profiles without a restart; no argument (the service decides what is scanned). */
+  | { v: 1; type: 'agentRescan'; id: number }
   /** XAIBO-PROD-527 (P5-T18 part 1): history tools and retention/storage settings. */
   | { v: 1; type: 'search'; id: number; query: string; filter: HistoryFilter; cursor: SearchKey | null; limit: number }
   | { v: 1; type: 'purge'; id: number; session: number }
@@ -411,6 +416,7 @@ export type PortMessage =
   // P5-T17a: failed = the store could not answer (the renderer offers Retry), never an empty ledger
   | ({ v: 1; type: 'monthly'; id: number; failed?: true } & LedgerPage)
   | { v: 1; type: 'clearUsage'; id: number; result: ClearUsageResult }
+  | { v: 1; type: 'agentRescan'; id: number; result: RescanResult }
   /** capped (Gate 5 round 2 B): the bounded scan stopped before the page filled; results may be incomplete, next continues. */
   | { v: 1; type: 'search'; id: number; hits: SearchHit[]; next: SearchKey | null; failed?: true; capped?: true }
   | { v: 1; type: 'purge'; id: number; result: PurgeResult }
@@ -969,6 +975,7 @@ export function parsePortRequest(x: unknown): PortRequest | null {
     return { v: 1, type: 'usageHistory', id: m.id, scope: m.scope, stream: m.stream, from: m.from, to: m.to, cursor, limit: m.limit };
   }
   if (m?.type === 'clearUsage') return count(m.id) ? { v: 1, type: 'clearUsage', id: m.id } : null;
+  if (m?.type === 'agentRescan') return exactKeys(m, ['v', 'type', 'id']) && count(m.id) ? { v: 1, type: 'agentRescan', id: m.id } : null;
   if (m?.type === 'search') { // the query length first (design review L1)
     if (!count(m.id) || typeof m.query !== 'string' || m.query.length < 1 || m.query.length > QUERY_MAX) return null;
     const filter = parseFilter(m.filter), cursor = parseSearchKey(m.cursor);
@@ -1090,6 +1097,13 @@ export function parsePortMessage(x: unknown): PortMessage | null {
     return count(m.id) && rows && next !== undefined ? { v: 1, type: 'page', id: m.id, rows, next } : null;
   }
   if (m.type === 'clearUsage') return count(m.id) && oneOf(CLEAR_USAGE_RESULTS, m.result) ? { v: 1, type: 'clearUsage', id: m.id, result: m.result } : null;
+  if (m.type === 'agentRescan') {
+    const r = m.result, keys = isObj(r) ? Object.keys(r).sort().join() : '';
+    const ok = isObj(r) && ((r.status === 'ready' && keys === 'status')
+      || (r.status === 'refused' && oneOf(RESCAN_CODES, r.code) && (keys === 'code,status'
+        || (r.code === 'rate-limited' && keys === 'code,retryAfterMs,status' && count(r.retryAfterMs) && (r.retryAfterMs as number) <= 60_000))));
+    return exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) && ok ? { v: 1, type: 'agentRescan', id: m.id, result: r as RescanResult } : null;
+  }
   if (m.type === 'search') {
     const hits = all(m.hits, MAX_ITEMS, parseSearchHit), next = parseSearchKey(m.next), failed = failedOf(hits !== null && hits.length === 0 && next === null);
     const capped = m.capped === undefined ? {} : m.capped === true ? { capped: true as const } : null;

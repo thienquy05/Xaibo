@@ -73,6 +73,8 @@ export function createClient(port: PortLike, push: Pushes) {
     },
     /** P5-T16: Clear usage history (after the owner's confirmation). */
     async clearUsage() { return (await ask({ type: 'clearUsage' }, 'clearUsage')).result; },
+    /** XAIBO-PROD-590 (P6-T08 slice A): rescan agents and profiles without a restart. */
+    async rescan() { return (await ask({ type: 'agentRescan' }, 'agentRescan')).result; },
     // XAIBO-PROD-527 (P5-T18 part 1): history tools and retention/storage settings
     async search(query: string, filter: HistoryFilter, cursor: SearchKey | null, limit: number) {
       const { v: _v, type: _t, id: _i, ...page } = await ask({ type: 'search', query, filter, cursor, limit }, 'search');

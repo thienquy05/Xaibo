@@ -133,6 +133,8 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
         break;
       }
       // P5-T16: the ledger recomputes on the next request (never from a run read before the clear); XAIBO-PROD-526: async
+      // XAIBO-PROD-590 (P6-T08 slice A): rescan without restart; the agents broadcast follows from the service's announce
+      case 'agentRescan': void s.rescan().then((result) => port.postMessage({ v: IPC_VERSION, type: 'agentRescan', id: req.id, result } satisfies PortMessage)); break;
       case 'clearUsage': void s.clearUsage().then((result) => {
         if (result === 'cleared') ledger?.invalidate();
         port.postMessage({ v: IPC_VERSION, type: 'clearUsage', id: req.id, result } satisfies PortMessage);
