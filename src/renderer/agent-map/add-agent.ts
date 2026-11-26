@@ -22,7 +22,7 @@ export interface Wizard {
 }
 export type WizardEvent =
   | { type: 'rescan' } | { type: 'scanned'; seq: number; result: RescanResult }
-  | { type: 'agent'; agent: string } | { type: 'profile'; profileId: string }
+  | { type: 'agent'; agent: string } | { type: 'profile'; profileId: string | null }
   | { type: 'applied'; gen: number } | { type: 'receipt'; gen: number } | { type: 'next' } | { type: 'back' };
 
 /** XAIBO-PROD-593 (slice D): step 1's candidates, one per agent (detection belongs to the agent, whatever the profile), detected
@@ -51,6 +51,9 @@ export const setUp = (d: IntegrationDetail) => d.row.key.profileId !== null && d
 export const importText = (r: CatalogImportResult | null): string | null => (r === null ? null : r.status === 'imported'
   ? `Imported ${r.agent}. Restart Xaibo to list it; importing grants nothing.`
   : `Not imported: ${r.issues.map((i) => `${i.code} at ${i.at}`).join('; ')}.`);
+/** XAIBO-PROD-598 (code review M1): the chosen profile is still listed (a folder revoke can remove it); no choice counts as listed. */
+export const profileListed = (rows: readonly IntegrationRow[], agent: string, profileId: string | null) =>
+  profileId === null || rows.some((r) => r.key.agent === agent && r.key.profileId === profileId);
 export const stepKey = (w: Wizard) => `${w.gen}|${w.step}`;
 export const receiptEvent = (t: ReceiptTest, w: Wizard): WizardEvent | null =>
   (t.phase === 'received' && w.step === 'receipt' && w.applied && !w.receipt ? { type: 'receipt', gen: w.gen } : null);

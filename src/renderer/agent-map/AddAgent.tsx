@@ -4,20 +4,23 @@
 // nothing is installed), (3) the profile, (4) the configuration preview through the existing Connect diff dialog, (5) Test
 // receipt through the existing passive receipt model, (6) the result from fresh evidence, with Open integration. Next/Back/
 // Cancel stay in the region; a step change focuses its heading; Rescan waits while an apply or a receipt test runs (slice C
-// review L2). Grants for imported agents arrive with P6-T08a. Every service string goes through visible().
+// review L2). XAIBO-PROD-598 (P6-T08a slice C): step 3 shows an imported agent's grants fieldset, with or without a profile; a
+// grant or revoke reads the candidates and the detail again (a folder approval can list a profile). Every service string goes
+// through visible().
 // ponytail: candidates come from the first Agents list pages (at most 4 x 10 rows: a handful of agents); page further if needed.
 import { useEffect, useReducer, useRef, useState } from 'react';
-import { INTEGRATION_PAGE_MAX, type CatalogImportResult, type IntegrationDetail, type IntegrationKey, type IntegrationRow, type RescanResult } from '../../shared/ipc.ts';
+import { type CatalogImportResult, type IntegrationDetail, type IntegrationKey, type IntegrationRow, type RescanResult } from '../../shared/ipc.ts';
 import { visible } from '../text.ts';
-import { candidates, canNext, detailKey, importText, openWizard, previewOpen, receiptEvent, setUp, stepKey, STEP_TITLE, wizardStep, type Candidate } from './add-agent.ts';
+import { candidates, canNext, detailKey, importText, openWizard, previewOpen, profileListed, receiptEvent, setUp, stepKey, STEP_TITLE, wizardStep, type Candidate } from './add-agent.ts';
 import { contentText, reasonsText, receiptText, STATE, stateText } from './integrations-state.ts';
 import { panelActions } from './integration-dialog.ts';
 import { IntegrationDiffDialog, type Done, type WriteApi } from './IntegrationDiffDialog.tsx';
 import type { DetailFetch } from './IntegrationPanel.tsx';
 import type { PageFetch } from './AgentsList.tsx';
-import { pollTest, startTest, testText, TEST_POLL_MS, TEST_TIMEOUT_MS, type ReceiptTest } from './integration-panel.ts';
+import { GrantsFieldset, type GrantApi } from './GrantsFieldset.tsx';
+import { allRows, pollTest, startTest, testText, TEST_POLL_MS, TEST_TIMEOUT_MS, type ReceiptTest } from './integration-panel.ts';
 
-export interface AddAgentApi extends WriteApi { integrationPage: PageFetch; integrationDetail: DetailFetch; rescan(): Promise<RescanResult> }
+export interface AddAgentApi extends WriteApi, GrantApi { integrationPage: PageFetch; integrationDetail: DetailFetch; rescan(): Promise<RescanResult> }
 const SCAN: Record<string, string> = {
   starting: 'Agents are still being detected; try again shortly.', 'read-only': 'Rescan is unavailable on a read-only store.',
   'rate-limited': 'Rescanned moments ago; try again shortly.', unavailable: 'Rescan is unavailable.', failed: 'Rescan failed; the previous results are shown.',
@@ -41,20 +44,15 @@ export function AddAgent({ api, lastKnown, onCancel, onDone, onChanged, importRe
   const rowsSeq = useRef(0);
   const live = lastKnown === null;
 
-  const loadRows = async () => {
+  /** The rows read (null when superseded or failed). */
+  const loadRows = async (): Promise<IntegrationRow[] | null> => {
     const mine = ++rowsSeq.current; // review L8: the latest list read wins
-    const out: IntegrationRow[] = [];
-    let cursor: IntegrationKey | null = null;
     try {
-      for (let i = 0; i < 4; i++) {
-        const r = await api.integrationPage(cursor, INTEGRATION_PAGE_MAX);
-        if (r.status !== 'ready') throw new Error(r.code);
-        out.push(...r.value.rows);
-        cursor = r.value.next;
-        if (!cursor) break;
-      }
-      if (mine === rowsSeq.current) setRows(out);
-    } catch { if (mine === rowsSeq.current) setRows((x) => (Array.isArray(x) ? x : 'failed')); } // keep the previous evidence on a failed refresh
+      const out = await allRows(api.integrationPage);
+      if (mine !== rowsSeq.current) return null;
+      setRows(out);
+      return out;
+    } catch { if (mine === rowsSeq.current) setRows((x) => (Array.isArray(x) ? x : 'failed')); return null; } // keep the previous evidence on a failed refresh
   };
   const rescan = () => {
     const seq = w.seq + 1;
@@ -68,9 +66,9 @@ export function AddAgent({ api, lastKnown, onCancel, onDone, onChanged, importRe
   const skRef = useRef(sk);
   skRef.current = sk;
   /** Review M1/L7: a reply for another step is dropped; a failed poll keeps what is shown (only a first read or Retry fails). */
-  const loadDetail = (poll = false): Promise<{ value: IntegrationDetail; observedAt: number } | null> => {
-    if (!key) return Promise.resolve(null);
-    const k = key, at = sk;
+  const loadDetail = (poll = false, of: IntegrationKey | null = key): Promise<{ value: IntegrationDetail; observedAt: number } | null> => {
+    if (!of) return Promise.resolve(null);
+    const k = of, at = sk;
     const failed = () => { if (!poll && at === skRef.current) setDetail({ key: at, failed: true }); return null; };
     return api.integrationDetail(k).then((r) => {
       if (at !== skRef.current) return null;
@@ -84,6 +82,11 @@ export function AddAgent({ api, lastKnown, onCancel, onDone, onChanged, importRe
   const cur = detailS && detailS.key === sk ? detailS : null;
   const detail = cur ? ('failed' in cur ? 'failed' as const : cur) : null;
   const d = detail && detail !== 'failed' ? detail.value : null;
+  // XAIBO-PROD-598: the agent's grants as last read: the fieldset (its outcome and focus) stays while the detail reloads under a
+  // new key (a profile listed by a folder approval, or a cleared choice after a revoke)
+  const lastGrants = useRef<{ agent: string; grants: IntegrationDetail['grants'] } | null>(null);
+  if (d) lastGrants.current = { agent: d.row.key.agent, grants: d.grants };
+  const grantsShown = w.agent && lastGrants.current?.agent === w.agent ? lastGrants.current.grants : null;
   const test: ReceiptTest = testS && testS.key === sk ? testS.t : { phase: 'idle' };
   const setTest = (f: ReceiptTest | ((t: ReceiptTest) => ReceiptTest)) => {
     const at = sk;
@@ -113,6 +116,20 @@ export function AddAgent({ api, lastKnown, onCancel, onDone, onChanged, importRe
     onChanged();
     void loadDetail().then((r) => { setBusy(false); if (r && setUp(r.value)) send({ type: 'applied', gen: w.gen }); else heading.current?.focus(); });
   };
+  // XAIBO-PROD-598 (E2E finding): a folder approval can list a profile and a revoke can remove the chosen one (code review M1:
+  // the choice is cleared), so the detail is read through the key the fresh rows give; review M2: the latest render's state is
+  // read through a ref when the action settles, not the one from the click
+  const grantsChanged = () => {
+    onChanged();
+    return loadRows().then((r) => {
+      if (!r || !w.agent) return loadDetail();
+      const gone = !profileListed(r, w.agent, w.profileId);
+      if (gone) send({ type: 'profile', profileId: null });
+      return loadDetail(false, detailKey(r, w.agent, gone ? null : w.profileId));
+    });
+  };
+  const grantsChangedRef = useRef(grantsChanged);
+  grantsChangedRef.current = grantsChanged;
   const retry = (what: string) => <p className="x-hint">Couldn't load {what}. <button type="button" className="x-btn x-btn-quiet" onClick={() => void loadDetail()}>Retry</button></p>;
   const cands: Candidate[] = Array.isArray(rows) ? candidates(rows) : [];
   const said = testText(test), why = d ? reasonsText(d.row) : null;
@@ -152,7 +169,7 @@ export function AddAgent({ api, lastKnown, onCancel, onDone, onChanged, importRe
               </div>
             ) : null}
             <p className="x-hint" aria-live="polite">{visible(importText(importResult) ?? '')}</p>
-            <p className="x-hint">An imported agent's folder, probe and setup each need their own grant, which comes later; importing grants nothing.</p>
+            <p className="x-hint">An imported agent's folder, probe and setup each need their own grant under Profile and grants; importing grants nothing.</p>
           </>
         ) : w.step === 'prerequisites' ? (
           d ? (
@@ -167,8 +184,8 @@ export function AddAgent({ api, lastKnown, onCancel, onDone, onChanged, importRe
                 : <p className="x-hint">No compatibility evidence is recorded for this agent.</p>}
             </>
           ) : detail === 'failed' ? retry('this agent') : <p className="x-hint">Loading…</p>
-        ) : w.step === 'profile' ? (
-          d ? (d.profiles.length ? (
+        ) : w.step === 'profile' ? (<>
+          {d ? (d.profiles.length ? (
             <fieldset className="x-radios">
               <legend>Profile</legend>
               {d.profiles.map((p) => (
@@ -176,8 +193,9 @@ export function AddAgent({ api, lastKnown, onCancel, onDone, onChanged, importRe
               ))}
             </fieldset>
           ) : <p className="x-hint">No profile found: start the agent once so it creates its profile folder, then Rescan.</p>)
-            : detail === 'failed' ? retry('this agent') : <p className="x-hint">Loading…</p>
-        ) : w.step === 'preview' ? (
+            : detail === 'failed' ? retry('this agent') : <p className="x-hint">Loading…</p>}
+          {w.agent && grantsShown !== null ? <GrantsFieldset agent={w.agent} grants={grantsShown} live={live} api={api} onChanged={() => grantsChangedRef.current()} /> : null}
+        </>) : w.step === 'preview' ? (
           d && w.profileId ? (
             w.applied ? <p className="x-hint">Configuration is set up for this profile.</p>
               : panelActions(d).includes('connect') && live ? (

@@ -4,7 +4,7 @@
 // and a new client; replies owed on the old one never arrive.
 import { type CatalogImportResult, accept, IPC_VERSION, isObj, parsePortMessage } from '../shared/ipc.ts';
 import type { SignInCommand } from './usage/sign-in-view.ts';
-import type { CleanupReply, ConnectReply, IntegrationDetailResult, IntegrationKey, IntegrationPageResult, PriceOp, RemovalReply, RetentionSetting, SearchKey, SuppressedCursor } from '../shared/ipc.ts';
+import type { CleanupReply, ConnectReply, IntegrationDetailResult, IntegrationKey, IntegrationPageResult, PriceOp, RemovalReply, RetentionSetting, RevokeResult, RevokeTarget, SearchKey, SuppressedCursor } from '../shared/ipc.ts';
 import type { AgentStatus, Banner, CostDetail, Cursor, FileItem, HistoryCursor, HistoryFilter, HistoryKey, HistoryRow, LedgerFilter, MapGroup, MapNode, MCursor, ModelMarker, Named, OverlayOp, OverlayResult, Page, PortMessage, PortRequest, SessionDetail, SessionRow, SubagentItem, TCursor, ToolItem, TranscriptAt, TranscriptItem, UsageRecord } from '../shared/ipc.ts';
 
 export interface LiveSet { rows: SessionRow[]; more: boolean }
@@ -78,6 +78,8 @@ export function createClient(port: PortLike, push: Pushes) {
     async clearUsage() { return (await ask({ type: 'clearUsage' }, 'clearUsage')).result; },
     /** XAIBO-PROD-590 (P6-T08 slice A): rescan agents and profiles without a restart. */
     async rescan() { return (await ask({ type: 'agentRescan' }, 'agentRescan')).result; },
+    /** XAIBO-PROD-598 (P6-T08a slice C): revoke one grant of an imported agent; ids only (granting goes through main). */
+    async grantRevoke(agent: string, target: RevokeTarget): Promise<RevokeResult> { return (await ask({ type: 'grantRevoke', agent, target }, 'grantRevoke')).result; },
     // XAIBO-PROD-527 (P5-T18 part 1): history tools and retention/storage settings
     async search(query: string, filter: HistoryFilter, cursor: SearchKey | null, limit: number) {
       const { v: _v, type: _t, id: _i, ...page } = await ask({ type: 'search', query, filter, cursor, limit }, 'search');

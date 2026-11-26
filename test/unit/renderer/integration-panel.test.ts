@@ -5,7 +5,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { CONNECT_ROUTES, RECONCILE_STATES, type IntegrationDetail } from '../../../src/shared/ipc.ts';
-import { entryText, notifyText, pollTest, restoreTarget, startTest, teeText, testable, testText, TEST_POLL_MS, TEST_TIMEOUT_MS, type ReceiptTest } from '../../../src/renderer/agent-map/integration-panel.ts';
+import { agentRow, allRows, entryText, notifyText, pollTest, restoreTarget, startTest, teeText, testable, testText, TEST_POLL_MS, TEST_TIMEOUT_MS, type ReceiptTest } from '../../../src/renderer/agent-map/integration-panel.ts';
+import { INTEGRATION_PAGE_MAX, type IntegrationKey, type IntegrationPageResult } from '../../../src/shared/ipc.ts';
 import { formatTime } from '../../../src/renderer/model.ts';
 
 const P = '00000000-0000-4000-8000-0000000c7801', E = '00000000-0000-4000-8000-0000000c78e1';
@@ -60,4 +61,32 @@ test('optional status-line tee (Claude) and notify wrapper (Codex) are status on
 test('Back to map returns to the originating row while it is loaded, else to the heading (null)', () => {
   assert.equal(restoreTarget(['a:x|1', 'a:x|2'], 'a:x|2'), 'a:x|2');
   assert.equal(restoreTarget(['a:x|1'], 'a:x|2'), null);
+});
+
+// XAIBO-PROD-598 (P6-T08a slice C, E2E finding): a folder approval can list the imported agent's first profile, so its
+// profile-less key stops existing (and a folder revoke can remove that profile again); the panel moves to the agent's first
+// listed row instead of showing "no longer listed".
+test('allRows: the Agents list from its first pages, following next cursors; at most 4 pages; a refusal throws', async () => {
+  const row = (agent: string, profileId: string | null) => ({ ...detail({ agent }).row, key: { agent, profileId } });
+  const pages = [[row('a', null), row('b', P)], [row('c', null)]];
+  const asked: (IntegrationKey | null)[] = [];
+  const fetch = async (cursor: IntegrationKey | null, limit: number): Promise<IntegrationPageResult> => {
+    asked.push(cursor);
+    assert.equal(limit, INTEGRATION_PAGE_MAX);
+    const i = asked.length - 1, rows = pages[i] ?? [];
+    return { status: 'ready', observedAt: 1, value: { rows, previous: null, next: i < pages.length - 1 ? rows.at(-1)!.key : null } };
+  };
+  assert.deepEqual((await allRows(fetch)).map((r) => r.key), [{ agent: 'a', profileId: null }, { agent: 'b', profileId: P }, { agent: 'c', profileId: null }]);
+  assert.deepEqual(asked, [null, { agent: 'b', profileId: P }]);
+  let n = 0;
+  const endless = async (): Promise<IntegrationPageResult> => ({ status: 'ready', observedAt: 1, value: { rows: [row(`x${++n}`, null)], previous: null, next: { agent: `x${n}`, profileId: null } } });
+  assert.equal((await allRows(endless)).length, 4);
+  await assert.rejects(allRows(async () => ({ status: 'refused', code: 'starting' })), /starting/);
+});
+
+test('agentRow: the agent\'s first listed row (its first profile, or its profile-less row); null when it is not listed', () => {
+  const row = (agent: string, profileId: string | null) => ({ ...detail({ agent }).row, key: { agent, profileId } });
+  assert.deepEqual(agentRow([row('a', null), row('synthagent', E), row('synthagent', P)], 'synthagent'), { agent: 'synthagent', profileId: E });
+  assert.deepEqual(agentRow([row('synthagent', null)], 'synthagent'), { agent: 'synthagent', profileId: null });
+  assert.equal(agentRow([row('other', P)], 'synthagent'), null);
 });

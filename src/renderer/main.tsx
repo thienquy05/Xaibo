@@ -4,7 +4,8 @@ import { StrictMode, useCallback, useEffect, useLayoutEffect, useMemo, useReduce
 import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { type CatalogImportResult, parseHealth, parseStartupReply } from '../shared/ipc.ts';
-import type { AgentStatus, Banner, Health, IntegrationKey, LedgerFilter, SessionRow, StartupRequest } from '../shared/ipc.ts';
+import type { AgentStatus, Banner, GrantAsk, Health, IntegrationKey, LedgerFilter, RevokeTarget, SessionRow, StartupRequest } from '../shared/ipc.ts';
+import { askGrant } from './agent-map/grants-view.ts';
 import type { SignInCommand } from './usage/sign-in-view.ts';
 import { createClient, parseVisible, type Client, type PortLike } from './client.ts';
 import { HealthStatus } from './Health.tsx';
@@ -29,7 +30,7 @@ import type { WorkspaceApi } from './workspace/OpenSession.tsx';
 import { workspaceApiOf } from './workspace/workspace-api.ts';
 import './styles/tokens.css';
 
-declare global { interface Window { xaibo?: { setAgentPath(agent: string): void; importCatalog?(): void; paintAck(delta: number): void; revealPriceOverride?(): Promise<unknown>; startup?(request: StartupRequest): Promise<unknown> } } }
+declare global { interface Window { xaibo?: { setAgentPath(agent: string): void; importCatalog?(): void; paintAck(delta: number): void; revealPriceOverride?(): Promise<unknown>; startup?(request: StartupRequest): Promise<unknown>; grant?(request: unknown): Promise<unknown> } } }
 
 // M3 marks (P1-T14): read through the Performance API by test/perf.
 // ponytail: distinct sessions changed within one frame before the batch is dropped for a cursor resync; raise if a
@@ -173,6 +174,9 @@ function App() {
       cleanupApply: (previewId: string) => client.current?.cleanupApply(previewId) ?? Promise.resolve(notSent),
       teePreview: (profileId: string) => client.current?.teePreview(profileId) ?? gone(),
       rescan: () => client.current?.rescan() ?? Promise.resolve({ status: 'refused', code: 'unavailable' } as const), // XAIBO-PROD-593
+      // XAIBO-PROD-598: a grant goes to main (ids only; its native confirmation); a revoke over the port; no connection sends nothing
+      grant: (a: GrantAsk) => askGrant(window.xaibo?.grant, a),
+      revoke: (agent: string, t: RevokeTarget) => client.current?.grantRevoke(agent, t) ?? Promise.resolve('unavailable' as const),
       teeRemovalPreview: (profileId: string) => client.current?.teeRemovalPreview(profileId) ?? gone(),
       // XAIBO-PROD-585: without a connection a read fails and a write is unavailable (nothing was sent)
       signIn: (profileId: string, c: SignInCommand) => client.current?.signIn(profileId, c) ?? (c.op === 'read' ? gone() : Promise.resolve({ code: 'unavailable' as const, view: null })) };

@@ -23,13 +23,14 @@ import { AgentsList, type AgentsSnapshot, type PageFetch } from './AgentsList.ts
 import { agentItems, agentKey, MODES, type Mode } from './integrations-state.ts';
 import { IntegrationPanel, type DetailFetch } from './IntegrationPanel.tsx';
 import { AddAgent } from './AddAgent.tsx';
+import type { GrantApi } from './GrantsFieldset.tsx';
 import type { WriteApi } from './IntegrationDiffDialog.tsx';
 import type { SignInApi } from '../usage/SignInFieldset.tsx';
 import { restoreTarget } from './integration-panel.ts';
 import type { IntegrationKey } from '../../shared/ipc.ts';
 
 /** XAIBO-PROD-579: plus the panel's previewed writes (WriteApi). */
-export interface MapApi extends WriteApi {
+export interface MapApi extends WriteApi, GrantApi {
   mapGroups(parent: MapGroup | null, cursor: MapGroup | null, limit: number): Promise<{ groups: MapNode[]; next: MapGroup | null }>;
   history(filter: HistoryFilter, cursor: HistoryKey | null, limit: number): Promise<{ rows: HistoryRow[]; next: HistoryKey | null }>;
   historyRow(session: number): Promise<HistoryRow | null>;
@@ -346,7 +347,7 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
             onCancel={() => { setAdding(false); requestAnimationFrame(() => addRef.current?.focus()); }}
             onDone={(key) => { setAdding(false); setListTick((t) => t + 1); setPanel({ key, origin: agentKey(key) }); }} />
         ) : panel ? (
-          <IntegrationPanel key={panel.origin} fetchDetail={api.integrationDetail} write={api} signIn={api.signIn} target={panel.key} lastKnown={lastKnown} onBack={backToMap} onChanged={() => setListTick((t) => t + 1)}
+          <IntegrationPanel key={panel.origin} fetchDetail={api.integrationDetail} fetchPage={api.integrationPage} write={api} signIn={api.signIn} grants={api} target={panel.key} lastKnown={lastKnown} onBack={backToMap} onChanged={() => setListTick((t) => t + 1)}
             onProfile={(id) => setPanel((p) => (p ? { ...p, key: { agent: p.key.agent, profileId: id } } : p))} />
         ) : null) : (
         <section className="x-pane x-map-detail" aria-labelledby="map-detail-heading">

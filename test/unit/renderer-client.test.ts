@@ -275,3 +275,17 @@ test('historyRow: its own row or null; failed rejects; a row for another session
     await assert.rejects(p, /invalid reply/, JSON.stringify(bad));
   }
 });
+
+// XAIBO-PROD-598 (P6-T08a slice C): Revoke sends ids only over the port and resolves with its own result.
+test('grantRevoke: an ids-only request; the result of its own reply', async () => {
+  const f = fakePort();
+  const c = createClient(f.port, { sessions() {}, agents() {} });
+  const p = c.grantRevoke('synthagent', { kind: 'root', id: 'user' });
+  assert.deepEqual(f.sent.at(-1), { v: 1, type: 'grantRevoke', id: 1, agent: 'synthagent', target: { kind: 'root', id: 'user' } });
+  f.deliver({ v: 1, type: 'grantRevoke', id: 1, result: 'revoked' });
+  assert.equal(await p, 'revoked');
+  const s = c.grantRevoke('synthagent', { kind: 'setup' });
+  assert.deepEqual(f.sent.at(-1), { v: 1, type: 'grantRevoke', id: 2, agent: 'synthagent', target: { kind: 'setup' } });
+  f.deliver({ v: 1, type: 'grantRevoke', id: 2, result: 'granted' });
+  await assert.rejects(s, /invalid reply/);
+});

@@ -14,7 +14,9 @@ import { contentText, reasonsText, receiptText, STATE, stateText } from './integ
 import { panelActions, teeHint, teeToggle, type DialogAction, type PanelAction } from './integration-dialog.ts';
 import { IntegrationDiffDialog, type Done, type WriteApi } from './IntegrationDiffDialog.tsx';
 import { SignInFieldset, type SignInApi } from '../usage/SignInFieldset.tsx';
-import { entryText, notifyText, pollTest, startTest, teeText, testable, testText, TEST_POLL_MS, TEST_TIMEOUT_MS, type ReceiptTest } from './integration-panel.ts';
+import { GrantsFieldset, type GrantApi } from './GrantsFieldset.tsx';
+import type { PageFetch } from './AgentsList.tsx';
+import { agentRow, allRows, entryText, notifyText, pollTest, startTest, teeText, testable, testText, TEST_POLL_MS, TEST_TIMEOUT_MS, type ReceiptTest } from './integration-panel.ts';
 
 export type DetailFetch = (key: IntegrationKey) => Promise<IntegrationDetailResult>;
 const REFUSED: Record<(typeof DETAIL_REFUSALS)[number], string> = {
@@ -22,8 +24,8 @@ const REFUSED: Record<(typeof DETAIL_REFUSALS)[number], string> = {
 };
 const ACTION: Record<PanelAction, string> = { connect: 'Connect', disconnect: 'Disconnect', uninstall: 'Full Uninstall', cleanup: 'Clean up' };
 
-export function IntegrationPanel({ fetchDetail, write, signIn, target, lastKnown, onBack, onProfile, onChanged }: {
-  fetchDetail: DetailFetch; write: WriteApi; signIn: SignInApi; target: IntegrationKey; lastKnown: string | null; onBack: () => void; onProfile: (profileId: string) => void;
+export function IntegrationPanel({ fetchDetail, fetchPage, write, signIn, grants, target, lastKnown, onBack, onProfile, onChanged }: {
+  fetchDetail: DetailFetch; fetchPage: PageFetch; write: WriteApi; signIn: SignInApi; grants: GrantApi; target: IntegrationKey; lastKnown: string | null; onBack: () => void; onProfile: (profileId: string | null) => void;
   /** An apply was sent: evidence elsewhere (the Agents list) may have changed. */
   onChanged: () => void;
 }) {
@@ -65,6 +67,21 @@ export function IntegrationPanel({ fetchDetail, write, signIn, target, lastKnown
   const profilesRef = useRef<{ id: string; label: string }[]>([]);
   if (d) profilesRef.current = d.profiles;
   const profiles = profilesRef.current;
+  const nameRef = useRef(target.agent); // the heading keeps the agent's name while another key loads
+  if (d) nameRef.current = d.row.name;
+  // XAIBO-PROD-598: an imported agent's grants as last read: the fieldset stays (with its outcome and focus) while the panel
+  // reloads or moves to the agent's first row after a folder approval listed a profile or a revoke removed it (E2E finding)
+  const grantsRef = useRef<IntegrationDetail['grants']>(null);
+  if (d) grantsRef.current = d.grants;
+  const alive = useRef(true); // code review L3: a reread that settles after this panel closed never moves another panel
+  useEffect(() => () => { alive.current = false; }, []);
+  const grantsChanged = async () => {
+    onChanged();
+    const r = await load();
+    if (!alive.current || r?.status !== 'refused' || r.code !== 'not-found') return;
+    const k = agentRow(await allRows(fetchPage).catch(() => []), targetRef.current.agent);
+    if (alive.current && k && k.profileId !== targetRef.current.profileId) onProfile(k.profileId);
+  };
   // XAIBO-PROD-579: the dialog keeps the detail it opened with while a reload runs; actions wait for that reload
   const detailRef = useRef<IntegrationDetail | null>(null);
   if (d) detailRef.current = d;
@@ -95,7 +112,7 @@ export function IntegrationPanel({ fetchDetail, write, signIn, target, lastKnown
   return (
     <section className="x-pane x-map-detail x-integration" aria-labelledby="integration-heading">
       <div className="x-pane-head">
-        <h2 id="integration-heading" ref={heading} tabIndex={-1}>Integration: {visible(d?.row.name ?? target.agent)}</h2>
+        <h2 id="integration-heading" ref={heading} tabIndex={-1}>Integration: {visible(nameRef.current)}</h2>
         <button type="button" className="x-btn x-btn-quiet" onClick={onBack}><Icon id="back" />Back to map</button>
       </div>
       <div className="x-map-detail-body">
@@ -106,6 +123,7 @@ export function IntegrationPanel({ fetchDetail, write, signIn, target, lastKnown
             </select>
           </label>
         ) : d ? <p className="x-agent-sub">Profile: {d.row.profileLabel === null ? 'No profile' : visible(d.row.profileLabel)}</p> : null}
+        {grantsRef.current !== null ? <GrantsFieldset agent={target.agent} grants={grantsRef.current} live={lastKnown === null} api={grants} onChanged={grantsChanged} /> : null}
         {res === 'loading' ? <p className="x-hint">Loading integration…</p>
           : !d || !ready ? <p className="x-hint">{res === 'error' || typeof res !== 'object' || res.status !== 'refused' ? REFUSED.failed : REFUSED[res.code]}. <button type="button" className="x-btn x-btn-quiet" onClick={() => void load()}>Retry</button></p>
           : (

@@ -4,7 +4,7 @@
 // the click) and after the current install boundary, so an old or replayed delivery, or one from before a reinstall, never
 // counts. Texts for the reconcile entries and the status-only tee and notify lines. Rendering lives in IntegrationPanel.tsx.
 // ponytail: bounded polling while the panel shows; push delivery only if measured latency warrants it.
-import type { IntegrationDetail, IntegrationRow, RemovalItem } from '../../shared/ipc.ts';
+import { INTEGRATION_PAGE_MAX, type IntegrationDetail, type IntegrationKey, type IntegrationPageResult, type IntegrationRow, type RemovalItem } from '../../shared/ipc.ts';
 import { formatTime } from '../model.ts';
 
 export const TEST_POLL_MS = 2_000, TEST_TIMEOUT_MS = 60_000;
@@ -53,3 +53,21 @@ export const notifyText = (d: IntegrationDetail) => (d.row.key.agent === 'codex'
 /** Back to map: the originating row while loaded; null = the Agents heading. ponytail: no next/previous-row fallback (rows are
  *  not removed from the panel until unit 5's actions). */
 export const restoreTarget = (keys: readonly string[], origin: string) => (keys.includes(origin) ? origin : null);
+
+/** XAIBO-PROD-598: the Agents list rows from its first pages; a refusal throws. ponytail: at most 4 pages of
+ *  INTEGRATION_PAGE_MAX rows (a handful of agents); page further if needed. */
+export async function allRows(fetch: (cursor: IntegrationKey | null, limit: number) => Promise<IntegrationPageResult>): Promise<IntegrationRow[]> {
+  const out: IntegrationRow[] = [];
+  let cursor: IntegrationKey | null = null;
+  for (let i = 0; i < 4; i++) {
+    const r = await fetch(cursor, INTEGRATION_PAGE_MAX);
+    if (r.status !== 'ready') throw new Error(r.code);
+    out.push(...r.value.rows);
+    cursor = r.value.next;
+    if (!cursor) break;
+  }
+  return out;
+}
+/** XAIBO-PROD-598 (E2E finding): a folder approval can list an imported agent's first profile (its profile-less key is then
+ *  gone) and a folder revoke can remove it again; the panel moves to the agent's first listed row. */
+export const agentRow = (rows: readonly IntegrationRow[], agent: string): IntegrationKey | null => rows.find((r) => r.key.agent === agent)?.key ?? null;

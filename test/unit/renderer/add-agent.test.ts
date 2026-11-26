@@ -3,7 +3,7 @@
 // after an applied preview and a receipt.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { candidates, canNext, detailKey, importText, openWizard, previewOpen, setUp, receiptEvent, stepKey, STEPS, wizardStep, type Wizard, type WizardEvent } from '../../../src/renderer/agent-map/add-agent.ts';
+import { candidates, canNext, detailKey, importText, openWizard, previewOpen, profileListed, setUp, receiptEvent, stepKey, STEPS, wizardStep, type Wizard, type WizardEvent } from '../../../src/renderer/agent-map/add-agent.ts';
 import type { IntegrationDetail, IntegrationRow } from '../../../src/shared/ipc.ts';
 
 const P = '00000000-0000-4000-8000-0000000aa001', Q = '00000000-0000-4000-8000-0000000aa002';
@@ -178,4 +178,20 @@ test('importText: imported names the agent, a restart and that nothing is grante
   assert.equal(importText({ status: 'imported', agent: 'synthagent' }), 'Imported synthagent. Restart Xaibo to list it; importing grants nothing.');
   assert.equal(importText({ status: 'rejected', issues: [{ code: 'shadow', at: '/agents/0/id' }, { code: 'schema-invalid', at: '/agents/0' }] }),
     'Not imported: shadow at /agents/0/id; schema-invalid at /agents/0.');
+});
+
+// XAIBO-PROD-598 (P6-T08a slice C, code review M1): revoking a folder can remove the chosen profile; the wizard then clears the
+// choice (staying on Profile and grants) instead of reading a profile that is gone.
+test('profileListed and a cleared profile choice', () => {
+  const row = (agent: string, profileId: string | null) => ({ key: { agent, profileId } } as IntegrationRow);
+  const A = '00000000-0000-4000-8000-0000000c8a01';
+  assert.equal(profileListed([row('synthagent', A)], 'synthagent', A), true);
+  assert.equal(profileListed([row('synthagent', null)], 'synthagent', A), false);
+  assert.equal(profileListed([row('other', A)], 'synthagent', A), false);
+  assert.equal(profileListed([], 'synthagent', null), true, 'no choice: nothing to clear');
+  let w = run(openWizard(), { type: 'scanned', seq: 1, result: { status: 'ready' } }, { type: 'agent', agent: 'synthagent' }, { type: 'next' }, { type: 'next' }, { type: 'profile', profileId: A });
+  assert.equal(w.step, 'profile');
+  const gen = w.gen;
+  w = wizardStep(w, { type: 'profile', profileId: null });
+  assert.deepEqual([w.step, w.profileId, w.gen, canNext(w)], ['profile', null, gen + 1, false]);
 });
