@@ -9,7 +9,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { boot } from '../../../src/service/boot.ts';
 import { profileRoots } from '../../../src/service/catalog/detect.ts';
-import { approveRoot, grantProbe, grantSetup, importCatalog, loadImports } from '../../../src/service/catalog/import.ts';
+import { approveRoot, boundedOutcome, grantProbe, grantSetup, importCatalog, importCatalogFile, loadImports } from '../../../src/service/catalog/import.ts';
+import { parsePortMessage, parseServiceCommand } from '../../../src/shared/ipc.ts';
 import { loadCatalog, type Catalog } from '../../../src/service/catalog/validate.ts';
 import { deniedRootsFrom } from '../../../src/service/config/bounds.ts';
 import { openStore } from '../../../src/service/store/db.ts';
@@ -339,4 +340,49 @@ test('P6-T09a code review: grantSetup refuses a stored entry the validator rejec
   const l = loadImports(s.dataDir, bundled, s.o);
   assert.deepEqual([...l.setup], []);
   assert.ok(l.issues.some((i) => i.code === 'schema-invalid'));
+});
+
+// XAIBO-PROD-595 (P6-T08 slice E part 2; D-P6-19 1a, EC-78): import through the native picker. main forwards only the path the
+// owner picked; the service reads it bounded (no link, regular file, 256 KiB) and runs importCatalog; the result carries an
+// agent id or fixed codes and pointers only. Importing grants nothing.
+test('P6-T08: importCatalogFile reads one bounded regular file and imports it; links, folders and oversize are refused', () => {
+  const s = setup();
+  const file = join(s.tmp, 'entry.json');
+  writeFileSync(file, bytes('valid/synthagent.json'));
+  assert.deepEqual(importCatalogFile(s.dataDir, bundled, file), { status: 'imported', agent: 'synthagent' });
+  assert.deepEqual(loadImports(s.dataDir, bundled, s.o).grants.get('synthagent'), [], 'no grant from an import');
+  assert.deepEqual([...loadImports(s.dataDir, bundled, s.o).setup], []);
+  const before = snapshot(s.store);
+  const link = join(s.tmp, 'link.json');
+  symlinkSync(file, link);
+  assert.deepEqual(importCatalogFile(s.dataDir, bundled, link), { status: 'rejected', issues: [{ code: 'unreadable', at: '/' }] });
+  assert.deepEqual(importCatalogFile(s.dataDir, bundled, s.tmp), { status: 'rejected', issues: [{ code: 'unreadable', at: '/' }] });
+  assert.deepEqual(importCatalogFile(s.dataDir, bundled, join(s.tmp, 'missing.json')), { status: 'rejected', issues: [{ code: 'unreadable', at: '/' }] });
+  const big = join(s.tmp, 'big.json');
+  writeFileSync(big, Buffer.alloc(256 * 1024 + 1, 0x20));
+  assert.deepEqual(importCatalogFile(s.dataDir, bundled, big), { status: 'rejected', issues: [{ code: 'too-large', at: '/' }] });
+  assert.equal(snapshot(s.store), before, 'refusals never change the store');
+});
+
+test('P6-T08: the importCatalog command takes one absolute path; the catalogImport broadcast is bounded', () => {
+  assert.deepEqual(parseServiceCommand({ v: 1, type: 'importCatalog', path: '/tmp/xaibo-fixture/entry.json' }), { v: 1, type: 'importCatalog', path: '/tmp/xaibo-fixture/entry.json' });
+  for (const bad of [{ path: 'entry.json' }, { path: '/tmp/a' + String.fromCharCode(0) + 'b' }, { path: '/'.padEnd(4097, 'x') }, {}]) {
+    assert.equal(parseServiceCommand({ v: 1, type: 'importCatalog', ...bad }), null, JSON.stringify(bad));
+  }
+  const msg = (result: unknown) => parsePortMessage({ v: 1, type: 'catalogImport', result });
+  assert.ok(msg({ status: 'imported', agent: 'synthagent' }));
+  assert.ok(msg({ status: 'rejected', issues: [{ code: 'shadow', at: '/agents/0/id' }] }));
+  for (const bad of [{ status: 'imported', agent: 'Bad Id' }, { status: 'rejected', issues: Array.from({ length: 33 }, () => ({ code: 'shadow', at: '/' })) },
+    { status: 'rejected', issues: [{ code: 'Shadow!', at: '/' }] }, { status: 'rejected', issues: [{ code: 'shadow', at: 'x'.repeat(257) }] }, { status: 'done' }]) {
+    assert.equal(msg(bad), null, JSON.stringify(bad));
+  }
+});
+
+test('P6-T08 import review M1: the broadcast outcome is capped so the window can always read it (32 issues, 256-char pointers)', () => {
+  const many = { status: 'rejected' as const, issues: Array.from({ length: 40 }, (_, i) => ({ code: 'schema-invalid' as const, at: i === 0 ? '/'.padEnd(300, 'a') : `/agents/0/x${i}` })) };
+  const b = boundedOutcome(many);
+  assert.equal(b.status === 'rejected' && b.issues.length, 32);
+  assert.ok(b.status === 'rejected' && b.issues.every((i) => i.at.length <= 256));
+  assert.ok(parsePortMessage({ v: 1, type: 'catalogImport', result: b }));
+  assert.deepEqual(boundedOutcome({ status: 'imported', agent: 'synthagent' }), { status: 'imported', agent: 'synthagent' });
 });

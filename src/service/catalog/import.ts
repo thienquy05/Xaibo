@@ -9,7 +9,7 @@
 // owner's grant to run one binary's version probe; every load keeps a grant only while its entry digest, declared binary
 // and approved root still hold (each rescan reloads; a grants map is never reused, P3-3); grants die with their entry (P3-8).
 import { createHash } from 'node:crypto';
-import { lstatSync, realpathSync, statSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { isObj } from '../../shared/ipc.ts';
 import { writable } from '../config/bounds.ts';
@@ -18,7 +18,7 @@ import { atomicWrite, fsyncDir, privateDir } from '../fs-private.ts';
 import { probeable, type ProbeGrant } from './detect.ts';
 import { catalogIssues, type AgentEntry, type Catalog, type CatalogCode } from './validate.ts';
 
-export type ImportCode = CatalogCode | 'too-large' | 'invalid-json' | 'store-corrupt';
+export type ImportCode = CatalogCode | 'too-large' | 'invalid-json' | 'store-corrupt' | 'unreadable';
 export interface ImportIssue { code: ImportCode; at: string }
 /** Where an imported profile root may be: disposable roots only until P6-T12 (production passes allowed = []). */
 export interface RootPolicy { home: string; allowed: string[]; denied: string[] | null }
@@ -225,3 +225,27 @@ export function grantSetup(dataDir: string, bundled: Catalog, agentId: string, o
     return false;
   }
 }
+
+/** XAIBO-PROD-595 (P6-T08 slice E part 2; D-P6-19 1a): a file the owner picked in main's native dialog. Read here, bounded: no
+ *  link (O_NOFOLLOW), a regular file, at most 256 KiB (one byte over is too-large); then importCatalog. Grants nothing. */
+export function importCatalogFile(dataDir: string, bundled: Catalog, file: string): ReturnType<typeof importCatalog> {
+  const no = (code: ImportCode) => ({ status: 'rejected' as const, issues: [{ code, at: '/' }] });
+  let fd: number | undefined;
+  try {
+    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const st = fstatSync(fd);
+    if (!st.isFile()) return no('unreadable');
+    if (st.size > MAX_INPUT) return no('too-large');
+    const buf = Buffer.alloc(MAX_INPUT + 1);
+    const n = readSync(fd, buf, 0, buf.length, 0);
+    return n > MAX_INPUT ? no('too-large') : importCatalog(dataDir, buf.subarray(0, n), bundled);
+  } catch {
+    return no('unreadable');
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+/** Import review M1: the outcome as broadcast, capped so the window's parser always accepts it (32 issues, 256-char pointers). */
+export const boundedOutcome = (r: ReturnType<typeof importCatalog>): ReturnType<typeof importCatalog> =>
+  (r.status === 'imported' ? r : { status: 'rejected', issues: r.issues.slice(0, 32).map((i) => ({ code: i.code, at: i.at.slice(0, 256) })) });

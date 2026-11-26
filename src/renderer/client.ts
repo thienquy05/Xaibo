@@ -2,7 +2,7 @@
 // pushed deltas and agent status go to their handlers; every message is validated (src/shared/ipc.ts) and invalid ones
 // are counted; an invalid reply rejects its request, so the caller can recover. A service restart brings a new port
 // and a new client; replies owed on the old one never arrive.
-import { accept, IPC_VERSION, isObj, parsePortMessage } from '../shared/ipc.ts';
+import { type CatalogImportResult, accept, IPC_VERSION, isObj, parsePortMessage } from '../shared/ipc.ts';
 import type { SignInCommand } from './usage/sign-in-view.ts';
 import type { CleanupReply, ConnectReply, IntegrationDetailResult, IntegrationKey, IntegrationPageResult, PriceOp, RemovalReply, RetentionSetting, SearchKey, SuppressedCursor } from '../shared/ipc.ts';
 import type { AgentStatus, Banner, CostDetail, Cursor, FileItem, HistoryCursor, HistoryFilter, HistoryKey, HistoryRow, LedgerFilter, MapGroup, MapNode, MCursor, ModelMarker, Named, OverlayOp, OverlayResult, Page, PortMessage, PortRequest, SessionDetail, SessionRow, SubagentItem, TCursor, ToolItem, TranscriptAt, TranscriptItem, UsageRecord } from '../shared/ipc.ts';
@@ -14,6 +14,8 @@ export interface Pushes {
   sessions(rows: SessionRow[], delta?: number): void; agents(agents: AgentStatus[] | null): void; coverage?(banners: Banner[]): void;
   /** P4-T10c1: the service dropped a delta too large to send; reload by cursor. */
   resync?(): void;
+  /** XAIBO-PROD-595: a catalog import's outcome (after the owner picked a file in main's dialog). */
+  catalogImport?(result: CatalogImportResult): void;
 }
 
 /** P4-T02: main's window hide/show, forwarded by the preload as `{ xaiboVisible: boolean }`; anything else is null. */
@@ -38,6 +40,7 @@ export function createClient(port: PortLike, push: Pushes) {
     } else if (m.type === 'sessions') push.sessions(m.rows, m.delta);
     else if (m.type === 'coverage') push.coverage?.(m.banners);
     else if (m.type === 'resync') push.resync?.();
+    else if (m.type === 'catalogImport') push.catalogImport?.(m.result);
     else push.agents(m.agents);
   });
   port.onmessage = (e) => {

@@ -15,7 +15,9 @@ export const READ_ONLY_BANNER: Record<ReadOnlyReason, string> = {
  *  reloadPrices re-reads the private price override (P2-T09; sent by Settings in P6-T11). */
 export type ServiceCommand = { v: 1; type: 'quit' | 'wake' | 'port' | 'reloadPrices' } | { v: 1; type: 'setPath'; agent: string; path: string }
   /** P3-T12: the machine is about to sleep; `at` is main's clock at the power event (ms since epoch). */
-  | { v: 1; type: 'suspend'; at: number };
+  | { v: 1; type: 'suspend'; at: number }
+  /** XAIBO-PROD-595: a catalog entry file the user picked in the native dialog (read and validated by the service). */
+  | { v: 1; type: 'importCatalog'; path: string };
 /** service -> main; notify (P3-T11, EC-59) carries only the agent display name, the approved project label (null until
  *  one exists, FR-10) and the wait state. */
 export type NotifyState = 'waiting-for-permission' | 'needs-input';
@@ -53,6 +55,7 @@ export function parseServiceCommand(x: unknown): ServiceCommand | null {
   if (!m) return null;
   if (oneOf(['quit', 'wake', 'port', 'reloadPrices'] as const, m.type)) return { v: 1, type: m.type };
   if (m.type === 'suspend') return Number.isFinite(m.at) && (m.at as number) > 0 ? { v: 1, type: 'suspend', at: m.at as number } : null;
+  if (m.type === 'importCatalog') return text(m.path, 4096) && m.path.startsWith('/') && !m.path.includes('\0') ? { v: 1, type: 'importCatalog', path: m.path } : null;
   if (m.type !== 'setPath' || !text(m.agent) || !AGENT_ID.test(m.agent)) return null;
   if (!text(m.path, 4096) || !m.path.startsWith('/') || m.path.includes('\0')) return null;
   return { v: 1, type: 'setPath', agent: m.agent, path: m.path };
@@ -317,6 +320,8 @@ export interface LedgerPage { months: LedgerMonth[]; quota: LedgerQuota[]; older
 export interface LedgerFilter { agent: string | null; model: string | null }
 /** P5-T16: cleared; read-only = the store refused writes; failed = the transaction did not commit (nothing changed). */
 export const CLEAR_USAGE_RESULTS = ['cleared', 'read-only', 'failed'] as const;
+/** XAIBO-PROD-595: a catalog import's outcome, broadcast to the windows: the agent id, or fixed codes and pointers only. */
+export type CatalogImportResult = { status: 'imported'; agent: string } | { status: 'rejected'; issues: { code: string; at: string }[] };
 /** XAIBO-PROD-590 (P6-T08 slice A, EC-79): a rescan's answer; retryAfterMs (rate-limited only) is at most a minute. */
 export const RESCAN_CODES = ['starting', 'read-only', 'rate-limited', 'unavailable', 'failed'] as const;
 export type RescanResult = { status: 'ready' } | { status: 'refused'; code: (typeof RESCAN_CODES)[number]; retryAfterMs?: number };
@@ -418,6 +423,7 @@ export type PortMessage =
   | ({ v: 1; type: 'monthly'; id: number; failed?: true } & LedgerPage)
   | { v: 1; type: 'clearUsage'; id: number; result: ClearUsageResult }
   | { v: 1; type: 'agentRescan'; id: number; result: RescanResult }
+  | { v: 1; type: 'catalogImport'; result: CatalogImportResult }
   /** capped (Gate 5 round 2 B): the bounded scan stopped before the page filled; results may be incomplete, next continues. */
   | { v: 1; type: 'search'; id: number; hits: SearchHit[]; next: SearchKey | null; failed?: true; capped?: true }
   | { v: 1; type: 'purge'; id: number; result: PurgeResult }
@@ -1100,6 +1106,13 @@ export function parsePortMessage(x: unknown): PortMessage | null {
     return count(m.id) && rows && next !== undefined ? { v: 1, type: 'page', id: m.id, rows, next } : null;
   }
   if (m.type === 'clearUsage') return count(m.id) && oneOf(CLEAR_USAGE_RESULTS, m.result) ? { v: 1, type: 'clearUsage', id: m.id, result: m.result } : null;
+  if (m.type === 'catalogImport') {
+    const r = m.result;
+    const ok = isObj(r) && ((r.status === 'imported' && exactKeys(r, ['status', 'agent']) && text(r.agent) && AGENT_ID.test(r.agent))
+      || (r.status === 'rejected' && exactKeys(r, ['status', 'issues']) && bounded(r.issues, 32)
+        && (r.issues as unknown[]).every((i) => exactKeys(i, ['code', 'at']) && typeof i.code === 'string' && /^[a-z-]{1,32}$/.test(i.code) && text(i.at, 256))));
+    return exactKeys(m, ['v', 'type', 'result']) && ok ? { v: 1, type: 'catalogImport', result: r as CatalogImportResult } : null;
+  }
   if (m.type === 'agentRescan') {
     const r = m.result, keys = isObj(r) ? Object.keys(r).sort().join() : '';
     const ok = isObj(r) && ((r.status === 'ready' && keys === 'status')

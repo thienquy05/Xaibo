@@ -7,7 +7,7 @@
 // ponytail: collapse discards a branch's pages without keeping its cursor (design allows reloading it explicitly);
 // keep the cursor when users ask to reopen deep pages.
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type RefObject } from 'react';
-import type { AgentStatus, HistoryFilter, HistoryKey, HistoryRow, MapGroup, MapNode, RescanResult } from '../../shared/ipc.ts';
+import type { AgentStatus, CatalogImportResult, HistoryFilter, HistoryKey, HistoryRow, MapGroup, MapNode, RescanResult } from '../../shared/ipc.ts';
 import { VirtualList } from '../components/VirtualList.tsx';
 import { rovingKey } from '../components/virtual-list-model.ts';
 import { formatTime } from '../model.ts';
@@ -55,10 +55,12 @@ const leafFilter = (group: MapGroup): HistoryFilter => ({ mode: 'all', agent: nu
 
 /** `tick` counts session activity: an empty map loads its first page again when sessions arrive (an import after start);
  *  Gate 5 G5d-1: a shown map, and one restored (Return or the nav link), fetches its resident pages again instead. */
-export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, restoreId = null, onSave, open = null }: {
+export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, restoreId = null, onSave, open = null, importResult = null, onImport }: {
   api: MapApi; agents: AgentStatus[]; lastKnown: string | null; tick: number; onOpen: (row: HistoryRow) => void;
   /** XAIBO-PROD-539 Return to Agent Map: the map as left and the session to return to; `onSave` keeps it on leaving. */
   saved?: MapSnapshot | null; restoreId?: number | null; onSave?: (m: MapSnapshot) => void;
+  /** XAIBO-PROD-595: the latest catalog import outcome and the native-dialog action (Add agent step 1). */
+  importResult?: CatalogImportResult | null; onImport?: () => void;
   /** XAIBO-PROD-586 (D-P6-17): open this profile's integration panel (Agents mode) on arrival, e.g. from Settings. */
   open?: IntegrationKey | null;
 }) {
@@ -340,7 +342,7 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
             )}
         </section>
         {mode === 'agents' ? (adding ? (
-          <AddAgent api={api} lastKnown={lastKnown} onChanged={() => setListTick((t) => t + 1)}
+          <AddAgent api={api} lastKnown={lastKnown} onChanged={() => setListTick((t) => t + 1)} importResult={importResult} {...(onImport ? { onImport } : {})}
             onCancel={() => { setAdding(false); requestAnimationFrame(() => addRef.current?.focus()); }}
             onDone={(key) => { setAdding(false); setListTick((t) => t + 1); setPanel({ key, origin: agentKey(key) }); }} />
         ) : panel ? (

@@ -3,7 +3,7 @@
 // after an applied preview and a receipt.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { candidates, canNext, detailKey, openWizard, previewOpen, setUp, receiptEvent, stepKey, STEPS, wizardStep, type Wizard, type WizardEvent } from '../../../src/renderer/agent-map/add-agent.ts';
+import { candidates, canNext, detailKey, importText, openWizard, previewOpen, setUp, receiptEvent, stepKey, STEPS, wizardStep, type Wizard, type WizardEvent } from '../../../src/renderer/agent-map/add-agent.ts';
 import type { IntegrationDetail, IntegrationRow } from '../../../src/shared/ipc.ts';
 
 const P = '00000000-0000-4000-8000-0000000aa001', Q = '00000000-0000-4000-8000-0000000aa002';
@@ -169,4 +169,13 @@ test('setUp: a profile with Xaibo entries and no Connect left to offer; a partia
   assert.equal(setUp(det([{ entry: E, route: 'codex-hooks', state: 'connected', reason: null }])), true);
   assert.equal(setUp(det([{ entry: E, route: 'claude-retention', state: 'connected', reason: null }], 'detected')), false, 'hooks not installed: Connect still offered');
   assert.equal(setUp(det([], 'detected')), false);
+});
+
+// XAIBO-PROD-595 (P6-T08 slice E part 2): the wizard's import message: the agent id and the restart and grant notes, or the
+// codes and pointers (never file content); nothing before a result.
+test('importText: imported names the agent, a restart and that nothing is granted; rejected lists codes and pointers', () => {
+  assert.equal(importText(null), null);
+  assert.equal(importText({ status: 'imported', agent: 'synthagent' }), 'Imported synthagent. Restart Xaibo to list it; importing grants nothing.');
+  assert.equal(importText({ status: 'rejected', issues: [{ code: 'shadow', at: '/agents/0/id' }, { code: 'schema-invalid', at: '/agents/0' }] }),
+    'Not imported: shadow at /agents/0/id; schema-invalid at /agents/0.');
 });

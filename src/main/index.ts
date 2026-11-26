@@ -110,6 +110,15 @@ function start(dataDir: string) {
     appendQuiet(trace, `${JSON.stringify({ ev: 'paint', delta, t: t.toString() })}\n`); // XAIBO-PROD-430: never throws
   });
   // "Set path…" (P1-T08/T12): only from our window, only an agent id; the user picks the file, the service validates it.
+  // XAIBO-PROD-595 (P6-T08 slice E part 2; D-P6-19 1a): Import catalog entry. Only from our window, no argument; the user picks a
+  // JSON file and the service reads and validates it (bounded). Importing grants nothing.
+  ipcMain.on('import-catalog', (e) => {
+    if (!win || !fromOurWindow(e, win)) return; // import review L2: our window's main frame only
+    void dialog.showOpenDialog(win, { title: 'Choose an agent catalog entry', properties: ['openFile'], filters: [{ name: 'Agent catalog entry', extensions: ['json'] }] }).then((r) => {
+      const file = r.filePaths[0];
+      if (!r.canceled && file) supervisor.send({ v: IPC_VERSION, type: 'importCatalog', path: file });
+    });
+  });
   ipcMain.on('set-agent-path', (e, agent: unknown) => {
     if (!win || e.sender !== win.webContents || typeof agent !== 'string' || !AGENT_ID.test(agent)) return;
     void dialog.showOpenDialog(win, { title: 'Choose the agent executable', properties: ['openFile'] }).then((r) => {

@@ -237,6 +237,8 @@ const command = accept(parseServiceCommand, (m, transferred: MessagePortMain[]) 
   if (m.type === 'quit') { svc?.stop(); process.exit(0); }
   // Power events wait for boot, in arrival order, so a sleep during startup still reaches the engine (P3-T12 review).
   else if (m.type === 'wake') void booted.then((s) => s.wake());
+  // XAIBO-PROD-595 (P6-T08 slice E part 2): a picked catalog file; the outcome (codes only) goes to every window
+  else if (m.type === 'importCatalog') { const { path: picked } = m; void booted.then((s) => broadcast({ v: IPC_VERSION, type: 'catalogImport', result: s.importCatalog(picked) })); }
   else if (m.type === 'suspend') { const { at } = m; void booted.then((s) => s.suspend(at)); }
   else if (m.type === 'reloadPrices') void booted.then((s) => s.reloadPrices());
   else if (m.type === 'port') transferred.forEach(connect);

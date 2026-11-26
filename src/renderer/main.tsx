@@ -3,7 +3,7 @@
 import { StrictMode, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type MouseEvent } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
-import { parseHealth, parseStartupReply } from '../shared/ipc.ts';
+import { type CatalogImportResult, parseHealth, parseStartupReply } from '../shared/ipc.ts';
 import type { AgentStatus, Banner, Health, IntegrationKey, LedgerFilter, SessionRow, StartupRequest } from '../shared/ipc.ts';
 import type { SignInCommand } from './usage/sign-in-view.ts';
 import { createClient, parseVisible, type Client, type PortLike } from './client.ts';
@@ -29,7 +29,7 @@ import type { WorkspaceApi } from './workspace/OpenSession.tsx';
 import { workspaceApiOf } from './workspace/workspace-api.ts';
 import './styles/tokens.css';
 
-declare global { interface Window { xaibo?: { setAgentPath(agent: string): void; paintAck(delta: number): void; revealPriceOverride?(): Promise<unknown>; startup?(request: StartupRequest): Promise<unknown> } } }
+declare global { interface Window { xaibo?: { setAgentPath(agent: string): void; importCatalog?(): void; paintAck(delta: number): void; revealPriceOverride?(): Promise<unknown>; startup?(request: StartupRequest): Promise<unknown> } } }
 
 // M3 marks (P1-T14): read through the Performance API by test/perf.
 // ponytail: distinct sessions changed within one frame before the batch is dropped for a cursor resync; raise if a
@@ -46,6 +46,7 @@ function App() {
   const [agents, setAgents] = useState<AgentStatus[] | null>(null);
   const [list, setList] = useState<ListState>(emptyList);
   const [banners, setBanners] = useState<Banner[]>([]);
+  const [catalogImport, setCatalogImport] = useState<CatalogImportResult | null>(null); // XAIBO-PROD-595
   const [liveSet, setLiveSet] = useState<LiveSetState>(emptyLiveSet);
   const [area, setArea] = useState<Area>('dashboard');
   const [tick, setTick] = useState(0); // session activity: the usage view refreshes on it (throttled there)
@@ -109,7 +110,7 @@ function App() {
       if (e.source !== window) return;
       if (e.data === 'xaibo-port' && e.ports[0]) { // a (re)started service: new client, reload the first page
         client.current?.close();
-        const c = createClient(e.ports[0] as unknown as PortLike, { sessions, agents: setAgents, coverage: setBanners, resync });
+        const c = createClient(e.ports[0] as unknown as PortLike, { sessions, agents: setAgents, coverage: setBanners, resync, catalogImport: setCatalogImport });
         client.current = c;
         if (!visible()) c.setLive(false);
         // An invalid first page leaves the list empty; deltas and the next restart still fill it.
@@ -328,7 +329,7 @@ function App() {
         {area === 'settings' ? <Settings api={settingsApi} readOnly={!!health?.readOnly} signIn={{
             profiles: () => client.current?.usageAll().then((r) => r.profiles) ?? Promise.reject(new Error('no service connection')), api: mapApi.signIn,
             name: (a) => agents?.find((x) => x.agent === a)?.name ?? a, open: toIntegration, live: lastKnown === null }} />
-          : area === 'map' ? <AgentMap api={mapApi} agents={agents ?? []} lastKnown={lastKnown} tick={tick} onOpen={openFromMap}
+          : area === 'map' ? <AgentMap api={mapApi} importResult={catalogImport} onImport={() => window.xaibo?.importCatalog?.()} agents={agents ?? []} lastKnown={lastKnown} tick={tick} onOpen={openFromMap}
             saved={mapSaved.current} restoreId={mapReturn} onSave={(m) => { mapSaved.current = m; }} open={openIntegration} />
           : area === 'dashboard'
           ? <Dashboard live={liveSet} liveFailed={liveFailed} liveRetry={liveRetry} onRetryLive={retryLive} lastKnown={lastKnown} agents={agents} banners={banners} api={api} tick={tick}

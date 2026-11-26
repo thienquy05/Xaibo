@@ -5,7 +5,7 @@
 // listens and the spool replays, before the file backfill; a full disk is logged and its hook-only gap written on recovery.
 import { statSync } from 'node:fs';
 import path from 'node:path';
-import { isActive, OUTCOMES, REASONS, RULES, type AgentStatus, type Banner, type ClearUsageResult, type PurgeResult, type ReimportResult, type RetentionSetting, type SaveRetentionResult, type LiveStatus, type NotifyState, type PriceCheck, type RescanResult, type ServiceMetrics } from '../shared/ipc.ts';
+import { isActive, OUTCOMES, REASONS, RULES, type AgentStatus, type Banner, type ClearUsageResult, type PurgeResult, type ReimportResult, type RetentionSetting, type SaveRetentionResult, type LiveStatus, type NotifyState, type PriceCheck, type RescanResult, type ServiceMetrics, type CatalogImportResult } from '../shared/ipc.ts';
 import type { Logger } from '../shared/log.ts';
 import { AgyAdapter } from './adapters/agy/index.ts';
 import { ClaudeAdapter } from './adapters/claude/index.ts';
@@ -17,7 +17,7 @@ import { createEngine, type StatusEngine } from './status/engine.ts';
 import { fileObservations } from './status/feed.ts';
 import { readLoginEnv, type LoginEnv } from './catalog/env.ts';
 import { loadCatalog, type Catalog, type SessionKind } from './catalog/validate.ts';
-import { loadImports } from './catalog/import.ts';
+import { boundedOutcome, importCatalogFile, loadImports } from './catalog/import.ts';
 import { setupAccess, type SetupAccess } from './catalog/setup-plans.ts';
 import { deniedRootsFrom } from './config/bounds.ts';
 import type { ModelEntry } from './usage/models.ts';
@@ -101,6 +101,8 @@ export interface Service {
   setPath(agent: string, file: string): Promise<boolean>;
   /** XAIBO-PROD-590 (P6-T08 slice A; EC-79, FR-01): re-detects agents and re-syncs profiles without a restart. */
   rescan(): Promise<RescanResult>;
+  /** XAIBO-PROD-595: import a catalog entry file the owner picked (listed after a restart: the catalog is kept from startup). */
+  importCatalog(file: string): CatalogImportResult;
   /** P3-T12: the machine sleeps from `at` (main's clock); the status engine excludes the gap from R1/R5. */
   suspend(at?: number): void;
   /** Resumes the status engine now, then reconciles every adapter at once (FR-02, bounded scans). */
@@ -543,6 +545,8 @@ export async function boot(o: BootOptions): Promise<Service> {
       });
     },
     rescan,
+    // import review L3: a service that cannot import says unavailable (never blames the file)
+    importCatalog: (file) => (bundled && !readOnly && !stopped ? boundedOutcome(importCatalogFile(o.dataDir, bundled, file)) : { status: 'rejected', issues: [{ code: 'unavailable', at: '/' }] }),
     suspend: (at) => engine?.suspend(at ?? clock()),
     wake: async () => { scheduler.wake(); engine?.resume(clock()); await Promise.all(adapters.map((a) => a.wake())); }, // sleep is no clock jump
     retention,

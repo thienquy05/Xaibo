@@ -4,7 +4,7 @@
 // compatibility labels (VS Code unverified); Next waits for a profile, an applied preview and a receipt; the Connect diff
 // dialog applies the hooks; Test receipt passes only on a lifecycle delivery made after it started; the result opens the
 // integration panel. Cancel returns focus to Add agent. Nothing is installed and no agent runs.
-import { chmodSync, existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { expect, openSessions, shot, test } from './fixtures.ts';
@@ -159,5 +159,25 @@ test('Add agent at a narrow window: the wizard alone, keyboard Cancel back to Ad
   expect(box && box.width).toBeGreaterThan(600);
   await page.getByRole('button', { name: 'Cancel' }).press('Enter');
   await expect(add).toBeFocused();
+  await xaibo.quit(run);
+});
+
+// XAIBO-PROD-595 (P6-T08 slice E part 2; D-P6-19 1a): Import catalog entry through main's native dialog (stubbed to a synthetic
+// fixture file): imported once (with the restart and no-grant notes), refused as shadow the second time.
+test('Add agent: Import catalog entry imports a synthetic entry once, then refuses it as shadow; nothing is granted', async ({ xaibo }) => {
+  test.setTimeout(120_000);
+  const file = path.join(path.dirname(xaibo.home), 'entry.json');
+  writeFileSync(file, readFileSync(path.join(import.meta.dirname, '..', 'fixtures', 'synthetic', 'catalog', 'valid', 'synthagent.json')));
+  const run = await xaibo.launch();
+  const page = await xaibo.window(run);
+  await run.app!.evaluate(({ dialog }, f) => { dialog.showOpenDialog = (async () => ({ canceled: false, filePaths: [f] })) as typeof dialog.showOpenDialog; }, file);
+  await page.getByRole('navigation', { name: 'Areas' }).getByRole('link', { name: 'Agent Map' }).click();
+  await page.getByRole('button', { name: 'Add agent' }).click();
+  const imp = page.getByRole('button', { name: 'Import catalog entry' });
+  await imp.press('Enter');
+  const body = page.locator('[aria-labelledby="add-agent-step"]');
+  await expect(body).toContainText('Imported synthagent. Restart Xaibo to list it; importing grants nothing.', { timeout: 20_000 });
+  await imp.press('Enter');
+  await expect(body).toContainText('Not imported: shadow at /agents/0/id;', { timeout: 20_000 }); // id, binary name and folder all shadow
   await xaibo.quit(run);
 });

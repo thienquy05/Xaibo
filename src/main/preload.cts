@@ -12,6 +12,7 @@ ipcRenderer.on('visible', (_e, on: unknown) => window.postMessage({ xaiboVisible
 // P3-T10: `paintAck(delta)` reports a painted delta id; main records it only under XAIBO_PERF_TRACE=1.
 contextBridge.exposeInMainWorld('xaibo', {
   setAgentPath: (agent: string) => ipcRenderer.send('set-agent-path', String(agent)),
+  importCatalog: () => ipcRenderer.send('import-catalog'), // XAIBO-PROD-595: no argument; main opens the native dialog
   paintAck: (delta: number) => ipcRenderer.send('paint-ack', Number(delta)),
   revealPriceOverride: () => ipcRenderer.invoke('reveal-price-override') as Promise<unknown>,
   startup: (request: unknown) => ipcRenderer.invoke('startup', request) as Promise<unknown>,

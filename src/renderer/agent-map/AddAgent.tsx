@@ -7,9 +7,9 @@
 // review L2). Grants for imported agents arrive with P6-T08a. Every service string goes through visible().
 // ponytail: candidates come from the first Agents list pages (at most 4 x 10 rows: a handful of agents); page further if needed.
 import { useEffect, useReducer, useRef, useState } from 'react';
-import { INTEGRATION_PAGE_MAX, type IntegrationDetail, type IntegrationKey, type IntegrationRow, type RescanResult } from '../../shared/ipc.ts';
+import { INTEGRATION_PAGE_MAX, type CatalogImportResult, type IntegrationDetail, type IntegrationKey, type IntegrationRow, type RescanResult } from '../../shared/ipc.ts';
 import { visible } from '../text.ts';
-import { candidates, canNext, detailKey, openWizard, previewOpen, receiptEvent, setUp, stepKey, STEP_TITLE, wizardStep, type Candidate } from './add-agent.ts';
+import { candidates, canNext, detailKey, importText, openWizard, previewOpen, receiptEvent, setUp, stepKey, STEP_TITLE, wizardStep, type Candidate } from './add-agent.ts';
 import { contentText, reasonsText, receiptText, STATE, stateText } from './integrations-state.ts';
 import { panelActions } from './integration-dialog.ts';
 import { IntegrationDiffDialog, type Done, type WriteApi } from './IntegrationDiffDialog.tsx';
@@ -23,8 +23,10 @@ const SCAN: Record<string, string> = {
   'rate-limited': 'Rescanned moments ago; try again shortly.', unavailable: 'Rescan is unavailable.', failed: 'Rescan failed; the previous results are shown.',
 };
 
-export function AddAgent({ api, lastKnown, onCancel, onDone, onChanged }: {
+export function AddAgent({ api, lastKnown, onCancel, onDone, onChanged, importResult = null, onImport }: {
   api: AddAgentApi; lastKnown: string | null; onCancel: () => void; onDone: (key: IntegrationKey) => void; onChanged: () => void;
+  /** XAIBO-PROD-595: the latest catalog import outcome, and the action that asks main for its native file dialog. */
+  importResult?: CatalogImportResult | null; onImport?: () => void;
 }) {
   const [w, send] = useReducer(wizardStep, undefined, openWizard);
   const [rows, setRows] = useState<IntegrationRow[] | 'failed' | null>(null);
@@ -144,7 +146,13 @@ export function AddAgent({ api, lastKnown, onCancel, onDone, onChanged }: {
                   ))}
                 </fieldset>
               )}
-            <p className="x-hint">Importing a catalog entry is not available here yet; granting an imported agent's folder, probe or setup comes later.</p>
+            {onImport ? (
+              <div className="x-integration-actions">
+                <button type="button" className="x-btn x-btn-secondary" aria-disabled={!live || undefined} onClick={() => { if (live) onImport(); }}>Import catalog entry</button>
+              </div>
+            ) : null}
+            <p className="x-hint" aria-live="polite">{visible(importText(importResult) ?? '')}</p>
+            <p className="x-hint">An imported agent's folder, probe and setup each need their own grant, which comes later; importing grants nothing.</p>
           </>
         ) : w.step === 'prerequisites' ? (
           d ? (

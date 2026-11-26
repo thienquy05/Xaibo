@@ -8,7 +8,7 @@
 import type { IntegrationRow, RescanResult } from '../../shared/ipc.ts';
 import type { ReceiptTest } from './integration-panel.ts';
 import { panelActions } from './integration-dialog.ts';
-import type { IntegrationDetail } from '../../shared/ipc.ts';
+import type { CatalogImportResult, IntegrationDetail } from '../../shared/ipc.ts';
 
 export const STEPS = ['candidates', 'prerequisites', 'profile', 'preview', 'receipt', 'result'] as const;
 export type Step = (typeof STEPS)[number];
@@ -47,6 +47,10 @@ export const detailKey = (rows: readonly IntegrationRow[], agent: string, profil
 export const previewOpen = (w: Wizard) => w.step === 'preview' && w.profileId !== null && !w.applied;
 /** Review M3: set up = Xaibo's entries on the profile and no Connect left to offer (a partial apply is not). */
 export const setUp = (d: IntegrationDetail) => d.row.key.profileId !== null && d.entries.length > 0 && !panelActions(d).includes('connect');
+/** XAIBO-PROD-595: the import outcome in words (codes and pointers only, never file content). */
+export const importText = (r: CatalogImportResult | null): string | null => (r === null ? null : r.status === 'imported'
+  ? `Imported ${r.agent}. Restart Xaibo to list it; importing grants nothing.`
+  : `Not imported: ${r.issues.map((i) => `${i.code} at ${i.at}`).join('; ')}.`);
 export const stepKey = (w: Wizard) => `${w.gen}|${w.step}`;
 export const receiptEvent = (t: ReceiptTest, w: Wizard): WizardEvent | null =>
   (t.phase === 'received' && w.step === 'receipt' && w.applied && !w.receipt ? { type: 'receipt', gen: w.gen } : null);
