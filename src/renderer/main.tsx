@@ -6,6 +6,7 @@ import { createRoot } from 'react-dom/client';
 import { type CatalogImportResult, parseHealth, parseStartupReply } from '../shared/ipc.ts';
 import type { AgentStatus, Banner, GrantAsk, Health, IntegrationKey, LedgerFilter, RevokeTarget, SessionRow, StartupRequest } from '../shared/ipc.ts';
 import { askGrant } from './agent-map/grants-view.ts';
+import { confirmedApply } from './agent-map/integration-dialog.ts';
 import type { SignInCommand } from './usage/sign-in-view.ts';
 import { createClient, parseVisible, type Client, type PortLike } from './client.ts';
 import { HealthStatus } from './Health.tsx';
@@ -30,7 +31,7 @@ import type { WorkspaceApi } from './workspace/OpenSession.tsx';
 import { workspaceApiOf } from './workspace/workspace-api.ts';
 import './styles/tokens.css';
 
-declare global { interface Window { xaibo?: { setAgentPath(agent: string): void; importCatalog?(): void; paintAck(delta: number): void; revealPriceOverride?(): Promise<unknown>; startup?(request: StartupRequest): Promise<unknown>; grant?(request: unknown): Promise<unknown> } } }
+declare global { interface Window { xaibo?: { setAgentPath(agent: string): void; importCatalog?(): void; paintAck(delta: number): void; revealPriceOverride?(): Promise<unknown>; startup?(request: StartupRequest): Promise<unknown>; grant?(request: unknown): Promise<unknown>; confirmApply?(request: unknown): Promise<unknown> } } }
 
 // M3 marks (P1-T14): read through the Performance API by test/perf.
 // ponytail: distinct sessions changed within one frame before the batch is dropped for a cursor resync; raise if a
@@ -167,11 +168,12 @@ function App() {
     return { ...browseApi, integrationPage: (cursor: IntegrationKey | null, limit: number) => client.current?.integrationPage(cursor, limit) ?? gone(),
       integrationDetail: (key: IntegrationKey) => client.current?.integrationDetail(key) ?? gone(),
       connectPreview: (profileId: string, retention: boolean) => client.current?.connectPreview(profileId, retention) ?? gone(),
-      connectApply: (previewId: string) => client.current?.connectApply(previewId) ?? Promise.resolve(notSent),
+      // XAIBO-PROD-601: a real profile's apply answered needs-confirmation goes to main's native confirmation (ids only)
+      connectApply: (previewId: string) => (client.current ? confirmedApply('connect', previewId, () => client.current!.connectApply(previewId), window.xaibo?.confirmApply) : Promise.resolve(notSent)),
       removalPreview: (profileId: string | null) => client.current?.removalPreview(profileId) ?? gone(),
-      removalApply: (previewId: string) => client.current?.removalApply(previewId) ?? Promise.resolve(notSent),
+      removalApply: (previewId: string) => (client.current ? confirmedApply('removal', previewId, () => client.current!.removalApply(previewId), window.xaibo?.confirmApply) : Promise.resolve(notSent)),
       cleanupPreview: (profileId: string) => client.current?.cleanupPreview(profileId) ?? gone(),
-      cleanupApply: (previewId: string) => client.current?.cleanupApply(previewId) ?? Promise.resolve(notSent),
+      cleanupApply: (previewId: string) => (client.current ? confirmedApply('cleanup', previewId, () => client.current!.cleanupApply(previewId), window.xaibo?.confirmApply) : Promise.resolve(notSent)),
       teePreview: (profileId: string) => client.current?.teePreview(profileId) ?? gone(),
       rescan: () => client.current?.rescan() ?? Promise.resolve({ status: 'refused', code: 'unavailable' } as const), // XAIBO-PROD-593
       // XAIBO-PROD-598: a grant goes to main (ids only; its native confirmation); a revoke over the port; no connection sends nothing

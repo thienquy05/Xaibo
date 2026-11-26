@@ -1582,6 +1582,12 @@ export function parseApplyResult(x: unknown): ApplyOfferResult | ApplyConfirmRes
   return { status: 'offer', offer: { kind: o.kind, previewId: o.previewId, items, binding: o.binding } };
 }
 
+/** XAIBO-PROD-601 (P6-T12 slice 3): the renderer's check of main's confirm-apply result (cancelled, done or refused; never an offer). */
+export function parseApplyOutcome(x: unknown): ApplyOutcome | null {
+  if (exactKeys(x, ['status']) && x.status === 'cancelled') return { status: 'cancelled' };
+  const r = parseApplyResult(x);
+  return r && r.status !== 'offer' ? r : null;
+}
 function parseRevokeTarget(t: unknown): RevokeTarget | null {
   if (exactKeys(t, ['kind', 'id']) && (t.kind === 'root' || t.kind === 'probe') && refId(t.id)) return { kind: t.kind, id: t.id };
   return exactKeys(t, ['kind']) && t.kind === 'setup' ? { kind: 'setup' } : null;

@@ -6,7 +6,7 @@
 // fresh preview and waits for another Apply; a reply to an older request is dropped (seq). Rendering: IntegrationDiffDialog.tsx.
 // Decision (R8): diffs show Xaibo's own values and a replaced value's type and hash; no unchanged lines (the service never
 // sends whole config documents); removal and cleanup show each entry's outcome (their previews carry no lines).
-import type { CleanupReply, ConnectOutcome, ConnectPreview, ConnectReply, IntegrationDetail, RemovalItem, RemovalPreview, RemovalReply } from '../../shared/ipc.ts';
+import { parseApplyOutcome, type ApplyKind, type ApplyOutcome, type CleanupReply, type ConnectOutcome, type ConnectPreview, type ConnectReply, type IntegrationDetail, type RemovalItem, type RemovalPreview, type RemovalReply } from '../../shared/ipc.ts';
 import { APPLYING, RESULT_UNAVAILABLE } from '../model.ts';
 import { entryText, ROUTE } from './integration-panel.ts';
 
@@ -99,7 +99,29 @@ function outcomeText(kind: ActionKind, r: Reply): { done: boolean; text: string 
   }
 }
 
+/** XAIBO-PROD-601 (P6-T12 slice 3; D-P6-21): an apply the service answers needs-confirmation (a real profile) goes to main's
+ *  native confirmation with its kind and preview id only; its outcome becomes the dialog's reply. Any other reply passes
+ *  through unchanged and main is not asked. A malformed, thrown or other-kind result is unknown (the apply may have run). */
+export async function confirmedApply<T extends Reply>(kind: ApplyKind, previewId: string, port: () => Promise<T>, bridge: ((request: unknown) => Promise<unknown>) | undefined): Promise<T> {
+  const r = await port();
+  if (r.status !== 'refused' || r.code !== 'needs-confirmation') return r;
+  if (!bridge) return { status: 'refused', code: 'unavailable' } as T; // nothing was sent
+  let out: ApplyOutcome | null = null;
+  try { out = parseApplyOutcome(await bridge({ kind, previewId })); } catch { /* unknown below */ }
+  if (!out || (out.status === 'done' && out.kind !== kind)) return { status: 'refused', code: 'unknown' } as T;
+  return (out.status === 'done' ? out.reply : { status: 'refused', code: out.status === 'cancelled' ? 'cancelled' : out.code }) as T;
+}
+
 const REFUSALS: Record<string, string> = {
+  // XAIBO-PROD-601: real-profile confirmation outcomes (main's native dialog)
+  'unsafe-profile': "Xaibo can't change this profile safely (another agent's folder, a shared or linked folder, or a folder chosen by hand). Nothing was changed.",
+  'needs-confirmation': "This change needs your confirmation in Xaibo's dialog.",
+  cancelled: 'Cancelled in the confirmation dialog. Nothing was changed. A click right as the dialog opens counts as Cancel.',
+  unknown: "Xaibo couldn't confirm the result; the change may have been applied. Check the panel before trying again.",
+  stale: 'The change no longer matches what the confirmation showed. Close and open it again.',
+  'not-real': "This profile doesn't need the confirmation dialog. Close and open it again.",
+  oversize: 'This change is too large to show in the confirmation dialog. Nothing was changed.',
+  invalid: "Xaibo's confirmation couldn't be opened. Nothing was changed.",
   'real-profile': "This profile isn't one of Xaibo's disposable test profiles; real-profile changes stay off until Gate 6.",
   busy: 'Another integration change is in progress. Close and try again shortly.', 'stale-lock': 'An earlier change stopped without finishing; restart Xaibo, then try again.',
   'preview-expired': 'This preview expired. Close and open it again.', 'preview-invalid': 'This preview is no longer valid. Close and open it again.',
