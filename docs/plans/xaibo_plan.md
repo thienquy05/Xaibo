@@ -1993,6 +1993,17 @@ See §6: Q-5.1..Q-5.11.
 
 **P6-T12 — Real-profile enablement and owner live check** — `security-change`. Remove the dev-CLI-only restriction so Connect may target detected real profiles (effective once the branch merges after Gate 6); the packaged app shows the same diff preview and requires explicit confirmation. Test first (U): target resolution refuses real roots with the "real-profile enabled" build flag off, allows them with a preview when on. The "real-profile enabled" flag stays off on the branch until the Gate 6 merge (FR-32). Owner touchpoint (optional, OQ-P6-1): runs after Gate 6 approval, as P7-T01's first step on the Phase 7 branch — the owner runs Connect then Disconnect on their real profiles in the packaged app; Claude records a local-only checksum manifest before/after (never committed or pasted); only pass/fail goes to the progress file. Deps: P6-T03, T10.
 
+  **Pre-enable checklist (D-P6-21 slice 4; owner checks at Gate 6 before `REAL_PROFILE_ENABLED` is flipped in the reviewed Gate 6 merge result).** Enabled by the flip: real Connect, Disconnect, Full Uninstall and cleanup on default- or env-origin Claude (settings fallback), Codex (`hooks.json`) and agy (`.gemini/config/hooks.json`) profiles, each apply through main's native confirmation (slices 1-3). Then:
+  1. The flip happens only in the merge result; the packaged build is checked to carry it; the slice 1 guard test (`real-profile.test.ts`, flag literal) is updated in the same commit.
+  2. **The Claude plugin route stays refused on real profiles** (D-P6-21 A) until all of: (a) isolated-CLI evidence in a disposable profile the owner signs in to: `claude plugin` install and uninstall with `CLAUDE_CONFIG_DIR` set to the profile root show no Keychain or credential access or refresh and no network attempt (the traffic switches are unverified for the plugin verbs), and `CLAUDE_CONFIG_DIR` set to the default `~/.claude` does not relocate the CLI's global state (`.claude.json`) or its Keychain item; (b) a parent-liveness pipe so a service exit stops the plugin CLI process group (today a quit during the CLI leaves it running); (c) process-start identity in `operation.lock` (today a reused pid, an empty lock or a failed release reads as busy: fail-closed; the owner removes the lock file while Xaibo is stopped).
+  3. Folders above an env-origin profile root are not checked (slice 1 review L3): an env root under a shared folder is refused only if its own folders are shared; check or document before relying on env roots.
+  4. A Full Uninstall over the confirmation budget (64 items, 6,000 characters) is refused until chunked (slice 2).
+  5. Plugin-route notes (only if 2 is ever met): `leftovers()` ignores `plugins/cache` and `.claude.json`; `confine` refuses past 50,000 entries (fail-safe); after a Claude auto-update the detection identity is stale until a rescan.
+  6. Cleanup names Xaibo's own record and backup only; the plugin copy and the `xaibo` marketplace entry stay manual and are listed in the confirmation.
+  7. Helper copies per Connect (~145 MB per helper on a volume without clones) are unmeasured (ponytail).
+  8. Imported profile roots stay unapprovable in production (D-P6-21 C).
+  9. The owner live check (OQ-P6-1) stays P7-T01's first step on the Phase 7 branch.
+
 **P6-T13 — Gate 6** — GS plus the checklist. At this gate the owner decides whether to retire the temp profiles early or keep them for the later SG spikes (§3.2; OQ-B10).
 
 ### EC rows assigned to Gate 6
