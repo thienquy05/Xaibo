@@ -18,6 +18,7 @@ import { fileObservations } from './status/feed.ts';
 import { readLoginEnv, type LoginEnv } from './catalog/env.ts';
 import { loadCatalog, type Catalog, type SessionKind } from './catalog/validate.ts';
 import { loadImports } from './catalog/import.ts';
+import { setupAccess, type SetupAccess } from './catalog/setup-plans.ts';
 import { deniedRootsFrom } from './config/bounds.ts';
 import type { ModelEntry } from './usage/models.ts';
 import { priceUsage } from './usage/cost.ts';
@@ -68,6 +69,9 @@ export interface Service {
   agents(): AgentStatus[] | null;
   /** XAIBO-PROD-558 (P6-T03 part 1b): the synced profiles, null until profile sync ran (never on a read-only store). */
   profiles(): Profile[] | null;
+  /** XAIBO-PROD-589 (P6-T09a slice B): a report agent's declared setup and access, read fresh from the import store per call;
+   *  null before the catalog loaded or when the agent declares none. */
+  setupAccess(agent: string): SetupAccess | null;
   /** The login-shell environment read at start; null until read or when it could not be read (no PATH). */
   loginEnv(): LoginEnv | null;
   /** Catalog session kinds for list badges (P2-T04); empty if the catalog failed to load. */
@@ -438,6 +442,7 @@ export async function boot(o: BootOptions): Promise<Service> {
   return {
     store, detections, adapters, done, agents,
     profiles: () => (synced ? profiles : null),
+    setupAccess: (agent) => (bundled ? setupAccess(o.dataDir, bundled, agent, { home: o.home, allowed: o.allowedRoots ?? [], denied: deniedRootsFrom(env) }) : null),
     loginEnv: () => (env.PATH ? env : null),
     kinds: () => catalog?.sessionKinds ?? [],
     catalog: () => catalog ?? null,

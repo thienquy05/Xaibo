@@ -38,6 +38,7 @@ export function runsShim(doc: unknown, shim: RegExp): boolean {
 const INDEX = /^(0|[1-9]\d*)$/;
 const AGENT: Record<Route, string> = {
   'claude-plugin': 'claude', 'claude-settings-fallback': 'claude', 'claude-retention': 'claude', 'claude-tee': 'claude', 'codex-hooks': 'codex', 'agy-hooks': 'agy',
+  'report-setup': 'report', // XAIBO-PROD-589: set ops only, so no hook-array matching (no shim is named 'report')
 };
 const exists = (p: string) => { try { lstatSync(p); return true; } catch { return false; } };
 const at = (doc: unknown, segs: string[]): unknown => segs.reduce<unknown>((v, k) => (Array.isArray(v) || isObj(v) ? (v as Record<string, unknown>)[k] : undefined), doc);

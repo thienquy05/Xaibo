@@ -200,6 +200,7 @@ const integrationsFor = (s: Service): Connect | null | 'unavailable' => {
     integrations = createConnect(connectContext({
       dataDir, login: s.loginEnv(), bin: process.env.XAIBO_BIN ?? '', catalog: s.catalog(),
       detection: (agent) => s.detections.find((d) => d.agent === agent), // the live list: "Set path…" re-detects in place
+      setupAccess: (agent) => s.setupAccess(agent), // XAIBO-PROD-589: fresh per call, never cached
     }));
   }
   return integrations ?? (startupDone ? 'unavailable' : null);

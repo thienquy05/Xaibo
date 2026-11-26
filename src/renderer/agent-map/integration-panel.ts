@@ -33,6 +33,7 @@ export function testText(t: ReceiptTest): string | null {
 export const ROUTE: Record<RemovalItem['route'], string> = {
   'claude-plugin': 'Claude plugin hooks', 'claude-settings-fallback': 'Claude settings hooks', 'claude-retention': 'Transcript retention',
   'claude-tee': 'Status-line tee', 'codex-hooks': 'Codex hooks', 'agy-hooks': 'Antigravity hooks',
+  'report-setup': 'Report setup', // XAIBO-PROD-589; ponytail: the panel offers no report Connect yet (P6-T08/T12), only lists entries
 };
 const STATE: Record<RemovalItem['state'], string> = {
   connected: 'intact', 'disconnected-externally': 'removed outside Xaibo', drifted: 'changed outside Xaibo', 'pending-recovery': 'needs recovery', unreadable: 'unreadable',

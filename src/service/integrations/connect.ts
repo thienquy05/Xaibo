@@ -22,7 +22,7 @@ import { deployShim, installPlugin, PLUGIN_REF, pluginHooks, previewPlugin, teeP
 import { codexHookOps, codexTrustSteps, shimPath } from '../adapters/codex/setup.ts';
 import type { Detection, Profile } from '../catalog/detect.ts';
 import type { Catalog } from '../catalog/validate.ts';
-import { claudeConnectRoute, claudeRetentionOffer, retentionOps, type RetentionOffer } from '../catalog/setup-plans.ts';
+import { claudeConnectRoute, claudeRetentionOffer, reportOps, retentionOps, type RetentionOffer, type SetupAccess } from '../catalog/setup-plans.ts';
 import { real, writable } from '../config/bounds.ts';
 import { acquireLock, lockState } from '../config/lock.ts';
 import {
@@ -44,6 +44,9 @@ export interface ConnectContext {
   catalog: Catalog | null;
   detection: (agent: string) => Detection | undefined;
   cliPath: string | null;
+  /** XAIBO-PROD-589 (P6-T09a slice B, D-P6-18): a report-v1 agent's declared setup and its access, read fresh on every call
+   *  (boot: setupAccess over the private import store); null when the agent declares none. Absent: no report agents. */
+  setupAccess?: (agent: string) => SetupAccess | null;
   /** Monotonic ms (default performance.now). */
   now?: () => number;
   /** Test only (part 2a review L4): passed to the engine's apply() to inject a failure after a step's rename. The service's
@@ -112,6 +115,8 @@ interface Plugin { o: PluginOptions; version: string }
 /** owner: the requesting port (part 1b review L5); only that owner applies the preview. plugin: the confirmed plugin step. */
 interface Held {
   profile: Profile; sel: Selections; owner: unknown; plugin: { o: PluginOptions; pp: PluginPreview } | null;
+  /** XAIBO-PROD-589: the report access the preview was built from, rechecked at apply before any helper is deployed. */
+  report: SetupAccess | null;
   steps: { route: Route; build: () => Plan; plan: Plan }[]; trust: string[]; expiresAt: number;
 }
 const WRITES = ['settings.json', '.claude.json', 'plugins/known_marketplaces.json', 'plugins/installed_plugins.json', 'plugins/cache/'];
@@ -127,14 +132,44 @@ export function createConnect(ctx: ConnectContext) {
   const denied = ctx.denied?.length ? ctx.denied : null;
   /** The profile's own dir and the folder of the file written are both private and disposable (code review M-d: agy). */
   const permitted = (t: Target) => !!denied && writable(t.dir, ctx.allowed, denied) && writable(path.dirname(t.file), ctx.allowed, denied);
+  /** XAIBO-PROD-589: a native agent's file, else a report agent's declared file under its profile root, only while that root is
+   *  the approved one (Disconnect and removal need no grant: reversal is authorized by the manifest, design §3), and never
+   *  through a linked folder (code review M2: the manifest records the resolved path, so Disconnect would miss the entry).
+   *  ponytail (code review L2): once the root approval lapses, per-profile Disconnect answers unverified and only Full
+   *  Uninstall reverts the entry; resolve report targets from the manifest if that ever strands an owner. */
+  const targetFor = (p: Profile): Target | null => {
+    const native = targetOf(p);
+    if (native) return native;
+    const a = ctx.setupAccess?.(p.agent);
+    if (!a?.root) return null;
+    let root: string;
+    try { root = realpathSync.native(p.root); } catch { return null; }
+    if (root !== a.root) return null;
+    const file = path.join(root, a.setup.file);
+    try { if (realpathSync.native(path.dirname(file)) !== path.dirname(file)) return null; } catch { /* no parent folder: plan() refuses it */ }
+    return { dir: root, file, routes: ['report-setup'] };
+  };
+  /** Xaibo's own data dir is never a report-setup target (review: deniedRootsFrom lists agent roots only). */
+  const reportDenied = (d: string[]) => [...d, real(ctx.dataDir)];
   const previews = new Map<string, Held>();
   const recorded = (file: string, routes: Route[]) => readManifest(ctx.dataDir).some((e) => e.target === file && routes.includes(e.route));
 
   /** Selections, profile key and helper paths are captured here, never taken from an apply request (review L1). */
-  function builders(p: Profile, t: Target, sel: Selections): { plugin: Plugin | null; list: Builder[]; retention: RetentionOffer | null; trust: string[] } {
+  function builders(p: Profile, t: Target, sel: Selections, report: SetupAccess | null): { plugin: Plugin | null; list: Builder[]; retention: RetentionOffer | null; trust: string[] } {
     const key = isProfileKey(p.id) ? p.id : fail('ops');
     const bounds: Bounds = { root: t.dir, denied: denied! };
     const shim = shimPath(ctx.dataDir);
+    if (t.routes[0] === 'report-setup') {
+      const a = report ?? fail('unverified'); // code review L1: the access read once by the preview, never a second store read
+      const helper = path.join(path.dirname(shim), 'xaibo-report'); // where deployShim puts it
+      return { list: [['report-setup', () => {
+        // review M2: a file any manifest entry manages, on any route, is refused (agy's hooks file, another agent's config)
+        if (readManifest(ctx.dataDir).some((e) => e.target === t.file)) fail('duplicate');
+        return plan(t.file, 'report-setup', reportOps(a.setup, { helper, profileKey: key, agent: p.agent }), { root: t.dir, denied: reportDenied(denied!) });
+      }]], plugin: null, retention: null, trust: [] }; // Claude's offers (retention, tee) never apply
+    }
+    // code review M1: and no native route writes a file a report-setup entry manages (the report builder refuses the reverse)
+    if (readManifest(ctx.dataDir).some((e) => e.route === 'report-setup' && e.target === t.file)) fail('duplicate');
     if (p.agent === 'codex') {
       return { list: [['codex-hooks', () => {
         if (recorded(t.file, ['codex-hooks'])) fail('duplicate');
@@ -184,16 +219,24 @@ export function createConnect(ctx: ConnectContext) {
   function preview(p: Profile, sel: Selections, owner?: unknown): Preview | Refused {
     if (!denied) return refused('bounds-unavailable');
     if (sel.teeOnly && p.agent !== 'claude') return refused('unsupported'); // XAIBO-PROD-580: only Claude has the statusLine tee
-    const t = targetOf(p);
+    // XAIBO-PROD-589 (design §3): a report agent's root approval and setup grant, before any target is read
+    const report = targetOf(p) ? null : ctx.setupAccess?.(p.agent) ?? null;
+    if (report) {
+      let root: string | null = null;
+      try { root = realpathSync.native(p.root); } catch { /* no profile folder: not the approved root */ }
+      if (!report.root || root !== report.root) return refused('root-not-approved');
+      if (!report.granted) return refused('setup-not-granted');
+    }
+    const t = targetFor(p);
     if (!t) return refused('unverified');
     if (!permitted(t)) return refused('real-profile'); // before any offer read (review H3, M4)
     if (p.agent === 'claude' && !ctx.cliPath) return refused('bounds-unavailable'); // no login PATH: like no denylist
     // part 1b review M2: the helpers apply will deploy exist, before the owner confirms (xaibo-report ships beside the hook)
-    const helpers = [ctx.helpers.hook, path.join(path.dirname(ctx.helpers.hook), 'xaibo-report'), ctx.helpers.forwarder, ...(sel.tee ? [ctx.helpers.statusline] : [])];
+    const helpers = [ctx.helpers.hook, path.join(path.dirname(ctx.helpers.hook), 'xaibo-report'), ctx.helpers.forwarder, ...(sel.tee && p.agent === 'claude' ? [ctx.helpers.statusline] : [])];
     if (!helpers.every(regularFile)) return refused('helpers-unavailable');
     let b, steps, pp: PluginPreview | null = null;
     try {
-      b = builders(p, t, sel);
+      b = builders(p, t, sel, report);
       if (b.plugin) pp = previewPlugin(b.plugin.o); // nothing runs, nothing is written
       steps = b.list.map(([route, build]) => ({ route, build, plan: build() }));
     } catch (e) { if (e instanceof ConfigError) return refused(e.code); throw e; }
@@ -204,7 +247,7 @@ export function createConnect(ctx: ConnectContext) {
     if (previews.size - own.length >= MAX_PREVIEWS) return refused('busy'); // checked before the profile's own is dropped
     for (const id of own) previews.delete(id); // one per profile
     const previewId = randomUUID();
-    previews.set(previewId, { profile: p, sel, owner, plugin: b.plugin && pp ? { o: b.plugin.o, pp } : null, steps, trust: b.trust, expiresAt: at + TTL_MS });
+    previews.set(previewId, { profile: p, sel, owner, report, plugin: b.plugin && pp ? { o: b.plugin.o, pp } : null, steps, trust: b.trust, expiresAt: at + TTL_MS });
     const views: StepView[] = steps.map((s) => ({ route: s.route, target: s.plan.target, diff: s.plan.diff }));
     return {
       status: 'preview', previewId, profileId: p.id, ttlMs: TTL_MS, steps: b.plugin && pp ? [pluginView(pp, b.plugin.version), ...views] : views,
@@ -233,9 +276,13 @@ export function createConnect(ctx: ConnectContext) {
     if (!h || h.owner !== owner) return refused('preview-invalid');
     if (now() > h.expiresAt) return refused('preview-expired');
     if (!denied) return refused('bounds-unavailable');
-    const t = targetOf(h.profile);
-    if (!t || !permitted(t)) return refused('real-profile');
     const again = (): ConnectResult => ({ status: 'needs-preview', preview: preview(h.profile, h.sel, h.owner) }); // 1b review M1; we hold the lock
+    if (h.report) { // XAIBO-PROD-589: the grant, root and declared setup still as previewed, before any helper is deployed
+      const a = ctx.setupAccess?.(h.profile.agent);
+      if (!a?.granted || a.root !== h.report.root || !isDeepStrictEqual(a.setup, h.report.setup)) return again();
+    }
+    const t = targetFor(h.profile);
+    if (!t || !permitted(t)) return refused('real-profile');
     // checked before any helper is deployed: bytes, file identity and mode, as apply() / installPlugin will (review L2)
     const first = h.plugin ? h.plugin.pp.settings : h.steps[0]!.plan.preHash === null ? null : { hash: h.steps[0]!.plan.preHash, dev: h.steps[0]!.plan.dev, ino: h.steps[0]!.plan.ino, mode: h.steps[0]!.plan.mode };
     const cur = readFile(h.plugin ? h.plugin.pp.target : h.steps[0]!.plan.target);
@@ -268,7 +315,7 @@ export function createConnect(ctx: ConnectContext) {
       if (rebuilt && !same(next, step.plan)) return await undo(null);
       let known: Set<string>;
       try { known = new Set(readManifest(ctx.dataDir).map((e) => e.id)); } catch { return await undo('failed'); } // review L-5: undone, never left half applied
-      try { done.push(apply(next, { dataDir: ctx.dataDir, bounds: { root: t.dir, denied }, ...(ctx.afterRename ? { afterRename: ctx.afterRename } : {}) })); } catch (e) {
+      try { done.push(apply(next, { dataDir: ctx.dataDir, bounds: { root: t.dir, denied: next.route === 'report-setup' ? reportDenied(denied) : denied }, ...(ctx.afterRename ? { afterRename: ctx.afterRename } : {}) })); } catch (e) {
         // review M1: a step that threw after recording its entry leaves a pending entry: it is undone first
         const residue = readManifest(ctx.dataDir).filter((x) => !known.has(x.id));
         return await undo(e instanceof ConfigError ? e.code : 'failed', residue);
@@ -318,7 +365,7 @@ export function createConnect(ctx: ConnectContext) {
 
   async function disconnect(p: Profile): Promise<Outcome | Refused> {
     if (!denied) return refused('bounds-unavailable');
-    const t = targetOf(p);
+    const t = targetFor(p);
     if (!t) return refused('unverified');
     return locked(() => revertAll(readManifest(ctx.dataDir).filter((e) => e.target === t.file && t.routes.includes(e.route)), denied));
   }
@@ -337,7 +384,7 @@ export function createConnect(ctx: ConnectContext) {
    *  the IPC read (P6-T10). Same denylist and writable roots as every write. */
   // ponytail (code review 6): kept for its first reader, the P6-T10 IPC read; only tests read it until then
   let latest: ReconcileReport | null = null;
-  const reconcile = (profiles: readonly Profile[]) => (latest = scan({ dataDir: ctx.dataDir, denied, profiles, target: targetOf, permitted }));
+  const reconcile = (profiles: readonly Profile[]) => (latest = scan({ dataDir: ctx.dataDir, denied, profiles, target: targetFor, permitted }));
   const reconciled = () => latest;
 
   // XAIBO-PROD-563 (P6-T04 part 2; slice and review C1-C8 in .handoff/p6-t04-design.md): one preview and one confirmation
@@ -345,7 +392,7 @@ export function createConnect(ctx: ConnectContext) {
   // values are already gone, so no agent profile file is written and no CLI runs; the plugin copy and a still-registered
   // marketplace stay manual (P6-T12). Previews as Connect's (TTL, single use, owner-bound, max 32) in their own map (C7).
   const cleanups = new Map<string, { profiles: readonly Profile[]; entries: ManifestEntry[]; owner: unknown; expiresAt: number; scope?: string }>();
-  const current = (profiles: readonly Profile[], held: boolean) => scan({ dataDir: ctx.dataDir, denied, profiles, target: targetOf, permitted, held });
+  const current = (profiles: readonly Profile[], held: boolean) => scan({ dataDir: ctx.dataDir, denied, profiles, target: targetFor, permitted, held });
 
   /** `scope` (XAIBO-PROD-576 plan review M2): the profile the IPC asked for; one held preview per scope, busy checked first. */
   function previewCleanup(profiles: readonly Profile[], ids: readonly string[], owner?: unknown, scope?: string): CleanupPreview | Refused {
@@ -464,7 +511,7 @@ export function createConnect(ctx: ConnectContext) {
     if (route && !p) return refused('ops'); // a route limits one profile's removal only
     let t: Target | null = null;
     if (p) {
-      t = targetOf(p);
+      t = targetFor(p);
       if (!t) return refused('unverified');
       if (!permitted(t)) return refused('real-profile'); // H1: before any read
     }
@@ -493,7 +540,7 @@ export function createConnect(ctx: ConnectContext) {
       const again = (): RemovalResult => ({ status: 'needs-preview', preview: previewRemoval(profiles, live ?? null, owner, true, h.route) });
       if (h.profile) {
         if (!live) return refused('profile-not-found');
-        const t = targetOf(live);
+        const t = targetFor(live);
         if (!t || !permitted(t) || !isDeepStrictEqual(t, h.target)) return again(); // L2
       }
       const s = removalScope(profiles, h.target, true, h.route);

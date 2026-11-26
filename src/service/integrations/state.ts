@@ -13,10 +13,14 @@ import { profileLabel } from '../api.ts';
 import type { Detection, Profile } from '../catalog/detect.ts';
 import type { Catalog } from '../catalog/validate.ts';
 import { readManifest, within, type ManifestEntry } from '../config/transaction.ts';
+import { REPORT_EVENTS } from '../../shared/report/schema.ts';
 import { GAP_WINDOW_MS } from '../status/coverage.ts';
 import type { ReconcileReport, ReconcileState } from './reconcile.ts';
 
-const LIFECYCLE_ROUTES = new Set(['claude-plugin', 'claude-settings-fallback', 'codex-hooks', 'agy-hooks']);
+const LIFECYCLE_ROUTES = new Set(['claude-plugin', 'claude-settings-fallback', 'codex-hooks', 'agy-hooks', 'report-setup']);
+/** XAIBO-PROD-589 (P6-T09a slice B): a report agent's receipt is a report lifecycle event; content chunks and usage snapshots
+ *  are not lifecycle evidence. */
+const REPORT_LIFECYCLE = REPORT_EVENTS.filter((e) => e !== 'content.upsert' && e !== 'usage.snapshot');
 const MAX_CANDIDATES = 4096;
 /** Review R3: content coverage from the adapters Xaibo ships (the evidence that verified each); anything else unavailable. */
 const CONTENT: Record<string, string> = { claude: 'S9', codex: 'S9', agy: 'P2-T00' };
@@ -68,7 +72,8 @@ export function lastReceipt(db: DatabaseSync, agent: string, profileId: string, 
 function lifecycleEvents(agent: string, catalog: Catalog | null): readonly string[] {
   if (agent === 'claude') return CLAUDE_HOOK_EVENTS;
   if (agent === 'codex') return CODEX_HOOK_EVENTS;
-  return catalog?.agents.find((a) => a.id === agent)?.hookMappings?.rules.map((x) => x.event) ?? [];
+  const a = catalog?.agents.find((x) => x.id === agent);
+  return a?.reportSetup ? REPORT_LIFECYCLE : a?.hookMappings?.rules.map((x) => x.event) ?? [];
 }
 
 /** Claude's Connect routes qualify an exact release at or above a min (and up to a max); agents without routes need only a

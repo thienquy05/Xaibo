@@ -321,7 +321,7 @@ export type ClearUsageResult = (typeof CLEAR_USAGE_RESULTS)[number];
  *  (diff lines carry Xaibo's values and a replaced value's type + 12-hex hash only). An over-bound reply is refused by the
  *  service (too-large), never truncated. */
 export const CONNECT_TYPES = ['connectPreview', 'connectApply', 'teePreview'] as const; // XAIBO-PROD-580: a tee-on preview is a Connect preview
-export const CONNECT_ROUTES = ['claude-plugin', 'claude-settings-fallback', 'claude-retention', 'claude-tee', 'codex-hooks', 'agy-hooks'] as const;
+export const CONNECT_ROUTES = ['claude-plugin', 'claude-settings-fallback', 'claude-retention', 'claude-tee', 'codex-hooks', 'agy-hooks', 'report-setup'] as const;
 export type ConnectRoute = (typeof CONNECT_ROUTES)[number];
 export const CONNECT_LIMITS = { steps: 3, diff: 64, value: 16_384, text: 8_192, trust: 8, entries: 8, list: 256 } as const;
 export interface ConnectSelections { retention: boolean; tee: boolean }

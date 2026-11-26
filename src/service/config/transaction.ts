@@ -17,7 +17,8 @@ import { isDeepStrictEqual } from 'node:util';
 import { isObj } from '../../shared/ipc.ts';
 import { atomicWrite, fsyncDir, privateDir, writeExclusive } from '../fs-private.ts';
 
-const ROUTES = ['claude-plugin', 'claude-settings-fallback', 'claude-tee', 'codex-hooks', 'agy-hooks', 'claude-retention'] as const;
+// XAIBO-PROD-589 (P6-T09a slice B, D-P6-18): report-setup, one fixed route for every report-v1 agent's declared reportSetup
+const ROUTES = ['claude-plugin', 'claude-settings-fallback', 'claude-tee', 'codex-hooks', 'agy-hooks', 'claude-retention', 'report-setup'] as const;
 export type Route = (typeof ROUTES)[number];
 /** P6-T02 (EC-73, FR-33): the retention offer's target value. */
 export const RETENTION_DAYS = 45;

@@ -30,7 +30,8 @@ export interface IntegrationsDeps {
 
 const REPO = path.resolve(import.meta.dirname, '..', '..'); // src/service or out/service; never the cwd
 /** The service's Connect context. `bin` is main's XAIBO_BIN: the packaged resources/bin, or '' for the repo's helpers. */
-export function connectContext(o: { dataDir: string; login: LoginEnv | null; bin: string; catalog: Catalog | null; detection: (agent: string) => Detection | undefined }): ConnectContext {
+export function connectContext(o: { dataDir: string; login: LoginEnv | null; bin: string; catalog: Catalog | null; detection: (agent: string) => Detection | undefined;
+  setupAccess?: ConnectContext['setupAccess'] }): ConnectContext {
   const helpers = o.bin
     ? { hook: path.join(o.bin, 'xaibo-hook'), forwarder: path.join(o.bin, 'xaibo-forwarder'), statusline: path.join(o.bin, 'xaibo-statusline') }
     : { hook: path.join(REPO, 'src', 'forwarder', 'xaibo-hook'), forwarder: path.join(REPO, '.cache', 'sea', 'xaibo-forwarder'), statusline: path.join(REPO, '.cache', 'sea', 'xaibo-statusline') };
@@ -39,6 +40,7 @@ export function connectContext(o: { dataDir: string; login: LoginEnv | null; bin
   return {
     dataDir: o.dataDir, denied: o.login ? deniedRootsFrom(o.login) : null, allowed, claudeManagedDir: CLAUDE_MANAGED_DIR, helpers,
     catalog: o.catalog, detection: o.detection, cliPath: o.login?.PATH ?? null, // part 2b: Claude route selection and the plugin CLI
+    ...(o.setupAccess ? { setupAccess: o.setupAccess } : {}), // XAIBO-PROD-589: report agents' setup, read fresh per call
   };
 }
 

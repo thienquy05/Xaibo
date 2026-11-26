@@ -7,9 +7,11 @@ import { realpathSync } from 'node:fs';
 import path from 'node:path';
 import { RETENTION_DAYS, type ManifestEntry, type Op } from '../config/transaction.ts';
 import { claudeCleanup } from '../history/native-availability.ts';
+import { real } from '../config/bounds.ts';
 import { inRange } from './capabilities.ts';
 import type { Detection } from './detect.ts';
-import type { Catalog } from './validate.ts';
+import { loadImports, type RootPolicy } from './import.ts';
+import type { Catalog, ReportSetup } from './validate.ts';
 
 export { RETENTION_DAYS };
 export type RetentionOffer =
@@ -49,3 +51,31 @@ export function claudeConnectRoute(catalog: Catalog, d: Detection | undefined): 
 
 /** EC-90, D-19: Gemini's maxAge raise stays off until S11 runtime-verifies retention; reads nothing. */
 export const geminiRetentionOffer = (): RetentionOffer => ({ offered: false, reason: 'unverified', days: null });
+
+/** XAIBO-PROD-589 (P6-T09a slice B, D-P6-18): a report-v1 agent's declared setup, the approved root it may write under (null:
+ *  none approved) and whether the owner authorized it (granted). */
+export interface SetupAccess { setup: ReportSetup; root: string | null; granted: boolean }
+
+/** The declared ops with Xaibo's values in place of the placeholders; literals stay as they are (never a string, review M1). */
+export function reportOps(rs: ReportSetup, v: { helper: string; profileKey: string; agent: string }): Op[] {
+  return rs.ops.map((o) => ({
+    op: 'set', pointer: o.pointer,
+    value: 'literal' in o.value ? o.value.literal : o.value.xaibo === 'report-helper' ? v.helper : o.value.xaibo === 'profile-key' ? v.profileKey : v.agent,
+  }));
+}
+
+/** Read fresh from the private import store on every call (never a cached merged catalog): an imported entry gets its approved
+ *  setup root and its setup grant (import.ts); a bundled entry with a reportSetup is authorized by the shipped catalog, under its
+ *  default root (none ships today). null: the agent declares no setup. ponytail: a bundled entry's env-override and manual roots
+ *  are not offered; add them when a bundled report agent ships. */
+export function setupAccess(dataDir: string, bundled: Catalog, agent: string, o: RootPolicy): SetupAccess | null {
+  const l = loadImports(dataDir, bundled, o);
+  const roots = l.imported.get(agent);
+  if (roots) {
+    const rs = l.catalog.agents.find((a) => a.id === agent)?.reportSetup;
+    return rs ? { setup: rs, root: roots[rs.root] ?? null, granted: l.setup.has(agent) } : null;
+  }
+  const b = bundled.agents.find((a) => a.id === agent), rs = b?.reportSetup;
+  const r = rs && b.profileRoots.find((x) => x.id === rs.root);
+  return rs && r ? { setup: rs, root: real(path.resolve(o.home, r.relative)), granted: true } : null;
+}
