@@ -3,7 +3,8 @@
 // after an applied preview and a receipt.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { canNext, openWizard, STEPS, wizardStep, type Wizard, type WizardEvent } from '../../../src/renderer/agent-map/add-agent.ts';
+import { candidates, canNext, detailKey, openWizard, previewOpen, setUp, receiptEvent, stepKey, STEPS, wizardStep, type Wizard, type WizardEvent } from '../../../src/renderer/agent-map/add-agent.ts';
+import type { IntegrationDetail, IntegrationRow } from '../../../src/shared/ipc.ts';
 
 const P = '00000000-0000-4000-8000-0000000aa001', Q = '00000000-0000-4000-8000-0000000aa002';
 type Ev = WizardEvent | ((w: Wizard) => WizardEvent);
@@ -93,4 +94,79 @@ test('code review M1: an applied or receipt reply for an earlier selection is ig
   assert.equal(run({ ...onReceipt, applied: false }, receipt).receipt, false, 'no receipt on the receipt step without an applied preview');
   const refused = run(openWizard(), (x) => ({ type: 'scanned', seq: x.seq, result: { status: 'refused', code: 'failed' } }));
   assert.deepEqual(refused.scan, { refused: 'failed' });
+});
+
+// XAIBO-PROD-593 (P6-T08 slice D): step 1's candidates: one per agent (its detection is the agent's, whatever the profile),
+// detected first, then not detected, each in service order; the name and version from the service rows.
+test('candidates: one per agent, detected first, names and versions from the rows', () => {
+  const row = (agent: string, name: string, state: IntegrationRow['state'], version: string | null, profileId: string | null) => ({
+    key: { agent, profileId }, name, profileLabel: null, version, state, reasons: [], lifecycleGaps: [], receipt: null,
+    content: { mode: 'unavailable', assurance: 'unavailable', evidence: null, gaps: [] } } as IntegrationRow);
+  assert.deepEqual(candidates([
+    row('agy', 'Antigravity CLI', 'not-detected', null, null),
+    row('claude', 'Claude Code', 'detected', '2.1.332', P), row('claude', 'Claude Code', 'connected', '2.1.332', Q),
+    row('codex', 'Codex', 'unsupported-version', '0.170.0', null),
+  ]), [
+    { agent: 'claude', name: 'Claude Code', version: '2.1.332', detected: true },
+    { agent: 'codex', name: 'Codex', version: '0.170.0', detected: true },
+    { agent: 'agy', name: 'Antigravity CLI', version: null, detected: false },
+  ]);
+  assert.deepEqual(candidates([]), []);
+});
+
+// XAIBO-PROD-593 (slice D, E2E finding): before a profile is chosen the detail is read through the agent's first listed profile
+// (a profile-less key exists only for an agent with no profile); a chosen profile always wins.
+test('detailKey: the chosen profile, else the agent\'s first listed profile, else the profile-less key', () => {
+  const row = (agent: string, profileId: string | null) => ({ key: { agent, profileId } } as IntegrationRow);
+  const rows = [row('claude', P), row('codex', Q), row('codex', P)];
+  assert.deepEqual(detailKey(rows, 'codex', null), { agent: 'codex', profileId: Q });
+  assert.deepEqual(detailKey(rows, 'codex', P), { agent: 'codex', profileId: P });
+  assert.deepEqual(detailKey(rows, 'agy', null), { agent: 'agy', profileId: null });
+  assert.deepEqual(detailKey([], 'codex', null), { agent: 'codex', profileId: null });
+});
+
+// XAIBO-PROD-593 (slice D, E2E finding): the receipt step learns of a passed Test receipt through a pure mapping read in an
+// effect (never a dispatch inside a state updater, which React may replay without it).
+test('receiptEvent: a received test on the receipt step is the receipt for the current selection; nothing otherwise', () => {
+  const at = run(openWizard(), { type: 'agent', agent: 'codex' }, { type: 'next' }, { type: 'next' }, { type: 'profile', profileId: P }, { type: 'next' }, applied, { type: 'next' });
+  const got = { phase: 'received', receipt: { source: 'hook', event: 'Stop', receivedAt: 5 } } as const;
+  assert.deepEqual(receiptEvent(got, at), { type: 'receipt', gen: at.gen });
+  assert.equal(receiptEvent({ phase: 'waiting', startedAt: 1, until: 2 }, at), null);
+  assert.equal(receiptEvent(got, run(at, { type: 'back' })), null, 'not on the receipt step');
+  assert.equal(receiptEvent(got, run(at, receipt)), null, 'already received');
+});
+
+// XAIBO-PROD-593 (slice D, E2E finding): per-step state (the detail read, the receipt test) belongs to one step of one selection;
+// state stamped with another key is treated as absent, so nothing is reset after the owner has already acted.
+test('stepKey: changes with the step and with the selection (agent, profile, rescan), not otherwise', () => {
+  const w = run(openWizard(), { type: 'agent', agent: 'codex' });
+  const k = stepKey(w);
+  assert.equal(stepKey(run(w, { type: 'scanned', seq: w.seq, result: { status: 'ready' } })), k, 'a scan reply is not a new step');
+  assert.notEqual(stepKey(run(w, { type: 'next' })), k);
+  assert.notEqual(stepKey(run(w, { type: 'agent', agent: 'claude' })), k);
+  assert.notEqual(stepKey(run(w, { type: 'rescan' })), k);
+  const p = run(w, { type: 'next' }, { type: 'next' }, { type: 'profile', profileId: P });
+  assert.notEqual(stepKey(run(p, { type: 'profile', profileId: Q })), stepKey(p));
+});
+
+// XAIBO-PROD-593 (slice D, E2E finding): the Connect dialog may open only on the preview step, for the chosen profile, before
+// anything is applied; a remembered request never reopens it on a later step (a stale modal blocked the receipt step).
+test('previewOpen: only on the preview step with a profile and nothing applied yet', () => {
+  const at = run(openWizard(), { type: 'agent', agent: 'codex' }, { type: 'next' }, { type: 'next' }, { type: 'profile', profileId: P }, { type: 'next' });
+  assert.equal(previewOpen(at), true);
+  assert.equal(previewOpen(run(at, applied)), false, 'applied');
+  assert.equal(previewOpen(run(at, applied, { type: 'next' })), false, 'the receipt step');
+  assert.equal(previewOpen(run(at, { type: 'back' })), false, 'the profile step');
+});
+
+// XAIBO-PROD-593 (slice D review M3): only a lifecycle setup counts as applied (a partial apply that left Connect offered does not)
+test('setUp: a profile with Xaibo entries and no Connect left to offer; a partial apply is not set up', () => {
+  const det = (entries: IntegrationDetail['entries'], state: IntegrationDetail['row']['state'] = 'awaiting-trust') => ({
+    row: { key: { agent: 'codex', profileId: P }, name: 'Codex', profileLabel: 'p', version: '0.160.0', state, reasons: [], lifecycleGaps: [], receipt: null,
+      content: { mode: 'unavailable', assurance: 'unavailable', evidence: null, gaps: [] } },
+    profiles: [{ id: P, label: 'p' }], entries, trustSteps: [], boundary: null, compatibility: [] } as IntegrationDetail);
+  const E = '00000000-0000-4000-8000-0000000aae01';
+  assert.equal(setUp(det([{ entry: E, route: 'codex-hooks', state: 'connected', reason: null }])), true);
+  assert.equal(setUp(det([{ entry: E, route: 'claude-retention', state: 'connected', reason: null }], 'detected')), false, 'hooks not installed: Connect still offered');
+  assert.equal(setUp(det([], 'detected')), false);
 });

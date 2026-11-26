@@ -7,7 +7,7 @@
 // ponytail: collapse discards a branch's pages without keeping its cursor (design allows reloading it explicitly);
 // keep the cursor when users ask to reopen deep pages.
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type RefObject } from 'react';
-import type { AgentStatus, HistoryFilter, HistoryKey, HistoryRow, MapGroup, MapNode } from '../../shared/ipc.ts';
+import type { AgentStatus, HistoryFilter, HistoryKey, HistoryRow, MapGroup, MapNode, RescanResult } from '../../shared/ipc.ts';
 import { VirtualList } from '../components/VirtualList.tsx';
 import { rovingKey } from '../components/virtual-list-model.ts';
 import { formatTime } from '../model.ts';
@@ -22,6 +22,7 @@ import {
 import { AgentsList, type AgentsSnapshot, type PageFetch } from './AgentsList.tsx';
 import { agentItems, agentKey, MODES, type Mode } from './integrations-state.ts';
 import { IntegrationPanel, type DetailFetch } from './IntegrationPanel.tsx';
+import { AddAgent } from './AddAgent.tsx';
 import type { WriteApi } from './IntegrationDiffDialog.tsx';
 import type { SignInApi } from '../usage/SignInFieldset.tsx';
 import { restoreTarget } from './integration-panel.ts';
@@ -38,6 +39,8 @@ export interface MapApi extends WriteApi {
   integrationDetail: DetailFetch;
   /** XAIBO-PROD-585: the panel's sign-in fieldset. */
   signIn: SignInApi;
+  /** XAIBO-PROD-593 (P6-T08 slice D): rescan agents and profiles without a restart. */
+  rescan(): Promise<RescanResult>;
 }
 
 type Child = MapNode | HistoryRow;
@@ -72,7 +75,20 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
   const panelRef = useRef(panel);
   panelRef.current = panel;
   const [agentsFocus, setAgentsFocus] = useState<{ key: string; n: number } | null>(null);
-  const [listTick, setListTick] = useState(0); // XAIBO-PROD-579: an integration action ran: the list refetches
+  const [listTick, setListTick] = useState(0);
+  // XAIBO-PROD-593 (P6-T08 slice D; design §6.5.2): the Add agent wizard in the detail pane (Agents mode), Rescan beside it
+  const [adding, setAdding] = useState(false);
+  const addRef = useRef<HTMLButtonElement>(null);
+  const [rescanning, setRescanning] = useState(false);
+  const rescanAll = () => {
+    if (rescanning) return;
+    setRescanning(true);
+    void api.rescan().then((r) => {
+      setAnnounce(r.status === 'ready' ? 'Agents rescanned.' : r.code === 'rate-limited' ? 'Rescanned moments ago; try again shortly.' : 'Rescan is unavailable.');
+      if (r.status === 'ready') setListTick((t) => t + 1);
+    }, () => setAnnounce('Rescan is unavailable.')).finally(() => setRescanning(false));
+  };
+  const openAdd = () => { setFocusReq(null); setMode('agents'); setPanel(null); setAdding(true); }; // XAIBO-PROD-579: an integration action ran: the list refetches
   const backToMap = () => {
     const origin = panelRef.current?.origin;
     setPanel(null);
@@ -285,20 +301,25 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
   return (
     <div className="x-map-area">
       <h1 id="agent-map-heading" tabIndex={-1}>Agent Map</h1>
+      <div className="x-integration-actions x-map-actions">
+        <button ref={addRef} type="button" className="x-btn x-btn-primary" onClick={openAdd}>Add agent</button>
+        {/* review L5: while the wizard is open its own Rescan agents is the one that may run (it waits for an apply or receipt test) */}
+        <button type="button" className="x-btn x-btn-secondary" aria-disabled={rescanning || adding || lastKnown !== null || undefined} onClick={() => { if (lastKnown === null && !adding) rescanAll(); }}>Rescan</button>
+      </div>
       {lastKnown ? <p className="x-hint">Last known {lastKnown}: live counts may be out of date.</p> : null}
       {notice ? <p className="x-hint x-map-notice">{notice}</p> : null}
-      <div className={mode !== 'agents' ? 'x-map' : panel ? 'x-map x-map-panel-open' : 'x-map x-map-single'}>
+      <div className={mode !== 'agents' ? 'x-map' : panel || adding ? 'x-map x-map-panel-open' : 'x-map x-map-single'}>
         <section className="x-pane x-map-tree" aria-labelledby="map-tree-heading">
           <div className="x-pane-head">
             <h2 id="map-tree-heading" tabIndex={-1}>{mode === 'agents' ? 'Agents' : 'Repositories'}</h2>
             <div role="group" aria-label="Agent Map view" className="x-modes">
               {MODES.map((m, i) => (
                 <button key={m.mode} ref={(el) => { modeRefs.current[i] = el; }} type="button" className="x-mode" aria-pressed={mode === m.mode} tabIndex={mode === m.mode ? 0 : -1}
-                  onKeyDown={(e) => rovingKey(e, i, MODES.length, modeRefs.current)} onClick={() => { if (mode !== m.mode) { setFocusReq(null); setMode(m.mode); } }}>{m.label}</button>
+                  onKeyDown={(e) => rovingKey(e, i, MODES.length, modeRefs.current)} onClick={() => { if (mode !== m.mode) { setFocusReq(null); setMode(m.mode); setAdding(false); } }}>{m.label}</button>
               ))}
             </div>
           </div>
-          {mode === 'agents' ? <AgentsList fetchPage={api.integrationPage} lastKnown={lastKnown} store={agentsStore} focusTo={agentsFocus} refresh={listTick} onOpen={(r) => setPanel({ key: r.key, origin: agentKey(r.key) })} />
+          {mode === 'agents' ? <AgentsList fetchPage={api.integrationPage} lastKnown={lastKnown} store={agentsStore} focusTo={agentsFocus} refresh={listTick} onOpen={(r) => { setAdding(false); setPanel({ key: r.key, origin: agentKey(r.key) }); }} />
             : rootsEmpty && s.roots.loading && s.roots.pages.length === 0 ? <p className="x-hint x-map-note">Loading…</p>
             : rootsEmpty && s.roots.failed ? <p className="x-hint x-map-note">Groups could not be loaded. <button type="button" className="x-btn x-btn-quiet" onClick={() => load(null, null, 'first')}>Retry</button></p>
             : rootsEmpty ? <p className="x-hint x-map-note">No sessions yet.</p>
@@ -318,7 +339,11 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
               </div>
             )}
         </section>
-        {mode === 'agents' ? (panel ? (
+        {mode === 'agents' ? (adding ? (
+          <AddAgent api={api} lastKnown={lastKnown} onChanged={() => setListTick((t) => t + 1)}
+            onCancel={() => { setAdding(false); requestAnimationFrame(() => addRef.current?.focus()); }}
+            onDone={(key) => { setAdding(false); setListTick((t) => t + 1); setPanel({ key, origin: agentKey(key) }); }} />
+        ) : panel ? (
           <IntegrationPanel key={panel.origin} fetchDetail={api.integrationDetail} write={api} signIn={api.signIn} target={panel.key} lastKnown={lastKnown} onBack={backToMap} onChanged={() => setListTick((t) => t + 1)}
             onProfile={(id) => setPanel((p) => (p ? { ...p, key: { agent: p.key.agent, profileId: id } } : p))} />
         ) : null) : (

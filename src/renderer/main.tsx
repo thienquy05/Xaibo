@@ -171,6 +171,7 @@ function App() {
       cleanupPreview: (profileId: string) => client.current?.cleanupPreview(profileId) ?? gone(),
       cleanupApply: (previewId: string) => client.current?.cleanupApply(previewId) ?? Promise.resolve(notSent),
       teePreview: (profileId: string) => client.current?.teePreview(profileId) ?? gone(),
+      rescan: () => client.current?.rescan() ?? Promise.resolve({ status: 'refused', code: 'unavailable' } as const), // XAIBO-PROD-593
       teeRemovalPreview: (profileId: string) => client.current?.teeRemovalPreview(profileId) ?? gone(),
       // XAIBO-PROD-585: without a connection a read fails and a write is unavailable (nothing was sent)
       signIn: (profileId: string, c: SignInCommand) => client.current?.signIn(profileId, c) ?? (c.op === 'read' ? gone() : Promise.resolve({ code: 'unavailable' as const, view: null })) };

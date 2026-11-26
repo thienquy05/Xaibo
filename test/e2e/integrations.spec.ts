@@ -71,6 +71,10 @@ test('Agents mode: 31 rows, every FR-06 state, bounded paging, mode anchors, res
   const repos = modes(page).getByRole('button', { name: 'Repositories' }), agents = modes(page).getByRole('button', { name: 'Agents' });
   await expect(repos).toHaveAttribute('aria-pressed', 'true');
   await expect(agents).toHaveAttribute('aria-pressed', 'false');
+  await page.keyboard.press('Tab'); // XAIBO-PROD-593: Add agent and Rescan come first (design §6.5.2 tab order)
+  await expect(page.getByRole('button', { name: 'Add agent' })).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(page.getByRole('button', { name: 'Rescan' })).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(repos).toBeFocused();
   await page.keyboard.press('ArrowRight');

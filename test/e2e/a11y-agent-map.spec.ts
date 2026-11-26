@@ -60,8 +60,12 @@ for (const [layout, [w, h]] of Object.entries(LAYOUTS)) {
     const items = tree.getByRole('treeitem');
     await expect(items).toHaveCount(3, { timeout: 20_000 }); // two folders and the shared fixture's
     await expect(tree.locator('[tabindex="0"]')).toHaveCount(1); // one roving tab stop
-    // XAIBO-PROD-575 (design §6.5.2 tab order): the mode group's one tab stop, the selected mode, comes before the tree
+    // XAIBO-PROD-575 / 593 (design §6.5.2 tab order): Add agent, Rescan, then the mode group's one tab stop, then the tree
     const modes = page.getByRole('group', { name: 'Agent Map view' });
+    await page.keyboard.press('Tab');
+    await expectVisibleFocus(page.getByRole('button', { name: 'Add agent' }));
+    await page.keyboard.press('Tab');
+    await expectVisibleFocus(page.getByRole('button', { name: 'Rescan' }));
     await page.keyboard.press('Tab');
     await expectVisibleFocus(modes.getByRole('button', { name: 'Repositories', pressed: true }));
     await page.keyboard.press('Tab');
