@@ -16,4 +16,5 @@ contextBridge.exposeInMainWorld('xaibo', {
   paintAck: (delta: number) => ipcRenderer.send('paint-ack', Number(delta)),
   revealPriceOverride: () => ipcRenderer.invoke('reveal-price-override') as Promise<unknown>,
   startup: (request: unknown) => ipcRenderer.invoke('startup', request) as Promise<unknown>,
+  grant: (request: unknown) => ipcRenderer.invoke('grant', request) as Promise<unknown>, // XAIBO-PROD-597: ids only; main parses and confirms natively
 });

@@ -11,7 +11,7 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
-import { isObj } from '../../shared/ipc.ts';
+import { isObj, type GrantConfirmResult, type GrantOffer, type GrantOfferResult, type GrantRefusal, type GrantRequest, type GrantState, type RevokeResult, type RevokeTarget } from '../../shared/ipc.ts';
 import { writable } from '../config/bounds.ts';
 import { readFile, within } from '../config/transaction.ts';
 import { atomicWrite, fsyncDir, privateDir } from '../fs-private.ts';
@@ -250,28 +250,8 @@ export function importCatalogFile(dataDir: string, bundled: Catalog, file: strin
 export const boundedOutcome = (r: ReturnType<typeof importCatalog>): ReturnType<typeof importCatalog> =>
   (r.status === 'imported' ? r : { status: 'rejected', issues: r.issues.slice(0, 32).map((i) => ({ code: i.code, at: i.at.slice(0, 256) })) });
 
-/** XAIBO-PROD-596 (P6-T08a slice A; D-P6-20, SEC5): what the owner asked to grant, by ids; a probe also names the executable
- *  they picked in main's native dialog. */
-export type GrantRequest = { action: 'root'; agent: string; root: string } | { action: 'probe'; agent: string; binary: string; file: string } | { action: 'setup'; agent: string };
-export type GrantRefusal = 'not-found' | 'root-unavailable' | 'root-not-approved' | 'executable-invalid' | 'unavailable';
-/** What main's native confirmation shows: the entry, the exact folder or file, the probe's argv or the setup's ops; never sent
- *  to the renderer. binding: an HMAC (per-boot key, 5-minute bucket) of everything shown and stored, so a confirm writes only
- *  what the dialog showed. */
-export interface GrantOffer {
-  action: GrantRequest['action']; agent: string; name: string; id: string | null; root: string; path: string;
-  argv: string[] | null; ops: { pointer: string; value: string }[] | null; binding: string;
-}
-export type GrantOfferResult = { status: 'offer'; offer: GrantOffer } | { status: 'refused'; code: GrantRefusal };
-export type GrantConfirmResult = { status: 'granted' } | { status: 'refused'; code: 'stale' | 'unavailable' | 'failed' };
-export type RevokeTarget = { kind: 'root' | 'probe'; id: string } | { kind: 'setup' };
-export type RevokeResult = 'revoked' | 'unchanged' | 'not-found' | 'unavailable';
-type ItemState = 'approved' | 'granted' | 'stale' | 'none' | 'unavailable';
-/** Grant state for the integration detail, one state per declared item; no paths, digests or argv. */
-export interface GrantState {
-  roots: { id: string; state: Extract<ItemState, 'approved' | 'stale' | 'none' | 'unavailable'> }[];
-  probes: { binary: string; state: Extract<ItemState, 'granted' | 'stale' | 'none'> }[];
-  setup: { root: string; state: Extract<ItemState, 'granted' | 'stale' | 'none'> } | null;
-}
+// XAIBO-PROD-596/597 (P6-T08a; D-P6-20, SEC5): the grant types live in shared/ipc.ts (main shows the offer); re-exported here.
+export type { GrantConfirmResult, GrantOffer, GrantOfferResult, GrantRefusal, GrantRequest, GrantState, RevokeResult, RevokeTarget } from '../../shared/ipc.ts';
 
 const BUCKET_MS = 5 * 60_000; // a binding confirms within 5 to 10 minutes of its offer
 const valueText = (v: ReportSetup['ops'][number]['value']) => ('xaibo' in v ? `<${v.xaibo}>` : JSON.stringify(v.literal));

@@ -7,7 +7,7 @@ import { homedir, userInfo } from 'node:os';
 import path from 'node:path';
 import { errorCode, installCrashPolicy } from '../shared/crash.ts';
 import { accept, IPC_VERSION, parsePortRequest, parseServiceCommand } from '../shared/ipc.ts';
-import type { Banner, PortMessage, ServiceEvent, StorageReport, IntegrationDetailResult, IntegrationPageResult } from '../shared/ipc.ts';
+import type { Banner, PortMessage, ServiceEvent, StorageReport, IntegrationDetailResult, IntegrationPageResult, GrantConfirmResult, GrantOfferResult, RevokeResult } from '../shared/ipc.ts';
 import { appendQuiet, createLogger, loadInstallSecret, type Logger } from '../shared/log.ts';
 import { answer, answerCost, answerFiles, answerLiveSet, answerMarkers, answerSession, answerSlice, answerSubagents, answerTools, answerTranscript, answerUsage, answerUsageHistory, coalesce, createHub, sessionsByKey, type LiveOf } from './api.ts';
 import { allowedRootsFromEnv, boot, retentionDelayFromEnv, type Service } from './boot.ts';
@@ -140,6 +140,9 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
       // P5-T16: the ledger recomputes on the next request (never from a run read before the clear); XAIBO-PROD-526: async
       // XAIBO-PROD-590 (P6-T08 slice A): rescan without restart; the agents broadcast follows from the service's announce
       case 'agentRescan': void s.rescan().then((result) => port.postMessage({ v: IPC_VERSION, type: 'agentRescan', id: req.id, result } satisfies PortMessage)); break;
+      // XAIBO-PROD-597 (P6-T08a slice B): ids only; it only removes authority, so no native confirmation
+      case 'grantRevoke': void s.revoke(req.agent, req.target).catch((): RevokeResult => 'unavailable') // code review L: always a reply
+        .then((result) => port.postMessage({ v: IPC_VERSION, type: 'grantRevoke', id: req.id, result } satisfies PortMessage)); break;
       case 'clearUsage': void s.clearUsage().then((result) => {
         if (result === 'cleared') ledger?.invalidate();
         port.postMessage({ v: IPC_VERSION, type: 'clearUsage', id: req.id, result } satisfies PortMessage);
@@ -169,7 +172,7 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
         const c = integrationsFor(s);
         const result: IntegrationDetailResult = c === null ? { status: 'refused', code: 'starting' } : c === 'unavailable' || !dataDir ? { status: 'refused', code: 'unavailable' }
           : answerIntegrationDetail({ db, catalog: s.catalog(), detections: s.detections, profiles: s.profiles(), home: homedir(), now: Date.now(),
-            reconcile: () => c.reconcile(s.profiles() ?? []), ...pageEvidence({ db, dataDir }) }, req.key);
+            reconcile: () => c.reconcile(s.profiles() ?? []), grantState: (agent) => s.grantState(agent), ...pageEvidence({ db, dataDir }) }, req.key);
         port.postMessage({ v: IPC_VERSION, type: 'integrationDetail', id: req.id, result } satisfies PortMessage);
         break;
       }
@@ -243,6 +246,12 @@ const command = accept(parseServiceCommand, (m, transferred: MessagePortMain[]) 
   else if (m.type === 'reloadPrices') void booted.then((s) => s.reloadPrices());
   else if (m.type === 'port') transferred.forEach(connect);
   else if (m.type === 'setPath') { const { agent, path: file } = m; void booted.then((s) => s.setPath(agent, file)); }
+  // XAIBO-PROD-597 (P6-T08a slice B; review M5): main's grant offer and confirm; the reply goes to main only, never a port
+  else if (m.type === 'grantOffer' || m.type === 'grantConfirm') { // code review L: always a reply, a failure included
+    const reply = (result: GrantOfferResult | GrantConfirmResult) => parent.postMessage({ v: IPC_VERSION, type: 'grant', id: m.id, result } satisfies ServiceEvent);
+    const run = m.type === 'grantOffer' ? booted.then((s) => s.grantOffer(m.request)) : booted.then((s) => s.grantConfirm(m.request, m.binding));
+    void run.catch((): GrantConfirmResult => ({ status: 'refused', code: 'failed' })).then(reply);
+  }
 });
 parent.on('message', (e) => command(e.data, e.ports));
 

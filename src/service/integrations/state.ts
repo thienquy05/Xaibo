@@ -5,7 +5,7 @@
 // observation record codexHookStatus keeps (as the coverage banners do; code review M1).
 import type { DatabaseSync } from 'node:sqlite';
 import { CONNECT_LIMITS, GAP_REASONS, INTEGRATION_PAGE_MAX, REMOVAL_LIMIT, type IntegrationDetailResult, type IntegrationFact, type IntegrationKey, type IntegrationPageResult, type IntegrationRow,
-  type IntegrationState } from '../../shared/ipc.ts';
+  type IntegrationState, type GrantState } from '../../shared/ipc.ts';
 import { CLAUDE_HOOK_EVENTS, claudeHookPolicy } from '../adapters/claude/hooks.ts';
 import { CODEX_HOOK_EVENTS } from '../adapters/codex/hooks.ts';
 import { codexHookStatus } from '../adapters/codex/setup.ts';
@@ -102,6 +102,8 @@ export interface PageDeps {
   policy(p: Profile): string | null;
   /** XAIBO-PROD-577: Codex's guided trust steps for the profile (shown only while it awaits trust). */
   trustSteps(p: Profile): string[];
+  /** XAIBO-PROD-597 (P6-T08a slice B): an imported agent's grant state (no paths); absent or null for bundled agents. */
+  grantState?(agent: string): GrantState | 'unavailable' | null;
 }
 
 const order = (k: IntegrationKey) => k.agent + '|' + (k.profileId ?? ''); // agent ids hold no '|'
@@ -185,7 +187,7 @@ export function answerIntegrationDetail(d: PageDeps, key: IntegrationKey): Integ
     // a boundary can carry a file's fractional mtime (Codex's change boundary): rounded up, so an earlier receipt never counts
     const at = p ? d.installedAt(p) : null;
     return { status: 'ready', observedAt: d.now, value: { row, profiles, entries, trustSteps, boundary: at === null ? null : Math.ceil(at),
-      compatibility: compatibility(d.catalog, key.agent, row.version).slice(0, 16) } }; // XAIBO-PROD-591
+      compatibility: compatibility(d.catalog, key.agent, row.version).slice(0, 16), grants: d.grantState?.(key.agent) ?? null } }; // XAIBO-PROD-591, 597
   } catch {
     return { status: 'refused', code: 'failed' };
   }

@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { openStore } from '../../src/service/store/db.ts';
 import { loadCatalog } from '../../src/service/catalog/validate.ts';
 import { compatibility } from '../../src/service/catalog/capabilities.ts';
-import { parsePortMessage, parsePortRequest } from '../../src/shared/ipc.ts';
+import { parsePortMessage, parsePortRequest, type GrantState } from '../../src/shared/ipc.ts';
 import { answerIntegrationDetail, answerIntegrationPage, type PageDeps } from '../../src/service/integrations/state.ts';
 
 const C1 = '00000000-0000-4000-8000-0000000c7701', C2 = '00000000-0000-4000-8000-0000000c7702', X1 = '00000000-0000-4000-8000-0000000c7703', K2 = '00000000-0000-4000-8000-0000000c7704';
@@ -138,4 +138,28 @@ test('P6-T08: the detail carries the compatibility labels for the detected versi
   assert.equal(over(Array.from({ length: 17 }, () => 'x')), null, 'at most 16 lines');
   assert.equal(over(['x'.repeat(257)]), null, 'at most 256 characters a line');
   assert.equal(over([1]), null);
+});
+
+// XAIBO-PROD-597 (P6-T08a slice B; D-P6-20): the detail carries the agent's grant state from the service (per item, no paths).
+test('P6-T08a: the detail carries the grant state, bounded and without paths; none for an agent the service has none for', async () => {
+  const state: GrantState = { roots: [{ id: 'user', state: 'approved' }], probes: [{ binary: 'main', state: 'stale' }], setup: { root: 'user', state: 'none' } };
+  const d = await deps({ grantState: (agent: string) => (agent === 'agy' ? state : null) });
+  const r = ask(d, { agent: 'agy', profileId: null });
+  assert.equal(r.status, 'ready');
+  if (r.status !== 'ready') return;
+  assert.deepEqual(r.value.grants, state);
+  const cl = ask(d, { agent: 'claude', profileId: C1 });
+  assert.equal(cl.status === 'ready' ? cl.value.grants : 'x', null);
+  const msg = (grants: unknown) => parsePortMessage({ v: 1, type: 'integrationDetail', id: 1, result: { ...r, value: { ...r.value, grants } } });
+  assert.ok(msg(state));
+  assert.ok(msg('unavailable'));
+  assert.ok(msg(null));
+  for (const bad of [{ ...state, roots: [{ id: 'user', state: 'approved', path: '/tmp/x' }] }, { ...state, roots: Array(5).fill({ id: 'user', state: 'none' }) },
+    { ...state, roots: [{ id: 'user', state: 'granted' }] }, { ...state, probes: Array(9).fill({ binary: 'main', state: 'none' }) }, { ...state, setup: { root: 'User!', state: 'none' } },
+    { ...state, extra: 1 }, 'none']) {
+    assert.equal(msg(bad), null, JSON.stringify(bad));
+  }
+  assert.equal((await deps()).grantState, undefined, 'optional: the deps without it answer null');
+  const plain = ask(await deps(), { agent: 'agy', profileId: null });
+  assert.equal(plain.status === 'ready' ? plain.value.grants : 'x', null);
 });

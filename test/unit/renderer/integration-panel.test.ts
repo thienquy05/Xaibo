@@ -12,7 +12,7 @@ const P = '00000000-0000-4000-8000-0000000c7801', E = '00000000-0000-4000-8000-0
 const detail = (o: { receipt?: number | null; boundary?: number | null; agent?: string; entries?: IntegrationDetail['entries'] } = {}): IntegrationDetail => ({
   row: { key: { agent: o.agent ?? 'codex', profileId: P }, name: 'Codex', profileLabel: 'Default profile', version: '0.160.0', state: 'awaiting-trust', reasons: ['no-receipt'], lifecycleGaps: [],
     receipt: o.receipt ? { source: 'hook', event: 'Stop', receivedAt: o.receipt } : null, content: { mode: 'native-transcript', assurance: 'verified', evidence: 'S9', gaps: [] } },
-  profiles: [{ id: P, label: 'Default profile' }], entries: o.entries ?? [], trustSteps: [], boundary: o.boundary === undefined ? 1_000 : o.boundary, compatibility: [],
+  profiles: [{ id: P, label: 'Default profile' }], entries: o.entries ?? [], trustSteps: [], boundary: o.boundary === undefined ? 1_000 : o.boundary, compatibility: [], grants: null,
 });
 
 test('Test receipt: polls every 2 s for up to 60 s; only a receipt after the start and the install boundary counts', () => {

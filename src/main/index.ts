@@ -3,11 +3,12 @@
 // (P1-T06): restarted with backoff, a fresh port brokered to the renderer after every start and every page load.
 import { app, BrowserWindow, dialog, ipcMain, Menu, MessageChannelMain, Notification, powerMonitor, shell, utilityProcess } from 'electron';
 import type { MessagePortMain, Tray } from 'electron';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, realpathSync } from 'node:fs';
 import { release } from 'node:os';
 import path from 'node:path';
 import { installCrashPolicy } from '../shared/crash.ts';
-import { AGENT_ID, IPC_VERSION, type RevealResult, type ServiceMetrics, type StartupReply } from '../shared/ipc.ts';
+import { AGENT_ID, IPC_VERSION, parseGrantAsk, type GrantOutcome, type RevealResult, type ServiceMetrics, type StartupReply } from '../shared/ipc.ts';
+import { grantFlow } from './grants.ts';
 import { appendQuiet, createLogger, loadInstallSecret } from '../shared/log.ts';
 import { initDataDir, serviceEnv } from './app-paths.ts';
 import { buildBundle, foldMetrics, readLogTail, writeBundle } from './diagnostics.ts';
@@ -53,6 +54,21 @@ function start(dataDir: string) {
     const port = supervisor.connect();
     if (port) win.webContents.postMessage('port', null, [port]);
   };
+  // XAIBO-PROD-597 (P6-T08a slice B; D-P6-20, security review): main owns the grant confirmation (grants.ts). The picker and the
+  // message box are sheets on our window and are refused while it does not exist; only the grant button sends the binding.
+  const grants = grantFlow({
+    pickExecutable: async () => {
+      if (!win || win.isDestroyed()) return null;
+      const r = await dialog.showOpenDialog(win, { title: 'Choose the agent executable to grant', properties: ['openFile'] });
+      return r.canceled ? null : r.filePaths[0] ?? null;
+    },
+    realpath: (p) => realpathSync.native(p),
+    confirm: async (d) => (win && !win.isDestroyed() ? (await dialog.showMessageBox(win, d)).response === 1 : false),
+    send: (c) => supervisor.send(c),
+    setTimer: (fn, ms) => setTimeout(fn, ms),
+    clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
+    now: () => performance.now(),
+  });
   const notifyStub = process.env.XAIBO_NOTIFY_STUB === '1' ? path.join(app.getPath('logs'), 'notify-stub.jsonl') : null;
   const supervisor = new Supervisor<MessagePortMain>({
     fork: () => utilityProcess.fork(path.join(here, '..', 'service', 'index.js'), [], {
@@ -60,7 +76,8 @@ function start(dataDir: string) {
     }),
     channel: () => new MessageChannelMain(),
     onHealth: (h) => win?.webContents.send('health', h),
-    onSpawn: () => { serviceMetrics = null; sendPort(); }, // a new service process: no stale metrics (review L1)
+    onSpawn: () => { serviceMetrics = null; grants.reset(); sendPort(); }, // a new service process: no stale metrics (review L1) or grant flow
+    onGrant: (g) => grants.receive(g),
     setTimer: (fn, ms) => setTimeout(fn, ms),
     clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
     now: Date.now,
@@ -118,6 +135,15 @@ function start(dataDir: string) {
       const file = r.filePaths[0];
       if (!r.canceled && file) supervisor.send({ v: IPC_VERSION, type: 'importCatalog', path: file });
     });
+  });
+  // XAIBO-PROD-597: Approve root / Grant probe / Grant setup. Our window's main frame only, ids only (parsed here); the outcome
+  // carries no path or binding, and the log only the action and outcome (review L13).
+  ipcMain.handle('grant', async (e, request: unknown): Promise<GrantOutcome> => {
+    const ask = parseGrantAsk(request);
+    if (!win || win.isDestroyed() || !fromOurWindow(e, win) || !ask) return { status: 'refused', code: 'invalid' };
+    const out = await grants.ask(ask);
+    log.log(`grant_${ask.action}_${out.status === 'refused' ? out.code : out.status}`);
+    return out;
   });
   ipcMain.on('set-agent-path', (e, agent: unknown) => {
     if (!win || e.sender !== win.webContents || typeof agent !== 'string' || !AGENT_ID.test(agent)) return;

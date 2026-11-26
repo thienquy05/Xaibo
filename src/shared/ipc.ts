@@ -17,7 +17,10 @@ export type ServiceCommand = { v: 1; type: 'quit' | 'wake' | 'port' | 'reloadPri
   /** P3-T12: the machine is about to sleep; `at` is main's clock at the power event (ms since epoch). */
   | { v: 1; type: 'suspend'; at: number }
   /** XAIBO-PROD-595: a catalog entry file the user picked in the native dialog (read and validated by the service). */
-  | { v: 1; type: 'importCatalog'; path: string };
+  | { v: 1; type: 'importCatalog'; path: string }
+  /** XAIBO-PROD-597 (P6-T08a slice B): main's grant offer request and its confirmation (main only; correlated by id). */
+  | { v: 1; type: 'grantOffer'; id: number; request: GrantRequest }
+  | { v: 1; type: 'grantConfirm'; id: number; request: GrantRequest; binding: string };
 /** service -> main; notify (P3-T11, EC-59) carries only the agent display name, the approved project label (null until
  *  one exists, FR-10) and the wait state. */
 export type NotifyState = 'waiting-for-permission' | 'needs-input';
@@ -28,7 +31,9 @@ export type ServiceMetrics = Record<(typeof SERVICE_METRICS)[number], number>;
 export type ServiceEvent =
   | { v: 1; type: 'ready'; readOnly: ReadOnlyReason | null }
   | { v: 1; type: 'notify'; agent: string; label: string | null; state: NotifyState }
-  | { v: 1; type: 'metrics'; metrics: ServiceMetrics };
+  | { v: 1; type: 'metrics'; metrics: ServiceMetrics }
+  /** XAIBO-PROD-597: the reply to main's grantOffer or grantConfirm (never sent to a renderer port). */
+  | { v: 1; type: 'grant'; id: number; result: GrantOfferResult | GrantConfirmResult };
 export type HealthState = 'starting' | 'running' | 'restarting' | 'stopped';
 /** main -> renderer; attempt counts consecutive restarts (0 unless restarting). */
 export interface Health { v: 1; type: 'health'; state: HealthState; attempt: number; readOnly: ReadOnlyReason | null }
@@ -55,6 +60,15 @@ export function parseServiceCommand(x: unknown): ServiceCommand | null {
   if (!m) return null;
   if (oneOf(['quit', 'wake', 'port', 'reloadPrices'] as const, m.type)) return { v: 1, type: m.type };
   if (m.type === 'suspend') return Number.isFinite(m.at) && (m.at as number) > 0 ? { v: 1, type: 'suspend', at: m.at as number } : null;
+  if (m.type === 'grantOffer') {
+    const request = parseGrantRequest(m.request);
+    return exactKeys(m, ['v', 'type', 'id', 'request']) && count(m.id) && request ? { v: 1, type: 'grantOffer', id: m.id, request } : null;
+  }
+  if (m.type === 'grantConfirm') {
+    const request = parseGrantRequest(m.request);
+    return exactKeys(m, ['v', 'type', 'id', 'request', 'binding']) && count(m.id) && request && typeof m.binding === 'string' && BINDING.test(m.binding)
+      ? { v: 1, type: 'grantConfirm', id: m.id, request, binding: m.binding } : null;
+  }
   if (m.type === 'importCatalog') return text(m.path, 4096) && m.path.startsWith('/') && !m.path.includes('\0') ? { v: 1, type: 'importCatalog', path: m.path } : null;
   if (m.type !== 'setPath' || !text(m.agent) || !AGENT_ID.test(m.agent)) return null;
   if (!text(m.path, 4096) || !m.path.startsWith('/') || m.path.includes('\0')) return null;
@@ -66,6 +80,10 @@ export function parseServiceEvent(x: unknown): ServiceEvent | null {
   if (m?.type === 'notify') {
     if (!text(m.agent, 64) || !m.agent || !(m.label === null || text(m.label, 128))) return null;
     return oneOf(['waiting-for-permission', 'needs-input'] as const, m.state) ? { v: 1, type: 'notify', agent: m.agent, label: m.label, state: m.state } : null;
+  }
+  if (m?.type === 'grant') {
+    const result = parseGrantResult(m.result);
+    return exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) && result ? { v: 1, type: 'grant', id: m.id, result } : null;
   }
   if (m?.type === 'metrics') { // every known key, a safe non-negative integer; anything else is dropped (never content)
     const raw = m.metrics;
@@ -369,6 +387,8 @@ export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Curs
   | { v: 1; type: 'clearUsage'; id: number }
   /** XAIBO-PROD-590: rescan agents and profiles without a restart; no argument (the service decides what is scanned). */
   | { v: 1; type: 'agentRescan'; id: number }
+  /** XAIBO-PROD-597 (P6-T08a slice B): revoke one grant of an imported agent; ids only (it only removes authority). */
+  | { v: 1; type: 'grantRevoke'; id: number; agent: string; target: RevokeTarget }
   /** XAIBO-PROD-527 (P5-T18 part 1): history tools and retention/storage settings. */
   | { v: 1; type: 'search'; id: number; query: string; filter: HistoryFilter; cursor: SearchKey | null; limit: number }
   | { v: 1; type: 'purge'; id: number; session: number }
@@ -423,6 +443,7 @@ export type PortMessage =
   | ({ v: 1; type: 'monthly'; id: number; failed?: true } & LedgerPage)
   | { v: 1; type: 'clearUsage'; id: number; result: ClearUsageResult }
   | { v: 1; type: 'agentRescan'; id: number; result: RescanResult }
+  | { v: 1; type: 'grantRevoke'; id: number; result: RevokeResult }
   | { v: 1; type: 'catalogImport'; result: CatalogImportResult }
   /** capped (Gate 5 round 2 B): the bounded scan stopped before the page filled; results may be incomplete, next continues. */
   | { v: 1; type: 'search'; id: number; hits: SearchHit[]; next: SearchKey | null; failed?: true; capped?: true }
@@ -985,6 +1006,10 @@ export function parsePortRequest(x: unknown): PortRequest | null {
   }
   if (m?.type === 'clearUsage') return count(m.id) ? { v: 1, type: 'clearUsage', id: m.id } : null;
   if (m?.type === 'agentRescan') return exactKeys(m, ['v', 'type', 'id']) && count(m.id) ? { v: 1, type: 'agentRescan', id: m.id } : null;
+  if (m?.type === 'grantRevoke') {
+    const target = parseRevokeTarget(m.target);
+    return exactKeys(m, ['v', 'type', 'id', 'agent', 'target']) && count(m.id) && refId(m.agent) && target ? { v: 1, type: 'grantRevoke', id: m.id, agent: m.agent, target } : null;
+  }
   if (m?.type === 'search') { // the query length first (design review L1)
     if (!count(m.id) || typeof m.query !== 'string' || m.query.length < 1 || m.query.length > QUERY_MAX) return null;
     const filter = parseFilter(m.filter), cursor = parseSearchKey(m.cursor);
@@ -1113,6 +1138,7 @@ export function parsePortMessage(x: unknown): PortMessage | null {
         && (r.issues as unknown[]).every((i) => exactKeys(i, ['code', 'at']) && typeof i.code === 'string' && /^[a-z-]{1,32}$/.test(i.code) && text(i.at, 256))));
     return exactKeys(m, ['v', 'type', 'result']) && ok ? { v: 1, type: 'catalogImport', result: r as CatalogImportResult } : null;
   }
+  if (m.type === 'grantRevoke') return exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) && oneOf(REVOKE_RESULTS, m.result) ? { v: 1, type: 'grantRevoke', id: m.id, result: m.result } : null;
   if (m.type === 'agentRescan') {
     const r = m.result, keys = isObj(r) ? Object.keys(r).sort().join() : '';
     const ok = isObj(r) && ((r.status === 'ready' && keys === 'status')
@@ -1402,26 +1428,28 @@ export interface IntegrationDetail {
   trustSteps: string[]; boundary: number | null;
   /** XAIBO-PROD-591 (P6-T08 slice B): the agent's compatibility labels for its detected version (at most 16 lines). */
   compatibility: string[];
+  /** XAIBO-PROD-597 (P6-T08a slice B): an imported agent's grant state per item (no paths); null for bundled agents. */
+  grants: GrantState | 'unavailable' | null;
 }
 export type IntegrationDetailResult = { status: 'ready'; observedAt: number; value: IntegrationDetail } | { status: 'refused'; code: (typeof DETAIL_REFUSALS)[number] };
 function parseIntegrationDetail(x: unknown): IntegrationDetailResult | undefined {
   if (exactKeys(x, ['status', 'code']) && x.status === 'refused') return oneOf(DETAIL_REFUSALS, x.code) ? { status: 'refused', code: x.code } : undefined;
   if (!exactKeys(x, ['status', 'observedAt', 'value']) || x.status !== 'ready' || !count(x.observedAt)) return undefined;
   const v = x.value;
-  if (!exactKeys(v, ['row', 'profiles', 'entries', 'trustSteps', 'boundary', 'compatibility'])) return undefined;
-  const row = parseIntegrationRow(v.row);
+  if (!exactKeys(v, ['row', 'profiles', 'entries', 'trustSteps', 'boundary', 'compatibility', 'grants'])) return undefined;
+  const row = parseIntegrationRow(v.row), grants = parseGrants(v.grants);
   const ok = row && bounded(v.profiles, REMOVAL_LIMIT) && v.profiles.every((p) => exactKeys(p, ['id', 'label']) && uuid(p.id) && text(p.label, 512))
     && bounded(v.entries, REMOVAL_LIMIT) && v.entries.every((e) => exactKeys(e, ['entry', 'route', 'state', 'reason']) && uuid(e.entry) && route(e.route)
       && oneOf(RECONCILE_STATES, e.state) && (e.reason === null || connectCode(e.reason)))
     && bounded(v.trustSteps, CONNECT_LIMITS.trust) && v.trustSteps.every(longText) && (v.boundary === null || count(v.boundary))
-    && bounded(v.compatibility, 16) && v.compatibility.every((l) => text(l, 256));
+    && bounded(v.compatibility, 16) && v.compatibility.every((l) => text(l, 256)) && grants !== undefined;
   if (!ok) return undefined;
   // code review L3: the fields agree: trust steps only while awaiting trust; a profile-less row has no entries or boundary; the
   // row's own profile is listed
   const pid = row.key.profileId, d = v as unknown as IntegrationDetail;
   if ((d.trustSteps.length && row.state !== 'awaiting-trust') || (pid === null && (d.entries.length || d.boundary !== null))
     || (pid !== null && !d.profiles.some((p) => p.id === pid))) return undefined;
-  return { status: 'ready', observedAt: x.observedAt, value: { row, profiles: d.profiles.map((p) => ({ ...p })), entries: d.entries.map((e) => ({ ...e })), trustSteps: [...d.trustSteps], boundary: d.boundary, compatibility: [...d.compatibility] } };
+  return { status: 'ready', observedAt: x.observedAt, value: { row, profiles: d.profiles.map((p) => ({ ...p })), entries: d.entries.map((e) => ({ ...e })), trustSteps: [...d.trustSteps], boundary: d.boundary, compatibility: [...d.compatibility], grants } };
 }
 function parseIntegrationPage(x: unknown): IntegrationPageResult | undefined {
   if (exactKeys(x, ['status', 'code']) && x.status === 'refused') return oneOf(INTEGRATION_REFUSALS, x.code) ? { status: 'refused', code: x.code } : undefined;
@@ -1432,4 +1460,81 @@ function parseIntegrationPage(x: unknown): IntegrationPageResult | undefined {
   const previous = v.previous === null ? null : parseIntegrationKey(v.previous), next = v.next === null ? null : parseIntegrationKey(v.next);
   if (rows.some((r) => r === undefined) || previous === undefined || next === undefined) return undefined;
   return { status: 'ready', observedAt: x.observedAt, value: { rows: rows as IntegrationRow[], previous, next } };
+}
+
+// XAIBO-PROD-597 (P6-T08a slice B; D-P6-20, SEC5; security review): grant wire types. The renderer asks main with ids only
+// (GrantAsk over ipcMain.handle('grant')); main alone sends grantOffer/grantConfirm to the service and gets the bounded offer
+// back in a grant ServiceEvent, never on a renderer port; revoke is an ids-only port request. The service types (slice A) live
+// here so main can name them.
+export type GrantRequest = { action: 'root'; agent: string; root: string } | { action: 'probe'; agent: string; binary: string; file: string } | { action: 'setup'; agent: string };
+const OFFER_REFUSALS = ['not-found', 'root-unavailable', 'root-not-approved', 'executable-invalid', 'unavailable'] as const;
+const CONFIRM_REFUSALS = ['stale', 'unavailable', 'failed'] as const;
+export type GrantRefusal = (typeof OFFER_REFUSALS)[number];
+/** What main's native confirmation shows: the entry, the exact folder or file, the probe's argv or the setup's ops; never sent
+ *  to the renderer. binding: an HMAC (per-boot key, 5-minute bucket) of everything shown and stored. */
+export interface GrantOffer {
+  action: GrantRequest['action']; agent: string; name: string; id: string | null; root: string; path: string;
+  argv: string[] | null; ops: { pointer: string; value: string }[] | null; binding: string;
+}
+export type GrantOfferResult = { status: 'offer'; offer: GrantOffer } | { status: 'refused'; code: GrantRefusal };
+export type GrantConfirmResult = { status: 'granted' } | { status: 'refused'; code: (typeof CONFIRM_REFUSALS)[number] };
+export type RevokeTarget = { kind: 'root' | 'probe'; id: string } | { kind: 'setup' };
+export const REVOKE_RESULTS = ['revoked', 'unchanged', 'not-found', 'unavailable'] as const;
+export type RevokeResult = (typeof REVOKE_RESULTS)[number];
+/** Grant state for the integration detail, one state per declared item; no paths, digests or argv. */
+export interface GrantState {
+  roots: { id: string; state: 'approved' | 'stale' | 'none' | 'unavailable' }[];
+  probes: { binary: string; state: 'granted' | 'stale' | 'none' }[];
+  setup: { root: string; state: 'granted' | 'stale' | 'none' } | null;
+}
+export type GrantAsk = { action: 'root'; agent: string; root: string } | { action: 'probe'; agent: string; binary: string } | { action: 'setup'; agent: string };
+export const GRANT_CODES = ['not-found', 'root-unavailable', 'root-not-approved', 'executable-invalid', 'stale', 'busy', 'unavailable', 'failed', 'invalid', 'oversize', 'unknown'] as const;
+/** unknown: the confirm was sent but no reply came in time (the grant may have been written: reread, never retry). */
+export type GrantOutcome = { status: 'granted' } | { status: 'cancelled' } | { status: 'refused'; code: (typeof GRANT_CODES)[number] };
+const REFUSED_CODES = [...OFFER_REFUSALS, ...CONFIRM_REFUSALS] as const;
+const refId = (x: unknown): x is string => typeof x === 'string' && AGENT_ID.test(x);
+const absPath = (x: unknown): x is string => text(x, 4096) && x.startsWith('/') && !x.includes('\0');
+const BINDING = /^[0-9a-f]{64}$/;
+
+export function parseGrantAsk(x: unknown): GrantAsk | null {
+  if (!isObj(x) || !refId(x.agent)) return null;
+  if (x.action === 'root') return exactKeys(x, ['action', 'agent', 'root']) && refId(x.root) ? { action: 'root', agent: x.agent, root: x.root } : null;
+  if (x.action === 'probe') return exactKeys(x, ['action', 'agent', 'binary']) && refId(x.binary) ? { action: 'probe', agent: x.agent, binary: x.binary } : null;
+  return x.action === 'setup' && exactKeys(x, ['action', 'agent']) ? { action: 'setup', agent: x.agent } : null;
+}
+function parseGrantRequest(x: unknown): GrantRequest | null {
+  if (!isObj(x) || x.action !== 'probe') return parseGrantAsk(x) as Exclude<GrantAsk, { action: 'probe' }> | null; // a probe ask carries no file
+  return exactKeys(x, ['action', 'agent', 'binary', 'file']) && refId(x.agent) && refId(x.binary) && absPath(x.file) ? { action: 'probe', agent: x.agent, binary: x.binary, file: x.file } : null;
+}
+export function parseGrantOutcome(x: unknown): GrantOutcome | null {
+  if (exactKeys(x, ['status']) && (x.status === 'granted' || x.status === 'cancelled')) return { status: x.status };
+  return exactKeys(x, ['status', 'code']) && x.status === 'refused' && oneOf(GRANT_CODES, x.code) ? { status: 'refused', code: x.code } : null;
+}
+function parseGrantResult(r: unknown): GrantOfferResult | GrantConfirmResult | null {
+  if (exactKeys(r, ['status']) && r.status === 'granted') return { status: 'granted' };
+  if (exactKeys(r, ['status', 'code']) && r.status === 'refused') return oneOf(REFUSED_CODES, r.code) ? { status: 'refused', code: r.code } as GrantOfferResult | GrantConfirmResult : null;
+  if (!exactKeys(r, ['status', 'offer']) || r.status !== 'offer') return null;
+  const o = r.offer;
+  const ok = exactKeys(o, ['action', 'agent', 'name', 'id', 'root', 'path', 'argv', 'ops', 'binding']) && oneOf(['root', 'probe', 'setup'] as const, o.action) && refId(o.agent)
+    && text(o.name, 64) && (o.id === null || refId(o.id)) && absPath(o.root) && absPath(o.path)
+    && (o.argv === null || (bounded(o.argv, 5) && o.argv.every((a) => text(a, 4096))))
+    && (o.ops === null || (bounded(o.ops, 16) && o.ops.every((p) => exactKeys(p, ['pointer', 'value']) && text(p.pointer, 256) && text(p.value, 256))))
+    && typeof o.binding === 'string' && BINDING.test(o.binding);
+  if (!ok) return null;
+  const v = o as unknown as GrantOffer;
+  return { status: 'offer', offer: { ...v, argv: v.argv && [...v.argv], ops: v.ops && v.ops.map((p) => ({ ...p })) } };
+}
+function parseRevokeTarget(t: unknown): RevokeTarget | null {
+  if (exactKeys(t, ['kind', 'id']) && (t.kind === 'root' || t.kind === 'probe') && refId(t.id)) return { kind: t.kind, id: t.id };
+  return exactKeys(t, ['kind']) && t.kind === 'setup' ? { kind: 'setup' } : null;
+}
+function parseGrants(g: unknown): GrantState | 'unavailable' | null | undefined {
+  if (g === null || g === 'unavailable') return g;
+  if (!exactKeys(g, ['roots', 'probes', 'setup']) || !bounded(g.roots, 4) || !bounded(g.probes, 8)) return undefined;
+  const ok = g.roots.every((r) => exactKeys(r, ['id', 'state']) && refId(r.id) && oneOf(['approved', 'stale', 'none', 'unavailable'] as const, r.state))
+    && g.probes.every((p) => exactKeys(p, ['binary', 'state']) && refId(p.binary) && oneOf(['granted', 'stale', 'none'] as const, p.state))
+    && (g.setup === null || (exactKeys(g.setup, ['root', 'state']) && refId(g.setup.root) && oneOf(['granted', 'stale', 'none'] as const, g.setup.state)));
+  if (!ok) return undefined;
+  const v = g as unknown as GrantState;
+  return { roots: v.roots.map((r) => ({ ...r })), probes: v.probes.map((p) => ({ ...p })), setup: v.setup && { ...v.setup } };
 }

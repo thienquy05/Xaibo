@@ -28,6 +28,8 @@ export interface SupervisorDeps<P> {
   onNotify?(n: Extract<ServiceEvent, { type: 'notify' }>): void;
   /** P4-T10c2: validated content-free service metrics (every 5 s). */
   onMetrics?(m: Extract<ServiceEvent, { type: 'metrics' }>): void;
+  /** XAIBO-PROD-597 (P6-T08a slice B): a validated reply to main's grant offer or confirm. */
+  onGrant?(g: Extract<ServiceEvent, { type: 'grant' }>): void;
 }
 
 export class Supervisor<P> {
@@ -35,7 +37,8 @@ export class Supervisor<P> {
   readonly #receive = accept(parseServiceEvent, (m) => {
     if (m.type === 'ready') this.#ready(m.readOnly);
     else if (m.type === 'metrics') this.#d.onMetrics?.(m);
-    else this.#d.onNotify?.(m);
+    else if (m.type === 'grant') this.#d.onGrant?.(m); // review M5: explicit, never a notification
+    else if (m.type === 'notify') this.#d.onNotify?.(m);
   });
   #child: Child<P> | null = null;
   #attempt = 0;

@@ -164,7 +164,7 @@ test('setUp: a profile with Xaibo entries and no Connect left to offer; a partia
   const det = (entries: IntegrationDetail['entries'], state: IntegrationDetail['row']['state'] = 'awaiting-trust') => ({
     row: { key: { agent: 'codex', profileId: P }, name: 'Codex', profileLabel: 'p', version: '0.160.0', state, reasons: [], lifecycleGaps: [], receipt: null,
       content: { mode: 'unavailable', assurance: 'unavailable', evidence: null, gaps: [] } },
-    profiles: [{ id: P, label: 'p' }], entries, trustSteps: [], boundary: null, compatibility: [] } as IntegrationDetail);
+    profiles: [{ id: P, label: 'p' }], entries, trustSteps: [], boundary: null, compatibility: [], grants: null } as IntegrationDetail);
   const E = '00000000-0000-4000-8000-0000000aae01';
   assert.equal(setUp(det([{ entry: E, route: 'codex-hooks', state: 'connected', reason: null }])), true);
   assert.equal(setUp(det([{ entry: E, route: 'claude-retention', state: 'connected', reason: null }], 'detected')), false, 'hooks not installed: Connect still offered');

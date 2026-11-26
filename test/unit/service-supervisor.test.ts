@@ -171,3 +171,16 @@ test('P4-T10c2: metrics events go to onMetrics, extra keys stripped; an invalid 
   assert.equal(h.sup.dropped, 1);
   assert.equal(h.sup.health.state, 'starting');
 });
+
+// XAIBO-PROD-597 (P6-T08a slice B; security review M5): a grant event is dispatched to onGrant explicitly, never to onNotify.
+test('P6-T08a: grant events go to onGrant only, never to onNotify', () => {
+  const notes: unknown[] = [], grants: unknown[] = [];
+  const child = new FakeChild(1);
+  const sup = new Supervisor<{ n: number }>({ fork: () => child, channel: () => ({ port1: { n: 1 }, port2: { n: 2 } }), onHealth: () => {}, setTimer: () => 0, clearTimer: () => {},
+    now: () => 0, quitMs: 1, onNotify: (n) => notes.push(n), onGrant: (g) => grants.push(g) });
+  sup.start();
+  child.emit('message', { v: 1, type: 'grant', id: 3, result: { status: 'granted' } });
+  child.emit('message', { v: 1, type: 'grant', id: 4, result: { status: 'nope' } }); // invalid: dropped
+  assert.deepEqual(grants, [{ v: 1, type: 'grant', id: 3, result: { status: 'granted' } }]);
+  assert.deepEqual(notes, []);
+});
