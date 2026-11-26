@@ -177,7 +177,8 @@ export const TRANSCRIPT_ONLY = 'Transcript only, not resumable';
 /** Design C15: the native-state marker, never overlay state. */
 export const nativeBadge = (n: NativeState): 'native deleted' | 'native archived' | null => (!n.available ? 'native deleted' : n.archived ? 'native archived' : null);
 /** nativeExpiresAt: when the agent's own cleanup is estimated to delete the native transcript (Claude; an estimate). */
-export interface SessionDetail { row: SessionRow; coverage: CoverageCode[]; context: ContextReading | null; nativeExpiresAt?: number | null }
+/** limits (XAIBO-PROD-594): surfaces Xaibo has not verified for the agent's detected version (at most 4 lines). */
+export interface SessionDetail { row: SessionRow; coverage: CoverageCode[]; context: ContextReading | null; nativeExpiresAt?: number | null; limits?: string[] }
 
 /** XAIBO-PROD-417 (P4-T07a; design §6.3.2): the session's cost breakdown. Groups are the per-request estimates of one
  *  (model, price revision, basis); a component's ~$ comes only from its applied rate over priced requests. */
@@ -616,7 +617,9 @@ function parseDetail(x: unknown): SessionDetail | null | undefined { // undefine
   const expires = x.nativeExpiresAt;
   // review L3: a time the renderer's Date can show (0 .. 8.64e15 ms)
   if (expires !== undefined && !(expires === null || (typeof expires === 'number' && expires >= 0 && expires <= 8.64e15))) return undefined;
-  return row && coverage && context !== undefined ? { row, coverage, context, ...(expires !== undefined ? { nativeExpiresAt: expires } : {}) } : undefined;
+  const limits = x.limits;
+  if (limits !== undefined && !(Array.isArray(limits) && limits.length <= 4 && limits.every((l) => typeof l === 'string' && l.length <= 256))) return undefined;
+  return row && coverage && context !== undefined ? { row, coverage, context, ...(expires !== undefined ? { nativeExpiresAt: expires } : {}), ...(limits !== undefined ? { limits: [...limits as string[]] } : {}) } : undefined;
 }
 const CONTEXT_KEYS = ['generation', 'used', 'window', 'basis', 'source', 'asOf', 'observedAt'];
 export function parseContext(x: unknown): ContextReading | undefined {

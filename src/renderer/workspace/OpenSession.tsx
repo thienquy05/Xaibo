@@ -400,6 +400,7 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
             <div><dt>Estimated cost</dt><dd>{costText(row.costUsd, row.costCoverage)}</dd></div>
             <div><dt>Coverage</dt><dd>{gaps.length || rowMarkers(row).length
               ? [...gaps.map((g) => `Content incomplete: ${g}`), ...rowMarkers(row)].join('; ') : 'No known gaps'}</dd></div>
+            {detail?.limits?.length ? <div><dt>Other surfaces</dt><dd>{detail.limits.map((l) => visible(l)).join('; ')}</dd></div> : null}
           </dl>
         </div>
       </aside>

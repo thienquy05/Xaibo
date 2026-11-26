@@ -320,7 +320,7 @@ function largeSlice(db: DatabaseSync, session: number, key: string, offset: numb
 const stored = (agent: string, r: Pick<TrRow, 'kind' | 'role' | 'content' | 'raw'>): StoredRecord => ({ agent, kind: r.kind, role: r.role, injected: false, content: r.content, raw: r.raw });
 
 export function answerSession(db: DatabaseSync, req: PortRequest & { type: 'session' }, kinds: SessionKind[] = [], models: ModelEntry[] = [], live?: LiveOf,
-  managedDir?: string): PortMessage & { type: 'session' } {
+  managedDir?: string, limitsFor?: (agent: string) => string[]): PortMessage & { type: 'session' } {
   try {
     const r = db.prepare(`${ROW(db)} WHERE s.id = ? AND ${notPurging(db)}`).get(req.session) as Raw | undefined;
     if (!r) return { v: IPC_VERSION, type: 'session', id: req.id, detail: null };
@@ -342,7 +342,9 @@ export function answerSession(db: DatabaseSync, req: PortRequest & { type: 'sess
     } catch { context = null; }
     let nativeExpires: number | null = null; // P5-T12 (EC-23): an estimate; unreadable settings give none
     try { nativeExpires = nativeExpiresAt(db, r, managedDir); } catch { nativeExpires = null; }
-    return { v: IPC_VERSION, type: 'session', id: req.id, detail: { row, coverage, context, nativeExpiresAt: nativeExpires } };
+    // XAIBO-PROD-594 (P6-T08 slice E; US-8): surfaces Xaibo has not verified for this agent's detected version (the resolver's own bound)
+    const limits = limitsFor?.(r.agent).slice(0, 4);
+    return { v: IPC_VERSION, type: 'session', id: req.id, detail: { row, coverage, context, nativeExpiresAt: nativeExpires, ...(limits ? { limits } : {}) } };
   } catch { return { v: IPC_VERSION, type: 'session', id: req.id, detail: null }; }
 }
 

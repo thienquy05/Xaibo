@@ -7,7 +7,7 @@
 import { chmodSync, existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { expect, shot, test } from './fixtures.ts';
+import { expect, openSessions, shot, test } from './fixtures.ts';
 
 const A = '00000000-0000-4000-8000-0000000c8a01', S = '00000000-0000-4000-8000-0000000c8af1';
 
@@ -122,5 +122,42 @@ test('Add agent, keyboard only: rescan, candidate, coverage, profile, preview an
   await expect(pane.getByRole('heading', { level: 2 })).toBeFocused();
   await expect(wizard).toBeHidden();
   expect(errors, 'console errors').toEqual([]);
+  await xaibo.quit(run);
+});
+
+// XAIBO-PROD-594 (P6-T08 slice E; US-8): the open session's Details name the surfaces Xaibo has not verified for the agent's
+// detected version (the shared fixture's Claude session and its fake claude's version)
+test('Session Details: Other surfaces names the unverified VS Code and Desktop surfaces', async ({ xaibo }) => {
+  test.setTimeout(120_000);
+  const run = await xaibo.launch();
+  const page = await xaibo.window(run);
+  await openSessions(page);
+  const list = page.getByRole('list', { name: 'Sessions' });
+  await expect(list.getByRole('button').first()).toBeVisible({ timeout: 20_000 }); // the shared fixture's Claude session
+  await list.getByRole('button').first().click();
+  await page.getByRole('button', { name: 'Details' }).click();
+  const drawer = page.locator('dl').filter({ hasText: 'Other surfaces' });
+  await expect(drawer).toContainText(/VS Code extension: unverified for [^ ]+( version)? \(not tested\)/, { timeout: 20_000 });
+  await expect(drawer).toContainText(/Desktop app: unverified for [^ ]+( version)? \(not tested\)/);
+  await expect(drawer).not.toContainText(/\bsupported\b/);
+  await xaibo.quit(run);
+});
+
+// design §6.5.2 narrow: below 800 px the wizard takes the pane alone (the list is not shown), Cancel restores Add agent
+test('Add agent at a narrow window: the wizard alone, keyboard Cancel back to Add agent', async ({ xaibo }) => {
+  test.setTimeout(120_000);
+  const run = await xaibo.launch();
+  const page = await xaibo.window(run);
+  await run.app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(720, 640));
+  await page.getByRole('navigation', { name: 'Areas' }).getByRole('link', { name: 'Agent Map' }).click();
+  await expect(page.getByRole('heading', { name: 'Agent Map', level: 1 })).toBeFocused();
+  const add = page.getByRole('button', { name: 'Add agent' });
+  await add.press('Enter');
+  await expect(page.getByRole('heading', { name: 'Rescan and candidates', level: 3 })).toBeFocused();
+  await expect(page.getByRole('list', { name: 'Agents and profiles' })).toBeHidden();
+  const box = await page.getByRole('region', { name: 'Add agent' }).first().boundingBox();
+  expect(box && box.width).toBeGreaterThan(600);
+  await page.getByRole('button', { name: 'Cancel' }).press('Enter');
+  await expect(add).toBeFocused();
   await xaibo.quit(run);
 });

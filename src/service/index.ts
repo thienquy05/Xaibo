@@ -23,6 +23,7 @@ import { takePerf } from './perf-counters.ts';
 import { afterDispatch, answerIntegrations, connectContext, type Connect } from './integrations-ipc.ts';
 import { answerIntegrationDetail, answerIntegrationPage, pageEvidence } from './integrations/state.ts';
 import { createConnect } from './integrations/connect.ts';
+import { compatibility } from './catalog/capabilities.ts';
 
 // P3-T10: 50 ms keeps one push per window while leaving most of M1's 250 ms hook-to-paint budget; the tick re-reads
 // sessions whose status changes with time alone (settle within interval + 250 ms, M1), coverage is re-read slowly.
@@ -97,7 +98,11 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
       case 'liveSet': port.postMessage(db.isOpen ? answerLiveSet(db, req, Date.now(), s.kinds(), s.models(), live) : { v: IPC_VERSION, type: 'liveSet', id: req.id, rows: [], more: false }); break;
       case 'usage': port.postMessage(answerUsage(db, req, homedir())); break;
       case 'usageHistory': port.postMessage(answerUsageHistory(db, req)); break;
-      case 'session': port.postMessage(answerSession(db, req, s.kinds(), s.models(), live)); break;
+      // XAIBO-PROD-594: the VS Code extension and Desktop app lines (US-8) for the agent's detected version
+      case 'session': port.postMessage(answerSession(db, req, s.kinds(), s.models(), live, undefined, (agent) => {
+        const d = s.detections.find((x) => x.agent === agent);
+        return compatibility(s.catalog(), agent, d?.state === 'detected' ? d.version : null).filter((l) => /^(VS Code extension|Desktop app):/.test(l));
+      })); break;
       case 'transcript': port.postMessage(answerTranscript(db, req)); break;
       case 'slice': port.postMessage(answerSlice(db, req)); break;
       case 'tools': port.postMessage(answerTools(db, req, live)); break;
