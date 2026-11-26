@@ -10,7 +10,10 @@
 // adds `cliAdded`). Synthetic temp profiles only.
 import { writeFileSync } from 'node:fs';
 
-export const FAKE_CLAUDE = `#!${process.execPath}
+// Gate 6 step 0: under test:electron process.execPath is Electron, which the CLI's explicit environment (no
+// ELECTRON_RUN_AS_NODE) starts as an app that never exits; the fake runs on the Node that npm ran instead.
+const NODE = process.versions['electron'] ? (process.env['npm_node_execpath'] || process.env['NODE'] || process.execPath) : process.execPath;
+export const FAKE_CLAUDE = `#!${NODE}
 const fs = require('fs'), path = require('path');
 const a = process.argv.slice(2), dir = process.env.CLAUDE_CONFIG_DIR, side = path.dirname(dir);
 fs.appendFileSync(path.join(side, 'fake-claude.log'), JSON.stringify({ argv: a, dir }) + '\\n');
