@@ -5,7 +5,7 @@
 // the retention offer goes out without its ops.
 import os from 'node:os';
 import path from 'node:path';
-import { IPC_VERSION, parseCleanupReply, parseConnectReply, parseRemovalReply, type CleanupReply, type ConnectReply, type PortMessage, type PortRequest, type RemovalReply } from '../shared/ipc.ts';
+import { applyRefusal, IPC_VERSION, parseCleanupReply, parseConnectReply, parseRemovalReply, type CleanupReply, type ConnectReply, type PortMessage, type PortRequest, type RemovalReply, type ApplyAsk, type ApplyConfirmResult, type ApplyOfferResult } from '../shared/ipc.ts';
 import { CLAUDE_MANAGED_DIR } from './adapters/claude/hooks.ts';
 import type { LoginEnv } from './catalog/env.ts';
 import type { Detection, Profile } from './catalog/detect.ts';
@@ -68,6 +68,24 @@ function wireOther(type: 'removalPreview' | 'removalApply' | 'teeRemovalPreview'
 export function afterDispatch(type: IntegrationsRequest['type']): ConnectReply | CleanupReply {
   if (type === 'cleanupApply') return { status: 'partial', removed: [], left: [], code: 'failed' };
   return type === 'connectApply' || type === 'removalApply' ? AFTER_DISPATCH : refused('failed'); // diff review L3: a preview writes nothing
+}
+/** XAIBO-PROD-600 (P6-T12 slice 2): main's applyOffer and applyConfirm (from the parent port only; never a renderer port).
+ *  Always a reply; a confirmed apply's result goes through its request's own bound check (wire, wireOther). */
+export async function answerApply(d: IntegrationsDeps, cmd: { type: 'applyOffer'; ask: ApplyAsk } | { type: 'applyConfirm'; ask: ApplyAsk; binding: string }): Promise<ApplyOfferResult | ApplyConfirmResult> {
+  if (d.readOnly) return applyRefusal('read-only');
+  const c = d.connect();
+  if (c === null) return applyRefusal('starting');
+  if (c === 'unavailable') return applyRefusal('unavailable');
+  const { kind, previewId } = cmd.ask;
+  if (cmd.type === 'applyOffer') {
+    const r = c.applyOffer(kind, previewId, d.profiles());
+    return r.status === 'offer' ? r : applyRefusal(r.code);
+  }
+  let r;
+  try { r = await c.applyConfirmed(kind, previewId, cmd.binding, d.profiles()); } catch { return applyRefusal('unknown'); } // may follow a write
+  if (r.status !== 'done') return applyRefusal(r.code);
+  const reply = kind === 'connect' ? wire(r.reply, true) : wireOther(kind === 'removal' ? 'removalApply' : 'cleanupApply', r.reply, true);
+  return { status: 'done', kind, reply };
 }
 export async function answerIntegrations(d: IntegrationsDeps, req: IntegrationsRequest, owner: object): Promise<PortMessage> {
   const send = (result: ConnectReply | RemovalReply | CleanupReply) => ({ v: IPC_VERSION, type: req.type, id: req.id, result }) as PortMessage;

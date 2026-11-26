@@ -7,7 +7,7 @@ import { homedir, userInfo } from 'node:os';
 import path from 'node:path';
 import { errorCode, installCrashPolicy } from '../shared/crash.ts';
 import { accept, IPC_VERSION, parsePortRequest, parseServiceCommand } from '../shared/ipc.ts';
-import type { Banner, PortMessage, ServiceEvent, StorageReport, IntegrationDetailResult, IntegrationPageResult, GrantConfirmResult, GrantOfferResult, RevokeResult } from '../shared/ipc.ts';
+import type { Banner, PortMessage, ServiceEvent, StorageReport, IntegrationDetailResult, IntegrationPageResult, GrantConfirmResult, GrantOfferResult, ApplyConfirmResult, ApplyOfferResult, RevokeResult } from '../shared/ipc.ts';
 import { appendQuiet, createLogger, loadInstallSecret, type Logger } from '../shared/log.ts';
 import { answer, answerCost, answerFiles, answerLiveSet, answerMarkers, answerSession, answerSlice, answerSubagents, answerTools, answerTranscript, answerUsage, answerUsageHistory, coalesce, createHub, sessionsByKey, type LiveOf } from './api.ts';
 import { allowedRootsFromEnv, boot, retentionDelayFromEnv, type Service } from './boot.ts';
@@ -20,7 +20,7 @@ import { priceView } from './usage/prices.ts';
 import { answerHistoryRow, answerSearch, retentionState, suppressedPage } from './history/tools.ts';
 import { StorageMeter } from './storage/meter.ts';
 import { takePerf } from './perf-counters.ts';
-import { afterDispatch, answerIntegrations, connectContext, type Connect } from './integrations-ipc.ts';
+import { afterDispatch, answerApply, answerIntegrations, connectContext, type Connect } from './integrations-ipc.ts';
 import { answerIntegrationDetail, answerIntegrationPage, pageEvidence } from './integrations/state.ts';
 import { createConnect } from './integrations/connect.ts';
 import { compatibility } from './catalog/capabilities.ts';
@@ -251,6 +251,12 @@ const command = accept(parseServiceCommand, (m, transferred: MessagePortMain[]) 
     const reply = (result: GrantOfferResult | GrantConfirmResult) => parent.postMessage({ v: IPC_VERSION, type: 'grant', id: m.id, result } satisfies ServiceEvent);
     const run = m.type === 'grantOffer' ? booted.then((s) => s.grantOffer(m.request)) : booted.then((s) => s.grantConfirm(m.request, m.binding));
     void run.catch((): GrantConfirmResult => ({ status: 'refused', code: 'failed' })).then(reply);
+  }
+  // XAIBO-PROD-600 (P6-T12 slice 2): main's apply offer and confirm; the reply goes to main only, never a port, always one
+  else if (m.type === 'applyOffer' || m.type === 'applyConfirm') {
+    const reply = (result: ApplyOfferResult | ApplyConfirmResult) => parent.postMessage({ v: IPC_VERSION, type: 'apply', id: m.id, result } satisfies ServiceEvent);
+    const run = booted.then((s) => answerApply({ readOnly: s.store.readOnly, connect: () => integrationsFor(s), profile: (id) => s.profiles()?.find((p) => p.id === id), profiles: () => s.profiles() ?? [] }, m));
+    void run.catch((): ApplyConfirmResult => ({ status: 'refused', code: m.type === 'applyConfirm' ? 'unknown' : 'failed' })).then(reply);
   }
 });
 parent.on('message', (e) => command(e.data, e.ports));

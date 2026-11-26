@@ -12,13 +12,13 @@
 // installed through `claude plugin` under the operation lock, held across the awaits; retention and tee after it are rebuilt
 // and applied only when equal to the preview (D-P6-06). Part 2c (XAIBO-PROD-561): Disconnect, Uninstall and this undo remove a
 // plugin entry last on its file (after tee and retention) through the hardened uninstallPlugin.
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { lstatSync, realpathSync, unlinkSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isProfileKey } from '../../shared/hook-protocol.ts';
-import { REMOVAL_LIMIT, type RemovalItem } from '../../shared/ipc.ts';
+import { APPLY_ITEMS, REMOVAL_LIMIT, type ApplyKind, type ApplyLabel, type ApplyOffer, type RemovalItem } from '../../shared/ipc.ts';
 import { agyHooksFile, checkAgyInstall } from '../adapters/agy/setup.ts';
 import { deployShim, installPlugin, PLUGIN_REF, pluginHooks, previewPlugin, teePlan, uninstallPlugin, type PluginOptions, type PluginPreview } from '../adapters/claude/setup.ts';
 import { codexHookOps, codexTrustSteps, shimPath } from '../adapters/codex/setup.ts';
@@ -124,6 +124,8 @@ interface Held {
   /** XAIBO-PROD-589: the report access the preview was built from, rechecked at apply before any helper is deployed. */
   report: SetupAccess | null;
   steps: { route: Route; build: () => Plan; plan: Plan }[]; trust: string[]; expiresAt: number;
+  /** XAIBO-PROD-600: a real-profile preview (realBounds), applied only through main's confirmation; the offer it showed. */
+  real: boolean; retention: RetentionOffer | null;
 }
 const WRITES = ['settings.json', '.claude.json', 'plugins/known_marketplaces.json', 'plugins/installed_plugins.json', 'plugins/cache/'];
 const pluginView = (pp: PluginPreview, version: string): StepView => ({
@@ -164,6 +166,10 @@ export function createConnect(ctx: ConnectContext) {
   /** The disposable bounds as before, else a real profile's, else null (refused before any read). */
   const boundsFor = (p: Profile, t: Target): Bounds | null => (permitted(t) ? { root: t.dir, denied: denied! } : realBounds(p, t));
   const refusal = () => refused(realOn ? 'unsafe-profile' : 'real-profile');
+  /** XAIBO-PROD-600 (review H1): the profile's target is a real one now (not disposable, real bounds). */
+  const nowReal = (p: Profile) => { const t = targetFor(p); return !!t && !permitted(t) && !!realBounds(p, t); };
+  /** XAIBO-PROD-600: a recorded entry on a real profile (outside the disposable roots, real bounds for a live profile). */
+  const realEntry = (e: ManifestEntry, d: string[], profiles: readonly Profile[]) => !writable(path.dirname(e.target), ctx.allowed, d) && !!entryBounds(e, d, profiles);
   /** H3: a recorded entry's bounds: disposable by its folder, else only as a currently resolved real target of one of
    *  `profiles` (never the manifest alone; never the plugin route on a real root, decision A). */
   const entryBounds = (e: ManifestEntry, d: string[], profiles: readonly Profile[]): Bounds | null => {
@@ -294,7 +300,7 @@ export function createConnect(ctx: ConnectContext) {
     if (previews.size - own.length >= MAX_PREVIEWS) return refused('busy'); // checked before the profile's own is dropped
     for (const id of own) previews.delete(id); // one per profile
     const previewId = randomUUID();
-    previews.set(previewId, { profile: p, sel, owner, report, plugin: b.plugin && pp ? { o: b.plugin.o, pp } : null, steps, trust: b.trust, expiresAt: at + TTL_MS });
+    previews.set(previewId, { profile: p, sel, owner, report, plugin: b.plugin && pp ? { o: b.plugin.o, pp } : null, steps, trust: b.trust, expiresAt: at + TTL_MS, real: !permitted(t), retention: b.retention });
     const views: StepView[] = steps.map((s) => ({ route: s.route, target: s.plan.target, diff: s.plan.diff }));
     return {
       status: 'preview', previewId, profileId: p.id, ttlMs: TTL_MS, steps: b.plugin && pp ? [pluginView(pp, b.plugin.version), ...views] : views,
@@ -308,7 +314,11 @@ export function createConnect(ctx: ConnectContext) {
   /** Part 2a: under the operation lock, taken before the preview is looked up, so `busy` keeps the preview for a retry. */
   async function applyConnect(previewId: string, owner?: unknown): Promise<ConnectResult> {
     if (!denied) return refused('bounds-unavailable');
-    return locked(() => applyLocked(previewId, owner));
+    // XAIBO-PROD-600 (review H1, M4): a real-class preview (as previewed or now) only through main's confirmation; refused
+    // before the lock is taken or the lookup consumes it, so main's confirm can still use it
+    const held = previews.get(previewId);
+    if (held && held.owner === owner && (held.real || nowReal(held.profile))) return refused('needs-confirmation');
+    return locked(() => applyLocked(previewId, owner, false));
   }
   /** The operation lock around one whole operation, held until its promise settles (part 2b: the CLI awaits); a held or stale
    *  lock is the refusal, nothing else is touched. */
@@ -317,7 +327,7 @@ export function createConnect(ctx: ConnectContext) {
     try { lock = acquireLock(ctx.dataDir); } catch (e) { return refused(e instanceof ConfigError ? e.code : 'failed'); } // nothing written yet (code review L-b)
     try { return await fn(); } finally { lock.release(); }
   }
-  async function applyLocked(previewId: string, owner?: unknown): Promise<ConnectResult> {
+  async function applyLocked(previewId: string, owner: unknown, confirmed: boolean): Promise<ConnectResult> {
     const h = previews.get(previewId);
     previews.delete(previewId); // consumed on first lookup, whatever happens next, a wrong owner included (review L1, 1b L5)
     if (!h || h.owner !== owner) return refused('preview-invalid');
@@ -331,6 +341,7 @@ export function createConnect(ctx: ConnectContext) {
     const t = targetFor(h.profile);
     const bounds = t && boundsFor(h.profile, t);
     if (!t || !bounds) return refusal();
+    if (!confirmed && !permitted(t)) return refused('needs-confirmation'); // review H1: decided again under the lock
     // checked before any helper is deployed: bytes, file identity and mode, as apply() / installPlugin will (review L2)
     const first = h.plugin ? h.plugin.pp.settings : h.steps[0]!.plan.preHash === null ? null : { hash: h.steps[0]!.plan.preHash, dev: h.steps[0]!.plan.dev, ino: h.steps[0]!.plan.ino, mode: h.steps[0]!.plan.mode };
     const cur = readFile(h.plugin ? h.plugin.pp.target : h.steps[0]!.plan.target);
@@ -412,6 +423,8 @@ export function createConnect(ctx: ConnectContext) {
     } catch (err) { stop(err instanceof ConfigError ? err.code : 'failed'); }
   }
 
+  /** Test and dev only (code review 7): no IPC route reaches it; a renderer-facing caller must go through previewRemoval and
+   *  main's confirmation for a real profile (XAIBO-PROD-600). */
   async function disconnect(p: Profile): Promise<Outcome | Refused> {
     if (!denied) return refused('bounds-unavailable');
     const t = targetFor(p);
@@ -442,7 +455,7 @@ export function createConnect(ctx: ConnectContext) {
   // clean up entries a fresh reconcile reports disconnected-externally: their manifest record, then their backup. Their owned
   // values are already gone, so no agent profile file is written and no CLI runs; the plugin copy and a still-registered
   // marketplace stay manual (P6-T12). Previews as Connect's (TTL, single use, owner-bound, max 32) in their own map (C7).
-  const cleanups = new Map<string, { profiles: readonly Profile[]; entries: ManifestEntry[]; owner: unknown; expiresAt: number; scope?: string }>();
+  const cleanups = new Map<string, { profiles: readonly Profile[]; entries: ManifestEntry[]; owner: unknown; expiresAt: number; scope?: string; real: boolean }>();
   const current = (profiles: readonly Profile[], held: boolean) => scan({ dataDir: ctx.dataDir, denied, profiles, target: targetFor, permitted: allowedTarget, held });
 
   /** `scope` (XAIBO-PROD-576 plan review M2): the profile the IPC asked for; one held preview per scope, busy checked first. */
@@ -462,7 +475,8 @@ export function createConnect(ctx: ConnectContext) {
     if (cleanups.size - own.length >= MAX_PREVIEWS) return refused('busy');
     for (const id of own) cleanups.delete(id);
     const previewId = randomUUID();
-    cleanups.set(previewId, { profiles, entries: structuredClone(entries as ManifestEntry[]), owner, expiresAt: at + TTL_MS, ...(scope === undefined ? {} : { scope }) });
+    cleanups.set(previewId, { profiles, entries: structuredClone(entries as ManifestEntry[]), owner, expiresAt: at + TTL_MS, ...(scope === undefined ? {} : { scope }),
+      real: (entries as ManifestEntry[]).some((e) => realEntry(e, denied, profiles)) });
     return { status: 'preview', previewId, ttlMs: TTL_MS, items: items.map((x) => ({ entry: x!.entry, cleanup: x!.cleanup })) };
   }
 
@@ -470,6 +484,12 @@ export function createConnect(ctx: ConnectContext) {
    *  write (C3, C4); a failed record write after that is `partial`. ponytail (C6): `claude plugin` takes no Xaibo lock, so a
    *  reinstall between the last check and the manifest write leaves a plugin Xaibo no longer owns (Disconnect will not remove it). */
   async function applyCleanup(previewId: string, owner?: unknown): Promise<CleanupResult> {
+    if (!denied) return refused('bounds-unavailable');
+    const held = cleanups.get(previewId); // XAIBO-PROD-600: as applyConnect
+    if (held && held.owner === owner && (held.real || held.entries.some((e) => realEntry(e, denied, held.profiles)))) return refused('needs-confirmation');
+    return cleanupLocked(previewId, owner, false);
+  }
+  async function cleanupLocked(previewId: string, owner: unknown, confirmed: boolean): Promise<CleanupResult> {
     if (!denied) return refused('bounds-unavailable');
     return locked((): CleanupResult => {
       const h = cleanups.get(previewId);
@@ -483,6 +503,7 @@ export function createConnect(ctx: ConnectContext) {
       // C2: the entry exactly as previewed and still removed by a fresh reconcile (which also reads the plugin registries)
       if (!h.entries.every((e) => isDeepStrictEqual(manifest.find((x) => x.id === e.id), e)
         && r.entries.some((x) => x.entry === e.id && x.state === 'disconnected-externally'))) return { status: 'needs-preview' };
+      if (!confirmed && h.entries.some((e) => realEntry(e, denied, h.profiles))) return refused('needs-confirmation'); // review H1
       let todo: { id: string; file: string | null }[];
       try {
         const dir = privateDirs(ctx.dataDir).backups; // a linked or foreign backups dir refuses: private-dir
@@ -526,7 +547,7 @@ export function createConnect(ctx: ConnectContext) {
   // Previews as Connect's (TTL, single use, owner-bound, max 32), one held per scope (M2).
   type Pin = { hash: string; dev: number; ino: number; mode: number } | null | 'refused' | { error: string };
   // XAIBO-PROD-580 (R6): `route` limits a profile's removal to one route (the separate tee off); its own scope
-  const removals = new Map<string, { scope: string | null; profile: Profile | null; target: Target | null; route: Route | null; entries: ManifestEntry[]; pins: [string, Pin][]; items: RemovalItem[]; owner: unknown; expiresAt: number }>();
+  const removals = new Map<string, { scope: string | null; profile: Profile | null; target: Target | null; route: Route | null; entries: ManifestEntry[]; pins: [string, Pin][]; items: RemovalItem[]; owner: unknown; expiresAt: number; real: boolean }>();
   const pinOf = (e: ManifestEntry, d: string[], profiles: readonly Profile[]): Pin => {
     const file = e.target;
     if (!entryBounds(e, d, profiles)) return 'refused';
@@ -575,11 +596,18 @@ export function createConnect(ctx: ConnectContext) {
     if (removals.size - own.length >= MAX_PREVIEWS) return refused('busy'); // M2: checked before the scope's own is dropped
     for (const id of own) removals.delete(id);
     const previewId = randomUUID();
-    removals.set(previewId, { scope, profile: p, target: t, route, entries: structuredClone(s.entries), pins: s.pins, items: s.items, owner, expiresAt: at + TTL_MS });
+    removals.set(previewId, { scope, profile: p, target: t, route, entries: structuredClone(s.entries), pins: s.pins, items: s.items, owner, expiresAt: at + TTL_MS,
+      real: s.entries.some((e) => realEntry(e, denied, profiles)) });
     return { status: 'preview', previewId, profileId: p?.id ?? null, ttlMs: TTL_MS, items: s.items };
   }
   /** `profiles`: the live synced profiles (M1: a profile gone since the preview changes the mapping). */
   async function applyRemoval(previewId: string, owner: unknown, profiles: readonly Profile[]): Promise<RemovalResult> {
+    if (!denied) return refused('bounds-unavailable');
+    const held = removals.get(previewId); // XAIBO-PROD-600: as applyConnect
+    if (held && held.owner === owner && (held.real || held.entries.some((e) => realEntry(e, denied, profiles)))) return refused('needs-confirmation');
+    return removalLocked(previewId, owner, profiles, false);
+  }
+  async function removalLocked(previewId: string, owner: unknown, profiles: readonly Profile[], confirmed: boolean): Promise<RemovalResult> {
     if (!denied) return refused('bounds-unavailable');
     const d = denied;
     return locked(async (): Promise<RemovalResult> => {
@@ -599,9 +627,79 @@ export function createConnect(ctx: ConnectContext) {
       if ('status' in s) return s.code === 'not-connected' ? again() : s;
       // R5, M1, L1: the same entries (deep-equal), target identities and items (state, profile) as previewed
       if (!isDeepStrictEqual(s.entries, h.entries) || !isDeepStrictEqual(s.pins, h.pins) || !isDeepStrictEqual(s.items, h.items)) return again();
+      if (!confirmed && s.entries.some((e) => realEntry(e, d, profiles))) return refused('needs-confirmation'); // review H1
       return revertAll(s.entries, d, profiles);
     });
   }
 
-  return { previewConnect, applyConnect, disconnect, uninstall, dropOwner, reconcile, reconciled, previewCleanup, applyCleanup, previewRemoval, applyRemoval };
+  // XAIBO-PROD-600 (P6-T12 slice 2; D-P6-21; plan and security review .handoff/p6-t12-slice2-plan.md): main's native
+  // confirmation of a real-class preview. applyOffer returns the dialog items (labels from a closed set) and a binding: an HMAC
+  // under a per-start key over the kind, the preview id, the items and a digest of the held preview (everything apply would
+  // use); applyConfirmed re-derives both from the held preview (never from main's text) and applies through the existing
+  // locked path with the held owner (review M5: the only caller that may), so every recheck stays (needs-preview never applies).
+  const applyKey = randomBytes(32);
+  type Offered = { items: [ApplyLabel, string][]; digest: string; owner: unknown; run: () => Promise<unknown> };
+  function offered(kind: ApplyKind, previewId: string, profiles: readonly Profile[]): Offered | Refused {
+    if (!denied) return refused('bounds-unavailable');
+    const d = denied, at = now();
+    if (kind === 'connect') {
+      const h = previews.get(previewId);
+      if (!h) return refused('preview-invalid');
+      if (at > h.expiresAt) return refused('preview-expired');
+      if (!h.real && !nowReal(h.profile)) return refused('not-real');
+      const p = h.profile, items: [ApplyLabel, string][] = [['agent', p.agent], ['profile', p.id], ['folder', p.root]];
+      for (const s of h.steps) {
+        items.push(['file', s.plan.target], ['change', `${s.route}: ${s.plan.preHash === null ? 'create' : 'modify'}, ${s.plan.owned.length} owned, ${s.plan.created.length} created`]);
+        for (const o of s.plan.owned) items.push(['value', `${o.pointer} = ${JSON.stringify(o.value)}`]); // code review 1: what is written, hook commands included
+      }
+      if (h.retention?.offered && h.steps.some((s) => s.route === 'claude-retention')) items.push(['retention', `${h.retention.from ?? 'not set'} to ${h.retention.to} days`]);
+      if (p.agent === 'claude') items.push(['tee', h.steps.some((s) => s.route === 'claude-tee') ? 'on' : 'off']);
+      items.push(['helper', shimPath(ctx.dataDir)]);
+      // code review 4: the plugin preview too (never built for a real profile today, decision A; bound if that ever changes)
+      const digest = JSON.stringify({ p, sel: h.sel, report: h.report, trust: h.trust, retention: h.retention, plugin: h.plugin?.pp ?? null,
+        steps: h.steps.map((s) => ({ route: s.route, target: s.plan.target, owned: s.plan.owned, created: s.plan.created, preHash: s.plan.preHash, dev: s.plan.dev, ino: s.plan.ino, mode: s.plan.mode })) });
+      return { items, digest, owner: h.owner, run: () => locked(() => applyLocked(previewId, h.owner, true)) };
+    }
+    if (kind === 'removal') {
+      const r = removals.get(previewId);
+      if (!r) return refused('preview-invalid');
+      if (at > r.expiresAt) return refused('preview-expired');
+      const real = r.entries.filter((e) => realEntry(e, d, profiles)).length;
+      if (!r.real && !real) return refused('not-real');
+      const items: [ApplyLabel, string][] = r.profile ? [['agent', r.profile.agent], ['profile', r.profile.id], ['folder', r.profile.root]] : [['scope', 'Full Uninstall: every recorded entry']];
+      items.push(['entries', String(r.entries.length)], ['real-entries', String(real)]);
+      for (const e of r.entries) items.push(['file', e.target], ['change', `${e.route}: revert`]);
+      const digest = JSON.stringify({ scope: r.scope, profile: r.profile, target: r.target, route: r.route, entries: r.entries, pins: r.pins, items: r.items });
+      return { items, digest, owner: r.owner, run: () => removalLocked(previewId, r.owner, profiles, true) };
+    }
+    const c = cleanups.get(previewId);
+    if (!c) return refused('preview-invalid');
+    if (at > c.expiresAt) return refused('preview-expired');
+    if (!c.real && !c.entries.some((e) => realEntry(e, d, c.profiles))) return refused('not-real');
+    const scan = current(c.profiles, false);
+    if (scan.status === 'blocked') return refused(scan.code === 'busy' || scan.code === 'stale-lock' ? 'busy' : 'failed');
+    const items: [ApplyLabel, string][] = [...(c.scope ? [['profile', c.scope] as [ApplyLabel, string]] : []), ['records', String(c.entries.length)], ['backups', String(c.entries.filter((e) => e.backup).length)]];
+    for (const e of c.entries) {
+      items.push(['file', e.target], ['change', `${e.route}: forget the record`]);
+      const manual = scan.entries.find((x) => x.entry === e.id)?.manual ?? [];
+      if (manual.length) items.push(['manual', manual.join(', ')]);
+    }
+    return { items, digest: JSON.stringify({ scope: c.scope ?? null, entries: c.entries }), owner: c.owner, run: () => cleanupLocked(previewId, c.owner, true) };
+  }
+  const bindingOf = (kind: ApplyKind, previewId: string, x: Offered) => createHmac('sha256', applyKey).update(JSON.stringify([kind, previewId, x.items, x.digest])).digest('hex');
+  function applyOffer(kind: ApplyKind, previewId: string, profiles: readonly Profile[]): { status: 'offer'; offer: ApplyOffer } | Refused {
+    const x = offered(kind, previewId, profiles);
+    if ('status' in x) return x;
+    if (x.items.length > APPLY_ITEMS || x.items.some(([, v]) => v.length > 4096)) return refused('oversize'); // ponytail: a very large Full Uninstall is refused until chunked
+    return { status: 'offer', offer: { kind, previewId, items: x.items, binding: bindingOf(kind, previewId, x) } };
+  }
+  async function applyConfirmed(kind: ApplyKind, previewId: string, binding: string, profiles: readonly Profile[]): Promise<{ status: 'done'; reply: unknown } | Refused> {
+    const x = offered(kind, previewId, profiles);
+    if ('status' in x) return x;
+    const want = Buffer.from(bindingOf(kind, previewId, x)), got = Buffer.from(binding);
+    if (got.length !== want.length || !timingSafeEqual(got, want)) return refused('stale'); // the held preview stays for a fresh offer
+    return { status: 'done', reply: await x.run() };
+  }
+
+  return { previewConnect, applyConnect, disconnect, uninstall, dropOwner, reconcile, reconciled, previewCleanup, applyCleanup, previewRemoval, applyRemoval, applyOffer, applyConfirmed };
 }

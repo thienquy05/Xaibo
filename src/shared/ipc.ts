@@ -20,7 +20,10 @@ export type ServiceCommand = { v: 1; type: 'quit' | 'wake' | 'port' | 'reloadPri
   | { v: 1; type: 'importCatalog'; path: string }
   /** XAIBO-PROD-597 (P6-T08a slice B): main's grant offer request and its confirmation (main only; correlated by id). */
   | { v: 1; type: 'grantOffer'; id: number; request: GrantRequest }
-  | { v: 1; type: 'grantConfirm'; id: number; request: GrantRequest; binding: string };
+  | { v: 1; type: 'grantConfirm'; id: number; request: GrantRequest; binding: string }
+  /** XAIBO-PROD-600 (P6-T12 slice 2): main's offer request and confirmation of a real-class apply (main only; correlated by id). */
+  | { v: 1; type: 'applyOffer'; id: number; ask: ApplyAsk }
+  | { v: 1; type: 'applyConfirm'; id: number; ask: ApplyAsk; binding: string };
 /** service -> main; notify (P3-T11, EC-59) carries only the agent display name, the approved project label (null until
  *  one exists, FR-10) and the wait state. */
 export type NotifyState = 'waiting-for-permission' | 'needs-input';
@@ -33,7 +36,9 @@ export type ServiceEvent =
   | { v: 1; type: 'notify'; agent: string; label: string | null; state: NotifyState }
   | { v: 1; type: 'metrics'; metrics: ServiceMetrics }
   /** XAIBO-PROD-597: the reply to main's grantOffer or grantConfirm (never sent to a renderer port). */
-  | { v: 1; type: 'grant'; id: number; result: GrantOfferResult | GrantConfirmResult };
+  | { v: 1; type: 'grant'; id: number; result: GrantOfferResult | GrantConfirmResult }
+  /** XAIBO-PROD-600: the reply to main's applyOffer or applyConfirm (never sent to a renderer port). */
+  | { v: 1; type: 'apply'; id: number; result: ApplyOfferResult | ApplyConfirmResult };
 export type HealthState = 'starting' | 'running' | 'restarting' | 'stopped';
 /** main -> renderer; attempt counts consecutive restarts (0 unless restarting). */
 export interface Health { v: 1; type: 'health'; state: HealthState; attempt: number; readOnly: ReadOnlyReason | null }
@@ -69,6 +74,12 @@ export function parseServiceCommand(x: unknown): ServiceCommand | null {
     return exactKeys(m, ['v', 'type', 'id', 'request', 'binding']) && count(m.id) && request && typeof m.binding === 'string' && BINDING.test(m.binding)
       ? { v: 1, type: 'grantConfirm', id: m.id, request, binding: m.binding } : null;
   }
+  if (m.type === 'applyOffer' || m.type === 'applyConfirm') {
+    const ask = parseApplyAsk(m.ask);
+    if (!ask || !count(m.id)) return null;
+    if (m.type === 'applyOffer') return exactKeys(m, ['v', 'type', 'id', 'ask']) ? { v: 1, type: 'applyOffer', id: m.id, ask } : null;
+    return exactKeys(m, ['v', 'type', 'id', 'ask', 'binding']) && typeof m.binding === 'string' && BINDING.test(m.binding) ? { v: 1, type: 'applyConfirm', id: m.id, ask, binding: m.binding } : null;
+  }
   if (m.type === 'importCatalog') return text(m.path, 4096) && m.path.startsWith('/') && !m.path.includes('\0') ? { v: 1, type: 'importCatalog', path: m.path } : null;
   if (m.type !== 'setPath' || !text(m.agent) || !AGENT_ID.test(m.agent)) return null;
   if (!text(m.path, 4096) || !m.path.startsWith('/') || m.path.includes('\0')) return null;
@@ -84,6 +95,10 @@ export function parseServiceEvent(x: unknown): ServiceEvent | null {
   if (m?.type === 'grant') {
     const result = parseGrantResult(m.result);
     return exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) && result ? { v: 1, type: 'grant', id: m.id, result } : null;
+  }
+  if (m?.type === 'apply') {
+    const result = parseApplyResult(m.result);
+    return exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) && result ? { v: 1, type: 'apply', id: m.id, result } : null;
   }
   if (m?.type === 'metrics') { // every known key, a safe non-negative integer; anything else is dropped (never content)
     const raw = m.metrics;
@@ -1524,6 +1539,49 @@ function parseGrantResult(r: unknown): GrantOfferResult | GrantConfirmResult | n
   const v = o as unknown as GrantOffer;
   return { status: 'offer', offer: { ...v, argv: v.argv && [...v.argv], ops: v.ops && v.ops.map((p) => ({ ...p })) } };
 }
+// XAIBO-PROD-600 (P6-T12 slice 2; D-P6-21; plan and security review .handoff/p6-t12-slice2-plan.md): main's native confirmation
+// of a real-class apply. The renderer asks main with a kind and a preview id only (ApplyAsk, invoke 'confirm-apply'); main alone
+// sends applyOffer/applyConfirm (the renderer port has neither); the offer's items are labelled from a closed set and carry
+// values main quotes; a confirmed apply answers with the request's own reply shape, through its own bound check.
+export const APPLY_KINDS = ['connect', 'removal', 'cleanup'] as const;
+export type ApplyKind = (typeof APPLY_KINDS)[number];
+export interface ApplyAsk { kind: ApplyKind; previewId: string }
+export const APPLY_LABELS = ['agent', 'profile', 'folder', 'scope', 'file', 'change', 'value', 'retention', 'tee', 'helper', 'entries', 'real-entries', 'records', 'backups', 'manual'] as const;
+export type ApplyLabel = (typeof APPLY_LABELS)[number];
+export const APPLY_ITEMS = 64;
+export interface ApplyOffer { kind: ApplyKind; previewId: string; items: [ApplyLabel, string][]; binding: string }
+/** unknown: the confirm was sent but no reply came (the apply may have run: reread, never retry). */
+export const APPLY_REFUSALS = ['not-real', 'preview-invalid', 'preview-expired', 'stale', 'oversize', 'bounds-unavailable', 'unavailable', 'starting', 'read-only', 'busy', 'failed', 'unknown', 'invalid'] as const;
+export type ApplyRefusal = { status: 'refused'; code: (typeof APPLY_REFUSALS)[number] };
+export type ApplyReply = ConnectReply | RemovalReply | CleanupReply;
+export type ApplyOfferResult = { status: 'offer'; offer: ApplyOffer } | ApplyRefusal;
+export type ApplyConfirmResult = { status: 'done'; kind: ApplyKind; reply: ApplyReply } | ApplyRefusal;
+export type ApplyOutcome = { status: 'cancelled' } | ApplyConfirmResult;
+export const applyRefusal = (code: string): ApplyRefusal => ({ status: 'refused', code: oneOf(APPLY_REFUSALS, code) ? code : 'failed' });
+
+export function parseApplyAsk(x: unknown): ApplyAsk | null {
+  return exactKeys(x, ['kind', 'previewId']) && oneOf(APPLY_KINDS, x.kind) && uuid(x.previewId) ? { kind: x.kind, previewId: x.previewId } : null;
+}
+const applyReply = (kind: ApplyKind, r: unknown): ApplyReply | null =>
+  (kind === 'connect' ? parseConnectReply(r) : kind === 'removal' ? parseRemovalReply('removalApply', r) : parseCleanupReply('cleanupApply', r));
+export function parseApplyResult(x: unknown): ApplyOfferResult | ApplyConfirmResult | null {
+  if (exactKeys(x, ['status', 'code']) && x.status === 'refused') return oneOf(APPLY_REFUSALS, x.code) ? { status: 'refused', code: x.code } : null;
+  if (exactKeys(x, ['status', 'kind', 'reply']) && x.status === 'done' && oneOf(APPLY_KINDS, x.kind)) {
+    const reply = applyReply(x.kind, x.reply);
+    return reply ? { status: 'done', kind: x.kind, reply } : null;
+  }
+  if (!exactKeys(x, ['status', 'offer']) || x.status !== 'offer') return null;
+  const o = x.offer;
+  if (!exactKeys(o, ['kind', 'previewId', 'items', 'binding']) || !oneOf(APPLY_KINDS, o.kind) || !uuid(o.previewId) || typeof o.binding !== 'string' || !BINDING.test(o.binding)) return null;
+  if (!bounded(o.items, APPLY_ITEMS)) return null;
+  const items: [ApplyLabel, string][] = [];
+  for (const it of o.items) {
+    if (!Array.isArray(it) || it.length !== 2 || !oneOf(APPLY_LABELS, it[0]) || !text(it[1], 4096)) return null;
+    items.push([it[0], it[1]]);
+  }
+  return { status: 'offer', offer: { kind: o.kind, previewId: o.previewId, items, binding: o.binding } };
+}
+
 function parseRevokeTarget(t: unknown): RevokeTarget | null {
   if (exactKeys(t, ['kind', 'id']) && (t.kind === 'root' || t.kind === 'probe') && refId(t.id)) return { kind: t.kind, id: t.id };
   return exactKeys(t, ['kind']) && t.kind === 'setup' ? { kind: 'setup' } : null;

@@ -63,6 +63,14 @@ async function world(o: { real?: boolean; route?: 'plugin' | 'fallback'; denied?
 type W = Awaited<ReturnType<typeof world>>;
 const hashes = (w: W) => Object.fromEntries(Object.entries(w.files).map(([k, f]) => [k, sha(f)]));
 const SEL = { retention: true, tee: true };
+/** XAIBO-PROD-600 (slice 2): a real-class preview applies only through main's confirmation (offer, then confirm with its binding). */
+async function applyReal(w: W, previewId: string, kind: 'connect' | 'removal' = 'connect') {
+  const o = w.c.applyOffer(kind, previewId, Object.values(w.profiles));
+  assert.equal(o.status, 'offer', JSON.stringify(o));
+  const r = await w.c.applyConfirmed(kind, previewId, (o as { offer: { binding: string } }).offer.binding, Object.values(w.profiles));
+  assert.equal(r.status, 'done', JSON.stringify(r));
+  return (r as { reply: { status: string; code?: string } }).reply;
+}
 
 test('L8: the shipped flag is the literal false and no production caller can set the override', async () => {
   assert.equal(REAL_PROFILE_ENABLED, false);
@@ -93,7 +101,7 @@ test('flag on: Claude uses the settings fallback even where the plugin qualifies
   assert.equal(routes[0], 'claude-settings-fallback');
   assert.ok(!routes.includes('claude-plugin'));
   assert.ok((pv as { steps: { target: string }[] }).steps.every((s) => s.target === w.files.claude), 'settings.json only');
-  const r = await w.c.applyConnect((pv as { previewId: string }).previewId);
+  const r = await applyReal(w, (pv as { previewId: string }).previewId);
   assert.equal(r.status, 'applied', JSON.stringify(r));
   assert.notEqual(sha(w.files.claude), before['claude']);
   assert.deepEqual({ ...hashes(w), claude: before['claude'] }, before, 'only settings.json changed (never ~/.claude.json)');
@@ -108,7 +116,7 @@ test('flag on: Codex and agy round-trip; config.toml and Gemini settings untouch
   for (const p of [w.profiles.codex, w.profiles.agy]) {
     const pv = w.c.previewConnect(p, SEL);
     assert.equal(pv.status, 'preview', `${p.agent} ${JSON.stringify(pv)}`);
-    assert.equal((await w.c.applyConnect((pv as { previewId: string }).previewId)).status, 'applied', p.agent);
+    assert.equal((await applyReal(w, (pv as { previewId: string }).previewId)).status, 'applied', p.agent);
   }
   assert.notEqual(sha(w.files.codex), before['codex']);
   assert.notEqual(sha(w.files.agy), before['agy']);
@@ -120,14 +128,14 @@ test('flag on: Codex and agy round-trip; config.toml and Gemini settings untouch
 test('flag on: the removal preview and reconcile read real targets through the same policy', async () => {
   const w = await world({ real: true });
   const pv = w.c.previewConnect(w.profiles.codex, SEL);
-  await w.c.applyConnect((pv as { previewId: string }).previewId);
+  await applyReal(w, (pv as { previewId: string }).previewId);
   const rec = w.c.reconcile(Object.values(w.profiles));
   assert.equal(rec.status, 'ready');
   assert.deepEqual((rec as { entries: { state: string }[] }).entries.map((e) => e.state), ['connected']);
   const rp = w.c.previewRemoval(Object.values(w.profiles), w.profiles.codex, w);
   assert.equal(rp.status, 'preview', JSON.stringify(rp));
   assert.ok((rp as { items: { state: string }[] }).items.every((x) => x.state === 'connected'));
-  const r = await w.c.applyRemoval((rp as { previewId: string }).previewId, w, Object.values(w.profiles));
+  const r = await applyReal(w, (rp as { previewId: string }).previewId, 'removal');
   assert.equal(r.status, 'disconnected', JSON.stringify(r));
   assert.equal(readFileSync(w.files.codex, 'utf8'), CODEX);
 });
@@ -160,7 +168,7 @@ test('flag on: manual origin, an env root not on the denylist, overlapping denie
 test('flag on (H3): a manifest entry is reverted only for a currently resolved target; orphans and forged targets stay', async () => {
   const w = await world({ real: true });
   const pv = w.c.previewConnect(w.profiles.codex, SEL);
-  await w.c.applyConnect((pv as { previewId: string }).previewId);
+  await applyReal(w, (pv as { previewId: string }).previewId);
   const connected = sha(w.files.codex);
   const orphan = await w.c.uninstall([]); // no profile held: an orphan on a real root
   assert.equal(orphan.status, 'partial', JSON.stringify(orphan));
@@ -191,7 +199,7 @@ test('flag on (code review): a folder made unsafe between preview and apply refu
   assert.equal(pv.status, 'preview');
   chmodSync(w.profiles.codex.root, 0o775);
   try {
-    assert.deepEqual(await w.c.applyConnect((pv as { previewId: string }).previewId), { status: 'refused', code: 'unsafe-profile' });
+    assert.deepEqual(await applyReal(w, (pv as { previewId: string }).previewId), { status: 'refused', code: 'unsafe-profile' });
   } finally { chmodSync(w.profiles.codex.root, 0o755); }
   assert.deepEqual(hashes(w), before);
 });
@@ -201,13 +209,13 @@ test('flag on (code review): Full Uninstall with the live profiles reverts every
   const before = hashes(w);
   for (const p of Object.values(w.profiles)) {
     const pv = w.c.previewConnect(p, SEL);
-    assert.equal((await w.c.applyConnect((pv as { previewId: string }).previewId)).status, 'applied', p.agent);
+    assert.equal((await applyReal(w, (pv as { previewId: string }).previewId)).status, 'applied', p.agent);
   }
   const u = await w.c.uninstall(Object.values(w.profiles));
   assert.equal(u.status, 'disconnected', JSON.stringify(u));
   assert.deepEqual(hashes(w), before);
   const pv = w.c.previewConnect(w.profiles.claude, { retention: false, tee: false });
-  await w.c.applyConnect((pv as { previewId: string }).previewId);
+  await applyReal(w, (pv as { previewId: string }).previewId);
   const connected = sha(w.files.claude);
   const mf = join(w.dataDir, 'integrations', 'manifest.json');
   const m = JSON.parse(readFileSync(mf, 'utf8')) as { entries: { route: string; profileKey?: string; phase?: string }[] };

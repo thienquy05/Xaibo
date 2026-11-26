@@ -13,7 +13,7 @@ const CONFIRM_MS = 30_000; // the service refreshes detection before it replies
 const DETAIL_MAX = 6_000;
 const CLICK_MS = 750; // code review L: a grant click this soon after the dialog opened counts as Cancel (clickjacking)
 const UNSAFE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Co}\p{Cn}\u{a0}\u{1680}\u{2000}-\u{200a}\u{202f}\u{205f}\u{3000}\u{115f}\u{1160}\u{3164}\u{ffa0}\u{2800}]/gu;
-const q = (s: string) => JSON.stringify(s).replace(UNSAFE, (c) => '\\u{' + c.codePointAt(0)!.toString(16).toUpperCase() + '}');
+export const q = (s: string) => JSON.stringify(s).replace(UNSAFE, (c) => '\\u{' + c.codePointAt(0)!.toString(16).toUpperCase() + '}');
 
 export interface GrantDialog { type: 'warning'; title: string; message: string; detail: string; buttons: [string, string]; defaultId: 0; cancelId: 0; noLink: true }
 const TEXT = {

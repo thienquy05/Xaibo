@@ -7,8 +7,9 @@ import { appendFileSync, realpathSync } from 'node:fs';
 import { release } from 'node:os';
 import path from 'node:path';
 import { installCrashPolicy } from '../shared/crash.ts';
-import { AGENT_ID, IPC_VERSION, parseGrantAsk, type GrantOutcome, type RevealResult, type ServiceMetrics, type StartupReply } from '../shared/ipc.ts';
+import { AGENT_ID, IPC_VERSION, parseApplyAsk, parseGrantAsk, type ApplyOutcome, type GrantOutcome, type RevealResult, type ServiceMetrics, type StartupReply } from '../shared/ipc.ts';
 import { grantFlow } from './grants.ts';
+import { applyFlow } from './apply-confirm.ts';
 import { appendQuiet, createLogger, loadInstallSecret } from '../shared/log.ts';
 import { initDataDir, serviceEnv } from './app-paths.ts';
 import { buildBundle, foldMetrics, readLogTail, writeBundle } from './diagnostics.ts';
@@ -69,6 +70,15 @@ function start(dataDir: string) {
     clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
     now: () => performance.now(),
   });
+  // XAIBO-PROD-600 (P6-T12 slice 2; D-P6-21): main owns the confirmation of a real-profile apply (apply-confirm.ts); the message
+  // box is a sheet on our window and refused while it does not exist; only the apply button sends the binding.
+  const applies = applyFlow({
+    confirm: async (d) => (win && !win.isDestroyed() ? (await dialog.showMessageBox(win, d)).response === 1 : false),
+    send: (c) => supervisor.send(c),
+    setTimer: (fn, ms) => setTimeout(fn, ms),
+    clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
+    now: () => performance.now(),
+  });
   const notifyStub = process.env.XAIBO_NOTIFY_STUB === '1' ? path.join(app.getPath('logs'), 'notify-stub.jsonl') : null;
   const supervisor = new Supervisor<MessagePortMain>({
     fork: () => utilityProcess.fork(path.join(here, '..', 'service', 'index.js'), [], {
@@ -76,8 +86,9 @@ function start(dataDir: string) {
     }),
     channel: () => new MessageChannelMain(),
     onHealth: (h) => win?.webContents.send('health', h),
-    onSpawn: () => { serviceMetrics = null; grants.reset(); sendPort(); }, // a new service process: no stale metrics (review L1) or grant flow
+    onSpawn: () => { serviceMetrics = null; grants.reset(); applies.reset(); sendPort(); }, // a new service process: no stale metrics (review L1), grant or apply flow
     onGrant: (g) => grants.receive(g),
+    onApply: (a) => applies.receive(a),
     setTimer: (fn, ms) => setTimeout(fn, ms),
     clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
     now: Date.now,
@@ -143,6 +154,15 @@ function start(dataDir: string) {
     if (!win || win.isDestroyed() || !fromOurWindow(e, win) || !ask) return { status: 'refused', code: 'invalid' };
     const out = await grants.ask(ask);
     log.log(`grant_${ask.action}_${out.status === 'refused' ? out.code : out.status}`);
+    return out;
+  });
+  // XAIBO-PROD-600: Apply / Disconnect / Clean up on a real profile. Our window's main frame only, a kind and a preview id only
+  // (parsed here); the outcome is the service's bound-checked reply; the log names only the kind and outcome.
+  ipcMain.handle('confirm-apply', async (e, request: unknown): Promise<ApplyOutcome> => {
+    const ask = parseApplyAsk(request);
+    if (!win || win.isDestroyed() || !fromOurWindow(e, win) || !ask) return { status: 'refused', code: 'invalid' };
+    const out = await applies.ask(ask);
+    log.log(`apply_${ask.kind}_${out.status === 'refused' ? out.code : out.status}`);
     return out;
   });
   ipcMain.on('set-agent-path', (e, agent: unknown) => {
