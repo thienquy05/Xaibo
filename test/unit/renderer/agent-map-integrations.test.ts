@@ -111,3 +111,7 @@ test('a row name is short and names agent, profile and state', () => {
   const rlo = String.fromCodePoint(0x202e), spoof = agentLabel(row(1, { profileLabel: `/tmp/a${rlo}exe.txt${String.fromCodePoint(10)}b` }));
   assert.ok(!spoof.includes(rlo) && !spoof.includes(String.fromCodePoint(10)), spoof);
 });
+
+test('D-P6-19 (2): a known hooks block reads as files-only coverage', () => {
+  assert.equal(FACT['hooks-blocked'], 'Hooks blocked by policy (files only)');
+});

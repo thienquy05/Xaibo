@@ -48,10 +48,11 @@ export function deriveState(i: StateInput): { state: IntegrationState; reasons: 
   if (i.entries.length === 0) return r('detected', ['not-connected']);
   const broken = [...new Set(i.entries.filter((s) => s !== 'connected'))] as IntegrationFact[];
   if (broken.length) return r('setup-required', broken);
-  if (i.blocked) return r('setup-required', ['hooks-blocked']);
+  const limits: IntegrationFact[] = [...(i.gaps.length ? ['hook-gap' as const] : []), ...(i.content === 'unavailable' ? ['content-unavailable' as const] : [])];
+  // D-P6-19 (2): files only, never Connected; the other limits stay named (slice C review L3)
+  if (i.blocked) return r('partial-coverage', ['hooks-blocked', ...limits]);
   if (i.trust === 'awaiting-trust') return r('awaiting-trust', ['no-receipt']);
   if (!i.receipt && i.trust !== 'connected') return r('setup-required', ['waiting-for-receipt']);
-  const limits: IntegrationFact[] = [...(i.gaps.length ? ['hook-gap' as const] : []), ...(i.content === 'unavailable' ? ['content-unavailable' as const] : [])];
   return limits.length ? r('partial-coverage', limits) : r('connected');
 }
 

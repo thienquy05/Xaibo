@@ -493,7 +493,7 @@ Panel heading `Integration: [agent]` and selected profile, Back to map, then age
 | Setup required | settings / warning | Show unmet prerequisites; copy-only hints |
 | Awaiting trust | permission / warning | Hooks configured but not trusted in Codex; guided step below |
 | Connected | link / success | Eligible test event receipt verified; content coverage still stated independently |
-| Partial coverage | finding / warning | Receipt present with named content/lifecycle gaps; review coverage |
+| Partial coverage | finding / warning | Receipt present with named content/lifecycle gaps; review coverage. Also a known hooks block by policy: "Hooks blocked by policy (files only)", Lifecycle receipt: none observed (D-P6-19) |
 | Unsupported version | unknown / warning | Tested capabilities unavailable; version evidence and copy-only instructions |
 | Not detected | unknown / muted | Rescan or Set path; configuration existence is not executable proof |
 

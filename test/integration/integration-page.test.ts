@@ -98,7 +98,7 @@ test('hook policy is Claude only; an unreadable policy is unreadable, not blocke
   hook(d.db, { at: 5_000, agent: 'codex', profile: C2, event: 'Stop' });
   const r = ask(d, null, 'next', 10);
   const by = (pid: string) => (r.status === 'ready' ? r.value.rows.find((x) => x.key.profileId === pid) : undefined);
-  assert.deepEqual([by(C1)?.state, by(C1)?.reasons], ['setup-required', ['hooks-blocked']]);
+  assert.deepEqual([by(C1)?.state, by(C1)?.reasons], ['partial-coverage', ['hooks-blocked']]); // D-P6-19 (2)
   assert.equal(by(C2)?.state, 'connected', 'a Claude policy never blocks Codex');
   const u = ask(await deps({ policy: () => 'unknown' }), null, 'next', 10);
   assert.deepEqual(u.status === 'ready' ? u.value.rows.find((x) => x.key.profileId === C1)?.reasons : null, ['unreadable']);

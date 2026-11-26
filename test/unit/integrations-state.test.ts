@@ -23,12 +23,13 @@ test('no profile or nothing installed is Detected', () => {
   assert.deepEqual(d({ entries: [] }), { state: 'detected', reasons: ['not-connected'] });
 });
 
-test('setup required names its blockers: unreadable evidence, drift, external removal, pending recovery, blocked hooks', () => {
+test('setup required names its blockers: unreadable evidence, drift, external removal, pending recovery; blocked hooks are partial coverage', () => {
   assert.deepEqual(d({ entries: 'unavailable' }), { state: 'setup-required', reasons: ['evidence-unavailable'] });
   assert.deepEqual(d({ entries: ['connected', 'drifted'] }), { state: 'setup-required', reasons: ['drifted'] });
   assert.deepEqual(d({ entries: ['disconnected-externally', 'pending-recovery', 'disconnected-externally'] }), { state: 'setup-required', reasons: ['disconnected-externally', 'pending-recovery'] });
   assert.deepEqual(d({ entries: ['unreadable'] }), { state: 'setup-required', reasons: ['unreadable'] });
-  assert.deepEqual(d({ blocked: true }), { state: 'setup-required', reasons: ['hooks-blocked'] });
+  // D-P6-19 (2): a known hooks block is Partial coverage (files only), never Connected
+  assert.deepEqual(d({ blocked: true }), { state: 'partial-coverage', reasons: ['hooks-blocked'] });
 });
 
 test('installed but unproven: Codex awaits trust; others wait for a lifecycle receipt', () => {
@@ -41,4 +42,10 @@ test('a receipt with named limits is Partial coverage; without them Connected', 
   assert.deepEqual(d({ content: 'unavailable' }), { state: 'partial-coverage', reasons: ['content-unavailable'] });
   assert.deepEqual(d({}), { state: 'connected', reasons: [] });
   assert.deepEqual(d({ agent: 'codex', trust: 'connected' }), { state: 'connected', reasons: [] });
+});
+
+test('D-P6-19 (2) and slice C review L3: a hooks block is partial coverage with no receipt, keeps other limits, never hides drift', () => {
+  assert.deepEqual(d({ blocked: true, receipt: false }), { state: 'partial-coverage', reasons: ['hooks-blocked'] });
+  assert.deepEqual(d({ blocked: true, gaps: ['spool-full'] }), { state: 'partial-coverage', reasons: ['hooks-blocked', 'hook-gap'] });
+  assert.deepEqual(d({ blocked: true, entries: ['drifted'] }), { state: 'setup-required', reasons: ['drifted'] });
 });

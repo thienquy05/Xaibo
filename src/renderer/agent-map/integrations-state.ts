@@ -58,7 +58,7 @@ export const FACT: Record<IntegrationFact, string> = {
   'no-executable': 'No executable found', 'probe-not-granted': 'Detection not granted', 'probe-grant-stale': 'Detection grant out of date',
   'version-unknown': 'Version unknown', 'version-unqualified': 'Version not qualified', 'no-profile': 'No profile found', 'not-connected': 'Not connected',
   'evidence-unavailable': 'Setup evidence unavailable', drifted: 'Configuration changed outside Xaibo', 'disconnected-externally': 'Removed outside Xaibo',
-  'pending-recovery': 'An earlier change needs recovery', unreadable: 'Configuration unreadable', 'hooks-blocked': 'Hooks blocked by policy',
+  'pending-recovery': 'An earlier change needs recovery', unreadable: 'Configuration unreadable', 'hooks-blocked': 'Hooks blocked by policy (files only)',
   'no-receipt': 'Hooks installed, awaiting trust', 'waiting-for-receipt': 'Waiting for lifecycle receipt', 'hook-gap': 'Recent hook events lost',
   'content-unavailable': 'Content coverage unavailable',
 };
