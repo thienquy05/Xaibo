@@ -1384,25 +1384,28 @@ export interface IntegrationDetail {
   row: IntegrationRow; profiles: { id: string; label: string }[];
   entries: { entry: string; route: ConnectRoute; state: (typeof RECONCILE_STATES)[number]; reason: string | null }[];
   trustSteps: string[]; boundary: number | null;
+  /** XAIBO-PROD-591 (P6-T08 slice B): the agent's compatibility labels for its detected version (at most 16 lines). */
+  compatibility: string[];
 }
 export type IntegrationDetailResult = { status: 'ready'; observedAt: number; value: IntegrationDetail } | { status: 'refused'; code: (typeof DETAIL_REFUSALS)[number] };
 function parseIntegrationDetail(x: unknown): IntegrationDetailResult | undefined {
   if (exactKeys(x, ['status', 'code']) && x.status === 'refused') return oneOf(DETAIL_REFUSALS, x.code) ? { status: 'refused', code: x.code } : undefined;
   if (!exactKeys(x, ['status', 'observedAt', 'value']) || x.status !== 'ready' || !count(x.observedAt)) return undefined;
   const v = x.value;
-  if (!exactKeys(v, ['row', 'profiles', 'entries', 'trustSteps', 'boundary'])) return undefined;
+  if (!exactKeys(v, ['row', 'profiles', 'entries', 'trustSteps', 'boundary', 'compatibility'])) return undefined;
   const row = parseIntegrationRow(v.row);
   const ok = row && bounded(v.profiles, REMOVAL_LIMIT) && v.profiles.every((p) => exactKeys(p, ['id', 'label']) && uuid(p.id) && text(p.label, 512))
     && bounded(v.entries, REMOVAL_LIMIT) && v.entries.every((e) => exactKeys(e, ['entry', 'route', 'state', 'reason']) && uuid(e.entry) && route(e.route)
       && oneOf(RECONCILE_STATES, e.state) && (e.reason === null || connectCode(e.reason)))
-    && bounded(v.trustSteps, CONNECT_LIMITS.trust) && v.trustSteps.every(longText) && (v.boundary === null || count(v.boundary));
+    && bounded(v.trustSteps, CONNECT_LIMITS.trust) && v.trustSteps.every(longText) && (v.boundary === null || count(v.boundary))
+    && bounded(v.compatibility, 16) && v.compatibility.every((l) => text(l, 256));
   if (!ok) return undefined;
   // code review L3: the fields agree: trust steps only while awaiting trust; a profile-less row has no entries or boundary; the
   // row's own profile is listed
   const pid = row.key.profileId, d = v as unknown as IntegrationDetail;
   if ((d.trustSteps.length && row.state !== 'awaiting-trust') || (pid === null && (d.entries.length || d.boundary !== null))
     || (pid !== null && !d.profiles.some((p) => p.id === pid))) return undefined;
-  return { status: 'ready', observedAt: x.observedAt, value: { row, profiles: d.profiles.map((p) => ({ ...p })), entries: d.entries.map((e) => ({ ...e })), trustSteps: [...d.trustSteps], boundary: d.boundary } };
+  return { status: 'ready', observedAt: x.observedAt, value: { row, profiles: d.profiles.map((p) => ({ ...p })), entries: d.entries.map((e) => ({ ...e })), trustSteps: [...d.trustSteps], boundary: d.boundary, compatibility: [...d.compatibility] } };
 }
 function parseIntegrationPage(x: unknown): IntegrationPageResult | undefined {
   if (exactKeys(x, ['status', 'code']) && x.status === 'refused') return oneOf(INTEGRATION_REFUSALS, x.code) ? { status: 'refused', code: x.code } : undefined;

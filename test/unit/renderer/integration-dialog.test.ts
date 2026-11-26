@@ -21,7 +21,7 @@ const connectPreview = (id: string, retention: boolean): ConnectPreview => ({ st
 const detail = (o: Partial<{ agent: string; state: IntegrationDetail['row']['state']; entries: IntegrationDetail['entries']; profileId: string | null }> = {}): IntegrationDetail => ({
   row: { key: { agent: o.agent ?? 'claude', profileId: o.profileId === undefined ? P : o.profileId }, name: o.agent === 'codex' ? 'Codex' : 'Claude Code', profileLabel: 'Default profile', version: '2.1.332',
     state: o.state ?? 'detected', reasons: [], lifecycleGaps: [], receipt: null, content: { mode: 'unavailable', assurance: 'unavailable', evidence: null, gaps: [] } },
-  profiles: [{ id: P, label: 'Default profile' }, { id: Q, label: '~/work-profile' }], entries: o.entries ?? [], trustSteps: [], boundary: null,
+  profiles: [{ id: P, label: 'Default profile' }, { id: Q, label: '~/work-profile' }], entries: o.entries ?? [], trustSteps: [], boundary: null, compatibility: [],
 });
 const reply = (s: DialogState, r: unknown) => dialogStep(s, { type: 'reply', seq: s.seq, reply: r as never });
 

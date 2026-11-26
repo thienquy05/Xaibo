@@ -4,6 +4,11 @@
     {
       "id": "claude",
       "displayName": "Claude Code",
+      "compatibility": [
+        {"version":"2.1.322","surface":"cli","visible":"verified","resumable":"verified","attach":"unverified","ownership":"unverified","note":"approvals go to the TUI; attach not tested","evidence":"Gate 0 S7 compatibility matrix (phase0_spikes.md)"},
+        {"version":"2.1.322","surface":"sdk-cli","visible":"unsupported","resumable":"verified","attach":"unsupported","ownership":"unverified","note":"not in the resume picker; resumable by id","evidence":"Gate 0 S7 compatibility matrix (phase0_spikes.md)"},
+        {"version":"2.1.322","surface":"bg","visible":"unverified","resumable":"unverified","attach":"unverified","ownership":"unverified","note":"commands exist in --help; not exercised","evidence":"Gate 0 S7 compatibility matrix (phase0_spikes.md)"}
+      ],
       "detection": {
         "binaries": [{ "id": "main", "names": ["claude"], "versionArgs": ["--version"] }],
         "locations": ["~/.local/bin", "/opt/homebrew/bin", "/usr/local/bin"]
@@ -20,6 +25,11 @@
     {
       "id": "codex",
       "displayName": "Codex",
+      "compatibility": [
+        {"version":"0.160.0","surface":"cli","visible":"verified","resumable":"verified","attach":"unverified","ownership":"unverified","note":"no-daemon mode: attach failed, the TUI owns it; shared daemon untested","evidence":"Gate 0 S6 compatibility matrix (phase0_spikes.md)"},
+        {"version":"0.160.0","surface":"exec","visible":"verified","resumable":"verified","attach":"unverified","ownership":"unverified","note":"listed only with --include-non-interactive","evidence":"Gate 0 S6 compatibility matrix (phase0_spikes.md)"},
+        {"version":"0.160.0","surface":"app-server","visible":"verified","resumable":"unverified","attach":"unverified","ownership":"unverified","note":"read with thread/read; resume not exercised","evidence":"Gate 0 S6 compatibility matrix (phase0_spikes.md)"}
+      ],
       "detection": {
         "binaries": [{ "id": "main", "names": ["codex"], "versionArgs": ["--version"] }],
         "locations": ["/opt/homebrew/bin", "/usr/local/bin"]

@@ -21,6 +21,13 @@ export interface AgentEntry {
   signInRules?: MethodRule[];
   /** XAIBO-PROD-588 (P6-T09a, D-P6-18): data-only report-v1 setup, set ops on one JSON file under one declared root. */
   reportSetup?: ReportSetup;
+  /** XAIBO-PROD-591 (P6-T08 slice B): per exact release and surface (Gate 0 S6/S7); bundled only. */
+  compatibility?: CompatibilityRow[];
+}
+export type Assurance = 'verified' | 'unverified' | 'unsupported';
+export interface CompatibilityRow {
+  version: string; surface: 'cli' | 'exec' | 'app-server' | 'sdk-cli' | 'bg' | 'vscode' | 'desktop';
+  visible: Assurance; resumable: Assurance; attach: Assurance; ownership: Assurance; note?: string; evidence: string;
 }
 /** P6-T09a review M1: a literal is never a string; strings come only from Xaibo (its report helper path, the profile key, the
  *  agent id). ponytail (slice A code review nit): a number has no range beyond finite (Ajv strictNumbers); add min/max if an
@@ -105,6 +112,9 @@ export function catalogIssues(value: unknown, bundled?: Catalog): CatalogIssue[]
     rs?.ops.forEach((o, j) => { if (rs.ops.slice(0, j).some((x) => overlaps(x.pointer, o.pointer))) add('unsafe-value', `${p}/reportSetup/ops/${j}/pointer`); });
     // P6-T01a (review H2): sign-in rules are bundled data only; an imported entry may carry none. Bundled: unique ids, the
     // agent's own surface, and only the allowlisted fields and discriminators (sign-in.ts).
+    // XAIBO-PROD-591: compatibility is Xaibo's own verification (bundled only); one row per release and surface
+    if (a.compatibility?.length && bundled) add('unsafe-value', `${p}/compatibility`);
+    else if (a.compatibility) dup(a.compatibility.map((r) => `${r.version}\0${r.surface}`), (j) => `${p}/compatibility/${j}`);
     if (a.signInRules?.length && bundled) add('unsafe-value', `${p}/signInRules`);
     else if (a.signInRules) {
       dup(a.signInRules.map((r) => r.id), (j) => `${p}/signInRules/${j}/id`);

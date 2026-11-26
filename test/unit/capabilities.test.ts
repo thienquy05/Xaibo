@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { capabilities } from '../../src/service/catalog/capabilities.ts';
+import { capabilities, compatibility } from '../../src/service/catalog/capabilities.ts';
 import { loadCatalog, validateCatalog, type Catalog } from '../../src/service/catalog/validate.ts';
 
 const S5 = ['Interrupt', 'PermissionRequest', 'PostCompact', 'PostToolUse', 'PreCompact', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop',
@@ -65,4 +65,31 @@ test('EC-53: no src file outside the catalog module references the model-request
   const files = readdirSync(src, { recursive: true }).map(String).filter((f) => /\.tsx?$/.test(f));
   const users = files.filter((f) => /PreModelRequest|PostModelRequest/.test(readFileSync(join(src, f), 'utf8')));
   assert.deepEqual(users.filter((f) => !f.startsWith(join('service', 'catalog'))), []);
+});
+
+// XAIBO-PROD-591 (P6-T08 slice B; EC-79, US-8, D-P6-19): per-version, per-surface compatibility from the Gate 0 S6/S7 matrices,
+// bundled catalog data only. A label is verified only for an exact tested release and surface; an unknown, prerelease or
+// untested version, or a surface without a row (VS Code, Desktop), says unverified with its reason; never supported.
+test('P6-T08: compatibility labels for an exact tested release; unverified otherwise, with the tested versions named', () => {
+  const c = loadCatalog();
+  const codex = compatibility(c, 'codex', '0.160.0');
+  // code review M2: attach and ownership were tested only with --no-daemon; the default shared daemon is untested
+  assert.ok(codex.some((l) => /^CLI: history visibility verified, resume verified, live attach unverified, ownership unverified for 0\.160\.0 \(.*shared daemon untested\)/.test(l)), codex.join('\n'));
+  assert.ok(codex.some((l) => /^Codex non-interactive \(exec\): history visibility verified, .*for 0\.160\.0 \(listed only with --include-non-interactive\)/.test(l)), codex.join('\n'));
+  assert.ok(codex.includes('VS Code extension: unverified for 0.160.0 (not tested)'));
+  assert.ok(codex.includes('Desktop app: unverified for 0.160.0 (not tested)'));
+  const later = compatibility(c, 'codex', '0.161.0');
+  assert.ok(later.every((l) => /: unverified for 0\.161\.0 \((tested on 0\.160\.0|not tested)\)$/.test(l)), later.join('\n'));
+  assert.ok(compatibility(c, 'codex', '0.160.0-alpha.1').every((l) => / unverified for 0\.160\.0-alpha\.1 /.test(l)), 'a prerelease is not its release');
+  assert.ok(compatibility(c, 'codex', null).every((l) => /: unverified for an unknown version /.test(l)));
+  const claude = compatibility(c, 'claude', '2.1.322');
+  assert.ok(claude.some((l) => /^Claude print mode \(-p\): history visibility unsupported, resume verified/.test(l)), claude.join('\n'));
+  assert.ok(compatibility(c, 'claude', '2.1.332').some((l) => l === 'CLI: unverified for 2.1.332 (tested on 2.1.322)'), 'a newer Claude is not assumed');
+  // code review M1: S7 recorded who receives approvals, not ownership; L5: --bg is listed, not exercised
+  assert.ok(claude.some((l) => /^CLI: history visibility verified, resume verified, live attach unverified, ownership unverified for 2\.1\.322/.test(l)), claude.join('\n'));
+  assert.ok(claude.some((l) => /^Background \(--bg\): history visibility unverified, resume unverified, live attach unverified, ownership unverified for 2\.1\.322/.test(l)), claude.join('\n'));
+  assert.ok([...codex, ...claude].every((l) => l.length <= 256), 'every line fits the wire bound');
+  assert.deepEqual(compatibility(c, 'agy', '1.0.0'), [], 'no rows, no labels');
+  assert.deepEqual(compatibility(null, 'codex', '0.160.0'), []);
+  for (const l of [...codex, ...later, ...claude]) assert.ok(!/\bsupported\b/.test(l.replace(/unsupported/g, '')), `never "supported": ${l}`);
 });

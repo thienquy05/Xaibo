@@ -183,3 +183,20 @@ test('P6-T09a review M2: an imported profile root under .gemini is shadow (agy k
   assert.deepEqual(catalogIssues(rooted('.gemini2')), [], 'a name prefix is not shadow');
   assert.deepEqual(catalogIssues(rooted('.gemini2'), bundled), []);
 });
+
+// XAIBO-PROD-591 (P6-T08 slice B): compatibility rows are bundled data only (an imported entry may carry none, as sign-in rules);
+// exact release, an allowlisted surface, three states per fact, one row per version and surface.
+test('P6-T08: compatibility rows validate as bundled data; imported, duplicate or malformed rows are refused', () => {
+  const c = read('valid/synthagent.json') as Catalog;
+  const row = { version: '1.0.0', surface: 'cli', visible: 'verified', resumable: 'unverified', attach: 'unsupported', ownership: 'unverified', evidence: 'synthetic fixture' };
+  const withRows = (rows: unknown[]) => ({ ...c, agents: [{ ...c.agents[0]!, compatibility: rows }] });
+  assert.deepEqual(catalogIssues(withRows([row, { ...row, surface: 'vscode', note: 'synthetic' }])), []);
+  assert.deepEqual(catalogIssues(withRows([row]), bundled), [{ code: 'unsafe-value', at: '/agents/0/compatibility' }], 'imported entries carry none');
+  assert.deepEqual(catalogIssues(withRows([row, { ...row }])), [{ code: 'duplicate-id', at: '/agents/0/compatibility/1' }]);
+  for (const [why, bad] of [['state', { ...row, attach: 'supported' }], ['surface', { ...row, surface: 'jetbrains' }], ['prerelease', { ...row, version: '1.0.0-beta' }],
+    ['extra key', { ...row, launch: 'x' }], ['no evidence', (({ evidence: _e, ...r }) => r)(row)]] as const) {
+    const issues = catalogIssues(withRows([bad]));
+    assert.ok(issues.length > 0 && issues.every((i) => i.code === 'schema-invalid'), `${why}: ${JSON.stringify(issues)}`);
+  }
+  assert.deepEqual(catalogIssues(bundled), [], 'the bundled catalog with its rows is valid');
+});

@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openStore } from '../../src/service/store/db.ts';
 import { loadCatalog } from '../../src/service/catalog/validate.ts';
+import { compatibility } from '../../src/service/catalog/capabilities.ts';
 import { parsePortMessage, parsePortRequest } from '../../src/shared/ipc.ts';
 import { answerIntegrationDetail, answerIntegrationPage, type PageDeps } from '../../src/service/integrations/state.ts';
 
@@ -118,4 +119,23 @@ test('replies: bounded and exact; fixed refusal codes', async () => {
   }
   assert.ok(M({ status: 'refused', code: 'not-found' }));
   assert.equal(M({ status: 'refused', code: 'boom: /tmp/x' }), null);
+});
+
+// XAIBO-PROD-591 (P6-T08 slice B; EC-79, US-8): the detail carries that agent's compatibility labels for its detected version
+// (catalog/capabilities.ts), bounded on the wire; unverified is never shown as supported.
+test('P6-T08: the detail carries the compatibility labels for the detected version; the reply is bounded', async () => {
+  const d = await deps();
+  const r = ask(d, { agent: 'codex', profileId: C2 });
+  assert.ok(r.status === 'ready');
+  assert.deepEqual(r.value.compatibility, compatibility(d.catalog, 'codex', '0.160.0'));
+  assert.ok(r.value.compatibility.includes('VS Code extension: unverified for 0.160.0 (not tested)'));
+  assert.ok(parsePortMessage({ v: 1, type: 'integrationDetail', id: 1, result: r }));
+  const agy = ask(d, { agent: 'agy', profileId: null });
+  assert.deepEqual(agy.status === 'ready' ? agy.value.compatibility : null, [], 'no rows, no labels');
+  const cl = ask(d, { agent: 'claude', profileId: C1 }); // code review L4: every bundled agent's labels cross the wire
+  assert.ok(cl.status === 'ready' && cl.value.compatibility.length > 0 && parsePortMessage({ v: 1, type: 'integrationDetail', id: 1, result: cl }));
+  const over = (compat: unknown) => parsePortMessage({ v: 1, type: 'integrationDetail', id: 1, result: { ...r, value: { ...r.value, compatibility: compat } } });
+  assert.equal(over(Array.from({ length: 17 }, () => 'x')), null, 'at most 16 lines');
+  assert.equal(over(['x'.repeat(257)]), null, 'at most 256 characters a line');
+  assert.equal(over([1]), null);
 });

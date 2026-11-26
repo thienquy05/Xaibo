@@ -86,6 +86,7 @@
         "method": { "enum": ["subscription", "api-key", "cloud-provider", "gateway", "mixed"] }
       }
     },
+    "assurance": { "enum": ["verified", "unverified", "unsupported"] },
     "reportValue": {
       "description": "P6-T09a (D-P6-18, review M1): a reportSetup value: a boolean, number or null literal, or a value Xaibo supplies. No strings, so catalog data never writes a command or a path of its own.",
       "oneOf": [
@@ -122,6 +123,26 @@
                   "value": { "$ref": "#/$defs/reportValue" }
                 }
               }
+            }
+          }
+        },
+        "compatibility": {
+          "description": "P6-T08 (EC-79, US-8; D-P6-19): per exact tested release and surface, whether that surface lists the history, resumes it, attaches live, and records ownership (Gate 0 S6/S7). Bundled catalog only; an untested version or surface is unverified. Display data only, never a launch or control permission.",
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["version", "surface", "visible", "resumable", "attach", "ownership", "evidence"],
+            "properties": {
+              "version": { "$ref": "#/$defs/version" },
+              "surface": { "enum": ["cli", "exec", "app-server", "sdk-cli", "bg", "vscode", "desktop"] },
+              "visible": { "$ref": "#/$defs/assurance" },
+              "resumable": { "$ref": "#/$defs/assurance" },
+              "attach": { "$ref": "#/$defs/assurance" },
+              "ownership": { "$ref": "#/$defs/assurance" },
+              "note": { "type": "string", "minLength": 1, "maxLength": 96 },
+              "evidence": { "type": "string", "minLength": 1, "maxLength": 256 }
             }
           }
         },

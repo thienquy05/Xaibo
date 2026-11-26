@@ -12,6 +12,7 @@ import { codexHookStatus } from '../adapters/codex/setup.ts';
 import { profileLabel } from '../api.ts';
 import type { Detection, Profile } from '../catalog/detect.ts';
 import type { Catalog } from '../catalog/validate.ts';
+import { compatibility } from '../catalog/capabilities.ts';
 import { readManifest, within, type ManifestEntry } from '../config/transaction.ts';
 import { REPORT_EVENTS } from '../../shared/report/schema.ts';
 import { GAP_WINDOW_MS } from '../status/coverage.ts';
@@ -182,7 +183,8 @@ export function answerIntegrationDetail(d: PageDeps, key: IntegrationKey): Integ
     const trustSteps = p && row.state === 'awaiting-trust' ? d.trustSteps(p).slice(0, CONNECT_LIMITS.trust) : [];
     // a boundary can carry a file's fractional mtime (Codex's change boundary): rounded up, so an earlier receipt never counts
     const at = p ? d.installedAt(p) : null;
-    return { status: 'ready', observedAt: d.now, value: { row, profiles, entries, trustSteps, boundary: at === null ? null : Math.ceil(at) } };
+    return { status: 'ready', observedAt: d.now, value: { row, profiles, entries, trustSteps, boundary: at === null ? null : Math.ceil(at),
+      compatibility: compatibility(d.catalog, key.agent, row.version).slice(0, 16) } }; // XAIBO-PROD-591
   } catch {
     return { status: 'refused', code: 'failed' };
   }
