@@ -725,8 +725,14 @@ html, .x-shell.x-fixed { scroll-padding-top: var(--x-frame-pad, 8px); } /* clear
 /* XAIBO-PROD-585: nothing in the panel is wider than its pane (a native select sizes to its longest option, e.g. a long profile
    path); labelled fields stack their label over the control */
 .x-integration .x-map-detail-body > * { max-width: 100%; min-width: 0; }
-.x-integration select { max-width: 100%; }
+/* P6-T10a closing check: the panel and Settings sign-in selects take the page text (200% text scales them, WCAG 1.4.4) and the
+   control look of the app's other selects */
+.x-integration select { max-width: 100%; min-height: var(--x-control-height); padding: var(--x-space-2); color: var(--x-ink); background: var(--x-surface); border: var(--x-border); border-radius: var(--x-radius-control); font: inherit; }
 .x-integration .x-field { display: grid; gap: var(--x-space-1); justify-items: start; }
+/* P6-T10a closing check (320 CSS px, 200% text): a long profile path in a native select never widens the panel or the
+   Settings page; the columns may shrink below their content, so the select's max-width applies */
+.x-integration .x-map-detail-body, .x-integration .x-field { grid-template-columns: minmax(0, 1fr); }
+.x-integration .x-field { min-width: 0; max-width: 100%; }
 .x-diff-dialog { width: min(720px, calc(100vw - 32px)); max-width: none; max-height: calc(100vh - 32px); overflow-y: auto; }
 .x-diff-dialog h3 { margin: var(--x-space-2) 0 var(--x-space-1); font-size: var(--x-text-body); }
 .x-diff-dialog .x-radios { margin-bottom: var(--x-space-3); }

@@ -6,8 +6,9 @@
 import { chmodSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import type { Page } from '@playwright/test';
-import { expect, shot, test } from './fixtures.ts';
+import type { Locator, Page } from '@playwright/test';
+import { addRules, focusProblems, layoutProblems, setTheme, SPACING, type Theme } from './a11y-checks.ts';
+import { expect, shot, test, type Xaibo } from './fixtures.ts';
 
 const A = '00000000-0000-4000-8000-0000000c8511', B = '00000000-0000-4000-8000-0000000c8512';
 const open = async (page: Page) => {
@@ -19,8 +20,9 @@ const open = async (page: Page) => {
   return pane;
 };
 
-test('Sign-in declaration in the panel: declare, change, account change, clear, explicit Unknown; another profile unchanged; restart', async ({ xaibo }) => {
-  test.setTimeout(180_000);
+/** Disposable Codex profiles A and B (manual roots under the run's TMPDIR, UUID ids) in a fresh data dir, with one synthetic
+ *  priced request for B (its retained observed consumption). */
+async function seed(xaibo: Xaibo) {
   const root = path.dirname(xaibo.home), tmp = path.join(root, 'tmp');
   chmodSync(tmp, 0o700);
   const dataDir = path.join(root, 'data-signin');
@@ -49,6 +51,12 @@ test('Sign-in declaration in the panel: declare, change, account change, clear, 
     db.prepare("INSERT INTO usage (session_id, schema_version, source, identity, scope, event_id, uncached_input, cache_read, cache_write, output, source_ts) VALUES (?, 1, 'fixture', 'r-sb', 'message', ?, 100, 0, 0, 50, ?)").run(sid, ev, t);
     db.prepare("INSERT INTO cost_estimates (session_id, schema_version, source, covered_scope, amount_usd, basis, coverage) VALUES (?, 1, 'fixture', 'usage:fixture:r-sb', 0.25, 'token_table', '{\"coverage\":\"full\"}')").run(sid);
   } finally { db.close(); }
+  return { dataDir, env, a, b };
+}
+
+test('Sign-in declaration in the panel: declare, change, account change, clear, explicit Unknown; another profile unchanged; restart', async ({ xaibo }) => {
+  test.setTimeout(180_000);
+  const { dataDir, env, a, b } = await seed(xaibo);
 
   const run = await xaibo.launch({ dataDir, env });
   const page = await xaibo.window(run);
@@ -146,3 +154,62 @@ test('Sign-in declaration in the panel: declare, change, account change, clear, 
   await expect(page2.getByRole('region', { name: 'Integration: Codex' }).getByRole('group', { name: 'Sign-in method' })).toContainText(/Owner declaration: Gateway/, { timeout: 20_000 });
   await xaibo.quit(again);
 });
+
+// P6-T10a closing check (design §2.4, §8.1; the P4-T15b method): the three sign-in surfaces (the integration panel's
+// fieldset, Settings Sign-in declarations, Dashboard usage blocks with consumption and links) at 320 CSS px and with 200%
+// text plus the text-spacing overrides, light and dark: no overflow, clipped text, overlapping controls or clipped focus rings.
+for (const theme of ['light', 'dark'] as Theme[]) {
+  for (const mode of ['reflow', 'text200'] as const) {
+    test(`sign-in surfaces ${theme} × ${mode}: no overflow, clipping, overlap or clipped focus rings`, async ({ xaibo }) => {
+      test.setTimeout(180_000);
+      const { dataDir, env, b } = await seed(xaibo);
+      const run = await xaibo.launch({ dataDir, env });
+      const page = await xaibo.window(run);
+      const app = run.app!;
+      const errors: string[] = [];
+      page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+      await setTheme(app, page, theme);
+      if (mode === 'reflow') {
+        await app.evaluate(({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows()[0]!; w.setSize(640, 560); w.webContents.setZoomFactor(2); });
+        await expect.poll(() => page.evaluate(() => innerWidth)).toBeLessThanOrEqual(320);
+      } else {
+        await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(960, 640));
+        await addRules(page, ['html { font-size: 200% !important; }']);
+      }
+      await addRules(page, SPACING);
+      const problems: string[] = [];
+      const check = async (where: string, target: Locator) => {
+        // WCAG 1.4.4: a select's text scales with the page text like its label's (form controls do not inherit font by default)
+        for (const s of await target.locator('select').all()) {
+          const [own, label] = await s.evaluate((e) => [getComputedStyle(e).fontSize, getComputedStyle(e.parentElement!).fontSize]);
+          if (own !== label) problems.push(`${where}: select ${await s.getAttribute('id') ?? await s.getAttribute('aria-label') ?? ''} text ${own} beside its label's ${label}`);
+        }
+        if (process.env.XAIBO_SHOT) { // the window as painted (page screenshots come out blank under the window zoom)
+          await target.evaluate((e) => (e.querySelector('select, button') ?? e).scrollIntoView({ block: 'start' }));
+          await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))); // painted before the capture
+          const png = await app.evaluate(async ({ BrowserWindow }) => (await BrowserWindow.getAllWindows()[0]!.webContents.capturePage()).toPNG().toString('base64'));
+          writeFileSync(path.join(process.env.XAIBO_SHOT, `sign-in-${theme}-${mode}-${where}.png`), Buffer.from(png, 'base64'));
+        }
+        problems.push(...await layoutProblems(page, where));
+        await page.locator('body').focus();
+        problems.push(...await focusProblems(page, where));
+      };
+      const pane = await open(page);
+      await expect(pane.getByRole('group', { name: 'Sign-in method' })).toContainText('Sign-in method: Unknown', { timeout: 20_000 });
+      await check('panel', pane);
+      await page.getByRole('navigation', { name: 'Areas' }).getByRole('link', { name: 'Settings' }).click();
+      const section = page.getByRole('region', { name: 'Sign-in declarations' });
+      await section.getByRole('combobox', { name: 'Profile' }).selectOption({ label: `Codex · ${b}` });
+      await expect(section.getByRole('group', { name: 'Sign-in method' })).toContainText('Sign-in method: Unknown', { timeout: 20_000 });
+      await check('settings', section);
+      await page.getByRole('navigation', { name: 'Areas' }).getByRole('link', { name: 'Dashboard' }).click();
+      await page.getByRole('group', { name: 'Dashboard view' }).getByRole('button', { name: 'Usage and history' }).click();
+      const usage = page.getByRole('region', { name: `Codex · ${b}`, exact: true });
+      await expect(usage).toContainText('Observed tokens: 150', { timeout: 20_000 });
+      await check('dashboard-usage', usage);
+      expect(errors, 'console errors').toEqual([]);
+      expect(problems, `layout and focus problems (${mode})`).toEqual([]);
+      await xaibo.quit(run);
+    });
+  }
+}
