@@ -8,7 +8,7 @@
 // tampering by the same user is out of scope (review R13). XAIBO-PROD-567 (part 3, review P3-1..P3-8): grantProbe stores an
 // owner's grant to run one binary's version probe; every load keeps a grant only while its entry digest, declared binary
 // and approved root still hold (each rescan reloads; a grants map is never reused, P3-3); grants die with their entry (P3-8).
-import { createHash } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { isObj } from '../../shared/ipc.ts';
@@ -16,7 +16,7 @@ import { writable } from '../config/bounds.ts';
 import { readFile, within } from '../config/transaction.ts';
 import { atomicWrite, fsyncDir, privateDir } from '../fs-private.ts';
 import { probeable, type ProbeGrant } from './detect.ts';
-import { catalogIssues, type AgentEntry, type Catalog, type CatalogCode } from './validate.ts';
+import { catalogIssues, type AgentEntry, type Catalog, type CatalogCode, type ReportSetup } from './validate.ts';
 
 export type ImportCode = CatalogCode | 'too-large' | 'invalid-json' | 'store-corrupt' | 'unreadable';
 export interface ImportIssue { code: ImportCode; at: string }
@@ -249,3 +249,142 @@ export function importCatalogFile(dataDir: string, bundled: Catalog, file: strin
 /** Import review M1: the outcome as broadcast, capped so the window's parser always accepts it (32 issues, 256-char pointers). */
 export const boundedOutcome = (r: ReturnType<typeof importCatalog>): ReturnType<typeof importCatalog> =>
   (r.status === 'imported' ? r : { status: 'rejected', issues: r.issues.slice(0, 32).map((i) => ({ code: i.code, at: i.at.slice(0, 256) })) });
+
+/** XAIBO-PROD-596 (P6-T08a slice A; D-P6-20, SEC5): what the owner asked to grant, by ids; a probe also names the executable
+ *  they picked in main's native dialog. */
+export type GrantRequest = { action: 'root'; agent: string; root: string } | { action: 'probe'; agent: string; binary: string; file: string } | { action: 'setup'; agent: string };
+export type GrantRefusal = 'not-found' | 'root-unavailable' | 'root-not-approved' | 'executable-invalid' | 'unavailable';
+/** What main's native confirmation shows: the entry, the exact folder or file, the probe's argv or the setup's ops; never sent
+ *  to the renderer. binding: an HMAC (per-boot key, 5-minute bucket) of everything shown and stored, so a confirm writes only
+ *  what the dialog showed. */
+export interface GrantOffer {
+  action: GrantRequest['action']; agent: string; name: string; id: string | null; root: string; path: string;
+  argv: string[] | null; ops: { pointer: string; value: string }[] | null; binding: string;
+}
+export type GrantOfferResult = { status: 'offer'; offer: GrantOffer } | { status: 'refused'; code: GrantRefusal };
+export type GrantConfirmResult = { status: 'granted' } | { status: 'refused'; code: 'stale' | 'unavailable' | 'failed' };
+export type RevokeTarget = { kind: 'root' | 'probe'; id: string } | { kind: 'setup' };
+export type RevokeResult = 'revoked' | 'unchanged' | 'not-found' | 'unavailable';
+type ItemState = 'approved' | 'granted' | 'stale' | 'none' | 'unavailable';
+/** Grant state for the integration detail, one state per declared item; no paths, digests or argv. */
+export interface GrantState {
+  roots: { id: string; state: Extract<ItemState, 'approved' | 'stale' | 'none' | 'unavailable'> }[];
+  probes: { binary: string; state: Extract<ItemState, 'granted' | 'stale' | 'none'> }[];
+  setup: { root: string; state: Extract<ItemState, 'granted' | 'stale' | 'none'> } | null;
+}
+
+const BUCKET_MS = 5 * 60_000; // a binding confirms within 5 to 10 minutes of its offer
+const valueText = (v: ReportSetup['ops'][number]['value']) => ('xaibo' in v ? `<${v.xaibo}>` : JSON.stringify(v.literal));
+const mac = (key: Uint8Array, bucket: number, parts: unknown[]) => createHmac('sha256', key).update(JSON.stringify([bucket, ...parts])).digest('hex');
+const acceptedEntry = (dataDir: string, bundled: Catalog, agentId: string) => {
+  const entries = readStore(dataDir);
+  return { entries, e: entries ? accept(entries, bundled).ok.find((x) => x.catalog.agents[0]!.id === agentId) : undefined };
+};
+
+/** The offer for a request against the current store, policy and files (read-only); everything the binding covers. */
+function offerOf(dataDir: string, bundled: Catalog, r: GrantRequest, o: RootPolicy): { offer: Omit<GrantOffer, 'binding'>; parts: unknown[] } | GrantRefusal {
+  try { return offerIn(dataDir, bundled, r, o); } catch { return 'unavailable'; } // code review L2: an unreadable folder (EACCES) refuses
+}
+function offerIn(dataDir: string, bundled: Catalog, r: GrantRequest, o: RootPolicy): { offer: Omit<GrantOffer, 'binding'>; parts: unknown[] } | GrantRefusal {
+  const e = acceptedEntry(dataDir, bundled, r.agent).e;
+  if (!e) return 'not-found';
+  const a = e.catalog.agents[0]!, digest = digestOf(e.catalog), roots = approved(e, o);
+  const base = { action: r.action, agent: a.id, name: a.displayName, argv: null, ops: null };
+  if (r.action === 'root') {
+    const declared = a.profileRoots.find((x) => x.id === r.root);
+    if (!declared) return 'not-found';
+    const dir = rootDir(declared, o);
+    if (!dir) return 'root-unavailable';
+    return { offer: { ...base, id: r.root, root: dir, path: dir }, parts: [r.action, a.id, r.root, digest, dir] };
+  }
+  if (r.action === 'probe') {
+    const b = a.detection.binaries.find((x) => x.id === r.binary);
+    if (!b) return 'not-found';
+    const dirs = Object.values(roots);
+    if (!dirs.length) return 'root-not-approved';
+    const root = path.isAbsolute(r.file) && b.names.includes(path.basename(r.file)) ? dirs.find((d) => inside(r.file, d)) : undefined;
+    const id = root ? probeable(r.file) : null;
+    if (!root || !id) return 'executable-invalid';
+    return { offer: { ...base, id: r.binary, root, path: r.file, argv: [r.file, ...b.versionArgs] }, parts: [r.action, a.id, r.binary, digest, root, r.file, id] };
+  }
+  const rs = a.reportSetup;
+  if (!rs) return 'not-found';
+  const root = roots[rs.root];
+  if (!root) return 'root-not-approved';
+  const file = path.join(root, rs.file);
+  return { offer: { ...base, id: null, root, path: file, ops: rs.ops.map((x) => ({ pointer: x.pointer, value: valueText(x.value) })) }, parts: [r.action, a.id, digest, root, file] };
+}
+
+/** XAIBO-PROD-596: the native confirmation's content for a grant request; writes nothing. */
+export function grantOffer(dataDir: string, bundled: Catalog, r: GrantRequest, o: RootPolicy, key: Uint8Array, now = Date.now()): GrantOfferResult {
+  const x = offerOf(dataDir, bundled, r, o);
+  if (typeof x === 'string') return { status: 'refused', code: x };
+  return { status: 'offer', offer: { ...x.offer, binding: mac(key, Math.floor(now / BUCKET_MS), x.parts) } };
+}
+
+/** XAIBO-PROD-596: main's confirmation of an offer. Re-derives the offer and, only while its binding matches (same key, this or
+ *  the previous bucket), calls the unchanged writer in the same synchronous tick, so nothing in the service runs between the
+ *  check and the write (same-user tampering is out of scope, R13). Anything else is stale and writes nothing. */
+export function confirmGrant(dataDir: string, bundled: Catalog, r: GrantRequest, binding: string, o: RootPolicy, key: Uint8Array, now = Date.now()): GrantConfirmResult {
+  const x = offerOf(dataDir, bundled, r, o);
+  if (x === 'unavailable') return { status: 'refused', code: 'unavailable' };
+  const b = Math.floor(now / BUCKET_MS), want = Buffer.from(typeof binding === 'string' ? binding : '');
+  const match = typeof x !== 'string' && [b, b - 1].some((k) => { const h = Buffer.from(mac(key, k, x.parts)); return h.length === want.length && timingSafeEqual(h, want); });
+  if (!match) return { status: 'refused', code: 'stale' };
+  const ok = r.action === 'root' ? approveRoot(dataDir, bundled, r.agent, r.root, o)
+    : r.action === 'probe' ? grantProbe(dataDir, bundled, r.agent, r.binary, r.file, o) : grantSetup(dataDir, bundled, r.agent, o);
+  return ok ? { status: 'granted' } : { status: 'refused', code: 'failed' };
+}
+
+/** XAIBO-PROD-596: removes one stored grant (no confirmation: it only removes authority). A root takes with it every stored
+ *  probe grant inside its stored path and a setup grant bound to it, whether or not they still bind, so a later approval
+ *  brings none back. Idempotent; a corrupt store is never rewritten. */
+export function revokeGrant(dataDir: string, bundled: Catalog, agentId: string, t: RevokeTarget): RevokeResult {
+  let found;
+  try { found = acceptedEntry(dataDir, bundled, agentId); } catch { return 'unavailable'; }
+  const { entries, e } = found;
+  if (!entries || !e) return 'not-found';
+  const grants = Array.isArray(e.grants) ? e.grants : [];
+  const setupRoot = isObj(e.setup) ? e.setup['root'] : undefined;
+  if (t.kind === 'root') {
+    const stored = Object.hasOwn(e.roots, t.id) ? e.roots[t.id]! : null;
+    if (stored === null) return 'unchanged';
+    const rest = { ...e.roots };
+    delete rest[t.id];
+    e.roots = rest;
+    // code review L3: keep only what sits under a root still stored, so a grant under an earlier path of this root (HOME
+    // changed, then re-approved) or a malformed record cannot revive with a later approval
+    const kept = Object.values(rest);
+    e.grants = grants.filter((g) => isObj(g) && typeof g['path'] === 'string' && kept.some((d) => within(g['path'] as string, d)));
+    if (!kept.includes(setupRoot as string)) delete e.setup;
+  } else if (t.kind === 'probe') {
+    const kept = grants.filter((g) => !(isObj(g) && g['binary'] === t.id));
+    if (kept.length === grants.length) return 'unchanged';
+    e.grants = kept;
+  } else {
+    if (e.setup === undefined) return 'unchanged';
+    delete e.setup;
+  }
+  try { writeStore(dataDir, entries); } catch { return 'unavailable'; }
+  return 'revoked';
+}
+
+/** XAIBO-PROD-596: each declared item's grant state for an imported agent; null for bundled or unknown ids, 'unavailable'
+ *  when the store cannot be read (never shown as "no grants"). */
+export function grantState(dataDir: string, bundled: Catalog, agentId: string, o: RootPolicy): GrantState | 'unavailable' | null {
+  try { return stateOf(dataDir, bundled, agentId, o); } catch { return 'unavailable'; } // code review L2
+}
+function stateOf(dataDir: string, bundled: Catalog, agentId: string, o: RootPolicy): GrantState | null {
+  const e = acceptedEntry(dataDir, bundled, agentId).e;
+  if (!e) return null;
+  const a = e.catalog.agents[0]!, roots = approved(e, o), valid = validGrants(e, roots);
+  const stored = Array.isArray(e.grants) ? e.grants.filter(isObj) : [];
+  return {
+    roots: a.profileRoots.map((r) => ({ id: r.id, state: Object.hasOwn(roots, r.id) ? 'approved' : Object.hasOwn(e.roots, r.id) ? 'stale' : rootDir(r, o) ? 'none' : 'unavailable' })),
+    probes: a.detection.binaries.map((b) => {
+      const g = valid.find((x) => x.binary === b.id);
+      return { binary: b.id, state: g && probeable(g.path, g.id) ? 'granted' : g || stored.some((x) => x['binary'] === b.id) ? 'stale' : 'none' };
+    }),
+    setup: a.reportSetup ? { root: a.reportSetup.root, state: setupBinds(e, roots) ? 'granted' : e.setup !== undefined ? 'stale' : 'none' } : null,
+  };
+}

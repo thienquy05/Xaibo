@@ -133,6 +133,72 @@ test('code review H1: an import store that reads as corrupt at rescan never turn
   } finally { svc.stop(); }
 });
 
+// XAIBO-PROD-596 (P6-T08a slice A; D-P6-20): grants through the service refresh detection and profiles before the reply,
+// inside the rescan cooldown; the renderer's own rescan keeps its cooldown; a revoke that changes nothing scans nothing.
+const synthRoots = (svc: Awaited<ReturnType<ReturnType<typeof world>['start']>>) => svc.profiles()!.filter((p) => p.agent === 'synthagent').map((p) => p.root);
+test('P6-T08a: a confirmed root approval and probe grant take effect before the reply; revoke drops them; a no-op revoke scans nothing', async () => {
+  const w = world();
+  w.install(w.bin, 'codex', '0.160.0'); // every scan probes it once: a scan counter
+  assert.equal(importCatalog(w.dataDir, SYNTH, bundled).status, 'imported');
+  const root = join(w.home, '.synthagent');
+  mkdirSync(root);
+  const ROOT = { action: 'root', agent: 'synthagent', root: 'user' } as const;
+  const svc = await w.start(); // the default 5 s cooldown
+  try {
+    assert.deepEqual(svc.grantOffer(ROOT), { status: 'refused', code: 'unavailable' }, 'refused while starting');
+    await svc.done;
+    assert.deepEqual(await svc.rescan(), { status: 'ready' }); // the cooldown is now running
+    const x = svc.grantOffer(ROOT);
+    assert.equal(x.status, 'offer');
+    if (x.status !== 'offer') return;
+    assert.deepEqual(synthRoots(svc), [], 'an offer changes nothing');
+    assert.deepEqual(await svc.grantConfirm(ROOT, x.offer.binding), { status: 'granted' });
+    assert.deepEqual(synthRoots(svc), [root], 'the profile exists when the reply arrives');
+    assert.equal((await svc.rescan()).status, 'refused', 'the renderer rescan keeps its cooldown');
+
+    w.install(root, 'synthagent', '1.0.0');
+    const PROBE = { action: 'probe', agent: 'synthagent', binary: 'main', file: join(root, 'synthagent') } as const;
+    const y = svc.grantOffer(PROBE);
+    assert.equal(y.status, 'offer');
+    if (y.status !== 'offer') return;
+    assert.deepEqual(await svc.grantConfirm(PROBE, y.offer.binding), { status: 'granted' });
+    assert.equal(state(svc, 'synthagent')?.state, 'detected', 'probed through its new grant before the reply');
+    assert.deepEqual(svc.grantState('synthagent'), { roots: [{ id: 'user', state: 'approved' }], probes: [{ binary: 'main', state: 'granted' }], setup: null });
+
+    assert.equal(await svc.revoke('synthagent', { kind: 'root', id: 'user' }), 'revoked');
+    assert.deepEqual(synthRoots(svc), [], 'gone when the reply arrives');
+    assert.equal(state(svc, 'synthagent')?.state, 'not-detected', 'the probe grant under the root went with it');
+    const scans = w.probed('codex');
+    assert.equal(await svc.revoke('synthagent', { kind: 'root', id: 'user' }), 'unchanged');
+    assert.equal(w.probed('codex'), scans, 'a revoke that changed nothing runs no scan');
+    assert.deepEqual(svc.grantState('claude'), null);
+  } finally { svc.stop(); }
+  assert.deepEqual(svc.grantOffer(ROOT), { status: 'refused', code: 'unavailable' }, 'refused after stop');
+  assert.equal(await svc.revoke('synthagent', { kind: 'root', id: 'user' }), 'unavailable');
+});
+
+test('code review L1/L4: a binding is single-use (no replay after a revoke); a grant waits for a scan in flight and its reply reflects it', async () => {
+  const w = world();
+  assert.equal(importCatalog(w.dataDir, SYNTH, bundled).status, 'imported');
+  const root = join(w.home, '.synthagent');
+  mkdirSync(root);
+  const ROOT = { action: 'root', agent: 'synthagent', root: 'user' } as const;
+  const svc = await w.start({ cooldown: 0 });
+  try {
+    await svc.done;
+    const x = svc.grantOffer(ROOT);
+    assert.equal(x.status, 'offer');
+    if (x.status !== 'offer') return;
+    const inFlight = svc.rescan();
+    assert.deepEqual(await svc.grantConfirm(ROOT, x.offer.binding), { status: 'granted' });
+    assert.deepEqual(await inFlight, { status: 'ready' });
+    assert.deepEqual(synthRoots(svc), [root], 'the reply came after its own scan, not the earlier one');
+    assert.equal(await svc.revoke('synthagent', { kind: 'root', id: 'user' }), 'revoked');
+    assert.deepEqual(await svc.grantConfirm(ROOT, x.offer.binding), { status: 'refused', code: 'stale' }, 'no replay');
+    assert.deepEqual(synthRoots(svc), []);
+  } finally { svc.stop(); }
+});
+
 test('IPC: the rescan request carries no argument; replies are bounded', () => {
   assert.deepEqual(parsePortRequest({ v: 1, type: 'agentRescan', id: 7 }), { v: 1, type: 'agentRescan', id: 7 });
   for (const bad of [{ v: 1, type: 'agentRescan', id: 7, agent: 'codex' }, { v: 1, type: 'agentRescan', id: 7, path: '/tmp/x' }, { v: 1, type: 'agentRescan' }]) {

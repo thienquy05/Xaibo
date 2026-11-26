@@ -3,7 +3,8 @@
 // A read-only store (EC-45) is reported and skips ingest. P1-T12: commit and agent-status hooks for the renderer, and
 // a manual executable path ("Set path…") that re-detects that agent. P3-T04: once profiles are synced, the hook socket
 // listens and the spool replays, before the file backfill; a full disk is logged and its hook-only gap written on recovery.
-import { statSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { isActive, OUTCOMES, REASONS, RULES, type AgentStatus, type Banner, type ClearUsageResult, type PurgeResult, type ReimportResult, type RetentionSetting, type SaveRetentionResult, type LiveStatus, type NotifyState, type PriceCheck, type RescanResult, type ServiceMetrics, type CatalogImportResult } from '../shared/ipc.ts';
 import type { Logger } from '../shared/log.ts';
@@ -17,9 +18,11 @@ import { createEngine, type StatusEngine } from './status/engine.ts';
 import { fileObservations } from './status/feed.ts';
 import { readLoginEnv, type LoginEnv } from './catalog/env.ts';
 import { loadCatalog, type Catalog, type SessionKind } from './catalog/validate.ts';
-import { boundedOutcome, importCatalogFile, loadImports } from './catalog/import.ts';
+import { boundedOutcome, confirmGrant, grantOffer, grantState, importCatalogFile, loadImports, revokeGrant, type GrantConfirmResult, type GrantOfferResult,
+  type GrantRequest, type GrantState, type RevokeResult, type RevokeTarget, type RootPolicy } from './catalog/import.ts';
 import { setupAccess, type SetupAccess } from './catalog/setup-plans.ts';
 import { deniedRootsFrom } from './config/bounds.ts';
+import { within } from './config/transaction.ts';
 import type { ModelEntry } from './usage/models.ts';
 import { priceUsage } from './usage/cost.ts';
 import { checkOverride, loadPrices, type Prices } from './usage/prices.ts';
@@ -103,6 +106,14 @@ export interface Service {
   rescan(): Promise<RescanResult>;
   /** XAIBO-PROD-595: import a catalog entry file the owner picked (listed after a restart: the catalog is kept from startup). */
   importCatalog(file: string): CatalogImportResult;
+  /** XAIBO-PROD-596 (P6-T08a slice A): the native confirmation's content for a grant (main only; writes nothing). */
+  grantOffer(r: GrantRequest): GrantOfferResult;
+  /** Main's confirmation of an offer's binding; on success detection and profiles are refreshed before it resolves. */
+  grantConfirm(r: GrantRequest, binding: string): Promise<GrantConfirmResult>;
+  /** Removes one stored grant (a root with the grants under it); refreshed before it resolves when something was removed. */
+  revoke(agent: string, t: RevokeTarget): Promise<RevokeResult>;
+  /** Grant state per declared item of an imported agent (no paths); null for bundled or unknown agents. */
+  grantState(agent: string): GrantState | 'unavailable' | null;
   /** P3-T12: the machine sleeps from `at` (main's clock); the status engine excludes the gap from R1/R5. */
   suspend(at?: number): void;
   /** Resumes the status engine now, then reconciles every adapter at once (FR-02, bounded scans). */
@@ -138,6 +149,21 @@ export function retentionDelayFromEnv(env: Record<string, string | undefined>): 
   if (env.XAIBO_PERF_TRACE !== '1' || v === undefined || !/^[1-9]\d*$/.test(v)) return undefined;
   const n = Number(v);
   return n <= 2_147_483_647 ? n : undefined; // review L: setTimeout clamps a larger delay to 1 ms
+}
+/** XAIBO-PROD-596 (P6-T08a slice A; D-P6-20 decision 2, security review H1): XAIBO_TEST_ALLOWED_ROOT, for the packaged app's
+ *  E2E only: one disposable allowed root, honoured only when HOME is an isolated home (real path, not /, neither inside nor
+ *  containing the account home from the user database), the root is a real folder strictly inside it and the data dir is
+ *  outside the account home; anything else gives none (production: HOME is the account home). Every grant still needs the
+ *  native confirmation and writable()'s checks. */
+export function allowedRootsFromEnv(env: Record<string, string | undefined>, o: { home: string; accountHome: string; dataDir: string }): string[] {
+  const v = env.XAIBO_TEST_ALLOWED_ROOT;
+  if (!v || !path.isAbsolute(v)) return [];
+  try {
+    const real = (p: string) => realpathSync.native(p);
+    const home = real(o.home), account = real(o.accountHome), dataDir = real(o.dataDir);
+    if (home === path.parse(home).root || within(home, account) || within(account, home) || within(dataDir, account)) return [];
+    return real(v) === v && v !== home && within(v, home) && statSync(v).isDirectory() ? [v] : [];
+  } catch { return []; }
 }
 /** XAIBO-PROD-553 (D-P5-22 diagnostic): XAIBO_TEMP_STORE=file puts SQLite temp storage on disk, only under
  *  XAIBO_PERF_TRACE=1 (test only); anything else keeps the shipped MEMORY default. */
@@ -336,9 +362,35 @@ export async function boot(o: BootOptions): Promise<Service> {
   let chain: Promise<unknown> = Promise.resolve();
   const serial = <T>(fn: () => Promise<T>): Promise<T> => { const r = chain.then(fn); chain = r.catch(() => undefined); return r; };
   let settled = false, started = false, scan: Promise<RescanResult> | null = null, lastScan = -Infinity, bg: Promise<void> = Promise.resolve();
+  /** The scan itself, always run on `serial`: grants and approved roots reloaded from the store (P3-3), detections replaced
+   *  in place, profiles re-synced, an adapter for each new profile. */
+  const scanBody = async (): Promise<RescanResult> => {
+    if (stopped || !db.isOpen) return { status: 'refused', code: 'unavailable' }; // code review L2: stopped while queued
+    const loaded = loadImports(o.dataDir, bundled!, { home: o.home, allowed: o.allowedRoots ?? [], denied: deniedRootsFrom(env) });
+    // code review H1: what is imported comes from the startup catalog, never from this load: a store that reads as corrupt
+    // now (mode, size, EMFILE) leaves its entries imported with no roots and no grants, never bundled
+    const fresh = new Map(catalog!.agents.filter((a) => !bundled!.agents.some((b) => b.id === a.id)).map((a) => [a.id, loaded.imported.get(a.id) ?? {}]));
+    const next = await detectAll(loaded.grants, fresh);
+    if (stopped) return { status: 'refused', code: 'unavailable' };
+    imported = fresh;
+    detections.splice(0, detections.length, ...next); // review M4: index.ts and Connect read this array live
+    profiles = syncProfiles(db, profileRoots(catalog!, env, o.home, manualOf(), imported)); // stable ids; hook status reads it
+    announce();
+    // ponytail (code review L3): a profile gone since startup keeps its adapter until restart (ingest goes on; status drops it)
+    for (const p of profiles.filter((x) => ADAPTERS[x.agent] && !adapted.has(x.id))) {
+      if (stopped) break;
+      const a = adapterFor(p);
+      await a.watch();
+      if (stopped) break; // code review L1
+      // the new profile's backfill runs after the reply, one at a time (code review L4; P3-T16e), never after a stop
+      bg = bg.then(() => (stopped ? undefined : a.backfill())).catch((e: unknown) => o.log?.log('rescan_backfill_failed', { error: errorCode(e) }));
+    }
+    o.log?.log('rescan', { agents: next.length, profiles: profiles.length });
+    return { status: 'ready' };
+  };
   /** One scan at a time (callers join it), at most one per cooldown, never while starting, read-only or stopped. The catalog
-   *  and login environment stay as loaded at startup (review M1/M2; ponytail: a PATH or env change needs a restart, and an
-   *  import added at runtime arrives with P6-T08a); grants and approved roots are reloaded for every scan (P3-3). */
+   *  and login environment stay as loaded at startup (review M1/M2; ponytail: a PATH or env change, or a catalog import added
+   *  at runtime, needs a restart: D-P6-20 kept the catalog swap out); grants and approved roots are reloaded for every scan. */
   const rescan = (): Promise<RescanResult> => {
     const no = (code: Exclude<RescanResult, { status: 'ready' }>['code']) => Promise.resolve<RescanResult>({ status: 'refused', code });
     if (readOnly) return no('read-only');
@@ -350,33 +402,37 @@ export async function boot(o: BootOptions): Promise<Service> {
     const now = performance.now(), cooldown = o.rescanCooldownMs ?? RESCAN_MS;
     if (now - lastScan < cooldown) return Promise.resolve({ status: 'refused', code: 'rate-limited', retryAfterMs: Math.min(60_000, Math.ceil(cooldown - (now - lastScan))) });
     lastScan = now;
-    scan = serial(async (): Promise<RescanResult> => {
-      if (stopped || !db.isOpen) return { status: 'refused', code: 'unavailable' }; // code review L2: stopped while queued
-      const loaded = loadImports(o.dataDir, bundled!, { home: o.home, allowed: o.allowedRoots ?? [], denied: deniedRootsFrom(env) });
-      // code review H1: what is imported comes from the startup catalog, never from this load: a store that reads as corrupt
-      // now (mode, size, EMFILE) leaves its entries imported with no roots and no grants, never bundled
-      const fresh = new Map(catalog!.agents.filter((a) => !bundled!.agents.some((b) => b.id === a.id)).map((a) => [a.id, loaded.imported.get(a.id) ?? {}]));
-      const next = await detectAll(loaded.grants, fresh);
-      if (stopped) return { status: 'refused', code: 'unavailable' };
-      imported = fresh;
-      detections.splice(0, detections.length, ...next); // review M4: index.ts and Connect read this array live
-      profiles = syncProfiles(db, profileRoots(catalog!, env, o.home, manualOf(), imported)); // stable ids; hook status reads it
-      announce();
-      // ponytail (code review L3): a profile gone since startup keeps its adapter until restart (ingest goes on; status drops it)
-      for (const p of profiles.filter((x) => ADAPTERS[x.agent] && !adapted.has(x.id))) {
-        if (stopped) break;
-        const a = adapterFor(p);
-        await a.watch();
-        if (stopped) break; // code review L1
-        // the new profile's backfill runs after the reply, one at a time (code review L4; P3-T16e), never after a stop
-        bg = bg.then(() => (stopped ? undefined : a.backfill())).catch((e: unknown) => o.log?.log('rescan_backfill_failed', { error: errorCode(e) }));
-      }
-      o.log?.log('rescan', { agents: next.length, profiles: profiles.length });
-      return { status: 'ready' };
-    }).catch((e: unknown): RescanResult => { o.log?.log('rescan_failed', { error: errorCode(e) }); return { status: 'refused', code: 'failed' }; })
+    scan = serial(scanBody)
+      .catch((e: unknown): RescanResult => { o.log?.log('rescan_failed', { error: errorCode(e) }); return { status: 'refused', code: 'failed' }; })
       .finally(() => { scan = null; });
     return scan;
   };
+  // XAIBO-PROD-596 (P6-T08a slice A; D-P6-20, security review): grants. Offers are bound to this service instance's key; a
+  // confirm (main only) and a revoke run on `serial`, after any scan in flight, and a change is followed by its own scan
+  // (never joining one that loaded the old grants), cooldown skipped (every grant needs a native confirmation; a revoke scans
+  // only when it removed something) and counted for the renderer's rescan. A failed scan is logged; the change stands.
+  let grantKey = randomBytes(32); // code review L1: a new key after every change, so each binding confirms at most once
+  const policy = (): RootPolicy => ({ home: o.home, allowed: o.allowedRoots ?? [], denied: deniedRootsFrom(env) });
+  const grantable = () => !readOnly && !stopped && db.isOpen && settled && started && !!catalog && !!bundled;
+  const refresh = async () => {
+    lastScan = performance.now();
+    const r = await scanBody().catch((e: unknown): RescanResult => { o.log?.log('rescan_failed', { error: errorCode(e) }); return { status: 'refused', code: 'failed' }; });
+    if (r.status !== 'ready') o.log?.log('grant_refresh_skipped', { code: r.code });
+  };
+  const grantConfirm = (r: GrantRequest, binding: string): Promise<GrantConfirmResult> => (!grantable() ? Promise.resolve({ status: 'refused', code: 'unavailable' })
+    : serial(async (): Promise<GrantConfirmResult> => {
+      if (stopped) return { status: 'refused', code: 'unavailable' };
+      const res = confirmGrant(o.dataDir, bundled!, r, binding, policy(), grantKey);
+      if (res.status === 'granted') { grantKey = randomBytes(32); await refresh(); }
+      return res;
+    }));
+  const revoke = (agent: string, t: RevokeTarget): Promise<RevokeResult> => (!grantable() ? Promise.resolve('unavailable')
+    : serial(async (): Promise<RevokeResult> => {
+      if (stopped) return 'unavailable';
+      const res = revokeGrant(o.dataDir, bundled!, agent, t);
+      if (res === 'revoked') { grantKey = randomBytes(32); await refresh(); }
+      return res;
+    }));
 
   const start = async () => {
     try {
@@ -545,6 +601,10 @@ export async function boot(o: BootOptions): Promise<Service> {
       });
     },
     rescan,
+    grantOffer: (r) => (grantable() ? grantOffer(o.dataDir, bundled!, r, policy(), grantKey) : { status: 'refused', code: 'unavailable' }),
+    grantConfirm,
+    revoke,
+    grantState: (agent) => (bundled ? grantState(o.dataDir, bundled, agent, policy()) : null),
     // import review L3: a service that cannot import says unavailable (never blames the file)
     importCatalog: (file) => (bundled && !readOnly && !stopped ? boundedOutcome(importCatalogFile(o.dataDir, bundled, file)) : { status: 'rejected', issues: [{ code: 'unavailable', at: '/' }] }),
     suspend: (at) => engine?.suspend(at ?? clock()),

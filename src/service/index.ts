@@ -3,14 +3,14 @@
 // answers main's commands. Logs go to their own dir so two processes never rotate one file. P1-T12: each brokered
 // port gets agent status on connect, answers listSessions after boot, and receives coalesced session deltas.
 import type { MessagePortMain } from 'electron';
-import { homedir } from 'node:os';
+import { homedir, userInfo } from 'node:os';
 import path from 'node:path';
 import { errorCode, installCrashPolicy } from '../shared/crash.ts';
 import { accept, IPC_VERSION, parsePortRequest, parseServiceCommand } from '../shared/ipc.ts';
 import type { Banner, PortMessage, ServiceEvent, StorageReport, IntegrationDetailResult, IntegrationPageResult } from '../shared/ipc.ts';
 import { appendQuiet, createLogger, loadInstallSecret, type Logger } from '../shared/log.ts';
 import { answer, answerCost, answerFiles, answerLiveSet, answerMarkers, answerSession, answerSlice, answerSubagents, answerTools, answerTranscript, answerUsage, answerUsageHistory, coalesce, createHub, sessionsByKey, type LiveOf } from './api.ts';
-import { boot, retentionDelayFromEnv, type Service } from './boot.ts';
+import { allowedRootsFromEnv, boot, retentionDelayFromEnv, type Service } from './boot.ts';
 import { applyOverlay, listFolders, listHistory, listProjects, resyncAfter } from './history/overlay.ts';
 import { mapGroups } from './history/map.ts';
 import type { Batch } from './store/writer.ts';
@@ -250,8 +250,12 @@ async function main(dataDir: string, log: Logger) {
   secret = loadInstallSecret(dataDir);
   ledger = new MonthlyCache({ file: path.join(dataDir, 'xaibo.db'), secret, home: homedir(), log: (e, f) => log.log(e, f) });
   meter = new StorageMeter(dataDir);
+  // code review nit: userInfo() only when the variable is set (it throws for a uid with no user-database entry)
+  const testRoots = process.env.XAIBO_TEST_ALLOWED_ROOT ? allowedRootsFromEnv(process.env, { home: homedir(), accountHome: userInfo().homedir, dataDir }) : [];
+  if (testRoots.length) log.log('test_allowed_root');
   svc = await boot({
     dataDir, home: homedir(), shell: process.env.SHELL, log, retentionDelayMs: retentionDelayFromEnv(process.env),
+    allowedRoots: testRoots, // XAIBO-PROD-596: none unless an isolated-HOME E2E run sets XAIBO_TEST_ALLOWED_ROOT
     onCommit: committed,
     onAgents: (agents) => broadcast({ v: IPC_VERSION, type: 'agents', agents }),
     onNotify: (n) => parent.postMessage({ v: IPC_VERSION, type: 'notify', ...n } satisfies ServiceEvent), // P3-T11
