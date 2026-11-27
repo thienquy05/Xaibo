@@ -2,6 +2,7 @@
 // files ahead), then tail via the watcher. Each file is synced from its stored checkpoint; records and the new
 // checkpoint commit together (writer.ts). Subclasses supply discovery, line parsing, oversized lines and batches.
 import type { Stats } from 'node:fs';
+import type { MethodRule } from '../usage/sign-in.ts';
 import { stat } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import type { DatabaseSync } from 'node:sqlite';
@@ -9,6 +10,7 @@ import { LineSplitter, type Line } from '../lines.ts';
 import type { Batch, QuarantineRow, SourceFileCheckpoint, Writer } from '../store/writer.ts';
 import { headHash, HEAD_BYTES, readRange, readZstd, startOffset, zstdAvailable, type Checkpoint } from '../tail.ts';
 import { Watcher, type WatchFn } from '../watch.ts';
+import { counters } from '../perf-counters.ts';
 
 /** Thrown out of a read when a commit asks for the file to be read again (G5f-1). */
 const REREAD = Symbol('reread');
@@ -26,6 +28,8 @@ export interface TailAdapterOptions {
   root: string;
   /** P3-T15 (Codex only): the install's secret salt for the account marker; absent or null = no marker. */
   accountSalt?: Buffer | null;
+  /** P6-T01a slice 4 (Codex only): sign-in method rules from the bundled catalog (none shipped: S14 Pass-narrowed). */
+  signInRules?: readonly MethodRule[];
   zstd?: boolean;
   intervalMs?: number;
   activeMs?: number;
@@ -58,7 +62,7 @@ export abstract class TailAdapter<F extends TailFile, R extends TailRecord> {
     // P3-T16e: small batches and read chunks bound how long one commit holds the event loop (measured on the t1mix
     // import: 25 rows / 128 KiB keep a 5 ms timer's lateness at p95 ~20 ms, import ~51 s; 100 rows / 1 MiB let it run
     // ~700 ms late, so socket acks missed the forwarder deadline).
-    this.o = { accountSalt: null, zstd: zstdAvailable, intervalMs: 5000, activeMs: 10 * 60_000, eventsPerBatch: 25, bytesPerBatch: 128 * 1024, chunkBytes: 128 * 1024, maxLineBytes: PARSE_CAP, now: Date.now, ...o };
+    this.o = { accountSalt: null, signInRules: [], zstd: zstdAvailable, intervalMs: 5000, activeMs: 10 * 60_000, eventsPerBatch: 25, bytesPerBatch: 128 * 1024, chunkBytes: 128 * 1024, maxLineBytes: PARSE_CAP, now: Date.now, ...o };
     this.#watcher = new Watcher<F>({
       list: () => this.discover(),
       onChange: (f) => void this.sync(f, true).catch(() => undefined), // a failed sync is retried on the next change or scan
@@ -108,9 +112,11 @@ export abstract class TailAdapter<F extends TailFile, R extends TailRecord> {
   wake(): Promise<void> { return this.#watcher.scan(); }
 
   sync(file: F, live: boolean): Promise<void> {
-    const next = (this.#chains.get(file.path) ?? Promise.resolve()).then(() => this.#sync(file, live));
+    counters.syncsStarted++; counters.syncsPending++; // XAIBO-PROD-552 (perf trace only)
+    const next = (this.#chains.get(file.path) ?? Promise.resolve()).then(() => this.#sync(file, live))
+      .finally(() => { counters.syncsPending--; });
     // A failed sync (read or commit) makes the watcher forget the file, so the next scan or wake retries it.
-    this.#chains.set(file.path, next.catch(() => this.#watcher.forget(file.path)));
+    this.#chains.set(file.path, next.catch(() => { counters.syncFailures++; this.#watcher.forget(file.path); }));
     return next;
   }
 
@@ -174,6 +180,7 @@ export abstract class TailAdapter<F extends TailFile, R extends TailRecord> {
     const flush = async (final = false) => {
       const cp = { ...base, size: final ? base.size : lastEnd, offset: lastEnd, headHash: await hashAt(lastEnd), status };
       const committed = this.o.writer.enqueue(this.toBatch(file, cp, records, quarantine), live);
+      counters.batches++; counters.records += records.length;
       records = [];
       quarantine = [];
       bytes = 0;

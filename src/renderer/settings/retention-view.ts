@@ -2,30 +2,29 @@
 // retention, Trash and Storage sections. The stored setting picks the radio (unreadable picks none); Other takes a whole
 // number of days 1..RETENTION_MAX and an out-of-range value is an error, never clamped; storage parts are shares of the
 // reported total (database categories: of the database pages), and an unmeasured part is Unavailable with no share.
-import { RETENTION_MAX, type RetentionSetting, type SAVE_RESULTS, type StorageReport } from '../../shared/ipc.ts';
+import { RETENTION_DEFAULT, RETENTION_MAX, type RetentionSetting, type SaveRetentionResult, type StorageReport } from '../../shared/ipc.ts';
 import { formatTime } from '../model.ts';
 
-export const DEFAULT_DAYS = 45;
 export type Choice = 'default' | 'never' | 'other';
 export interface Draft { choice: Choice | null; days: string }
 
 export function draftOf(s: RetentionSetting | null): Draft {
   if (s === null) return { choice: null, days: '' };
   if (s === 'never') return { choice: 'never', days: '' };
-  return s.days === DEFAULT_DAYS ? { choice: 'default', days: '' } : { choice: 'other', days: String(s.days) };
+  return s.days === RETENTION_DEFAULT ? { choice: 'default', days: '' } : { choice: 'other', days: String(s.days) };
 }
 
 export const RANGE_ERROR = `Enter a whole number of days from 1 to ${RETENTION_MAX}.`;
 export function settingOf(d: Draft): { value: RetentionSetting } | { error: string } {
   if (d.choice === null) return { error: 'Choose how long to keep inactive history.' };
-  if (d.choice === 'default') return { value: { days: DEFAULT_DAYS } };
+  if (d.choice === 'default') return { value: { days: RETENTION_DEFAULT } };
   if (d.choice === 'never') return { value: 'never' };
   const s = d.days.trim();
   const n = /^\d{1,5}$/.test(s) ? Number(s) : NaN;
   return n >= 1 && n <= RETENTION_MAX ? { value: { days: n } } : { error: RANGE_ERROR };
 }
 
-export type SavePhase = (typeof SAVE_RESULTS)[number] | 'applying' | 'unavailable' | null;
+export type SavePhase = SaveRetentionResult | 'applying' | 'unavailable' | null;
 export function saveText(p: SavePhase): string {
   switch (p) {
     case null: return '';
@@ -63,7 +62,7 @@ export type RetentionAction =
   | { type: 'change'; draft: Draft }
   | { type: 'blur' }
   | { type: 'save' }
-  | { type: 'saved'; seq: number; result: (typeof SAVE_RESULTS)[number] | 'unavailable' };
+  | { type: 'saved'; seq: number; result: SaveRetentionResult | 'unavailable' };
 
 export const initialRetention: RetentionState = {
   loaded: 'loading', draft: { choice: null, days: '' }, touched: false, error: null, announce: '', phase: null, seq: 0, pending: null, focus: null,

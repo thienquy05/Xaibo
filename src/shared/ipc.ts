@@ -15,7 +15,15 @@ export const READ_ONLY_BANNER: Record<ReadOnlyReason, string> = {
  *  reloadPrices re-reads the private price override (P2-T09; sent by Settings in P6-T11). */
 export type ServiceCommand = { v: 1; type: 'quit' | 'wake' | 'port' | 'reloadPrices' } | { v: 1; type: 'setPath'; agent: string; path: string }
   /** P3-T12: the machine is about to sleep; `at` is main's clock at the power event (ms since epoch). */
-  | { v: 1; type: 'suspend'; at: number };
+  | { v: 1; type: 'suspend'; at: number }
+  /** XAIBO-PROD-595: a catalog entry file the user picked in the native dialog (read and validated by the service). */
+  | { v: 1; type: 'importCatalog'; path: string }
+  /** XAIBO-PROD-597 (P6-T08a slice B): main's grant offer request and its confirmation (main only; correlated by id). */
+  | { v: 1; type: 'grantOffer'; id: number; request: GrantRequest }
+  | { v: 1; type: 'grantConfirm'; id: number; request: GrantRequest; binding: string }
+  /** XAIBO-PROD-600 (P6-T12 slice 2): main's offer request and confirmation of a real-class apply (main only; correlated by id). */
+  | { v: 1; type: 'applyOffer'; id: number; ask: ApplyAsk }
+  | { v: 1; type: 'applyConfirm'; id: number; ask: ApplyAsk; binding: string };
 /** service -> main; notify (P3-T11, EC-59) carries only the agent display name, the approved project label (null until
  *  one exists, FR-10) and the wait state. */
 export type NotifyState = 'waiting-for-permission' | 'needs-input';
@@ -26,7 +34,11 @@ export type ServiceMetrics = Record<(typeof SERVICE_METRICS)[number], number>;
 export type ServiceEvent =
   | { v: 1; type: 'ready'; readOnly: ReadOnlyReason | null }
   | { v: 1; type: 'notify'; agent: string; label: string | null; state: NotifyState }
-  | { v: 1; type: 'metrics'; metrics: ServiceMetrics };
+  | { v: 1; type: 'metrics'; metrics: ServiceMetrics }
+  /** XAIBO-PROD-597: the reply to main's grantOffer or grantConfirm (never sent to a renderer port). */
+  | { v: 1; type: 'grant'; id: number; result: GrantOfferResult | GrantConfirmResult }
+  /** XAIBO-PROD-600: the reply to main's applyOffer or applyConfirm (never sent to a renderer port). */
+  | { v: 1; type: 'apply'; id: number; result: ApplyOfferResult | ApplyConfirmResult };
 export type HealthState = 'starting' | 'running' | 'restarting' | 'stopped';
 /** main -> renderer; attempt counts consecutive restarts (0 unless restarting). */
 export interface Health { v: 1; type: 'health'; state: HealthState; attempt: number; readOnly: ReadOnlyReason | null }
@@ -53,6 +65,22 @@ export function parseServiceCommand(x: unknown): ServiceCommand | null {
   if (!m) return null;
   if (oneOf(['quit', 'wake', 'port', 'reloadPrices'] as const, m.type)) return { v: 1, type: m.type };
   if (m.type === 'suspend') return Number.isFinite(m.at) && (m.at as number) > 0 ? { v: 1, type: 'suspend', at: m.at as number } : null;
+  if (m.type === 'grantOffer') {
+    const request = parseGrantRequest(m.request);
+    return exactKeys(m, ['v', 'type', 'id', 'request']) && count(m.id) && request ? { v: 1, type: 'grantOffer', id: m.id, request } : null;
+  }
+  if (m.type === 'grantConfirm') {
+    const request = parseGrantRequest(m.request);
+    return exactKeys(m, ['v', 'type', 'id', 'request', 'binding']) && count(m.id) && request && typeof m.binding === 'string' && BINDING.test(m.binding)
+      ? { v: 1, type: 'grantConfirm', id: m.id, request, binding: m.binding } : null;
+  }
+  if (m.type === 'applyOffer' || m.type === 'applyConfirm') {
+    const ask = parseApplyAsk(m.ask);
+    if (!ask || !count(m.id)) return null;
+    if (m.type === 'applyOffer') return exactKeys(m, ['v', 'type', 'id', 'ask']) ? { v: 1, type: 'applyOffer', id: m.id, ask } : null;
+    return exactKeys(m, ['v', 'type', 'id', 'ask', 'binding']) && typeof m.binding === 'string' && BINDING.test(m.binding) ? { v: 1, type: 'applyConfirm', id: m.id, ask, binding: m.binding } : null;
+  }
+  if (m.type === 'importCatalog') return text(m.path, 4096) && m.path.startsWith('/') && !m.path.includes('\0') ? { v: 1, type: 'importCatalog', path: m.path } : null;
   if (m.type !== 'setPath' || !text(m.agent) || !AGENT_ID.test(m.agent)) return null;
   if (!text(m.path, 4096) || !m.path.startsWith('/') || m.path.includes('\0')) return null;
   return { v: 1, type: 'setPath', agent: m.agent, path: m.path };
@@ -63,6 +91,14 @@ export function parseServiceEvent(x: unknown): ServiceEvent | null {
   if (m?.type === 'notify') {
     if (!text(m.agent, 64) || !m.agent || !(m.label === null || text(m.label, 128))) return null;
     return oneOf(['waiting-for-permission', 'needs-input'] as const, m.state) ? { v: 1, type: 'notify', agent: m.agent, label: m.label, state: m.state } : null;
+  }
+  if (m?.type === 'grant') {
+    const result = parseGrantResult(m.result);
+    return exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) && result ? { v: 1, type: 'grant', id: m.id, result } : null;
+  }
+  if (m?.type === 'apply') {
+    const result = parseApplyResult(m.result);
+    return exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) && result ? { v: 1, type: 'apply', id: m.id, result } : null;
   }
   if (m?.type === 'metrics') { // every known key, a safe non-negative integer; anything else is dropped (never content)
     const raw = m.metrics;
@@ -141,7 +177,17 @@ export interface UsageScope {
   scope: number | null; agent: string; profile: string; verified: boolean | null; stream: string | null;
   windowMinutes: number | null; usedPercent: number | null; resetsAt: number | null; plan: string | null; credits: Credits | null;
   asOf: number | null; firstObservedAt: number | null; measuredAt: number | null; unavailable: 'passive' | 'no-observation' | null;
+  /** XAIBO-PROD-582 (P6-T10a unit 1): the profile (its id, a profile key), the scope's sign-in generation (null on a row without a
+   *  scope) and that generation's boundary (null for generation 0: no invented provenance; never relabeled by a later change). */
+  profileId: string; generation: number | null; boundary: { method: SignInMethod; at: number; reason: 'method' | 'declared-account' } | null;
 }
+/** XAIBO-PROD-582: every profile once (agent, then id; custom agents too), with its label and current sign-in view (null: unreadable). */
+/** consumptionLimited (unit 2 review M3): the read was capped or groups dropped, so an empty or short list is not "nothing used". */
+export interface UsageProfile { profileId: string; agent: string; label: string; signIn: SignInView | null; consumption: UsageConsumption[]; consumptionLimited: boolean }
+/** XAIBO-PROD-583 (P6-T10a unit 2): retained observed consumption of one profile, sign-in generation and Codex account epoch
+ *  (scope: that epoch's verified quota scope id, the join key; the epoch itself never leaves the service). Tokens and the
+ *  per-request estimate are known subtotals; partial when anything is missing or the read was capped (`limited`). */
+export interface UsageConsumption { generation: number; scope: number | null; tokens: number | null; estimatedUsd: number | null; coverage: 'full' | 'partial'; from: number | null; to: number | null; limited: boolean }
 export interface HistoryCursor { measuredAt: number; id: number }
 export interface UsageRecord {
   id: number; kind: 'sample' | 'transition'; measuredAt: number; usedPercent: number | null; windowMinutes: number | null; resetsAt: number | null; sourceTimeKnown: boolean;
@@ -167,7 +213,8 @@ export const TRANSCRIPT_ONLY = 'Transcript only, not resumable';
 /** Design C15: the native-state marker, never overlay state. */
 export const nativeBadge = (n: NativeState): 'native deleted' | 'native archived' | null => (!n.available ? 'native deleted' : n.archived ? 'native archived' : null);
 /** nativeExpiresAt: when the agent's own cleanup is estimated to delete the native transcript (Claude; an estimate). */
-export interface SessionDetail { row: SessionRow; coverage: CoverageCode[]; context: ContextReading | null; nativeExpiresAt?: number | null }
+/** limits (XAIBO-PROD-594): surfaces Xaibo has not verified for the agent's detected version (at most 4 lines). */
+export interface SessionDetail { row: SessionRow; coverage: CoverageCode[]; context: ContextReading | null; nativeExpiresAt?: number | null; limits?: string[] }
 
 /** XAIBO-PROD-417 (P4-T07a; design §6.3.2): the session's cost breakdown. Groups are the per-request estimates of one
  *  (model, price revision, basis); a component's ~$ comes only from its applied rate over priced requests. */
@@ -223,6 +270,9 @@ const MAX_SOURCES = 8, MAX_SOURCE = 32, MAX_LABEL = 4097; // labels are cut to D
 // XAIBO-PROD-504 (P5-T01; FR-10, US-5): the history overlay. The renderer names a session only by its row id.
 export const NAME_MAX = 200;
 export const HISTORY_MODES = ['all', 'archived', 'trash'] as const;
+/** XAIBO-PROD-554 (design §6.4 Filters, D-P6-05): the record markers a Session list can be filtered by; cwd filter bound. */
+export const HISTORY_STATES = ['pinned', 'kept', 'native-deleted', 'native-archived'] as const;
+export const CWD_FILTER_MAX = 4096;
 /** XAIBO-PROD-510 (P5-T01c; design §6.5.1): a map group. project null = automatic grouping (moved sessions excluded),
  *  else that Project override; at = a repository (worktree null: all its worktrees) or a cwd folder (repository grouping
  *  absent; cwd null: Cwd unavailable); at null only under a project. Keys are the stored canonical paths. */
@@ -235,7 +285,10 @@ export interface MapNode {
   group: MapGroup; project: Named | null; reasons: ((typeof REPO_REASONS)[number] | null)[];
   sessions: number | null; live: number | null; agents: string[] | null;
 }
-export interface HistoryFilter { mode: (typeof HISTORY_MODES)[number]; agent: string | null; project: number | null; folder: number | null; group?: MapGroup }
+export interface HistoryFilter { mode: (typeof HISTORY_MODES)[number]; agent: string | null; project: number | null; folder: number | null; group?: MapGroup;
+  /** XAIBO-PROD-554 (each present only when set): the folder and below; activity overlapping [from, to) ms; a record marker;
+   *  a model id (Dashboard month detail). */
+  cwd?: string; from?: number; to?: number; state?: (typeof HISTORY_STATES)[number]; model?: string }
 /** History keyset: pinned first, then last activity descending (unknown last), then id. */
 export interface HistoryKey { pinned: boolean; lastActivity: number | null; id: number }
 export interface Named { id: number; name: string }
@@ -255,12 +308,20 @@ export const OVERLAY_ERRORS = ['not-found', 'invalid', 'read-only', 'disk-full',
 export type OverlayResult = { ok: true; id?: number } | { ok: false; error: (typeof OVERLAY_ERRORS)[number] };
 // XAIBO-PROD-527 (P5-T18 part 1; design §6.4, §6.6): search, purge, suppressed sessions, Re-import, retention, storage.
 export const QUERY_MAX = 256, SNIPPET_MAX = 200, RETENTION_MAX = 3650;
+/** XAIBO-PROD-551 (D-P5-15 item 15): search reads at most this many terms (later ones are not searched or emphasized);
+ *  retention defaults to this many days; retention never purges a session in an active lifecycle (EC-22). */
+export const QUERY_MAX_TERMS = 16, RETENTION_DEFAULT = 45;
+export const isActive = (lifecycle: LiveStatus['lifecycle'] | null): boolean =>
+  lifecycle === 'busy' || lifecycle === 'waiting-for-permission' || lifecycle === 'needs-input';
 /** event: the rowid of the last match read (Gate 5 round 2 review: exact continuation inside equal-rank ties). */
 export interface SearchKey { rank: number; session: number; event: number }
 export interface SearchHit { row: HistoryRow; event: number; snippet: string }
 export const PURGE_RESULTS = ['purged', 'pending', 'not-found', 'busy', 'read-only', 'disk-full', 'failed'] as const; // pending: Gate 5 second review M1
 export const REIMPORT_RESULTS = ['ok', 'none', 'pending', 'native-gone', 'not-found', 'read-only', 'disk-full', 'failed'] as const;
 export const SAVE_RESULTS = ['saved', 'invalid', 'read-only', 'disk-full', 'failed'] as const;
+export type PurgeResult = (typeof PURGE_RESULTS)[number];
+export type ReimportResult = (typeof REIMPORT_RESULTS)[number];
+export type SaveRetentionResult = (typeof SAVE_RESULTS)[number];
 /** A suppressed (purged) session: key = opaque HMAC handle; profile = its label, 'Unavailable' when the profile is gone. */
 export interface SuppressedRow { key: string; agent: string; profile: string; reason: 'manual' | 'retention'; at: number; filesPending: boolean }
 export interface SuppressedCursor { at: number; key: string }
@@ -292,12 +353,57 @@ export interface LedgerPage { months: LedgerMonth[]; quota: LedgerQuota[]; older
 export interface LedgerFilter { agent: string | null; model: string | null }
 /** P5-T16: cleared; read-only = the store refused writes; failed = the transaction did not commit (nothing changed). */
 export const CLEAR_USAGE_RESULTS = ['cleared', 'read-only', 'failed'] as const;
+/** XAIBO-PROD-595: a catalog import's outcome, broadcast to the windows: the agent id, or fixed codes and pointers only. */
+export type CatalogImportResult = { status: 'imported'; agent: string } | { status: 'rejected'; issues: { code: string; at: string }[] };
+/** XAIBO-PROD-590 (P6-T08 slice A, EC-79): a rescan's answer; retryAfterMs (rate-limited only) is at most a minute. */
+export const RESCAN_CODES = ['starting', 'read-only', 'rate-limited', 'unavailable', 'failed'] as const;
+export type RescanResult = { status: 'ready' } | { status: 'refused'; code: (typeof RESCAN_CODES)[number]; retryAfterMs?: number };
 export type ClearUsageResult = (typeof CLEAR_USAGE_RESULTS)[number];
+/** XAIBO-PROD-558 (P6-T03 part 1b; design review L1/L2): Connect replies, bounded; never an op, a plan or a foreign value
+ *  (diff lines carry Xaibo's values and a replaced value's type + 12-hex hash only). An over-bound reply is refused by the
+ *  service (too-large), never truncated. */
+export const CONNECT_TYPES = ['connectPreview', 'connectApply', 'teePreview'] as const; // XAIBO-PROD-580: a tee-on preview is a Connect preview
+export const CONNECT_ROUTES = ['claude-plugin', 'claude-settings-fallback', 'claude-retention', 'claude-tee', 'codex-hooks', 'agy-hooks', 'report-setup'] as const;
+export type ConnectRoute = (typeof CONNECT_ROUTES)[number];
+export const CONNECT_LIMITS = { steps: 3, diff: 64, value: 16_384, text: 8_192, trust: 8, entries: 8, list: 256 } as const;
+export interface ConnectSelections { retention: boolean; tee: boolean }
+export interface ConnectDiffLine { pointer: string; new: unknown; replaced?: { type: string; sha256: string } }
+/** cli: the plugin step only (XAIBO-PROD-560, part 2b): version, argv with placeholders, write surfaces relative to the profile. */
+export interface ConnectStep { route: ConnectRoute; target: string; diff: ConnectDiffLine[]; cli?: { version: string; argv: string[][]; writes: string[] } }
+export type ConnectOffer = { offered: true; from: number; to: number; layer: 'user' | 'default' }
+  | { offered: false; reason: 'policy' | 'enough' | 'unknown' | 'connected' | 'unverified'; days: number | null };
+export type ConnectPreview = { status: 'preview'; previewId: string; profileId: string; ttlMs: number; steps: ConnectStep[]; retention: ConnectOffer | null; trustSteps: string[] };
+export type ConnectRefused = { status: 'refused'; code: string };
+export interface ConnectOutcome {
+  status: 'disconnected' | 'partial';
+  reverted: { entry: string; route: ConnectRoute; result: 'restored' | 'removed' | 'structural' | 'unchanged' }[];
+  conflicts: { entry: string; route: ConnectRoute; pointer: string }[];
+  remaining: { entry: string; route: ConnectRoute; reason: string }[];
+  code?: string;
+}
+export type ConnectReply = ConnectPreview | ConnectRefused | { status: 'applied'; entries: string[]; trustSteps: string[] }
+  | { status: 'needs-preview'; preview: ConnectPreview | ConnectRefused } | ConnectOutcome;
+/** XAIBO-PROD-576 (P6-T10 unit 3; review R1/R4/R5, plan review H1/L4): Disconnect (a profile) and Full Uninstall (profileId
+ *  null) are previewed and applied by preview id; cleanup by profile. Items name an entry, its route, the profile it maps to
+ *  and its reconcile state (reason: why it is unreadable, e.g. refused for a target outside the writable roots); no path or
+ *  value. At most REMOVAL_LIMIT items, the core's own cap. */
+export const RECONCILE_STATES = ['connected', 'disconnected-externally', 'drifted', 'pending-recovery', 'unreadable'] as const;
+export const LEFTOVERS = ['manifest-entry', 'backup', 'plugin-copy', 'marketplace'] as const;
+export const REMOVAL_LIMIT = 256;
+export interface RemovalItem { entry: string; route: ConnectRoute; profileId: string | null; state: (typeof RECONCILE_STATES)[number]; reason: string | null }
+export type RemovalPreview = { status: 'preview'; previewId: string; profileId: string | null; ttlMs: number; items: RemovalItem[] };
+export type RemovalReply = RemovalPreview | ConnectRefused | { status: 'needs-preview'; preview: RemovalPreview | ConnectRefused } | ConnectOutcome;
+export type CleanupReply = { status: 'preview'; previewId: string; ttlMs: number; items: { entry: string; cleanup: (typeof LEFTOVERS)[number][] }[] }
+  | { status: 'cleaned'; removed: string[]; left: string[] } | { status: 'needs-preview' } | { status: 'partial'; removed: string[]; left: string[]; code: string } | ConnectRefused;
 export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Cursor | null; limit: number }
   /** P5-T17a: the ledger page of at most `limit` (1..12) observed months ending at `end` (null = the latest). */
   | { v: 1; type: 'monthly'; id: number; filter: LedgerFilter; end: string | null; limit: number }
   /** P5-T16: Clear usage history (Settings, after the owner's confirmation). */
   | { v: 1; type: 'clearUsage'; id: number }
+  /** XAIBO-PROD-590: rescan agents and profiles without a restart; no argument (the service decides what is scanned). */
+  | { v: 1; type: 'agentRescan'; id: number }
+  /** XAIBO-PROD-597 (P6-T08a slice B): revoke one grant of an imported agent; ids only (it only removes authority). */
+  | { v: 1; type: 'grantRevoke'; id: number; agent: string; target: RevokeTarget }
   /** XAIBO-PROD-527 (P5-T18 part 1): history tools and retention/storage settings. */
   | { v: 1; type: 'search'; id: number; query: string; filter: HistoryFilter; cursor: SearchKey | null; limit: number }
   | { v: 1; type: 'purge'; id: number; session: number }
@@ -308,6 +414,11 @@ export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Curs
   | { v: 1; type: 'retention'; id: number }
   | { v: 1; type: 'setRetention'; id: number; value: RetentionSetting }
   | { v: 1; type: 'storage'; id: number; refresh: boolean }
+  /** XAIBO-PROD-568 (P6-T11): Settings > Local prices: the current table, a Validate that switches nothing, a Reload. */
+  | { v: 1; type: 'prices'; id: number; op: PriceOp }
+  | SignInRequest
+  | { v: 1; type: 'integrationPage'; id: number; cursor: IntegrationKey | null; direction: 'next' | 'previous'; limit: number }
+  | { v: 1; type: 'integrationDetail'; id: number; key: IntegrationKey }
   | { v: 1; type: 'history'; id: number; filter: HistoryFilter; cursor: HistoryKey | null; limit: number }
   | { v: 1; type: 'projects'; id: number; cursor: number | null; limit: number }
   | { v: 1; type: 'folders'; id: number; project: number; cursor: number | null; limit: number }
@@ -327,22 +438,45 @@ export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Curs
   | { v: 1; type: 'slice'; id: number; session: number; event: number; part: 'text' | 'reasoning'; offset: number; call?: string }
   | IdPage<'tools'> | IdPage<'subagents'> | IdPage<'files'>
   | { v: 1; type: 'markers'; id: number; session: number; cursor: MCursor | null; limit: number }
-  | { v: 1; type: 'cost'; id: number; session: number };
+  | { v: 1; type: 'cost'; id: number; session: number }
+  /** XAIBO-PROD-558 (P6-T03 part 1b): Connect at the renderer trust boundary: a profile id, selections or a preview id only. */
+  | { v: 1; type: 'connectPreview'; id: number; profileId: string; selections: ConnectSelections }
+  | { v: 1; type: 'connectApply'; id: number; previewId: string }
+  | { v: 1; type: 'removalPreview'; id: number; profileId: string | null }
+  | { v: 1; type: 'removalApply'; id: number; previewId: string }
+  | { v: 1; type: 'cleanupPreview'; id: number; profileId: string }
+  | { v: 1; type: 'cleanupApply'; id: number; previewId: string }
+  /** XAIBO-PROD-580 (P6-T10 unit 6a, R6): the separate tee, by profile id: on is a tee-only Connect preview (connectApply), off the
+   *  removal preview of the profile's tee entry alone (removalApply). */
+  | { v: 1; type: 'teePreview'; id: number; profileId: string }
+  | { v: 1; type: 'teeRemovalPreview'; id: number; profileId: string };
 export type PortMessage =
+  | { v: 1; type: (typeof CONNECT_TYPES)[number]; id: number; result: ConnectReply }
+  | { v: 1; type: 'removalPreview' | 'removalApply' | 'teeRemovalPreview'; id: number; result: RemovalReply }
+  | { v: 1; type: 'cleanupPreview' | 'cleanupApply'; id: number; result: CleanupReply }
   // P5-T17a: failed = the store could not answer (the renderer offers Retry), never an empty ledger
   | ({ v: 1; type: 'monthly'; id: number; failed?: true } & LedgerPage)
   | { v: 1; type: 'clearUsage'; id: number; result: ClearUsageResult }
+  | { v: 1; type: 'agentRescan'; id: number; result: RescanResult }
+  | { v: 1; type: 'grantRevoke'; id: number; result: RevokeResult }
+  | { v: 1; type: 'catalogImport'; result: CatalogImportResult }
   /** capped (Gate 5 round 2 B): the bounded scan stopped before the page filled; results may be incomplete, next continues. */
   | { v: 1; type: 'search'; id: number; hits: SearchHit[]; next: SearchKey | null; failed?: true; capped?: true }
-  | { v: 1; type: 'purge'; id: number; result: (typeof PURGE_RESULTS)[number] }
+  | { v: 1; type: 'purge'; id: number; result: PurgeResult }
   /** row null = no such session (gone: purged); failed (row null) = the store could not answer (keep the record, Retry). */
   | { v: 1; type: 'historyRow'; id: number; row: HistoryRow | null; failed?: true }
   | { v: 1; type: 'suppressed'; id: number; rows: SuppressedRow[]; next: SuppressedCursor | null; failed?: true }
-  | { v: 1; type: 'reimport'; id: number; result: (typeof REIMPORT_RESULTS)[number] }
+  | { v: 1; type: 'reimport'; id: number; result: ReimportResult }
   /** setting null = the stored value is unreadable (no session retention runs on it). */
   | { v: 1; type: 'retention'; id: number; setting: RetentionSetting | null; lastRunAt: number | null }
-  | { v: 1; type: 'setRetention'; id: number; result: (typeof SAVE_RESULTS)[number] }
+  | { v: 1; type: 'setRetention'; id: number; result: SaveRetentionResult }
   | { v: 1; type: 'storage'; id: number; report: StorageReport | null; failed?: true }
+  /** view null = the service has no prices (a bundled-list build error); check is set only by validate. */
+  | { v: 1; type: 'prices'; id: number; view: PriceView | null; check: PriceCheck | null }
+  /** XAIBO-PROD-572: view null for profile-not-found, read-only, unavailable and failed. */
+  | { v: 1; type: 'signIn'; id: number; code: SignInReplyCode; view: SignInView | null }
+  | { v: 1; type: 'integrationPage'; id: number; result: IntegrationPageResult }
+  | { v: 1; type: 'integrationDetail'; id: number; result: IntegrationDetailResult }
   | { v: 1; type: 'history'; id: number; rows: HistoryRow[]; next: HistoryKey | null; failed?: true }
   | { v: 1; type: 'projects'; id: number; projects: Named[]; next: number | null; failed?: true }
   | { v: 1; type: 'folders'; id: number; folders: Named[]; next: number | null; failed?: true }
@@ -359,7 +493,7 @@ export type PortMessage =
   | { v: 1; type: 'markers'; id: number; markers: ModelMarker[]; next: MCursor | null; failed?: true }
   | { v: 1; type: 'page'; id: number; rows: SessionRow[]; next: Cursor | null }
   | { v: 1; type: 'liveSet'; id: number; rows: SessionRow[]; more: boolean }
-  | { v: 1; type: 'usage'; id: number; scopes: UsageScope[] }
+  | { v: 1; type: 'usage'; id: number; scopes: UsageScope[]; profiles: UsageProfile[] }
   | { v: 1; type: 'usageHistory'; id: number; records: UsageRecord[]; next: HistoryCursor | null }
   // coalesced deltas: current rows of changed sessions; delta only with XAIBO_PERF_TRACE=1 (the renderer acks its paint)
   | { v: 1; type: 'sessions'; rows: SessionRow[]; delta?: number }
@@ -457,9 +591,35 @@ function parseScope(x: unknown): UsageScope | null {
   if (!(x.unavailable === null || oneOf(['passive', 'no-observation'] as const, x.unavailable))) return null;
   const credits = parseCredits(x.credits);
   if (credits === undefined) return null;
-  return { scope: x.scope, agent: x.agent, profile: x.profile, verified: x.verified, stream: x.stream, windowMinutes: x.windowMinutes as number | null,
+  // XAIBO-PROD-582: identity and the scope's own sign-in generation and boundary
+  const b = x.boundary;
+  const boundary = b === null ? null : exactKeys(b, ['method', 'at', 'reason']) && oneOf(SIGN_IN_METHODS, b.method) && Number.isSafeInteger(b.at) && oneOf(['method', 'declared-account'] as const, b.reason)
+    ? { method: b.method, at: b.at as number, reason: b.reason } : undefined;
+  if (!profileKey(x.profileId) || !(x.generation === null || (Number.isSafeInteger(x.generation) && (x.generation as number) >= 0 && (x.generation as number) <= 256)) || boundary === undefined) return null;
+  return { profileId: x.profileId, generation: x.generation as number | null, boundary, scope: x.scope, agent: x.agent, profile: x.profile, verified: x.verified, stream: x.stream, windowMinutes: x.windowMinutes as number | null,
     usedPercent: x.usedPercent as number | null, resetsAt: x.resetsAt, plan: x.plan, credits, asOf: x.asOf, firstObservedAt: x.firstObservedAt,
     measuredAt: x.measuredAt, unavailable: x.unavailable };
+}
+export const PROFILE = /^[A-Za-z0-9._-]{1,128}$/; // may reach keys and paths downstream (security review 379 #9)
+/** A profile key that is safe as a path segment: PROFILE, never `.` or `..` (hook-protocol.ts re-exports both). */
+export const isProfileKey = (k: string): boolean => PROFILE.test(k) && k !== '.' && k !== '..';
+const profileKey = (x: unknown): x is string => typeof x === 'string' && isProfileKey(x);
+function parseUsageProfile(x: unknown): UsageProfile | null {
+  if (!exactKeys(x, ['profileId', 'agent', 'label', 'signIn', 'consumption', 'consumptionLimited']) || typeof x.consumptionLimited !== 'boolean' || !profileKey(x.profileId) || !agentOk(x.agent) || !text(x.label, 4097)) return null;
+  const signIn = x.signIn === null ? null : parseSignInView(x.signIn);
+  if (signIn === undefined || (signIn && signIn.profileId !== x.profileId)) return null;
+  const consumption = all(x.consumption, 64, parseConsumption);
+  return consumption ? { profileId: x.profileId, agent: x.agent, label: x.label, signIn, consumption, consumptionLimited: x.consumptionLimited as boolean } : null;
+}
+function parseConsumption(x: unknown): UsageConsumption | null {
+  if (!exactKeys(x, ['generation', 'scope', 'tokens', 'estimatedUsd', 'coverage', 'from', 'to', 'limited'])) return null;
+  const t = (v: unknown) => v === null || Number.isSafeInteger(v);
+  const ok = Number.isSafeInteger(x.generation) && (x.generation as number) >= 0 && (x.generation as number) <= 256 && (x.scope === null || count(x.scope))
+    && (x.tokens === null || count(x.tokens)) && (x.estimatedUsd === null || (finite(x.estimatedUsd) && (x.estimatedUsd as number) >= 0))
+    && oneOf(['full', 'partial'] as const, x.coverage) && t(x.from) && t(x.to) && (x.from === null) === (x.to === null)
+    && (x.from === null || (x.from as number) <= (x.to as number)) && typeof x.limited === 'boolean';
+  return ok ? { generation: x.generation as number, scope: x.scope as number | null, tokens: x.tokens as number | null, estimatedUsd: x.estimatedUsd as number | null,
+    coverage: x.coverage as 'full' | 'partial', from: x.from as number | null, to: x.to as number | null, limited: x.limited as boolean } : null;
 }
 function parseRecord(x: unknown): UsageRecord | null {
   if (!isObj(x) || !count(x.id) || !oneOf(['sample', 'transition'] as const, x.kind) || !finite(x.measuredAt) || typeof x.sourceTimeKnown !== 'boolean') return null;
@@ -499,7 +659,9 @@ function parseDetail(x: unknown): SessionDetail | null | undefined { // undefine
   const expires = x.nativeExpiresAt;
   // review L3: a time the renderer's Date can show (0 .. 8.64e15 ms)
   if (expires !== undefined && !(expires === null || (typeof expires === 'number' && expires >= 0 && expires <= 8.64e15))) return undefined;
-  return row && coverage && context !== undefined ? { row, coverage, context, ...(expires !== undefined ? { nativeExpiresAt: expires } : {}) } : undefined;
+  const limits = x.limits;
+  if (limits !== undefined && !(Array.isArray(limits) && limits.length <= 4 && limits.every((l) => typeof l === 'string' && l.length <= 256))) return undefined;
+  return row && coverage && context !== undefined ? { row, coverage, context, ...(expires !== undefined ? { nativeExpiresAt: expires } : {}), ...(limits !== undefined ? { limits: [...limits as string[]] } : {}) } : undefined;
 }
 const CONTEXT_KEYS = ['generation', 'used', 'window', 'basis', 'source', 'asOf', 'observedAt'];
 export function parseContext(x: unknown): ContextReading | undefined {
@@ -577,12 +739,22 @@ function parseHistoryKey(x: unknown): HistoryKey | null | undefined { // undefin
   return exactKeys(x, ['pinned', 'lastActivity', 'id']) && typeof x.pinned === 'boolean' && timeOrNull(x.lastActivity) && positive(x.id)
     ? { pinned: x.pinned, lastActivity: x.lastActivity, id: x.id } : undefined;
 }
+const OPTIONAL_FILTER_KEYS = ['group', 'cwd', 'from', 'to', 'state', 'model'] as const;
+const msOk = (x: unknown): x is number => Number.isSafeInteger(x) && (x as number) >= 0;
 function parseFilter(x: unknown): HistoryFilter | null {
-  const grouped = isObj(x) && Object.hasOwn(x, 'group');
-  if (!exactKeys(x, ['mode', 'agent', 'project', 'folder', ...(grouped ? ['group'] : [])]) || !oneOf(HISTORY_MODES, x.mode)) return null;
-  const group = grouped ? parseMapGroup(x.group) : undefined;
+  const present = isObj(x) ? OPTIONAL_FILTER_KEYS.filter((k) => Object.hasOwn(x, k)) : [];
+  if (!exactKeys(x, ['mode', 'agent', 'project', 'folder', ...present]) || !oneOf(HISTORY_MODES, x.mode)) return null;
+  const has = (k: (typeof OPTIONAL_FILTER_KEYS)[number]) => present.includes(k);
+  const group = has('group') ? parseMapGroup(x.group) : undefined;
   if (group === null || !((x.agent === null || agentOk(x.agent)) && idOrNull(x.project) && idOrNull(x.folder))) return null;
-  return { mode: x.mode, agent: x.agent, project: x.project, folder: x.folder, ...(group ? { group } : {}) };
+  // XAIBO-PROD-554: strict shapes; a date range needs both ends in order
+  if (has('cwd') && !(text(x.cwd, CWD_FILTER_MAX) && x.cwd !== '')) return null;
+  if (has('from') !== has('to') || (has('from') && !(msOk(x.from) && msOk(x.to) && x.from <= x.to))) return null;
+  if (has('state') && !oneOf(HISTORY_STATES, x.state)) return null;
+  if (has('model') && !(text(x.model, MAX_MODEL) && x.model !== '')) return null;
+  return { mode: x.mode, agent: x.agent, project: x.project, folder: x.folder, ...(group ? { group } : {}),
+    ...(has('cwd') ? { cwd: x.cwd as string } : {}), ...(has('from') ? { from: x.from as number, to: x.to as number } : {}),
+    ...(has('state') ? { state: x.state as HistoryFilter['state'] } : {}), ...(has('model') ? { model: x.model as string } : {}) };
 }
 const keyText = (x: unknown): x is string => text(x) && x !== '';
 /** Exact shapes only; a group with neither project nor place names nothing and is refused. */
@@ -708,8 +880,101 @@ function parseResult(x: unknown): OverlayResult | null {
   return x.ok === false && oneOf(OVERLAY_ERRORS, x.error) ? { ok: false, error: x.error } : null;
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export const uuid = (x: unknown): x is string => typeof x === 'string' && UUID.test(x); // XAIBO-PROD-585: also the renderer's UUID check
+const CODE = /^[a-z][a-z-]{0,31}$/;
+const connectCode = (x: unknown): x is string => typeof x === 'string' && CODE.test(x);
+const bounded = (x: unknown, max: number): x is unknown[] => Array.isArray(x) && x.length <= max;
+const depthOk = (v: unknown, d = 0): boolean => d <= 32 && (typeof v !== 'object' || v === null || Object.values(v).every((x) => depthOk(x, d + 1))); // review L-3
+const jsonValue = (v: unknown) => { try { const t = JSON.stringify(v); return t !== undefined && t.length <= CONNECT_LIMITS.value && depthOk(v); } catch { return false; } };
+const longText = (x: unknown): x is string => text(x, CONNECT_LIMITS.text);
+const route = (x: unknown): x is ConnectRoute => oneOf(CONNECT_ROUTES, x);
+// part 2b review H2: the plugin step's argv carries placeholders (never an absolute path), its writes are profile-relative
+const argText = (x: unknown) => text(x, 256) && !x.startsWith('/');
+const relPath = (x: unknown) => text(x, 256) && x.length > 0 && !x.startsWith('/') && !x.split('/').includes('..');
+const cliView = (c: unknown) => exactKeys(c, ['version', 'argv', 'writes']) && typeof c.version === 'string' && /^\d{1,6}\.\d{1,6}\.\d{1,6}$/.test(c.version)
+  && bounded(c.argv, 4) && c.argv.every((a) => bounded(a, 8) && a.every(argText)) && bounded(c.writes, 8) && c.writes.every(relPath);
+const stepKeys = (st: unknown) => {
+  const cli = isObj(st) && st.cli !== undefined;
+  return exactKeys(st, cli ? ['route', 'target', 'diff', 'cli'] : ['route', 'target', 'diff']) && (!cli || (st.route === 'claude-plugin' && cliView(st.cli)));
+};
+function connectPreview(x: unknown): ConnectPreview | null {
+  if (!exactKeys(x, ['status', 'previewId', 'profileId', 'ttlMs', 'steps', 'retention', 'trustSteps']) || x.status !== 'preview') return null;
+  if (!uuid(x.previewId) || !uuid(x.profileId) || !count(x.ttlMs) || !bounded(x.trustSteps, CONNECT_LIMITS.trust) || !x.trustSteps.every(longText)) return null;
+  if (!bounded(x.steps, CONNECT_LIMITS.steps) || !x.steps.every((st) => stepKeys(st) && isObj(st) && route(st.route) && longText(st.target)
+    && bounded(st.diff, CONNECT_LIMITS.diff) && st.diff.every((d) => exactKeys(d, isObj(d) && d.replaced !== undefined ? ['pointer', 'new', 'replaced'] : ['pointer', 'new'])
+      && longText(d.pointer) && jsonValue(d.new) && (d.replaced === undefined || (exactKeys(d.replaced, ['type', 'sha256']) && text(d.replaced.type, 16) && typeof d.replaced.sha256 === 'string' && /^[0-9a-f]{12}$/.test(d.replaced.sha256)))))) return null;
+  const o = x.retention;
+  const offer = o === null || (exactKeys(o, ['offered', 'from', 'to', 'layer']) && o.offered === true && count(o.from) && count(o.to) && oneOf(['user', 'default'] as const, o.layer))
+    || (exactKeys(o, ['offered', 'reason', 'days']) && o.offered === false && oneOf(['policy', 'enough', 'unknown', 'connected', 'unverified'] as const, o.reason) && (o.days === null || count(o.days)));
+  return offer ? x as unknown as ConnectPreview : null;
+}
+/** XAIBO-PROD-558: the one bound check for Connect replies (the service refuses what this refuses: too-large). */
+export function parseConnectReply(x: unknown): ConnectReply | null {
+  if (!isObj(x)) return null;
+  if (x.status === 'refused') return exactKeys(x, ['status', 'code']) && connectCode(x.code) ? { status: 'refused', code: x.code } : null;
+  if (x.status === 'preview') return connectPreview(x);
+  if (x.status === 'needs-preview') {
+    const inner = isObj(x.preview) && x.preview.status === 'refused' ? parseConnectReply(x.preview) : connectPreview(x.preview);
+    return exactKeys(x, ['status', 'preview']) && inner ? { status: 'needs-preview', preview: inner as ConnectPreview | ConnectRefused } : null;
+  }
+  if (x.status === 'applied') {
+    return exactKeys(x, ['status', 'entries', 'trustSteps']) && bounded(x.entries, CONNECT_LIMITS.entries) && x.entries.every(uuid)
+      && bounded(x.trustSteps, CONNECT_LIMITS.trust) && x.trustSteps.every(longText) ? x as unknown as ConnectReply : null;
+  }
+  if (x.status !== 'disconnected' && x.status !== 'partial') return null;
+  if (!exactKeys(x, x.code === undefined ? ['status', 'reverted', 'conflicts', 'remaining'] : ['status', 'reverted', 'conflicts', 'remaining', 'code'])) return null;
+  if (x.code !== undefined && !connectCode(x.code)) return null;
+  const L = CONNECT_LIMITS.list;
+  const ok = bounded(x.reverted, L) && x.reverted.every((r) => exactKeys(r, ['entry', 'route', 'result']) && uuid(r.entry) && route(r.route) && oneOf(['restored', 'removed', 'structural', 'unchanged'] as const, r.result))
+    && bounded(x.conflicts, L) && x.conflicts.every((c) => exactKeys(c, ['entry', 'route', 'pointer']) && uuid(c.entry) && route(c.route) && longText(c.pointer))
+    && bounded(x.remaining, L) && x.remaining.every((r) => exactKeys(r, ['entry', 'route', 'reason']) && uuid(r.entry) && route(r.route) && connectCode(r.reason));
+  return ok ? x as unknown as ConnectOutcome : null;
+}
+const refusal = (x: unknown) => exactKeys(x, ['status', 'code']) && x.status === 'refused' && connectCode(x.code);
+function removalPreview(x: unknown): RemovalPreview | null {
+  if (!exactKeys(x, ['status', 'previewId', 'profileId', 'ttlMs', 'items']) || x.status !== 'preview' || !uuid(x.previewId) || !(x.profileId === null || uuid(x.profileId)) || !count(x.ttlMs)) return null;
+  return bounded(x.items, REMOVAL_LIMIT) && x.items.every((i) => exactKeys(i, ['entry', 'route', 'profileId', 'state', 'reason']) && uuid(i.entry) && route(i.route)
+    && (i.profileId === null || uuid(i.profileId)) && oneOf(RECONCILE_STATES, i.state) && (i.reason === null || connectCode(i.reason))) ? x as unknown as RemovalPreview : null;
+}
+/** XAIBO-PROD-576: a preview request answers a preview or a refusal; an apply answers an outcome, a fresh preview or a refusal. */
+export function parseRemovalReply(type: 'removalPreview' | 'removalApply' | 'teeRemovalPreview', x: unknown): RemovalReply | null {
+  if (refusal(x)) return x as ConnectRefused;
+  if (type === 'removalPreview') return removalPreview(x);
+  if (type === 'teeRemovalPreview') { const p = removalPreview(x); return p && p.profileId !== null ? p : null; } // always one profile
+  if (isObj(x) && x.status === 'needs-preview') {
+    return exactKeys(x, ['status', 'preview']) && (refusal(x.preview) || removalPreview(x.preview)) ? x as unknown as RemovalReply : null;
+  }
+  return isObj(x) && (x.status === 'disconnected' || x.status === 'partial') ? parseConnectReply(x) as ConnectOutcome | null : null;
+}
+export function parseCleanupReply(type: 'cleanupPreview' | 'cleanupApply', x: unknown): CleanupReply | null {
+  if (refusal(x)) return x as ConnectRefused;
+  if (!isObj(x)) return null;
+  if (type === 'cleanupPreview') {
+    return exactKeys(x, ['status', 'previewId', 'ttlMs', 'items']) && x.status === 'preview' && uuid(x.previewId) && count(x.ttlMs) && bounded(x.items, REMOVAL_LIMIT)
+      && x.items.every((i) => exactKeys(i, ['entry', 'cleanup']) && uuid(i.entry) && bounded(i.cleanup, LEFTOVERS.length) && i.cleanup.every((c) => oneOf(LEFTOVERS, c))) ? x as unknown as CleanupReply : null;
+  }
+  if (x.status === 'needs-preview') return exactKeys(x, ['status']) ? { status: 'needs-preview' } : null;
+  const ids = (v: unknown) => bounded(v, REMOVAL_LIMIT) && v.every(uuid);
+  if (x.status === 'cleaned') return exactKeys(x, ['status', 'removed', 'left']) && ids(x.removed) && ids(x.left) ? x as unknown as CleanupReply : null;
+  return x.status === 'partial' && exactKeys(x, ['status', 'removed', 'left', 'code']) && ids(x.removed) && ids(x.left) && connectCode(x.code) ? x as unknown as CleanupReply : null;
+}
+
 export function parsePortRequest(x: unknown): PortRequest | null {
   const m = envelope(x);
+  // XAIBO-PROD-558: exact keys; a profile id (UUID), literal-boolean selections or a preview id (UUID), nothing else
+  if (m?.type === 'connectPreview') {
+    const sel = m.selections;
+    return exactKeys(m, ['v', 'type', 'id', 'profileId', 'selections']) && count(m.id) && uuid(m.profileId)
+      && exactKeys(sel, ['retention', 'tee']) && typeof sel.retention === 'boolean' && typeof sel.tee === 'boolean'
+      ? { v: 1, type: 'connectPreview', id: m.id, profileId: m.profileId, selections: { retention: sel.retention, tee: sel.tee } } : null;
+  }
+  if (m?.type === 'connectApply') return exactKeys(m, ['v', 'type', 'id', 'previewId']) && count(m.id) && uuid(m.previewId) ? { v: 1, type: 'connectApply', id: m.id, previewId: m.previewId } : null;
+  // XAIBO-PROD-576 (review R1): no bare Disconnect or Uninstall; removal and cleanup by profile id (null: every profile) or preview id
+  if (m?.type === 'removalPreview') return exactKeys(m, ['v', 'type', 'id', 'profileId']) && count(m.id) && (m.profileId === null || uuid(m.profileId)) ? { v: 1, type: 'removalPreview', id: m.id, profileId: m.profileId } : null;
+  if (m?.type === 'cleanupPreview') return exactKeys(m, ['v', 'type', 'id', 'profileId']) && count(m.id) && uuid(m.profileId) ? { v: 1, type: 'cleanupPreview', id: m.id, profileId: m.profileId } : null;
+  if (m?.type === 'teePreview' || m?.type === 'teeRemovalPreview') return exactKeys(m, ['v', 'type', 'id', 'profileId']) && count(m.id) && uuid(m.profileId) ? { v: 1, type: m.type, id: m.id, profileId: m.profileId } : null;
+  if (m?.type === 'removalApply' || m?.type === 'cleanupApply') return exactKeys(m, ['v', 'type', 'id', 'previewId']) && count(m.id) && uuid(m.previewId) ? { v: 1, type: m.type, id: m.id, previewId: m.previewId } : null;
   if (m?.type === 'history') {
     const filter = parseFilter(m.filter), cursor = parseHistoryKey(m.cursor);
     return count(m.id) && filter && cursor !== undefined && pageLimit(m.limit) ? { v: 1, type: 'history', id: m.id, filter, cursor, limit: m.limit } : null;
@@ -755,6 +1020,11 @@ export function parsePortRequest(x: unknown): PortRequest | null {
     return { v: 1, type: 'usageHistory', id: m.id, scope: m.scope, stream: m.stream, from: m.from, to: m.to, cursor, limit: m.limit };
   }
   if (m?.type === 'clearUsage') return count(m.id) ? { v: 1, type: 'clearUsage', id: m.id } : null;
+  if (m?.type === 'agentRescan') return exactKeys(m, ['v', 'type', 'id']) && count(m.id) ? { v: 1, type: 'agentRescan', id: m.id } : null;
+  if (m?.type === 'grantRevoke') {
+    const target = parseRevokeTarget(m.target);
+    return exactKeys(m, ['v', 'type', 'id', 'agent', 'target']) && count(m.id) && refId(m.agent) && target ? { v: 1, type: 'grantRevoke', id: m.id, agent: m.agent, target } : null;
+  }
   if (m?.type === 'search') { // the query length first (design review L1)
     if (!count(m.id) || typeof m.query !== 'string' || m.query.length < 1 || m.query.length > QUERY_MAX) return null;
     const filter = parseFilter(m.filter), cursor = parseSearchKey(m.cursor);
@@ -775,6 +1045,18 @@ export function parsePortRequest(x: unknown): PortRequest | null {
     return count(m.id) && value ? { v: 1, type: 'setRetention', id: m.id, value } : null;
   }
   if (m?.type === 'storage') return count(m.id) && typeof m.refresh === 'boolean' ? { v: 1, type: 'storage', id: m.id, refresh: m.refresh } : null;
+  if (m?.type === 'prices') return count(m.id) && oneOf(PRICE_OPS, m.op) ? { v: 1, type: 'prices', id: m.id, op: m.op } : null;
+  if (m?.type === 'signIn') return parseSignInRequest(m);
+  if (m?.type === 'integrationDetail') { // XAIBO-PROD-577: one agent/profile key, nothing else
+    const key = parseIntegrationKey(m.key);
+    return exactKeys(m, ['v', 'type', 'id', 'key']) && count(m.id) && key ? { v: 1, type: 'integrationDetail', id: m.id, key } : null;
+  }
+  if (m?.type === 'integrationPage') {
+    const cursor = m.cursor === null ? null : parseIntegrationKey(m.cursor);
+    return exactKeys(m, ['v', 'type', 'id', 'cursor', 'direction', 'limit']) && count(m.id) && cursor !== undefined && (m.direction === 'next' || m.direction === 'previous')
+      && Number.isSafeInteger(m.limit) && (m.limit as number) >= 1 && (m.limit as number) <= INTEGRATION_PAGE_MAX
+      ? { v: 1, type: 'integrationPage', id: m.id, cursor, direction: m.direction, limit: m.limit as number } : null;
+  }
   if (m?.type === 'monthly') {
     const filter = parseLedgerFilter(m.filter);
     return count(m.id) && filter && monthOrNull(m.end) && Number.isSafeInteger(m.limit) && (m.limit as number) >= 1 && (m.limit as number) <= LEDGER_MONTHS
@@ -788,6 +1070,20 @@ export function parsePortRequest(x: unknown): PortRequest | null {
 export function parsePortMessage(x: unknown): PortMessage | null {
   const m = envelope(x);
   if (!m) return null;
+  if (oneOf(CONNECT_TYPES, m.type)) {
+    const result = parseConnectReply(m.result);
+    // unit 6a review L1: a preview request answers a preview or a refusal, never an outcome
+    if (m.type !== 'connectApply' && result && result.status !== 'preview' && result.status !== 'refused') return null;
+    return exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) && result ? { v: 1, type: m.type, id: m.id, result } : null;
+  }
+  if (m.type === 'removalPreview' || m.type === 'removalApply' || m.type === 'teeRemovalPreview') {
+    const result = parseRemovalReply(m.type, m.result);
+    return exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) && result ? { v: 1, type: m.type, id: m.id, result } : null;
+  }
+  if (m.type === 'cleanupPreview' || m.type === 'cleanupApply') {
+    const result = parseCleanupReply(m.type, m.result);
+    return exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) && result ? { v: 1, type: m.type, id: m.id, result } : null;
+  }
   // review L1: failed only where it is defined; a failed page carries nothing
   const failedOf = (empty: boolean) => (m.failed === undefined ? {} : m.failed === true && empty ? { failed: true as const } : null);
   if (m.type === 'history') { // Gate 5 G5b2-5: failed = the store could not answer (the renderer keeps its rows, Retry)
@@ -850,6 +1146,21 @@ export function parsePortMessage(x: unknown): PortMessage | null {
     return count(m.id) && rows && next !== undefined ? { v: 1, type: 'page', id: m.id, rows, next } : null;
   }
   if (m.type === 'clearUsage') return count(m.id) && oneOf(CLEAR_USAGE_RESULTS, m.result) ? { v: 1, type: 'clearUsage', id: m.id, result: m.result } : null;
+  if (m.type === 'catalogImport') {
+    const r = m.result;
+    const ok = isObj(r) && ((r.status === 'imported' && exactKeys(r, ['status', 'agent']) && text(r.agent) && AGENT_ID.test(r.agent))
+      || (r.status === 'rejected' && exactKeys(r, ['status', 'issues']) && bounded(r.issues, 32)
+        && (r.issues as unknown[]).every((i) => exactKeys(i, ['code', 'at']) && typeof i.code === 'string' && /^[a-z-]{1,32}$/.test(i.code) && text(i.at, 256))));
+    return exactKeys(m, ['v', 'type', 'result']) && ok ? { v: 1, type: 'catalogImport', result: r as CatalogImportResult } : null;
+  }
+  if (m.type === 'grantRevoke') return exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) && oneOf(REVOKE_RESULTS, m.result) ? { v: 1, type: 'grantRevoke', id: m.id, result: m.result } : null;
+  if (m.type === 'agentRescan') {
+    const r = m.result, keys = isObj(r) ? Object.keys(r).sort().join() : '';
+    const ok = isObj(r) && ((r.status === 'ready' && keys === 'status')
+      || (r.status === 'refused' && oneOf(RESCAN_CODES, r.code) && (keys === 'code,status'
+        || (r.code === 'rate-limited' && keys === 'code,retryAfterMs,status' && count(r.retryAfterMs) && (r.retryAfterMs as number) <= 60_000))));
+    return exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) && ok ? { v: 1, type: 'agentRescan', id: m.id, result: r as RescanResult } : null;
+  }
   if (m.type === 'search') {
     const hits = all(m.hits, MAX_ITEMS, parseSearchHit), next = parseSearchKey(m.next), failed = failedOf(hits !== null && hits.length === 0 && next === null);
     const capped = m.capped === undefined ? {} : m.capped === true ? { capped: true as const } : null;
@@ -871,6 +1182,26 @@ export function parsePortMessage(x: unknown): PortMessage | null {
     const setting = m.setting === null ? null : parseRetentionSetting(m.setting);
     return count(m.id) && m.failed === undefined && (m.setting === null || setting) && timeOrNull(m.lastRunAt) ? { v: 1, type: 'retention', id: m.id, setting, lastRunAt: m.lastRunAt } : null;
   }
+  if (m.type === 'integrationDetail') {
+    const result = exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) ? parseIntegrationDetail(m.result) : undefined;
+    return result ? { v: 1, type: 'integrationDetail', id: m.id as number, result } : null;
+  }
+  if (m.type === 'integrationPage') {
+    const result = exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) ? parseIntegrationPage(m.result) : undefined;
+    return result ? { v: 1, type: 'integrationPage', id: m.id as number, result } : null;
+  }
+  if (m.type === 'signIn') {
+    if (!exactKeys(m, ['v', 'type', 'id', 'code', 'view']) || !count(m.id) || !oneOf(SIGN_IN_CODES, m.code)) return null;
+    const failure = m.code === 'profile-not-found' || m.code === 'read-only' || m.code === 'unavailable' || m.code === 'failed';
+    const view = m.view === null ? null : parseSignInView(m.view);
+    return view !== undefined && (view === null) === failure ? { v: 1, type: 'signIn', id: m.id, code: m.code, view } : null;
+  }
+  if (m.type === 'prices') {
+    const view = m.view === null ? null : parsePriceView(m.view);
+    const check = m.check === null || oneOf(PRICE_CHECKS, m.check) ? m.check : undefined;
+    return count(m.id) && exactKeys(m, ['v', 'type', 'id', 'view', 'check']) && view !== undefined && check !== undefined
+      ? { v: 1, type: 'prices', id: m.id, view, check } : null;
+  }
   if (m.type === 'storage') {
     const report = parseStorage(m.report), failed = failedOf(true); // a failed refresh still carries the last report
     return count(m.id) && report !== undefined && failed ? { v: 1, type: 'storage', id: m.id, report, ...failed } : null;
@@ -887,8 +1218,8 @@ export function parsePortMessage(x: unknown): PortMessage | null {
       ? { v: 1, type: 'monthly', id: m.id, months, quota, older: m.older, newer: m.newer, agents, models, ...(m.failed ? { failed: true as const } : {}) } : null;
   }
   if (m.type === 'usage') {
-    const scopes = all(m.scopes, MAX_SCOPES, parseScope);
-    return count(m.id) && scopes ? { v: 1, type: 'usage', id: m.id, scopes } : null;
+    const scopes = all(m.scopes, MAX_SCOPES, parseScope), profiles = all(m.profiles, MAX_SCOPES, parseUsageProfile);
+    return count(m.id) && scopes && profiles ? { v: 1, type: 'usage', id: m.id, scopes, profiles } : null;
   }
   if (m.type === 'usageHistory') {
     const records = all(m.records, MAX_RECORDS, parseRecord);
@@ -939,4 +1270,335 @@ export function accept<T, A extends unknown[] = []>(parse: (x: unknown) => T | n
   };
   receive.dropped = 0;
   return receive;
+}
+
+// XAIBO-PROD-568 (P6-T11; design §6.6 Local prices, C30; review R5): the price view Settings shows. Bounds equal the price
+// schema's (integrations/models.schema.json: revision 1..64, dates YYYY-MM-DD, 32 fallbacks of 1..64 exact model ids, rates
+// 0..100000, 8 cache-write classes), so every table the service accepted gets through.
+export const PRICE_ERRORS = ['override_unreadable', 'override_not_regular', 'override_too_large', 'override_json', 'override_schema'] as const;
+export type PriceError = (typeof PRICE_ERRORS)[number];
+const PRICE_CHECKS = ['absent', 'valid', ...PRICE_ERRORS] as const;
+/** Validate's answer: no override file, a valid one (not yet in use), or why it would be refused. */
+export type PriceCheck = (typeof PRICE_CHECKS)[number];
+const PRICE_OPS = ['get', 'validate', 'reload'] as const;
+export type PriceOp = (typeof PRICE_OPS)[number];
+export interface PriceRatesView { input: number; output: number; cache_read?: number; cache_write?: Record<string, number> }
+export interface PriceFallback { models: string[]; agent: string | null; rates: PriceRatesView }
+/** error: the override was refused at the last load; the table shown is then the last valid one. */
+export interface PriceView { source: 'bundled' | 'override'; revision: string; pricesAsOf: string; error: PriceError | null; fallbacks: PriceFallback[] }
+/** Reveal override file (main, SEC1): what Finder was asked to select. */
+export type RevealResult = 'file' | 'missing' | 'folder' | 'failed';
+
+const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const PRICE_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const CACHE_CLASS = /^[0-9]{1,3}[mh]$/;
+const rateOk = (x: unknown): x is number => finite(x) && (x as number) >= 0 && (x as number) <= 100_000;
+
+function parseRates(x: unknown): PriceRatesView | undefined {
+  if (!isObj(x) || !rateOk(x.input) || !rateOk(x.output) || Object.keys(x).some((k) => !['input', 'output', 'cache_read', 'cache_write'].includes(k))) return undefined;
+  if (x.cache_read !== undefined && !rateOk(x.cache_read)) return undefined;
+  const cw = x.cache_write;
+  if (cw !== undefined && (!isObj(cw) || Object.keys(cw).length > 8 || Object.entries(cw).some(([k, v]) => !CACHE_CLASS.test(k) || !rateOk(v)))) return undefined;
+  return { input: x.input, output: x.output, ...(x.cache_read !== undefined ? { cache_read: x.cache_read } : {}),
+    ...(cw !== undefined ? { cache_write: { ...(cw as Record<string, number>) } } : {}) };
+}
+
+function parsePriceView(x: unknown): PriceView | undefined {
+  if (!exactKeys(x, ['source', 'revision', 'pricesAsOf', 'error', 'fallbacks']) || !oneOf(['bundled', 'override'] as const, x.source)) return undefined;
+  if (!text(x.revision, 64) || !x.revision || !text(x.pricesAsOf, 10) || !PRICE_DATE.test(x.pricesAsOf)) return undefined;
+  if (!(x.error === null || oneOf(PRICE_ERRORS, x.error)) || !Array.isArray(x.fallbacks) || x.fallbacks.length > 32) return undefined;
+  const fallbacks: PriceFallback[] = [];
+  for (const f of x.fallbacks as unknown[]) {
+    if (!exactKeys(f, ['models', 'agent', 'rates']) || !Array.isArray(f.models) || !f.models.length || f.models.length > 64) return undefined;
+    if (!f.models.every((m) => typeof m === 'string' && MODEL_ID.test(m)) || !(f.agent === null || agentOk(f.agent))) return undefined;
+    const rates = parseRates(f.rates);
+    if (!rates) return undefined;
+    fallbacks.push({ models: [...(f.models as string[])], agent: f.agent, rates });
+  }
+  return { source: x.source, revision: x.revision, pricesAsOf: x.pricesAsOf, error: x.error, fallbacks };
+}
+
+// XAIBO-PROD-569 (P6-T10 unit 1; design §6.6 Startup): renderer <-> main through the preload, parsed on both sides.
+export type StartupRequest = { op: 'read' } | { op: 'save'; enabled: boolean };
+/** failed: platform = the OS refused or read back another value (enabled = that value, null when unreadable); invalid = a
+ *  malformed request (nothing done). */
+export type StartupReply = { status: 'ready'; enabled: boolean } | { status: 'failed'; code: 'platform' | 'invalid'; enabled: boolean | null };
+export function parseStartupRequest(x: unknown): StartupRequest | null {
+  if (exactKeys(x, ['op']) && x.op === 'read') return { op: 'read' };
+  return exactKeys(x, ['op', 'enabled']) && x.op === 'save' && typeof x.enabled === 'boolean' ? { op: 'save', enabled: x.enabled } : null;
+}
+export function parseStartupReply(x: unknown): StartupReply | null {
+  if (exactKeys(x, ['status', 'enabled']) && x.status === 'ready' && typeof x.enabled === 'boolean') return { status: 'ready', enabled: x.enabled };
+  return exactKeys(x, ['status', 'code', 'enabled']) && x.status === 'failed' && oneOf(['platform', 'invalid'] as const, x.code)
+    && (x.enabled === null || typeof x.enabled === 'boolean') ? { status: 'failed', code: x.code, enabled: x.enabled } : null;
+}
+
+// XAIBO-PROD-572 (P6-T01a slice 3; S-38, FR-54; design .handoff/p6-t01a-design.md "Slice 3 wire contract", security
+// review 3647): the owner's sign-in declaration. The renderer sends only the profile, the op, a method and the revision it
+// saw; the service assigns every time and reads no credential, auth, config or environment.
+export const SIGN_IN_METHODS = ['subscription', 'api-key', 'cloud-provider', 'gateway', 'mixed', 'unknown'] as const;
+export type SignInMethod = (typeof SIGN_IN_METHODS)[number];
+const SIGN_IN_KNOWN = SIGN_IN_METHODS.filter((m) => m !== 'unknown');
+const SIGN_IN_SOURCES = ['claude-statusline', 'claude-transcript', 'codex-rollout', 'agy-transcript'] as const;
+export const SIGN_IN_CODES = ['ok', 'stale', 'profile-not-found', 'limit', 'read-only', 'unavailable', 'failed'] as const;
+export type SignInReplyCode = (typeof SIGN_IN_CODES)[number];
+export type SignInRequest = { v: 1; type: 'signIn'; id: number; profileId: string } & (
+  | { op: 'read' }
+  | { op: 'set'; method: SignInMethod; expectedRevision: number }
+  | { op: 'clear' | 'account-change'; expectedRevision: number });
+export interface SignInView {
+  profileId: string; revision: number; method: SignInMethod;
+  /** What the method comes from: the owner's declaration, an output signal, or nothing (Unknown). */
+  source: 'owner' | (typeof SIGN_IN_SOURCES)[number] | null; at: number | null;
+  declaration: { method: SignInMethod; at: number } | null;
+  evidence: { method: Exclude<SignInMethod, 'unknown'>; source: (typeof SIGN_IN_SOURCES)[number]; version: string; ruleId: string; observedAt: number; sourceAt: number } | null;
+  conflict: boolean; usingDeclaration: boolean; outputStatus: 'unavailable' | 'matched' | 'ambiguous';
+  generation: number; boundary: { at: number; reason: 'method' | 'declared-account' } | null;
+}
+
+const SIGN_IN_VERSION = /^\d{1,6}\.\d{1,6}\.\d{1,6}(?:-[A-Za-z0-9.-]{1,48})?$/;
+const SIGN_IN_RULE = /^[a-z]+(?:-[a-z]+)*$/;
+const time = (x: unknown): x is number => Number.isSafeInteger(x);
+const msOrNull = (x: unknown): x is number | null => x === null || time(x);
+
+function parseSignInRequest(m: Msg): SignInRequest | null {
+  if (!count(m.id) || !uuid(m.profileId)) return null;
+  const base = { v: 1 as const, type: 'signIn' as const, id: m.id, profileId: m.profileId };
+  if (m.op === 'read') return exactKeys(m, ['v', 'type', 'id', 'profileId', 'op']) ? { ...base, op: 'read' } : null;
+  if (!count(m.expectedRevision)) return null;
+  if (m.op === 'set') {
+    return exactKeys(m, ['v', 'type', 'id', 'profileId', 'op', 'method', 'expectedRevision']) && oneOf(SIGN_IN_METHODS, m.method)
+      ? { ...base, op: 'set', method: m.method, expectedRevision: m.expectedRevision } : null;
+  }
+  return (m.op === 'clear' || m.op === 'account-change') && exactKeys(m, ['v', 'type', 'id', 'profileId', 'op', 'expectedRevision'])
+    ? { ...base, op: m.op, expectedRevision: m.expectedRevision } : null;
+}
+
+/** Review L5: the bounds again on the renderer side (the service writes them; a store row is not trusted). */
+function parseSignInView(x: unknown): SignInView | undefined {
+  if (!exactKeys(x, ['profileId', 'revision', 'method', 'source', 'at', 'declaration', 'evidence', 'conflict', 'usingDeclaration', 'outputStatus', 'generation', 'boundary'])) return undefined;
+  if (!uuid(x.profileId) || !count(x.revision) || !oneOf(SIGN_IN_METHODS, x.method) || !msOrNull(x.at) || !count(x.generation)) return undefined;
+  if (!(x.source === null || x.source === 'owner' || oneOf(SIGN_IN_SOURCES, x.source))) return undefined;
+  if (typeof x.conflict !== 'boolean' || typeof x.usingDeclaration !== 'boolean' || !oneOf(['unavailable', 'matched', 'ambiguous'] as const, x.outputStatus)) return undefined;
+  const d = x.declaration, e = x.evidence, b = x.boundary;
+  const declaration = d === null ? null : exactKeys(d, ['method', 'at']) && oneOf(SIGN_IN_METHODS, d.method) && time(d.at) ? { method: d.method, at: d.at } : undefined;
+  const evidence = e === null ? null : exactKeys(e, ['method', 'source', 'version', 'ruleId', 'observedAt', 'sourceAt']) && oneOf(SIGN_IN_KNOWN, e.method)
+    && oneOf(SIGN_IN_SOURCES, e.source) && text(e.version, 64) && SIGN_IN_VERSION.test(e.version) && text(e.ruleId, 64) && SIGN_IN_RULE.test(e.ruleId)
+    && time(e.observedAt) && time(e.sourceAt)
+    ? { method: e.method, source: e.source, version: e.version, ruleId: e.ruleId, observedAt: e.observedAt, sourceAt: e.sourceAt } : undefined;
+  const boundary = b === null ? null : exactKeys(b, ['at', 'reason']) && time(b.at) && oneOf(['method', 'declared-account'] as const, b.reason) ? { at: b.at, reason: b.reason } : undefined;
+  if (declaration === undefined || evidence === undefined || boundary === undefined) return undefined;
+  return { profileId: x.profileId, revision: x.revision, method: x.method, source: x.source, at: x.at, declaration, evidence, conflict: x.conflict,
+    usingDeclaration: x.usingDeclaration, outputStatus: x.outputStatus, generation: x.generation, boundary };
+}
+
+// XAIBO-PROD-574 (P6-T10 unit 2a; FR-06, D-P6-11; design .handoff/p6-t10-design.md sections 1-2, review R2/R3/R7): the
+// Agent Map Agents list, one row per agent and profile, read only. Reasons and gaps are fixed codes; no path beyond the
+// profile label the usage view already shows; a receipt names only its source, event and time.
+export const INTEGRATION_STATES = ['detected', 'setup-required', 'awaiting-trust', 'connected', 'partial-coverage', 'unsupported-version', 'not-detected'] as const;
+export const INTEGRATION_FACTS = ['no-executable', 'probe-not-granted', 'probe-grant-stale', 'version-unknown', 'version-unqualified', 'no-profile', 'not-connected',
+  'evidence-unavailable', 'drifted', 'disconnected-externally', 'pending-recovery', 'unreadable', 'hooks-blocked', 'no-receipt', 'waiting-for-receipt', 'hook-gap',
+  'content-unavailable'] as const;
+export const CONTENT_MODES = ['native-transcript', 'report-full', 'report-state-only', 'unavailable'] as const;
+export const INTEGRATION_REFUSALS = ['starting', 'unavailable', 'stale-cursor', 'too-large', 'failed'] as const;
+export const INTEGRATION_PAGE_MAX = 10;
+export type IntegrationState = (typeof INTEGRATION_STATES)[number];
+export type IntegrationFact = (typeof INTEGRATION_FACTS)[number];
+export interface IntegrationKey { agent: string; profileId: string | null }
+export interface IntegrationRow {
+  key: IntegrationKey; name: string; profileLabel: string | null; version: string | null; state: IntegrationState; reasons: IntegrationFact[];
+  lifecycleGaps: (typeof GAP_REASONS)[number][]; receipt: { source: 'hook' | 'report'; event: string; receivedAt: number } | null;
+  content: { mode: (typeof CONTENT_MODES)[number]; assurance: 'verified' | 'declared' | 'unavailable'; evidence: string | null; gaps: string[] };
+}
+export type IntegrationPageResult =
+  | { status: 'ready'; observedAt: number; value: { rows: IntegrationRow[]; previous: IntegrationKey | null; next: IntegrationKey | null } }
+  | { status: 'refused'; code: (typeof INTEGRATION_REFUSALS)[number] };
+
+const EVENT_NAME = /^[A-Za-z][A-Za-z0-9.]{0,63}$/;
+const SHORT_CODE = /^[a-z][a-z0-9-]{0,31}$/;
+function parseIntegrationKey(x: unknown): IntegrationKey | undefined {
+  return exactKeys(x, ['agent', 'profileId']) && typeof x.agent === 'string' && AGENT_ID.test(x.agent) && (x.profileId === null || uuid(x.profileId))
+    ? { agent: x.agent, profileId: x.profileId } : undefined;
+}
+const codeList = <T extends string>(x: unknown, allowed: readonly T[]): x is T[] => Array.isArray(x) && x.length <= 16 && x.every((c) => oneOf(allowed, c));
+function parseIntegrationRow(x: unknown): IntegrationRow | undefined {
+  if (!exactKeys(x, ['key', 'name', 'profileLabel', 'version', 'state', 'reasons', 'lifecycleGaps', 'receipt', 'content'])) return undefined;
+  const key = parseIntegrationKey(x.key), r = x.receipt, c = x.content;
+  if (!key || !text(x.name, 200) || !(x.profileLabel === null || text(x.profileLabel, 512)) || !(x.version === null || text(x.version, 64))) return undefined;
+  if (!oneOf(INTEGRATION_STATES, x.state) || !codeList(x.reasons, INTEGRATION_FACTS) || !codeList(x.lifecycleGaps, GAP_REASONS)) return undefined;
+  const receipt = r === null ? null : exactKeys(r, ['source', 'event', 'receivedAt']) && (r.source === 'hook' || r.source === 'report') && typeof r.event === 'string'
+    && EVENT_NAME.test(r.event) && count(r.receivedAt) ? { source: r.source as 'hook' | 'report', event: r.event, receivedAt: r.receivedAt } : undefined;
+  const content = exactKeys(c, ['mode', 'assurance', 'evidence', 'gaps']) && oneOf(CONTENT_MODES, c.mode) && oneOf(['verified', 'declared', 'unavailable'] as const, c.assurance)
+    && (c.evidence === null || text(c.evidence, 64)) && Array.isArray(c.gaps) && c.gaps.length <= 16 && c.gaps.every((g) => typeof g === 'string' && SHORT_CODE.test(g))
+    ? { mode: c.mode, assurance: c.assurance, evidence: c.evidence, gaps: [...c.gaps] as string[] } : undefined;
+  if (receipt === undefined || content === undefined) return undefined;
+  return { key, name: x.name, profileLabel: x.profileLabel, version: x.version, state: x.state, reasons: [...x.reasons], lifecycleGaps: [...x.lifecycleGaps], receipt, content };
+}
+// XAIBO-PROD-577 (P6-T10 unit 4a; design section 2, review R7/R8): the panel's read. The list row, that agent's profiles,
+// that profile's reconcile entries (ids and enums), Codex trust steps while awaiting trust, the install boundary.
+export const DETAIL_REFUSALS = ['starting', 'unavailable', 'not-found', 'failed'] as const;
+export interface IntegrationDetail {
+  row: IntegrationRow; profiles: { id: string; label: string }[];
+  entries: { entry: string; route: ConnectRoute; state: (typeof RECONCILE_STATES)[number]; reason: string | null }[];
+  trustSteps: string[]; boundary: number | null;
+  /** XAIBO-PROD-591 (P6-T08 slice B): the agent's compatibility labels for its detected version (at most 16 lines). */
+  compatibility: string[];
+  /** XAIBO-PROD-597 (P6-T08a slice B): an imported agent's grant state per item (no paths); null for bundled agents. */
+  grants: GrantState | 'unavailable' | null;
+}
+export type IntegrationDetailResult = { status: 'ready'; observedAt: number; value: IntegrationDetail } | { status: 'refused'; code: (typeof DETAIL_REFUSALS)[number] };
+function parseIntegrationDetail(x: unknown): IntegrationDetailResult | undefined {
+  if (exactKeys(x, ['status', 'code']) && x.status === 'refused') return oneOf(DETAIL_REFUSALS, x.code) ? { status: 'refused', code: x.code } : undefined;
+  if (!exactKeys(x, ['status', 'observedAt', 'value']) || x.status !== 'ready' || !count(x.observedAt)) return undefined;
+  const v = x.value;
+  if (!exactKeys(v, ['row', 'profiles', 'entries', 'trustSteps', 'boundary', 'compatibility', 'grants'])) return undefined;
+  const row = parseIntegrationRow(v.row), grants = parseGrants(v.grants);
+  const ok = row && bounded(v.profiles, REMOVAL_LIMIT) && v.profiles.every((p) => exactKeys(p, ['id', 'label']) && uuid(p.id) && text(p.label, 512))
+    && bounded(v.entries, REMOVAL_LIMIT) && v.entries.every((e) => exactKeys(e, ['entry', 'route', 'state', 'reason']) && uuid(e.entry) && route(e.route)
+      && oneOf(RECONCILE_STATES, e.state) && (e.reason === null || connectCode(e.reason)))
+    && bounded(v.trustSteps, CONNECT_LIMITS.trust) && v.trustSteps.every(longText) && (v.boundary === null || count(v.boundary))
+    && bounded(v.compatibility, 16) && v.compatibility.every((l) => text(l, 256)) && grants !== undefined;
+  if (!ok) return undefined;
+  // code review L3: the fields agree: trust steps only while awaiting trust; a profile-less row has no entries or boundary; the
+  // row's own profile is listed
+  const pid = row.key.profileId, d = v as unknown as IntegrationDetail;
+  if ((d.trustSteps.length && row.state !== 'awaiting-trust') || (pid === null && (d.entries.length || d.boundary !== null))
+    || (pid !== null && !d.profiles.some((p) => p.id === pid))) return undefined;
+  return { status: 'ready', observedAt: x.observedAt, value: { row, profiles: d.profiles.map((p) => ({ ...p })), entries: d.entries.map((e) => ({ ...e })), trustSteps: [...d.trustSteps], boundary: d.boundary, compatibility: [...d.compatibility], grants } };
+}
+function parseIntegrationPage(x: unknown): IntegrationPageResult | undefined {
+  if (exactKeys(x, ['status', 'code']) && x.status === 'refused') return oneOf(INTEGRATION_REFUSALS, x.code) ? { status: 'refused', code: x.code } : undefined;
+  if (!exactKeys(x, ['status', 'observedAt', 'value']) || x.status !== 'ready' || !count(x.observedAt)) return undefined;
+  const v = x.value;
+  if (!exactKeys(v, ['rows', 'previous', 'next']) || !Array.isArray(v.rows) || v.rows.length > INTEGRATION_PAGE_MAX) return undefined;
+  const rows = v.rows.map(parseIntegrationRow);
+  const previous = v.previous === null ? null : parseIntegrationKey(v.previous), next = v.next === null ? null : parseIntegrationKey(v.next);
+  if (rows.some((r) => r === undefined) || previous === undefined || next === undefined) return undefined;
+  return { status: 'ready', observedAt: x.observedAt, value: { rows: rows as IntegrationRow[], previous, next } };
+}
+
+// XAIBO-PROD-597 (P6-T08a slice B; D-P6-20, SEC5; security review): grant wire types. The renderer asks main with ids only
+// (GrantAsk over ipcMain.handle('grant')); main alone sends grantOffer/grantConfirm to the service and gets the bounded offer
+// back in a grant ServiceEvent, never on a renderer port; revoke is an ids-only port request. The service types (slice A) live
+// here so main can name them.
+export type GrantRequest = { action: 'root'; agent: string; root: string } | { action: 'probe'; agent: string; binary: string; file: string } | { action: 'setup'; agent: string };
+const OFFER_REFUSALS = ['not-found', 'root-unavailable', 'root-not-approved', 'executable-invalid', 'unavailable'] as const;
+const CONFIRM_REFUSALS = ['stale', 'unavailable', 'failed'] as const;
+export type GrantRefusal = (typeof OFFER_REFUSALS)[number];
+/** What main's native confirmation shows: the entry, the exact folder or file, the probe's argv or the setup's ops; never sent
+ *  to the renderer. binding: an HMAC (per-boot key, 5-minute bucket) of everything shown and stored. */
+export interface GrantOffer {
+  action: GrantRequest['action']; agent: string; name: string; id: string | null; root: string; path: string;
+  argv: string[] | null; ops: { pointer: string; value: string }[] | null; binding: string;
+}
+export type GrantOfferResult = { status: 'offer'; offer: GrantOffer } | { status: 'refused'; code: GrantRefusal };
+export type GrantConfirmResult = { status: 'granted' } | { status: 'refused'; code: (typeof CONFIRM_REFUSALS)[number] };
+export type RevokeTarget = { kind: 'root' | 'probe'; id: string } | { kind: 'setup' };
+export const REVOKE_RESULTS = ['revoked', 'unchanged', 'not-found', 'unavailable'] as const;
+export type RevokeResult = (typeof REVOKE_RESULTS)[number];
+/** Grant state for the integration detail, one state per declared item; no paths, digests or argv. */
+export interface GrantState {
+  roots: { id: string; state: 'approved' | 'stale' | 'none' | 'unavailable' }[];
+  probes: { binary: string; state: 'granted' | 'stale' | 'none' }[];
+  setup: { root: string; state: 'granted' | 'stale' | 'none' } | null;
+}
+export type GrantAsk = { action: 'root'; agent: string; root: string } | { action: 'probe'; agent: string; binary: string } | { action: 'setup'; agent: string };
+export const GRANT_CODES = ['not-found', 'root-unavailable', 'root-not-approved', 'executable-invalid', 'stale', 'busy', 'unavailable', 'failed', 'invalid', 'oversize', 'unknown'] as const;
+/** unknown: the confirm was sent but no reply came in time (the grant may have been written: reread, never retry). */
+export type GrantOutcome = { status: 'granted' } | { status: 'cancelled' } | { status: 'refused'; code: (typeof GRANT_CODES)[number] };
+const REFUSED_CODES = [...OFFER_REFUSALS, ...CONFIRM_REFUSALS] as const;
+const refId = (x: unknown): x is string => typeof x === 'string' && AGENT_ID.test(x);
+const absPath = (x: unknown): x is string => text(x, 4096) && x.startsWith('/') && !x.includes('\0');
+const BINDING = /^[0-9a-f]{64}$/;
+
+export function parseGrantAsk(x: unknown): GrantAsk | null {
+  if (!isObj(x) || !refId(x.agent)) return null;
+  if (x.action === 'root') return exactKeys(x, ['action', 'agent', 'root']) && refId(x.root) ? { action: 'root', agent: x.agent, root: x.root } : null;
+  if (x.action === 'probe') return exactKeys(x, ['action', 'agent', 'binary']) && refId(x.binary) ? { action: 'probe', agent: x.agent, binary: x.binary } : null;
+  return x.action === 'setup' && exactKeys(x, ['action', 'agent']) ? { action: 'setup', agent: x.agent } : null;
+}
+function parseGrantRequest(x: unknown): GrantRequest | null {
+  if (!isObj(x) || x.action !== 'probe') return parseGrantAsk(x) as Exclude<GrantAsk, { action: 'probe' }> | null; // a probe ask carries no file
+  return exactKeys(x, ['action', 'agent', 'binary', 'file']) && refId(x.agent) && refId(x.binary) && absPath(x.file) ? { action: 'probe', agent: x.agent, binary: x.binary, file: x.file } : null;
+}
+export function parseGrantOutcome(x: unknown): GrantOutcome | null {
+  if (exactKeys(x, ['status']) && (x.status === 'granted' || x.status === 'cancelled')) return { status: x.status };
+  return exactKeys(x, ['status', 'code']) && x.status === 'refused' && oneOf(GRANT_CODES, x.code) ? { status: 'refused', code: x.code } : null;
+}
+function parseGrantResult(r: unknown): GrantOfferResult | GrantConfirmResult | null {
+  if (exactKeys(r, ['status']) && r.status === 'granted') return { status: 'granted' };
+  if (exactKeys(r, ['status', 'code']) && r.status === 'refused') return oneOf(REFUSED_CODES, r.code) ? { status: 'refused', code: r.code } as GrantOfferResult | GrantConfirmResult : null;
+  if (!exactKeys(r, ['status', 'offer']) || r.status !== 'offer') return null;
+  const o = r.offer;
+  const ok = exactKeys(o, ['action', 'agent', 'name', 'id', 'root', 'path', 'argv', 'ops', 'binding']) && oneOf(['root', 'probe', 'setup'] as const, o.action) && refId(o.agent)
+    && text(o.name, 64) && (o.id === null || refId(o.id)) && absPath(o.root) && absPath(o.path)
+    && (o.argv === null || (bounded(o.argv, 5) && o.argv.every((a) => text(a, 4096))))
+    && (o.ops === null || (bounded(o.ops, 16) && o.ops.every((p) => exactKeys(p, ['pointer', 'value']) && text(p.pointer, 256) && text(p.value, 256))))
+    && typeof o.binding === 'string' && BINDING.test(o.binding);
+  if (!ok) return null;
+  const v = o as unknown as GrantOffer;
+  return { status: 'offer', offer: { ...v, argv: v.argv && [...v.argv], ops: v.ops && v.ops.map((p) => ({ ...p })) } };
+}
+// XAIBO-PROD-600 (P6-T12 slice 2; D-P6-21; plan and security review .handoff/p6-t12-slice2-plan.md): main's native confirmation
+// of a real-class apply. The renderer asks main with a kind and a preview id only (ApplyAsk, invoke 'confirm-apply'); main alone
+// sends applyOffer/applyConfirm (the renderer port has neither); the offer's items are labelled from a closed set and carry
+// values main quotes; a confirmed apply answers with the request's own reply shape, through its own bound check.
+export const APPLY_KINDS = ['connect', 'removal', 'cleanup'] as const;
+export type ApplyKind = (typeof APPLY_KINDS)[number];
+export interface ApplyAsk { kind: ApplyKind; previewId: string }
+export const APPLY_LABELS = ['agent', 'profile', 'folder', 'scope', 'file', 'change', 'value', 'retention', 'tee', 'helper', 'entries', 'real-entries', 'records', 'backups', 'manual'] as const;
+export type ApplyLabel = (typeof APPLY_LABELS)[number];
+export const APPLY_ITEMS = 64;
+export interface ApplyOffer { kind: ApplyKind; previewId: string; items: [ApplyLabel, string][]; binding: string }
+/** unknown: the confirm was sent but no reply came (the apply may have run: reread, never retry). */
+export const APPLY_REFUSALS = ['not-real', 'preview-invalid', 'preview-expired', 'stale', 'oversize', 'bounds-unavailable', 'unavailable', 'starting', 'read-only', 'busy', 'failed', 'unknown', 'invalid'] as const;
+export type ApplyRefusal = { status: 'refused'; code: (typeof APPLY_REFUSALS)[number] };
+export type ApplyReply = ConnectReply | RemovalReply | CleanupReply;
+export type ApplyOfferResult = { status: 'offer'; offer: ApplyOffer } | ApplyRefusal;
+export type ApplyConfirmResult = { status: 'done'; kind: ApplyKind; reply: ApplyReply } | ApplyRefusal;
+export type ApplyOutcome = { status: 'cancelled' } | ApplyConfirmResult;
+export const applyRefusal = (code: string): ApplyRefusal => ({ status: 'refused', code: oneOf(APPLY_REFUSALS, code) ? code : 'failed' });
+
+export function parseApplyAsk(x: unknown): ApplyAsk | null {
+  return exactKeys(x, ['kind', 'previewId']) && oneOf(APPLY_KINDS, x.kind) && uuid(x.previewId) ? { kind: x.kind, previewId: x.previewId } : null;
+}
+const applyReply = (kind: ApplyKind, r: unknown): ApplyReply | null =>
+  (kind === 'connect' ? parseConnectReply(r) : kind === 'removal' ? parseRemovalReply('removalApply', r) : parseCleanupReply('cleanupApply', r));
+export function parseApplyResult(x: unknown): ApplyOfferResult | ApplyConfirmResult | null {
+  if (exactKeys(x, ['status', 'code']) && x.status === 'refused') return oneOf(APPLY_REFUSALS, x.code) ? { status: 'refused', code: x.code } : null;
+  if (exactKeys(x, ['status', 'kind', 'reply']) && x.status === 'done' && oneOf(APPLY_KINDS, x.kind)) {
+    const reply = applyReply(x.kind, x.reply);
+    return reply ? { status: 'done', kind: x.kind, reply } : null;
+  }
+  if (!exactKeys(x, ['status', 'offer']) || x.status !== 'offer') return null;
+  const o = x.offer;
+  if (!exactKeys(o, ['kind', 'previewId', 'items', 'binding']) || !oneOf(APPLY_KINDS, o.kind) || !uuid(o.previewId) || typeof o.binding !== 'string' || !BINDING.test(o.binding)) return null;
+  if (!bounded(o.items, APPLY_ITEMS)) return null;
+  const items: [ApplyLabel, string][] = [];
+  for (const it of o.items) {
+    if (!Array.isArray(it) || it.length !== 2 || !oneOf(APPLY_LABELS, it[0]) || !text(it[1], 4096)) return null;
+    items.push([it[0], it[1]]);
+  }
+  return { status: 'offer', offer: { kind: o.kind, previewId: o.previewId, items, binding: o.binding } };
+}
+
+/** XAIBO-PROD-601 (P6-T12 slice 3): the renderer's check of main's confirm-apply result (cancelled, done or refused; never an offer). */
+export function parseApplyOutcome(x: unknown): ApplyOutcome | null {
+  if (exactKeys(x, ['status']) && x.status === 'cancelled') return { status: 'cancelled' };
+  const r = parseApplyResult(x);
+  return r && r.status !== 'offer' ? r : null;
+}
+function parseRevokeTarget(t: unknown): RevokeTarget | null {
+  if (exactKeys(t, ['kind', 'id']) && (t.kind === 'root' || t.kind === 'probe') && refId(t.id)) return { kind: t.kind, id: t.id };
+  return exactKeys(t, ['kind']) && t.kind === 'setup' ? { kind: 'setup' } : null;
+}
+function parseGrants(g: unknown): GrantState | 'unavailable' | null | undefined {
+  if (g === null || g === 'unavailable') return g;
+  if (!exactKeys(g, ['roots', 'probes', 'setup']) || !bounded(g.roots, 4) || !bounded(g.probes, 8)) return undefined;
+  const ok = g.roots.every((r) => exactKeys(r, ['id', 'state']) && refId(r.id) && oneOf(['approved', 'stale', 'none', 'unavailable'] as const, r.state))
+    && g.probes.every((p) => exactKeys(p, ['binary', 'state']) && refId(p.binary) && oneOf(['granted', 'stale', 'none'] as const, p.state))
+    && (g.setup === null || (exactKeys(g.setup, ['root', 'state']) && refId(g.setup.root) && oneOf(['granted', 'stale', 'none'] as const, g.setup.state)));
+  if (!ok) return undefined;
+  const v = g as unknown as GrantState;
+  return { roots: v.roots.map((r) => ({ ...r })), probes: v.probes.map((p) => ({ ...p })), setup: v.setup && { ...v.setup } };
 }

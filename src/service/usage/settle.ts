@@ -3,29 +3,27 @@
 // A contribution whose key is already settled adds nothing (spool replay, Re-import, suppression-clearing activity);
 // a new one adds its share and records its key with the bucket month and offset.
 import type { DatabaseSync } from 'node:sqlite';
-import { clearedSession, quotaContributions, sessionContributions, Totals, type Contribution } from './monthly.ts';
+import { clearedSession, contributions, Totals, type Contribution } from './monthly.ts';
 
 export interface SettleSelection { sessions: number[]; quota: number[] }
 
 export function settle(db: DatabaseSync, sel: SettleSelection, secret: Buffer, now: number): { added: number; skipped: number } {
-  return settleContributions(db, [sessionContributions(db, secret, sel.sessions), quotaContributions(db, secret, sel.quota)], now);
+  return settleContributions(db, contributions(db, secret, sel), now);
 }
 
 /** settle() for contributions the caller computed (Gate 5 round 2: the purge's settlement batches). */
-export function settleContributions(db: DatabaseSync, gens: Iterable<Contribution>[], now: number): { added: number; skipped: number } {
+export function settleContributions(db: DatabaseSync, all: Iterable<Contribution>, now: number): { added: number; skipped: number } {
   if (!db.isTransaction) throw new Error('settle must run inside the caller\'s transaction');
   const isSettled = db.prepare('SELECT 1 FROM settled_contributions WHERE key = ?');
   const mark = db.prepare('INSERT INTO settled_contributions (key, month, utc_offset, settled_at) VALUES (?, ?, ?, ?)');
   const delta = new Totals();
   const cleared = clearedSession(db); // P5-T16 review M2
   let added = 0, skipped = 0;
-  for (const gen of gens) {
-    for (const c of gen) {
-      if (isSettled.get(c.key) || cleared(c)) { skipped++; continue; }
-      mark.run(c.key, c.at.month, c.at.offset, now); // also dedupes a key repeated within this selection
-      delta.add(c);
-      added++;
-    }
+  for (const c of all) {
+    if (isSettled.get(c.key) || cleared(c)) { skipped++; continue; }
+    mark.run(c.key, c.at.month, c.at.offset, now); // also dedupes a key repeated within this selection
+    delta.add(c);
+    added++;
   }
   const revisions = db.prepare('SELECT price_revisions FROM monthly_usage WHERE month = ? AND agent = ? AND profile_key = ? AND model_id = ?');
   const usage = db.prepare(`INSERT INTO monthly_usage (month, agent, profile_key, model_id, sessions, turns, requests, uncached_input, cache_read, cache_write,

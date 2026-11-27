@@ -3,21 +3,27 @@
 // answers main's commands. Logs go to their own dir so two processes never rotate one file. P1-T12: each brokered
 // port gets agent status on connect, answers listSessions after boot, and receives coalesced session deltas.
 import type { MessagePortMain } from 'electron';
-import { homedir } from 'node:os';
+import { homedir, userInfo } from 'node:os';
 import path from 'node:path';
 import { errorCode, installCrashPolicy } from '../shared/crash.ts';
 import { accept, IPC_VERSION, parsePortRequest, parseServiceCommand } from '../shared/ipc.ts';
-import type { Banner, PortMessage, RetentionSetting, ServiceEvent, StorageReport } from '../shared/ipc.ts';
+import type { Banner, PortMessage, ServiceEvent, StorageReport, IntegrationDetailResult, IntegrationPageResult, GrantConfirmResult, GrantOfferResult, ApplyConfirmResult, ApplyOfferResult, RevokeResult } from '../shared/ipc.ts';
 import { appendQuiet, createLogger, loadInstallSecret, type Logger } from '../shared/log.ts';
 import { answer, answerCost, answerFiles, answerLiveSet, answerMarkers, answerSession, answerSlice, answerSubagents, answerTools, answerTranscript, answerUsage, answerUsageHistory, coalesce, createHub, sessionsByKey, type LiveOf } from './api.ts';
-import { boot, retentionDelayFromEnv, type Service } from './boot.ts';
+import { allowedRootsFromEnv, boot, retentionDelayFromEnv, type Service } from './boot.ts';
 import { applyOverlay, listFolders, listHistory, listProjects, resyncAfter } from './history/overlay.ts';
 import { mapGroups } from './history/map.ts';
 import type { Batch } from './store/writer.ts';
 import { traceableIds } from './trace-ids.ts';
 import { answerMonthly, MonthlyCache } from './usage/ledger.ts';
+import { priceView } from './usage/prices.ts';
 import { answerHistoryRow, answerSearch, retentionState, suppressedPage } from './history/tools.ts';
 import { StorageMeter } from './storage/meter.ts';
+import { takePerf } from './perf-counters.ts';
+import { afterDispatch, answerApply, answerIntegrations, connectContext, type Connect } from './integrations-ipc.ts';
+import { answerIntegrationDetail, answerIntegrationPage, pageEvidence } from './integrations/state.ts';
+import { createConnect } from './integrations/connect.ts';
+import { compatibility } from './catalog/capabilities.ts';
 
 // P3-T10: 50 ms keeps one push per window while leaving most of M1's 250 ms hook-to-paint budget; the tick re-reads
 // sessions whose status changes with time alone (settle within interval + 250 ms, M1), coverage is re-read slowly.
@@ -79,11 +85,24 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
   void booted.then((s) => {
     // A closed store still answers (empty: each answer catches its store errors), so no renderer request waits forever.
     const db = s.store.db;
+    // XAIBO-PROD-550 (D-P5-15 item 3): a history answer that a closed or failing store cannot give says its fallback
+    // (failed where it has one: the renderer keeps its rows and offers Retry), never an empty page. The page spreads
+    // first, so it can never replace v, type or id (review L4).
+    type Body<T extends PortMessage['type']> = Omit<Extract<PortMessage, { type: T }>, 'v' | 'type' | 'id'>;
+    const reply = <T extends PortMessage['type']>(type: T, fallback: Body<T>, fn: () => Body<T>) => {
+      let page = fallback;
+      try { if (db.isOpen) page = fn(); } catch { /* the fallback */ }
+      port.postMessage({ ...page, v: IPC_VERSION, type, id: req.id } as PortMessage);
+    };
     switch (req.type) {
       case 'liveSet': port.postMessage(db.isOpen ? answerLiveSet(db, req, Date.now(), s.kinds(), s.models(), live) : { v: IPC_VERSION, type: 'liveSet', id: req.id, rows: [], more: false }); break;
       case 'usage': port.postMessage(answerUsage(db, req, homedir())); break;
       case 'usageHistory': port.postMessage(answerUsageHistory(db, req)); break;
-      case 'session': port.postMessage(answerSession(db, req, s.kinds(), s.models(), live)); break;
+      // XAIBO-PROD-594: the VS Code extension and Desktop app lines (US-8) for the agent's detected version
+      case 'session': port.postMessage(answerSession(db, req, s.kinds(), s.models(), live, undefined, (agent) => {
+        const d = s.detections.find((x) => x.agent === agent);
+        return compatibility(s.catalog(), agent, d?.state === 'detected' ? d.version : null).filter((l) => /^(VS Code extension|Desktop app):/.test(l));
+      })); break;
       case 'transcript': port.postMessage(answerTranscript(db, req)); break;
       case 'slice': port.postMessage(answerSlice(db, req)); break;
       case 'tools': port.postMessage(answerTools(db, req, live)); break;
@@ -94,26 +113,21 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
       // P5-T17a: computed in a worker and cached (ledger.ts); failed when the store cannot answer
       case 'monthly': void answerMonthly(ledger!, req).then((m) => port.postMessage(m)); break;
       // XAIBO-PROD-527 (P5-T18 part 1): history tools and retention/storage settings
-      case 'search': {
-        let page: Omit<Extract<PortMessage, { type: 'search' }>, 'v' | 'type' | 'id'> = { hits: [], next: null, failed: true };
-        try { if (db.isOpen) page = answerSearch(db, req, s.kinds(), s.models(), live); } catch { /* failed */ }
-        port.postMessage({ v: IPC_VERSION, type: 'search', id: req.id, ...page } satisfies PortMessage); break;
-      }
+      case 'search': reply('search', { hits: [], next: null, failed: true }, () => answerSearch(db, req, s.kinds(), s.models(), live)); break;
       // design review M6: the ledger and open windows refresh once the session is hidden (boot's onRemoved, phase a)
       case 'purge': void s.purge(req.session).then((result) => port.postMessage({ v: IPC_VERSION, type: 'purge', id: req.id, result } satisfies PortMessage)); break;
-      case 'suppressed': {
-        let page: Omit<Extract<PortMessage, { type: 'suppressed' }>, 'v' | 'type' | 'id'> = { rows: [], next: null, failed: true };
-        try { if (db.isOpen) page = suppressedPage(db, secret!, homedir(), req.cursor, req.limit); } catch { /* failed */ }
-        port.postMessage({ v: IPC_VERSION, type: 'suppressed', id: req.id, ...page } satisfies PortMessage); break;
-      }
+      case 'suppressed': reply('suppressed', { rows: [], next: null, failed: true }, () => suppressedPage(db, secret!, homedir(), req.cursor, req.limit)); break;
       case 'historyRow': port.postMessage({ v: IPC_VERSION, type: 'historyRow', id: req.id, ...answerHistoryRow(db, req.session, s.kinds(), s.models(), live) } satisfies PortMessage); break;
       case 'reimport': port.postMessage({ v: IPC_VERSION, type: 'reimport', id: req.id, result: s.reimport(req.key) } satisfies PortMessage); break;
-      case 'retention': {
-        let state: { setting: RetentionSetting | null; lastRunAt: number | null } = { setting: null, lastRunAt: null };
-        try { if (db.isOpen) state = retentionState(db); } catch { /* unreadable */ }
-        port.postMessage({ v: IPC_VERSION, type: 'retention', id: req.id, ...state } satisfies PortMessage); break;
-      }
+      case 'retention': reply('retention', { setting: null, lastRunAt: null }, () => retentionState(db)); break; // unreadable: no setting
       case 'setRetention': port.postMessage({ v: IPC_VERSION, type: 'setRetention', id: req.id, result: s.saveRetention(req.value) } satisfies PortMessage); break;
+      // XAIBO-PROD-568 (P6-T11): Validate switches nothing; Reload keeps the last valid revision on an invalid file.
+      // ponytail (review R6): a read-only store reloads in memory only (not kept across a restart), as reloadPrices does.
+      case 'prices': {
+        const p = req.op === 'reload' ? s.reloadPrices() : s.prices();
+        port.postMessage({ v: IPC_VERSION, type: 'prices', id: req.id, view: p ? priceView(p) : null, check: req.op === 'validate' ? s.checkPrices() : null } satisfies PortMessage);
+        break;
+      }
       case 'storage': { // measured in the meter's worker on request; at most once a minute (design review M4)
         const last = meter!.latest(), now = Date.now();
         const fresh = last !== null && last.measuredAt <= now && now - last.measuredAt < STORAGE_MIN_MS;
@@ -124,47 +138,88 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
         break;
       }
       // P5-T16: the ledger recomputes on the next request (never from a run read before the clear); XAIBO-PROD-526: async
+      // XAIBO-PROD-590 (P6-T08 slice A): rescan without restart; the agents broadcast follows from the service's announce
+      case 'agentRescan': void s.rescan().then((result) => port.postMessage({ v: IPC_VERSION, type: 'agentRescan', id: req.id, result } satisfies PortMessage)); break;
+      // XAIBO-PROD-597 (P6-T08a slice B): ids only; it only removes authority, so no native confirmation
+      case 'grantRevoke': void s.revoke(req.agent, req.target).catch((): RevokeResult => 'unavailable') // code review L: always a reply
+        .then((result) => port.postMessage({ v: IPC_VERSION, type: 'grantRevoke', id: req.id, result } satisfies PortMessage)); break;
       case 'clearUsage': void s.clearUsage().then((result) => {
         if (result === 'cleared') ledger?.invalidate();
         port.postMessage({ v: IPC_VERSION, type: 'clearUsage', id: req.id, result } satisfies PortMessage);
       }); break;
       // XAIBO-PROD-504 (P5-T01): history overlay; Gate 5 G5b2-5: a store that cannot answer says failed (the renderer keeps
       // its rows and offers Retry), never an empty page
-      case 'history': {
-        let page: Omit<Extract<PortMessage, { type: 'history' }>, 'v' | 'type' | 'id'> = { rows: [], next: null, failed: true };
-        try { if (db.isOpen) page = listHistory(db, req.filter, req.cursor, req.limit, s.kinds(), s.models(), live); } catch { /* failed */ }
-        port.postMessage({ v: IPC_VERSION, type: 'history', id: req.id, ...page } satisfies PortMessage); break;
-      }
-      case 'projects': {
-        let page: Omit<Extract<PortMessage, { type: 'projects' }>, 'v' | 'type' | 'id'> = { projects: [], next: null, failed: true };
-        try { if (db.isOpen) page = listProjects(db, req.cursor, req.limit); } catch { /* failed */ }
-        port.postMessage({ v: IPC_VERSION, type: 'projects', id: req.id, ...page } satisfies PortMessage); break;
-      }
-      case 'folders': {
-        let page: Omit<Extract<PortMessage, { type: 'folders' }>, 'v' | 'type' | 'id'> = { folders: [], next: null, failed: true };
-        try { if (db.isOpen) page = listFolders(db, req.project, req.cursor, req.limit); } catch { /* failed */ }
-        port.postMessage({ v: IPC_VERSION, type: 'folders', id: req.id, ...page } satisfies PortMessage); break;
-      }
-      case 'mapGroups': { // P5-T01c: a store that cannot answer says failed (the renderer offers Retry), never an empty page
-        let page: Omit<Extract<PortMessage, { type: 'mapGroups' }>, 'v' | 'type' | 'id'> = { groups: [], next: null, failed: true };
-        try { if (db.isOpen) page = mapGroups(db, req.parent, req.cursor, req.limit, live); } catch { /* failed */ }
-        port.postMessage({ v: IPC_VERSION, type: 'mapGroups', id: req.id, ...page } satisfies PortMessage); break;
-      }
+      case 'history': reply('history', { rows: [], next: null, failed: true }, () => listHistory(db, req.filter, req.cursor, req.limit, s.kinds(), s.models(), live)); break;
+      case 'projects': reply('projects', { projects: [], next: null, failed: true }, () => listProjects(db, req.cursor, req.limit)); break;
+      case 'folders': reply('folders', { folders: [], next: null, failed: true }, () => listFolders(db, req.project, req.cursor, req.limit)); break;
+      // P5-T01c: a store that cannot answer says failed (the renderer offers Retry), never an empty page
+      case 'mapGroups': reply('mapGroups', { groups: [], next: null, failed: true }, () => mapGroups(db, req.parent, req.cursor, req.limit, live)); break;
       case 'overlay': {
         const result = applyOverlay(db, req.op, { readOnly: s.store.readOnly || !db.isOpen, now: Date.now() });
         port.postMessage({ v: IPC_VERSION, type: 'overlay', id: req.id, result } satisfies PortMessage);
         if (resyncAfter(req.op, result)) removed(); // G5b2-4: other windows list it (or not) too
         break;
       }
+      case 'integrationPage': { // XAIBO-PROD-574 (P6-T10 unit 2a): the Agents list, from a fresh read-only reconcile
+        const c = integrationsFor(s);
+        const result: IntegrationPageResult = c === null ? { status: 'refused', code: 'starting' } : c === 'unavailable' || !dataDir ? { status: 'refused', code: 'unavailable' }
+          : answerIntegrationPage({ db, catalog: s.catalog(), detections: s.detections, profiles: s.profiles(), home: homedir(), now: Date.now(),
+            reconcile: () => c.reconcile(s.profiles() ?? []), ...pageEvidence({ db, dataDir }) }, req);
+        port.postMessage({ v: IPC_VERSION, type: 'integrationPage', id: req.id, result } satisfies PortMessage);
+        break;
+      }
+      case 'integrationDetail': { // XAIBO-PROD-577 (P6-T10 unit 4a): the integration panel's read, from a fresh read-only reconcile
+        const c = integrationsFor(s);
+        const result: IntegrationDetailResult = c === null ? { status: 'refused', code: 'starting' } : c === 'unavailable' || !dataDir ? { status: 'refused', code: 'unavailable' }
+          : answerIntegrationDetail({ db, catalog: s.catalog(), detections: s.detections, profiles: s.profiles(), home: homedir(), now: Date.now(),
+            reconcile: () => c.reconcile(s.profiles() ?? []), grantState: (agent) => s.grantState(agent), ...pageEvidence({ db, dataDir }) }, req.key);
+        port.postMessage({ v: IPC_VERSION, type: 'integrationDetail', id: req.id, result } satisfies PortMessage);
+        break;
+      }
+      case 'signIn': { // XAIBO-PROD-572 (P6-T01a slice 3): a change re-groups usage, so the ledger recomputes (review L6)
+        const r = s.signIn(req);
+        port.postMessage({ v: IPC_VERSION, type: 'signIn', id: req.id, code: r.code, view: r.view } satisfies PortMessage);
+        if (r.changed) ledger?.invalidate();
+        break;
+      }
+      // XAIBO-PROD-558 (P6-T03 part 1b): Connect, Disconnect, Uninstall; a preview belongs to this port
+      case 'connectPreview': case 'connectApply': case 'removalPreview': case 'removalApply': case 'cleanupPreview': case 'cleanupApply': // XAIBO-PROD-576: no bare removal (R1)
+      case 'teePreview': case 'teeRemovalPreview': // XAIBO-PROD-580: the separate tee (R6)
+        // part 2a: awaited (the lock is released before the reply); a closed port drops the reply
+        void answerIntegrations({ readOnly: s.store.readOnly, connect: () => integrationsFor(s), profile: (id) => s.profiles()?.find((p) => p.id === id), profiles: () => s.profiles() ?? [] }, req, port)
+          .then((m) => { try { port.postMessage(m); } catch { /* the window closed */ } }, () => { // code review L-a: never unanswered
+            try { port.postMessage({ v: IPC_VERSION, type: req.type, id: req.id, result: afterDispatch(req.type) } as PortMessage); } catch { /* closed */ }
+          });
+        break;
       default: port.postMessage(db.isOpen ? answer(db, req, s.kinds(), s.models(), live) : { v: IPC_VERSION, type: 'page', id: req.id, rows: [], next: null });
     }
   });
 });
 
+/** The Connect core, built once profiles are synced (null before: `starting`). XAIBO_BIN is always set by main (review M3). */
+let integrations: Connect | null = null;
+let startupDone = false; // review L-2: startup settled; still no profile sync = `unavailable`, never `starting` forever
+void booted.then((s) => s.done.then(() => { startupDone = true; reconcileOnStart(s); }, () => { startupDone = true; reconcileOnStart(s); }));
+/** XAIBO-PROD-562 (P6-T04 part 1, EC-26): one read-only reconcile once startup settled; kept for the IPC read (P6-T10).
+ *  ponytail: once per start; a refresh after each Connect/Disconnect and on request comes with the IPC read. */
+function reconcileOnStart(s: Service) {
+  try { const c = integrationsFor(s); if (c && c !== 'unavailable') c.reconcile(s.profiles() ?? []); } catch { /* read-only: nothing to undo; the next start retries */ }
+}
+const integrationsFor = (s: Service): Connect | null | 'unavailable' => {
+  if (!integrations && s.profiles() !== null && dataDir) {
+    integrations = createConnect(connectContext({
+      dataDir, login: s.loginEnv(), bin: process.env.XAIBO_BIN ?? '', catalog: s.catalog(),
+      detection: (agent) => s.detections.find((d) => d.agent === agent), // the live list: "Set path…" re-detects in place
+      setupAccess: (agent) => s.setupAccess(agent), // XAIBO-PROD-589: fresh per call, never cached
+    }));
+  }
+  return integrations ?? (startupDone ? 'unavailable' : null);
+};
+
 function connect(port: MessagePortMain) {
   hub.add(port);
   port.on('message', (e) => request(e.data, port));
-  port.on('close', () => hub.remove(port));
+  port.on('close', () => { hub.remove(port); integrations?.dropOwner(port); });
   port.start();
   port.postMessage({ v: IPC_VERSION, type: 'agents', agents: svc?.agents() ?? null } satisfies PortMessage);
   port.postMessage({ v: IPC_VERSION, type: 'coverage', banners } satisfies PortMessage);
@@ -185,10 +240,24 @@ const command = accept(parseServiceCommand, (m, transferred: MessagePortMain[]) 
   if (m.type === 'quit') { svc?.stop(); process.exit(0); }
   // Power events wait for boot, in arrival order, so a sleep during startup still reaches the engine (P3-T12 review).
   else if (m.type === 'wake') void booted.then((s) => s.wake());
+  // XAIBO-PROD-595 (P6-T08 slice E part 2): a picked catalog file; the outcome (codes only) goes to every window
+  else if (m.type === 'importCatalog') { const { path: picked } = m; void booted.then((s) => broadcast({ v: IPC_VERSION, type: 'catalogImport', result: s.importCatalog(picked) })); }
   else if (m.type === 'suspend') { const { at } = m; void booted.then((s) => s.suspend(at)); }
   else if (m.type === 'reloadPrices') void booted.then((s) => s.reloadPrices());
   else if (m.type === 'port') transferred.forEach(connect);
   else if (m.type === 'setPath') { const { agent, path: file } = m; void booted.then((s) => s.setPath(agent, file)); }
+  // XAIBO-PROD-597 (P6-T08a slice B; review M5): main's grant offer and confirm; the reply goes to main only, never a port
+  else if (m.type === 'grantOffer' || m.type === 'grantConfirm') { // code review L: always a reply, a failure included
+    const reply = (result: GrantOfferResult | GrantConfirmResult) => parent.postMessage({ v: IPC_VERSION, type: 'grant', id: m.id, result } satisfies ServiceEvent);
+    const run = m.type === 'grantOffer' ? booted.then((s) => s.grantOffer(m.request)) : booted.then((s) => s.grantConfirm(m.request, m.binding));
+    void run.catch((): GrantConfirmResult => ({ status: 'refused', code: 'failed' })).then(reply);
+  }
+  // XAIBO-PROD-600 (P6-T12 slice 2): main's apply offer and confirm; the reply goes to main only, never a port, always one
+  else if (m.type === 'applyOffer' || m.type === 'applyConfirm') {
+    const reply = (result: ApplyOfferResult | ApplyConfirmResult) => parent.postMessage({ v: IPC_VERSION, type: 'apply', id: m.id, result } satisfies ServiceEvent);
+    const run = booted.then((s) => answerApply({ readOnly: s.store.readOnly, connect: () => integrationsFor(s), profile: (id) => s.profiles()?.find((p) => p.id === id), profiles: () => s.profiles() ?? [] }, m));
+    void run.catch((): ApplyConfirmResult => ({ status: 'refused', code: m.type === 'applyConfirm' ? 'unknown' : 'failed' })).then(reply);
+  }
 });
 parent.on('message', (e) => command(e.data, e.ports));
 
@@ -196,8 +265,12 @@ async function main(dataDir: string, log: Logger) {
   secret = loadInstallSecret(dataDir);
   ledger = new MonthlyCache({ file: path.join(dataDir, 'xaibo.db'), secret, home: homedir(), log: (e, f) => log.log(e, f) });
   meter = new StorageMeter(dataDir);
+  // code review nit: userInfo() only when the variable is set (it throws for a uid with no user-database entry)
+  const testRoots = process.env.XAIBO_TEST_ALLOWED_ROOT ? allowedRootsFromEnv(process.env, { home: homedir(), accountHome: userInfo().homedir, dataDir }) : [];
+  if (testRoots.length) log.log('test_allowed_root');
   svc = await boot({
     dataDir, home: homedir(), shell: process.env.SHELL, log, retentionDelayMs: retentionDelayFromEnv(process.env),
+    allowedRoots: testRoots, // XAIBO-PROD-596: none unless an isolated-HOME E2E run sets XAIBO_TEST_ALLOWED_ROOT
     onCommit: committed,
     onAgents: (agents) => broadcast({ v: IPC_VERSION, type: 'agents', agents }),
     onNotify: (n) => parent.postMessage({ v: IPC_VERSION, type: 'notify', ...n } satisfies ServiceEvent), // P3-T11
@@ -213,6 +286,8 @@ async function main(dataDir: string, log: Logger) {
     try {
       const metrics = { ...svc!.metrics(), deltaResyncs: resyncs };
       stamp({ ev: 'metrics', ...metrics }); // P4-T11: the live-load run reads queue age and resyncs from the perf trace
+      // XAIBO-PROD-552 (D-P5-20/22): content-free counters and the service's memory, perf trace only
+      if (trace) { const m = process.memoryUsage(); stamp({ ev: 'perf', ...takePerf(), rss: m.rss, heapUsed: m.heapUsed, heapTotal: m.heapTotal, external: m.external, arrayBuffers: m.arrayBuffers }); }
       parent.postMessage({ v: IPC_VERSION, type: 'metrics', metrics } satisfies ServiceEvent);
     }
     catch (e) { log.log('metrics_failed', { error: errorCode(e) }); }

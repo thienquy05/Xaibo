@@ -44,7 +44,9 @@ export function expectedEvents(p: { rate: number; burstRate: number; burstEveryS
 /** Load qualifies at >= 95 % of the expected events (serial emit loops drop slots after a stall). */
 export const loadQualifies = (emitted: number, p: Parameters<typeof expectedEvents>[0]) => emitted >= 0.95 * expectedEvents(p);
 
-export function analyze(o: { emitted: Emitted[]; service: TraceLine[]; main: TraceLine[]; restart: Window | null; faults?: Window[]; loadEnd: bigint }) {
+export function analyze(o: { emitted: Emitted[]; service: TraceLine[]; main: TraceLine[]; restart: Window | null; faults?: Window[]; loadEnd: bigint;
+  /** D-P5-20 (Codex plan): named time windows; each gets its own hop p95s over every painted event emitted in it. */
+  phases?: { name: string; from: bigint; to: bigint }[] }) {
   // Indexes built once: per id its commits and deltas, per delta number its paints, each in time order.
   const by = <K>(lines: TraceLine[], keys: (l: TraceLine) => K[]) => {
     const m = new Map<K, bigint[]>();
@@ -89,11 +91,19 @@ export function analyze(o: { emitted: Emitted[]; service: TraceLine[]; main: Tra
   // emit -> commit, steady painted events: the time a change waits to be stored (a committed but unpainted event is a miss
   // in M1/M2 and in drain, so leaving it out here never lets a run pass; review L2)
   const ingestLag: number[] = [];
+  const byPhase = (o.phases ?? []).map((w) => ({ ...w, hook: [] as number[], file: [] as number[], hookToCommit: [] as number[], fileToCommit: [] as number[], commitToDelta: [] as number[], deltaToPaint: [] as number[], unpainted: 0 }));
   let lastPaint: bigint | null = null;
   let missing = false; // a steady event never painted (a restart-window miss reaches the UI by replay, reported apart)
   for (const e of o.emitted) {
     const j = join(e);
     const restart = inRestart(e);
+    for (const w of byPhase) {
+      if (e.t0 < w.from || e.t0 >= w.to) continue;
+      if (!j) { w.unpainted++; continue; }
+      (e.kind === 'hook' ? w.hook : w.file).push(ms(e.t0, j.paint));
+      (e.kind === 'hook' ? w.hookToCommit : w.fileToCommit).push(ms(e.t0, j.commit));
+      w.commitToDelta.push(ms(j.commit, j.delta)); w.deltaToPaint.push(ms(j.delta, j.paint));
+    }
     (e.kind === 'hook' ? buckets.m1 : buckets.m2)[restart ? 'restartWindow' : 'steady'].push(j ? ms(e.t0, j.paint) : Number.POSITIVE_INFINITY);
     if (!j) {
       unpainted[restart ? 'restart' : 'steady']++;
@@ -130,5 +140,7 @@ export function analyze(o: { emitted: Emitted[]; service: TraceLine[]; main: Tra
     // The writer's own queue: file syncs flush right after they enqueue (tail-adapter), so this is about 0 by design.
     queueAgeMs: stats(metrics.map((m) => m.writerQueueAgeMs ?? 0)),
     deltaResyncs: resyncs,
+    phases: Object.fromEntries(byPhase.map((w) => [w.name, { seconds: Math.round(ms(w.from, w.to) / 1000), hooks: w.hook.length, files: w.file.length, unpainted: w.unpainted,
+      m1: p95(w.hook), m2: p95(w.file), hookToCommit: p95(w.hookToCommit), fileToCommit: p95(w.fileToCommit), commitToDelta: p95(w.commitToDelta), deltaToPaint: p95(w.deltaToPaint) }])),
   };
 }

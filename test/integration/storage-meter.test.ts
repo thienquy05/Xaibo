@@ -101,6 +101,7 @@ test('review L3: every table in the schema maps to its intended category (a new 
     price_revisions: 'prices',
     profiles: 'other', kv: 'other', overlays: 'other', projects: 'other', folders: 'other', suppressions: 'other', hook_delivery: 'other',
     report_delivery: 'other', report_rejects: 'other', schema_migrations: 'other', sqlite_sequence: 'other', sqlite_stat1: 'other',
+    profile_sign_in: 'other', sign_in_boundaries: 'other', // P6-T01a: per-profile sign-in metadata
   };
   const tables = (d.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map((r) => r.name);
   for (const t of tables) {

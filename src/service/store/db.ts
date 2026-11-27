@@ -13,6 +13,8 @@ export interface StoreOptions {
   backupDir: string;
   migrations?: Migration[];
   freeBytes?: (dir: string) => number;
+  /** XAIBO-PROD-553 (D-P5-22 diagnostic, perf trace only via boot.ts tempStoreFromEnv): SQLite temp storage; MEMORY by default. */
+  tempStore?: 'memory' | 'file';
 }
 
 const MIGRATIONS_DIR = new URL('./migrations/', import.meta.url);
@@ -27,6 +29,12 @@ export function loadMigrations(dir: URL = MIGRATIONS_DIR): Migration[] {
 }
 
 /** SQLITE_FULL (primary code 13) or ENOSPC: the store cannot grow (EC-44). */
+/** Research L6: rolls back after a failure without replacing the caller's error (a throwing ROLLBACK is swallowed;
+ *  callers that care read db.isTransaction afterwards). XAIBO-PROD-550: shared by the writer and openStore. */
+export function rollback(db: DatabaseSync): void {
+  try { if (db.isTransaction) db.exec('ROLLBACK'); } catch { /* the original error is the one reported */ }
+}
+
 export const isDiskFull = (e: unknown) => {
   const x = e as { errcode?: unknown; code?: unknown } | null;
   return (typeof x?.errcode === 'number' && (x.errcode & 0xff) === 13) || x?.code === 'ENOSPC';
@@ -36,12 +44,12 @@ const userVersion = (db: DatabaseSync) => Number(Object.values(db.prepare('PRAGM
 const sizeOf = (f: string) => (existsSync(f) ? statSync(f).size : 0);
 const freeBytesOf = (dir: string) => { const s = statfsSync(dir); return s.bavail * s.bsize; };
 
-function openReadWrite(file: string): DatabaseSync {
+function openReadWrite(file: string, tempStore: 'memory' | 'file' = 'memory'): DatabaseSync {
   if (!existsSync(file)) closeSync(openSync(file, 'a', 0o600)); // SQLite creates -wal/-shm with the DB file's mode
   chmodSync(file, 0o600);
   const db = new DatabaseSync(file);
   db.exec('PRAGMA auto_vacuum = INCREMENTAL'); // only takes effect before the first table
-  db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA temp_store = MEMORY');
+  db.exec(`PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA temp_store = ${tempStore === 'file' ? 'FILE' : 'MEMORY'}`);
   return db;
 }
 
@@ -93,7 +101,7 @@ export async function openStore(o: StoreOptions): Promise<Store> {
     if (found > Math.max(0, ...migrations.map((m) => m.version))) return { db: probe, readOnly: true, reason: 'newer-schema' };
     probe.close();
   }
-  const db = openReadWrite(o.file);
+  const db = openReadWrite(o.file, o.tempStore);
   const current = userVersion(db);
   const pending = migrations.filter((m) => m.version > current);
   if (pending.length === 0) return { db, readOnly: false };
@@ -120,7 +128,7 @@ export async function openStore(o: StoreOptions): Promise<Store> {
       db.exec(`PRAGMA user_version = ${m.version}`);
       db.exec('COMMIT');
     } catch (e) {
-      try { if (db.isTransaction) db.exec('ROLLBACK'); } catch { /* the connection is closed and reopened read-only below */ }
+      rollback(db); // the connection is closed and reopened read-only below
       failed = isDiskFull(e) ? 'insufficient-space' : 'migration-failed'; // research L6: space is fixable by the owner
     } finally {
       if (fkOff) db.exec('PRAGMA foreign_keys = ON');

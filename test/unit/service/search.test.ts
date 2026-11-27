@@ -13,7 +13,8 @@ import type { DatabaseSync } from 'node:sqlite';
 import { applyOverlay } from '../../../src/service/history/overlay.ts';
 import { openStore } from '../../../src/service/store/db.ts';
 import { ftsPrefix } from '../../../src/service/store/writer.ts';
-import { ftsQuery, searchSessions, SEARCH_COVERAGE, SEARCH_ITEM_LIMIT, SNIPPET_MAX } from '../../../src/service/search/query.ts';
+import { ftsQuery, searchSessions } from '../../../src/service/search/query.ts';
+import { SNIPPET_MAX } from '../../../src/shared/ipc.ts';
 import type { HistoryFilter } from '../../../src/shared/ipc.ts';
 
 const T = 1_700_000_000_000;
@@ -121,8 +122,6 @@ test('coverage: only the first 64 KiB of an item is searchable; the notes state 
   ev(s, 'numbat early');
   assert.deepEqual(sessionsOf(db, 'wombat'), [], 'text past 64 KiB is not indexed');
   assert.deepEqual(sessionsOf(db, 'numbat'), [s]);
-  assert.equal(SEARCH_COVERAGE, 'Search covers retained indexed content; incomplete sources may have gaps');
-  assert.match(SEARCH_ITEM_LIMIT, /64 KiB/);
 });
 
 test('review M1: snippets come from a bounded prefix, so multi-MiB matching events keep a page fast; the snippet shows the match', async () => {

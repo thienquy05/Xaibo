@@ -13,6 +13,7 @@ import { openChunks } from '../../src/service/adapters/generic/chunks.ts';
 import type { DatabaseSync } from 'node:sqlite';
 import { runRetention } from '../../src/service/retention/job.ts';
 import { DAY, setRetention } from '../../src/service/retention/policy.ts';
+import { TRASH_MS } from '../../src/service/history/trash.ts';
 import { liveMonthly } from '../../src/service/usage/monthly.ts';
 import { envelope, hookStore } from '../helpers/hook-store.ts';
 import { request, sample, SECRET, session, turn } from '../helpers/monthly.ts';
@@ -87,7 +88,7 @@ test('one run: retention (45 days), Trash auto-empty and account usage expiry; t
 
 test('Never keeps every session; Trash auto-empty and account usage expiry still run; an unreadable setting purges no session', async () => {
   const h = await seeded();
-  assert.equal(setRetention(h.db, 'never'), true);
+  setRetention(h.db, 'never');
   assert.deepEqual(await h.run(), { sessions: 0, trash: 2, quota: 2, skipped: null });
   assert.ok(left(h.db).includes('old'));
   const g = await seeded();
@@ -135,6 +136,22 @@ test('batches continue past skipped sessions; owed purge file work is finished f
   assert.equal(r.sessions, 7);
   assert.deepEqual(left(h.db), ['in-trash', 'kept', 'more-4', 'recent', 'resumed', 'trash-recent']);
   assert.equal((h.db.prepare("SELECT pending FROM suppressions WHERE native_session_id = 'earlier'").get() as { pending: string | null }).pending, null);
+});
+
+// XAIBO-PROD-550 (design review M4): the exact boundary of the permanent Trash deletion, on the job itself (the test-only
+// trashExpired/expiredTrash helpers it was checked on are gone): 30 x 24 h of elapsed time since the deletion is purged,
+// 1 ms short stays, and a deletion time in the future (a clock set back) never expires.
+test('Trash auto-empty at exactly 30 x 24 h elapsed; 1 ms short or a deletion time in the future stays (EC-42)', async () => {
+  const h = await seeded();
+  h.add('trash-at', NOW - 20 * DAY, { trashedAt: NOW - TRASH_MS });
+  h.add('trash-short', NOW - 20 * DAY, { trashedAt: NOW - TRASH_MS + 1 });
+  h.add('trash-future', NOW - 20 * DAY, { trashedAt: NOW + DAY });
+  await h.run();
+  const l = left(h.db);
+  assert.ok(!l.includes('trash-at'), 'purged at exactly 30 x 24 h');
+  assert.equal(reasons(h.db)['trash-at'], 'manual');
+  assert.ok(l.includes('trash-short'), '1 ms short stays');
+  assert.ok(l.includes('trash-future'), 'a deletion time in the future never expires early');
 });
 
 test('G5a-4: a run reaps chunk items of unregistered registrations through the live store; an unreadable registry reaps nothing', async () => {

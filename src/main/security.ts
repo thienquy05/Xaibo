@@ -1,6 +1,7 @@
 // P2/SEC1 policy wired into Electron (P1-T04): the app: scheme serves dist/renderer with the CSP header, every other
 // request is cancelled and counted, permissions always denied, navigation, window.open and webviews blocked, spellcheck
-// off. No crash reporter, auto-updater or shell.openExternal anywhere. S10: no Chromium switches needed.
+// off. No crash reporter, auto-updater or shell.openExternal anywhere; the only shell call is shell.showItemInFolder for
+// Reveal override file (P6-T11, reveal.ts: select only, fixed path). S10: no Chromium switches needed.
 import { app, protocol, session } from 'electron';
 import type { WebPreferences } from 'electron';
 import { readFile } from 'node:fs/promises';

@@ -260,6 +260,7 @@ body {
 .x-storage td.x-bar-cell { width: 40%; }
 .x-storage .x-meter { display: block; height: 8px; max-width: none; }
 .x-storage .x-un { color: var(--x-muted); }
+.x-storage td .x-rate { display: block; } /* XAIBO-PROD-568: one owner-set fallback rate per line */
 @media (max-width: 479px) { .x-storage th { width: 55%; } .x-storage td.x-bar-cell { width: 15%; } }
 .x-dialog { max-width: min(560px, calc(100vw - 32px)); padding: var(--x-space-5); color: var(--x-ink); background: var(--x-surface); border: 1px solid var(--x-line); border-radius: var(--x-radius-panel); }
 .x-dialog::backdrop { background: transparent; }
@@ -512,6 +513,12 @@ summary:hover { background: var(--x-tint); }
 .x-filters { display: grid; gap: var(--x-space-2); padding: 0 var(--x-space-1) var(--x-space-3); font-size: var(--x-text-small); }
 .x-filters label { display: grid; gap: 2px; color: var(--x-muted); }
 .x-filters select { min-height: var(--x-control-height); font: inherit; color: var(--x-ink); background: var(--x-surface); border: var(--x-border); border-radius: var(--x-radius-control); padding: 0 var(--x-space-2); }
+/* XAIBO-PROD-555: the Cwd, Activity between and Model filter rows */
+.x-filters .x-input { min-width: 0; font-size: var(--x-text-small); padding: 0 var(--x-space-2); }
+.x-date-range { display: grid; grid-template-columns: 1fr 1fr; gap: var(--x-space-2); margin: 0; padding: 0; border: 0; min-width: 0; }
+.x-date-range legend { padding: 0; margin-bottom: 2px; color: var(--x-muted); }
+.x-field-error { grid-column: 1 / -1; margin: 0; color: var(--x-danger); }
+.x-filter-model { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--x-space-2); overflow-wrap: anywhere; }
 .x-acts { display: flex; flex-wrap: wrap; gap: var(--x-space-2); }
 .x-tree-root { padding-bottom: var(--x-space-2); font-size: var(--x-text-small); }
 .x-tree { list-style: none; margin: 0; padding: 0; }
@@ -697,6 +704,45 @@ html, .x-shell.x-fixed { scroll-padding-top: var(--x-frame-pad, 8px); } /* clear
 .x-map { display: grid; gap: var(--x-space-6); }
 @media (min-width: 1200px) { .x-map { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); align-items: start; } }
 .x-map-tree .x-vlist { min-height: 18rem; }
+/* XAIBO-PROD-575 (P6-T10 unit 2b): Agents mode, the list alone across the map until unit 4's panel */
+@media (min-width: 1200px) { .x-map-single { grid-template-columns: minmax(0, 1fr); } }
+.x-agent-row { display: grid; gap: 2px; padding: var(--x-space-2) var(--x-space-3); border-bottom: 1px solid var(--x-divider); overflow-wrap: anywhere; }
+.x-agent-name { font-weight: var(--x-weight-strong); }
+.x-agent-sub { color: var(--x-muted); font-size: var(--x-text-small); }
+.x-agent-state { display: inline-flex; align-items: center; gap: var(--x-space-1); font-weight: var(--x-weight-strong); }
+.x-agent-state[data-tone="ok"] .x-icon { color: var(--x-success); }
+.x-agent-state[data-tone="warn"] .x-icon { color: var(--x-warning); }
+.x-agent-state[data-tone="muted"] { color: var(--x-muted); }
+/* XAIBO-PROD-578: the integration panel beside the list (wide), instead of it below 800 px (design §6.5) */
+@media (max-width: 799px) { .x-map-panel-open .x-map-tree { display: none; } }
+.x-agent-open { justify-self: start; margin-top: var(--x-space-1); }
+.x-integration .x-pane-head { flex-wrap: wrap; }
+.x-integration h3 { margin: 0; font-size: var(--x-text-body); }
+.x-integration-list { margin: 0; padding-left: var(--x-space-4); display: grid; gap: var(--x-space-1); overflow-wrap: anywhere; }
+.x-receipt-test { display: grid; gap: var(--x-space-1); justify-items: start; }
+/* XAIBO-PROD-579: the Connection actions and the integration diff dialog (one column, wrapped lines, no horizontal scroll) */
+.x-integration-actions { display: flex; flex-wrap: wrap; gap: var(--x-space-2); }
+/* XAIBO-PROD-585: nothing in the panel is wider than its pane (a native select sizes to its longest option, e.g. a long profile
+   path); labelled fields stack their label over the control */
+.x-integration .x-map-detail-body > * { max-width: 100%; min-width: 0; }
+/* P6-T10a closing check: the panel and Settings sign-in selects take the page text (200% text scales them, WCAG 1.4.4) and the
+   control look of the app's other selects */
+.x-integration select { max-width: 100%; min-height: var(--x-control-height); padding: var(--x-space-2); color: var(--x-ink); background: var(--x-surface); border: var(--x-border); border-radius: var(--x-radius-control); font: inherit; }
+.x-integration .x-field { display: grid; gap: var(--x-space-1); justify-items: start; }
+/* P6-T10a closing check (320 CSS px, 200% text): a long profile path in a native select never widens the panel or the
+   Settings page; the columns may shrink below their content, so the select's max-width applies */
+.x-integration .x-map-detail-body, .x-integration .x-field { grid-template-columns: minmax(0, 1fr); }
+.x-integration .x-field { min-width: 0; max-width: 100%; }
+.x-diff-dialog { width: min(720px, calc(100vw - 32px)); max-width: none; max-height: calc(100vh - 32px); overflow-y: auto; }
+.x-diff-dialog h3 { margin: var(--x-space-2) 0 var(--x-space-1); font-size: var(--x-text-body); }
+.x-diff-dialog .x-radios { margin-bottom: var(--x-space-3); }
+.x-diff { max-height: 40vh; overflow-y: auto; margin-bottom: var(--x-space-3); padding: var(--x-space-2) var(--x-space-3); border: var(--x-border); border-radius: var(--x-radius-control); background: var(--x-inset); }
+.x-diff:focus-visible { outline-offset: -4px; }
+.x-diff ul { margin: 0; padding: 0; list-style: none; }
+.x-diff li { font-family: var(--x-font-mono); font-size: var(--x-text-small); line-height: var(--x-leading-small); white-space: pre-wrap; overflow-wrap: anywhere; }
+.x-diff-add { color: var(--x-success); }
+.x-diff-remove { color: var(--x-danger); }
+.x-diff-note { color: var(--x-muted); }
 .x-map-note { margin: 0; padding: var(--x-space-4); }
 .x-map-node { display: flex; align-items: flex-start; min-width: 0; cursor: pointer; }
 .x-map-cell { flex: 1; display: flex; align-items: flex-start; gap: var(--x-space-1); min-width: 0; }

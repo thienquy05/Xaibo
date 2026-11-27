@@ -1058,14 +1058,14 @@ Run GS (§2.4) steps 0–6 in order, with these Gate 1 additions:
 - **M9:** canary hits in logs, diagnostics bundle, crash/error records, test artifacts (`canary.spec.ts`); target 0 per path.
 
 ### Gate 1 checklist
-- [ ] All 20 assigned EC rows pass (any waiver approved in writing by the owner).
-- [ ] lint, typecheck, unit, integration, E2E and perf green on a clean worktree; SQLite I-tests green under the Electron runtime.
-- [ ] M3 first-list, M6, M9 measured and reported with environment details, aggregates only.
-- [ ] `privacy:scan --all/--history` and `fixtures:lint` green; pre-commit active (`core.hooksPath`).
-- [ ] App data only in the temp or OS app-data dir with 0700/0600; repo unchanged after runs; fixture-store checksums unchanged.
-- [ ] Playwright MCP visual check of the list (render, empty console, keyboard); no visual baselines yet.
-- [ ] Dependency versions and licenses in the progress file.
-- [ ] GS: Codex review (`.handoff/gate1-review.md`), Claude second review, owner stop; PR only on request.
+- [x] All 20 assigned EC rows pass (any waiver approved in writing by the owner).
+- [x] lint, typecheck, unit, integration, E2E and perf green on a clean worktree; SQLite I-tests green under the Electron runtime.
+- [x] M3 first-list, M6, M9 measured and reported with environment details, aggregates only.
+- [x] `privacy:scan --all/--history` and `fixtures:lint` green; pre-commit active (`core.hooksPath`).
+- [x] App data only in the temp or OS app-data dir with 0700/0600; repo unchanged after runs; fixture-store checksums unchanged.
+- [x] Playwright MCP visual check of the list (render, empty console, keyboard); no visual baselines yet.
+- [x] Dependency versions and licenses in the progress file.
+- [x] GS: Codex review (`.handoff/gate1-review.md`), Claude second review, owner stop; PR only on request. *Gate 1 approved 2026-11-11 on `5defefa` (`gates/gate1.md`), merged by PR #3; covers every item above.*
 
 ### Risks (Phases 1–2)
 
@@ -1503,7 +1503,7 @@ Status 2026-11-14 (gate SHA `cd0a289`): 13 of 14 met, evidence per item in `docs
 - [x] Playwright MCP visual check for T10/T11 UI; console clean; status as text plus icon.
 - [x] `/ponytail-review` clean or resolved; no dependency added without approval.
 - [x] `docs/integrations/report-v1.md` and the progress file updated.
-- [ ] GS: Codex review (all chunks), Claude second review, `.handoff/` deleted, owner stop, PR. — **Open:** reviews done; waits for the `.handoff/` deletion (owner), the owner's Gate 3 approval and the PR #15 merge.
+- [x] GS: Codex review (all chunks), Claude second review, `.handoff/` deleted, owner stop, PR. *Gate 3 approved 2026-11-14 on `cd0a289` (`gates/gate3.md`), merged by PR #15.*
 
 ### 3.7 Risks (Phase 3)
 
@@ -1566,13 +1566,13 @@ Resolved by the owner with the §6 defaults (D-P3-02): Q3-2, Q3-3, Q3-5..Q3-9, Q
 **PD-T05 — Owner approval and close** — owner reads the doc (and mockups); `record_decision` "Gate D approved, design rev <sha>"; gate-record commit on top of the approved SHA adds `docs/plans/gates/gateD.md` with the checklist run, verdicts and approval (§2.4 step 6); `.handoff/design-*` deleted with no backups; PR to `master` when the owner asks. Done: decision ID, approved SHA, merged PR. Owner: **approves Gate D**.
 
 ### Gate D checklist
-- [ ] `docs/design/xaibo-design.md` covers every screen, state, label and delegated decision in PD-T01 (coverage matrix attached).
-- [ ] Light and dark themes; every inventoried token pair passes its OQ-X15 threshold (per-pair ratio and pass/fail attached).
-- [ ] A11Y rules per screen: keyboard, focus, labels, text + icon, focus restoration, narrow layouts.
-- [ ] No unapproved dependency implied; charts and icons hand-written SVG; no web fonts.
-- [ ] Originality (D-23) passed; the owner checks the dashboard-screenshot item (Q-D4).
-- [ ] Privacy scan clean; `.handoff` design files deleted.
-- [ ] Claude review 0 blocking, then owner approval recorded (no Codex review: Codex is the author).
+- [x] `docs/design/xaibo-design.md` covers every screen, state, label and delegated decision in PD-T01 (coverage matrix attached).
+- [x] Light and dark themes; every inventoried token pair passes its OQ-X15 threshold (per-pair ratio and pass/fail attached).
+- [x] A11Y rules per screen: keyboard, focus, labels, text + icon, focus restoration, narrow layouts.
+- [x] No unapproved dependency implied; charts and icons hand-written SVG; no web fonts.
+- [x] Originality (D-23) passed; the owner checks the dashboard-screenshot item (Q-D4).
+- [x] Privacy scan clean; `.handoff` design files deleted.
+- [x] Claude review 0 blocking, then owner approval recorded (no Codex review: Codex is the author). *Gate D approved 2026-11-14 on `3b41fc6` (`gates/gateD.md`), merged by PR #16; covers every item above.*
 
 ### Risks (Phase D)
 - **Critical path:** Phase 4 blocked until Gate D → run Phase D in parallel (Q-D1).
@@ -1975,7 +1975,11 @@ See §6: Q-5.1..Q-5.11.
 - Test first: I — a synthetic executable added to the temp PATH after startup is detected by rescan without restart. U — each matrix state maps to its label; an unverified surface never renders as supported. E — hooks-blocked fixture → Partial coverage; no events → "Connected" only after a synthetic receipt; an unverified surface shows its coverage-limit text; keyboard only.
 - Loop: `npm test` bare and once; E2E and connected-browser visual check separately. Deps: P6-T03, P6-T07, P6-T01a, P6-T10.
 
+**P6-T08a — Grant actions with native confirmation (D-P6-19)** — `security-change`. Approve an imported entry's profile root, grant its executable probe and grant its setup writes from the Add agent wizard step 3 and the integration panel, each through a main-owned native confirmation that shows the exact entry, path and grant text ("The granted program runs with your access. This grant is not a sandbox."); the renderer sends only ids, never a confirmed flag; revoke for each grant. Test first (U + E): a renderer request without the native confirmation grants nothing; each grant implies no other; revoke drops it at the next load. Deps: P6-T08. Production still approves no imported root until P6-T12 widens allowedRoots.
+
 **P6-T09 — M15 synthetic fourth agent** — no `src/` change; only a catalog entry, report-v1 events and the test. Files: `test/fixtures/synthetic/catalog/fourth-agent/` (entry and event stream, seeded from S11-T8), `test/integration/catalog/m15-fourth-agent.test.ts`. Test first (I): import, detect, preview and apply setup in a temp profile, send report events via `xaibo-report` (lifecycle, `content.upsert` chunks, `usage.snapshot`); detection, setup, full-content storage and status all pass; fails if core paths hard-code agent IDs (that fix is a separate HP unit first; M15 counts only once the final fixture diff touches `test/` alone). Done: green, unit diff lists only `test/` paths (`git diff --name-only` in the progress file). Deps: P6-T07, T08.
+
+**P6-T09a — Generic report-agent setup (D-P6-12)** — `security-change`. Setup preview/apply for a report-v1 agent (imported or catalog report-only) through the FR-32 engine and the P6-T03 preview/confirm: the agent's declared setup writes only, in an approved disposable profile root, refused for imported ids without their grants (P6-T07 constraint), then a receipt test. Test first (I): an imported synthetic agent with an approved root gets a preview, apply and byte-identical revert; an unapproved or ungranted imported id is refused; no spawn. Deps: P6-T07, P6-T03. Unblocks P6-T09 (whose final diff then touches `test/` only).
 
 **P6-T10 — Agent Map Agents list and integration panel UI** — extend P5-T18a per D-PD-01/02 and design §6.5/6.5.2: Repositories/Agents mode controls, bounded per-agent/profile list with FR-06 state, separate Lifecycle receipt/Content coverage and Open integration; selected scoped panel and Add agent live inside Agent Map, no separate Integrations area. Per-profile Connect/Disconnect with diff preview incl. default-selected, deselectable retention rows; separate default-off tee toggle with its own preview; Uninstall; coverage and trust guidance; conflict display; start-at-login opt-in (Electron `app.setLoginItemSettings`, default off). Files: `src/renderer/agent-map/` mode/panel state `.ts` and UI, `test/unit/renderer/agent-map-integrations.test.ts`, `test/e2e/integrations.spec.ts`, A11Y/visual suites. Test first: U — bounded mode/selection/focus restoration (§3.6 RED before TSX). E — preview shown; deselecting retention removes that row from the applied change; Disconnect restores; conflict shown; start-at-login persists; per-profile state isolation, list bounds, mode switching, Dashboard/Map return paths, Back to map, keyboard/focus and narrow layout per design. Done: E2E, connected-browser visual check and reviewed baselines. Deps: P6-T03, P5-T18a.
 
@@ -1988,6 +1992,18 @@ See §6: Q-5.1..Q-5.11.
 **P6-T11 — Price-override access in Settings** — reveal (`shell.showItemInFolder`, on the SEC1 reveal allowlist), validate and reload `<appdata>/models.override.json`; invalid edit shows the error and keeps the last valid revision (Gate 2 engine; EC-96 is gated there). Files: `src/renderer/` Settings, `src/main/` reveal handler, `test/e2e/settings-prices.spec.ts`. Test first (E): invalid override + Reload → error, revision unchanged; valid → new revision and "Prices as of" shown. Deps: P6-T01.
 
 **P6-T12 — Real-profile enablement and owner live check** — `security-change`. Remove the dev-CLI-only restriction so Connect may target detected real profiles (effective once the branch merges after Gate 6); the packaged app shows the same diff preview and requires explicit confirmation. Test first (U): target resolution refuses real roots with the "real-profile enabled" build flag off, allows them with a preview when on. The "real-profile enabled" flag stays off on the branch until the Gate 6 merge (FR-32). Owner touchpoint (optional, OQ-P6-1): runs after Gate 6 approval, as P7-T01's first step on the Phase 7 branch — the owner runs Connect then Disconnect on their real profiles in the packaged app; Claude records a local-only checksum manifest before/after (never committed or pasted); only pass/fail goes to the progress file. Deps: P6-T03, T10.
+
+  **Pre-enable checklist (D-P6-21 slice 4; owner checks at Gate 6 before `REAL_PROFILE_ENABLED` is flipped in the reviewed Gate 6 merge result).** Enabled by the flip: real Connect, Disconnect, Full Uninstall and cleanup on default- or env-origin Claude (settings fallback), Codex (`hooks.json`) and agy (`.gemini/config/hooks.json`) profiles, each apply through main's native confirmation (slices 1-3). Then:
+  1. The flip happens only in the merge result; the packaged build is checked to carry it; the slice 1 guard test (`real-profile.test.ts`, flag literal) is updated in the same commit.
+  2. **The Claude plugin route stays refused on real profiles** (D-P6-21 A) until all of: (a) isolated-CLI evidence in a disposable profile the owner signs in to: `claude plugin` install and uninstall with `CLAUDE_CONFIG_DIR` set to the profile root show no Keychain or credential access or refresh and no network attempt (the traffic switches are unverified for the plugin verbs), and `CLAUDE_CONFIG_DIR` set to the default `~/.claude` does not relocate the CLI's global state (`.claude.json`) or its Keychain item; (b) a parent-liveness pipe so a service exit stops the plugin CLI process group (today a quit during the CLI leaves it running); (c) process-start identity in `operation.lock` (today a reused pid, an empty lock or a failed release reads as busy: fail-closed; the owner removes the lock file while Xaibo is stopped).
+  3. Folders above an env-origin profile root are not checked (slice 1 review L3): an env root under a shared folder is refused only if its own folders are shared; check or document before relying on env roots.
+  4. A Full Uninstall over the confirmation budget (64 items, 6,000 characters) is refused until chunked (slice 2).
+  5. Plugin-route notes (only if 2 is ever met): `leftovers()` ignores `plugins/cache` and `.claude.json`; `confine` refuses past 50,000 entries (fail-safe); after a Claude auto-update the detection identity is stale until a rescan.
+  6. Cleanup names Xaibo's own record and backup only; the plugin copy and the `xaibo` marketplace entry stay manual and are listed in the confirmation.
+  7. Helper copies per Connect (~145 MB per helper on a volume without clones) are unmeasured (ponytail).
+  8. Imported profile roots stay unapprovable in production (D-P6-21 C).
+  9. The owner live check (OQ-P6-1) stays P7-T01's first step on the Phase 7 branch.
+  **Status (2026-11-27): done.** Item 1 in `e76c862` (XAIBO-PROD-607, security-change run 243; the packaged `app.asar` carries the literal true; Codex and Claude approve); items 2-9 acknowledged by the owner at the Gate 6 stop ("flip, items 2-9 confirmed"); the open follow-ups in 2 and 3 are Phase 7 items.
 
 **P6-T13 — Gate 6** — GS plus the checklist. At this gate the owner decides whether to retire the temp profiles early or keep them for the later SG spikes (§3.2; OQ-B10).
 
@@ -2006,15 +2022,15 @@ See §6: Q-5.1..Q-5.11.
 | EC-110 | Canary credential/auth/config files and keychain entries | Access trace: detector opens/stats none, reads no process environment; no canary persisted/logged/shown | U + I | P6-T01a |
 
 ### Gate 6 checklist
-- [ ] EC-26 (I), EC-27 (I), EC-72 (I), EC-73 (U), EC-78 (U + I), EC-79 (I + E), EC-90 (U), EC-109 (U + I), EC-110 (U + I, access trace and canary absence) pass, each with RED output recorded.
-- [ ] Config round trip byte-identical where Xaibo-owned values are unchanged, across the full matrix incl. the tee; changed values conflict, never overwrite.
-- [ ] M15 measured: fourth agent passes detection, setup, full-content storage and status with a `test/`-only diff.
-- [ ] Agent Map Agents list/integration panel/Add agent, Settings price and sign-in declaration/usage E2E green; visual baselines from the approved design; A11Y keyboard/focus/narrow checks pass.
-- [ ] S14 disposition and validated per-agent/version catalog mappings recorded; negative/unavailable signals remain Unknown/owner declaration; no credential inspection or usage request.
-- [ ] M6 clean in every E2E run; M7 config lint: no prompt/agent hook types in any generated config.
-- [ ] Native fixture files unmodified (checksums).
-- [ ] Temp profiles: owner decision recorded (retire now with logout, deletion and temp keychain items removed after confirmation, or keep for the later SG spikes, §3.2).
-- [ ] GS steps 0–6.
+- [x] EC-26 (I), EC-27 (I), EC-72 (I), EC-73 (U), EC-78 (U + I), EC-79 (I + E), EC-90 (U), EC-109 (U + I), EC-110 (U + I, access trace and canary absence) pass, each with RED output recorded. *`gates/gate6.md`: npm test, test:electron and E2E on `7ad7479`; RED in each unit's harness run (runs 185-242).*
+- [x] Config round trip byte-identical where Xaibo-owned values are unchanged, across the full matrix incl. the tee; changed values conflict, never overwrite. *`roundtrip` (incl. the tee) on `7ad7479`.*
+- [x] M15 measured: fourth agent passes detection, setup, full-content storage and status with a `test/`-only diff. *`m15-fourth-agent` (P6-T09, `8223a3c`, test-only).*
+- [x] Agent Map Agents list/integration panel/Add agent, Settings price and sign-in declaration/usage E2E green; visual baselines from the approved design; A11Y keyboard/focus/narrow checks pass. *E2E 90/90 on `7ad7479` (`agent-map`, `integrations`, `add-agent`, `settings-prices`, `sign-in-usage`, `visual`, `a11y-agent-map`).*
+- [x] S14 disposition and validated per-agent/version catalog mappings recorded; negative/unavailable signals remain Unknown/owner declaration; no credential inspection or usage request. *D-P6-15 (Pass-narrowed): no verified mapping, every method Unknown unless declared; no shipped rules.*
+- [x] M6 clean in every E2E run; M7 config lint: no prompt/agent hook types in any generated config. *E2E connection audit in every launch and the packaged audit (0 non-loopback); `hook-config-lint` passes.*
+- [x] Native fixture files unmodified (checksums). *Packaged audit `fixtureStoresUnchanged` on `7ad7479`.*
+- [x] Temp profiles: owner decision recorded (retire now with logout, deletion and temp keychain items removed after confirmation, or keep for the later SG spikes, §3.2). *Kept (D-P6-22).*
+- [x] GS steps 0–6. *Gate 6 approved 2026-11-26 on `7ad7479` (`gates/gate6.md`, record `8c476ca`).*
 
 **Metrics at Gate 6.** M15 (pass/fail per sub-check); M6 from the E2E audit; M7 config lint on generated plugin and hooks; if forwarder or service code changed, re-run T0 (M1, M16).
 

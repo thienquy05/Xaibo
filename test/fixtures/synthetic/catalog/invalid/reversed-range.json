@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "agents": [
+    {
+      "id": "synthagent",
+      "displayName": "Synthetic Agent",
+      "detection": {
+        "binaries": [
+          {
+            "id": "main",
+            "names": [
+              "synthagent"
+            ],
+            "versionArgs": [
+              "--version"
+            ]
+          }
+        ],
+        "locations": [
+          "~/.local/bin"
+        ]
+      },
+      "profileRoots": [
+        {
+          "id": "user",
+          "base": "home",
+          "relative": ".synthagent"
+        }
+      ],
+      "existenceEvidence": [
+        {
+          "root": "user",
+          "path": "config.json",
+          "kind": "file"
+        }
+      ],
+      "hookEvents": [
+        {
+          "versions": {
+            "min": "2.0.0",
+            "max": "1.0.0"
+          },
+          "events": [
+            "Stop"
+          ],
+          "evidence": "synthetic fixture"
+        }
+      ]
+    }
+  ],
+  "sessionKinds": []
+}

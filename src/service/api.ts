@@ -2,8 +2,11 @@
 // default 50 rows, hard cap 100; rows by session key for the coalesced deltas the service pushes after commits.
 import { nativeExpiresAt } from './history/native-availability.ts';
 import type { DatabaseSync } from 'node:sqlite';
-import { IPC_VERSION, isObj } from '../shared/ipc.ts';
-import type { ContextReading, CoverageCode, Credits, Cursor, HistoryCursor, LiveStatus, Page, PortMessage, PortRequest, SessionRow, TCursor, TranscriptItem, UsageRecord, UsageScope } from '../shared/ipc.ts';
+import { AGENT_ID, IPC_VERSION, isObj, isProfileKey } from '../shared/ipc.ts';
+import { UUID } from '../shared/hook-protocol.ts';
+import type { ContextReading, CoverageCode, Credits, Cursor, HistoryCursor, LiveStatus, Page, PortMessage, PortRequest, SessionRow, SignInMethod, SignInView, TCursor, TranscriptItem, UsageConsumption, UsageProfile, UsageRecord, UsageScope } from '../shared/ipc.ts';
+import { signInView } from './usage/sign-in-state.ts';
+import { consumptionByProfile, CONSUMPTION_ROWS } from './usage/consumption.ts';
 import { COST_CODE, COST_COMPONENTS, MAX_COST_CODES, MAX_COST_GROUPS, MAX_ITEMS, MAX_RECORDS, MAX_REFERENCES, MAX_SCOPES, parseContext, parseCost, PREVIEW_BYTES,
   REFERENCE_MAX, SLICE_BYTES } from '../shared/ipc.ts';
 import type { CostDetail, CostGroup, PriceRevisionInfo } from '../shared/ipc.ts';
@@ -23,6 +26,11 @@ import { displayName, modelLabel, type ModelEntry, type ModelList } from './usag
 
 export const PAGE_DEFAULT = 50;
 export const PAGE_MAX = 100;
+/** XAIBO-PROD-550 (D-P5-15 item 12): a requested page size, PAGE_DEFAULT unless a positive safe integer, at most PAGE_MAX. */
+export const pageSize = (limit: number): number => Math.min(Number.isSafeInteger(limit) && limit > 0 ? limit : PAGE_DEFAULT, PAGE_MAX);
+/** A table exists (an older read-only schema may lack the overlay or suppression tables); `name` is a constant. */
+export const hasTable = (db: DatabaseSync, name: string): boolean =>
+  db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined;
 /** Display strings (cwd, entrypoint, title) are cut to this many UTF-16 units plus "…" before IPC, far below the
  *  64 KiB per-string limit the renderer validates, so one long transcript value cannot void a page. The store keeps
  *  the original. */
@@ -95,13 +103,13 @@ export const toRow = (db: DatabaseSync, kinds: SessionKind[], models: ModelEntry
 /** P5-T03 (FR-11, design §6.1/§6.4): trashed sessions leave All sessions, the live set and deltas. A store without the
  *  overlay tables (a read-only older schema) has no Trash. */
 function shown(db: DatabaseSync): string {
-  return (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'overlays'").get() === undefined ? '1'
+  return (!hasTable(db, 'overlays') ? '1'
     : 'NOT EXISTS (SELECT 1 FROM overlays o WHERE o.agent = s.agent AND o.profile_id = s.profile_id AND o.native_session_id = s.native_session_id AND o.trashed_at IS NOT NULL)')
     + ` AND ${notPurging(db)}`; // XAIBO-PROD-542 G5-N1: a session being purged is hidden
 }
 
 export function listSessions(db: DatabaseSync, cursor: Cursor | null, limit: number, kinds: SessionKind[] = [], models: ModelEntry[] = [], live?: LiveOf): Page {
-  const n = Math.min(Number.isSafeInteger(limit) && limit > 0 ? limit : PAGE_DEFAULT, PAGE_MAX);
+  const n = pageSize(limit);
   const t = shown(db);
   let raw: Raw[];
   if (!cursor) raw = db.prepare(`${ROW(db)} WHERE ${t} ${ORDER}`).all(n) as unknown as Raw[];
@@ -168,40 +176,70 @@ function credits(raw: string | null): Credits | null {
 }
 const finiteOrNull = (v: number | null) => (v !== null && Number.isFinite(v) ? v : null);
 type Latest = { scope: number; agent: string; verified: number; limit_id: string; used_percent: number | null; window_minutes: number | null; resets_at: number | null;
-  plan: string | null; credits: string | null; as_of: number | null; first_observed_at: number; measured_at: number; profile_id: string };
+  plan: string | null; credits: string | null; as_of: number | null; first_observed_at: number; measured_at: number; profile_id: string;
+  generation: number; b_method: SignInMethod | null; b_at: number | null; b_reason: 'method' | 'declared-account' | null };
 /** P4-T04b1: per profile (agent, id order): agy -> one passive-unavailable row; others -> the newest measurement per
  *  scope and stream (raw: state is derived at render time against the local clock), else one no-observation row.
  *  ponytail: streams found by a scan of the history index, as usageStatusList; capped at MAX_SCOPES rows. */
 export function usageScopes(db: DatabaseSync, home: string): UsageScope[] {
   // XAIBO-PROD-542: a purging session's own (unverified) scope leaves Usage with it
+  // XAIBO-PROD-582: the scope's sign-in generation and that generation's stored boundary (none for generation 0); a store left
+  // read-only before migration 027 has neither (review M1): generation 0, no boundary
+  const epochs = signInEpochs(db);
   const latest = db.prepare(`SELECT sc.id AS scope, sc.agent, sc.verified, sc.profile_id, h.limit_id, h.used_percent, h.window_minutes, h.resets_at, h.plan, h.credits,
-      h.as_of, h.first_observed_at, h.measured_at
+      h.as_of, h.first_observed_at, h.measured_at, ${epochs ? 'sc.sign_in_generation AS generation, b.method AS b_method, b.at AS b_at, b.reason AS b_reason' : '0 AS generation, NULL AS b_method, NULL AS b_at, NULL AS b_reason'}
     FROM (SELECT DISTINCT usage_scope_id, limit_id FROM usage_history) k
     JOIN usage_history h ON h.id = (SELECT id FROM usage_history x WHERE x.usage_scope_id = k.usage_scope_id AND x.limit_id = k.limit_id
       ORDER BY x.measured_at DESC, x.id DESC LIMIT 1)
     JOIN usage_scopes sc ON sc.id = h.usage_scope_id
+    ${epochs ? 'LEFT JOIN sign_in_boundaries b ON b.profile_id = sc.profile_id AND b.generation = sc.sign_in_generation' : ''}
     WHERE sc.session_id IS NULL OR EXISTS (SELECT 1 FROM sessions s WHERE s.id = sc.session_id AND ${notPurging(db)})
     ORDER BY sc.id, h.limit_id`).all() as Latest[];
-  const blank = { scope: null, verified: null, stream: null, windowMinutes: null, usedPercent: null, resetsAt: null, plan: null, credits: null, asOf: null, firstObservedAt: null, measuredAt: null };
+  const blank = { generation: null, boundary: null, scope: null, verified: null, stream: null, windowMinutes: null, usedPercent: null, resetsAt: null, plan: null, credits: null, asOf: null, firstObservedAt: null, measuredAt: null };
   const out: UsageScope[] = [];
   for (const p of db.prepare('SELECT id, agent, root, origin FROM profiles ORDER BY agent, id').all() as { id: string; agent: string; root: string; origin: string }[]) {
     const profile = profileLabel(p.origin, p.root, home);
-    if (p.agent === 'agy') { out.push({ ...blank, agent: p.agent, profile, unavailable: 'passive' }); continue; }
+    if (p.agent === 'agy') { out.push({ ...blank, profileId: p.id, agent: p.agent, profile, unavailable: 'passive' }); continue; }
     const mine = latest.filter((r) => r.profile_id === p.id);
     // Review M: only agents with a passive usage source get a no-observation row (a custom registration agent has none).
-    if (!mine.length) { if (p.agent === 'claude' || p.agent === 'codex') out.push({ ...blank, agent: p.agent, profile, unavailable: 'no-observation' }); continue; }
+    if (!mine.length) { if (p.agent === 'claude' || p.agent === 'codex') out.push({ ...blank, profileId: p.id, agent: p.agent, profile, unavailable: 'no-observation' }); continue; }
     for (const r of mine) {
-      out.push({ scope: r.scope, agent: r.agent, profile, verified: r.verified === 1, stream: r.limit_id, windowMinutes: r.window_minutes,
+      out.push({ profileId: p.id, generation: r.generation, boundary: r.b_method && r.b_at !== null && r.b_reason ? { method: r.b_method, at: r.b_at, reason: r.b_reason } : null,
+        scope: r.scope, agent: r.agent, profile, verified: r.verified === 1, stream: r.limit_id, windowMinutes: r.window_minutes,
         usedPercent: finiteOrNull(r.used_percent), resetsAt: r.resets_at, plan: r.plan, credits: credits(r.credits), asOf: r.as_of,
         firstObservedAt: r.first_observed_at, measuredAt: r.measured_at, unavailable: null });
     }
   }
   return out.slice(0, MAX_SCOPES);
 }
+const epochCols = new WeakMap<DatabaseSync, boolean>();
+/** Migration 027 (sign-in generations and boundaries) present: probed once per store, as suppression.ts's phaseClause. */
+const signInEpochs = (db: DatabaseSync) => {
+  let has = epochCols.get(db);
+  if (has === undefined) epochCols.set(db, has = db.prepare("SELECT 1 FROM pragma_table_info('usage_scopes') WHERE name = 'sign_in_generation'").get() !== undefined);
+  return has;
+};
+/** XAIBO-PROD-582 (P6-T10a unit 1): every profile once (agent, then id; custom agents too) with its label and current sign-in view,
+ *  from the database only (no reconcile, config, credential or environment read); a view that cannot be read is null. */
+// ponytail: the first MAX_SCOPES profiles (before the id filter), no "more" flag; page it if a store ever holds that many
+export function usageProfiles(db: DatabaseSync, home: string): UsageProfile[] {
+  // XAIBO-PROD-583: consumption per profile; if it cannot be read the profiles still answer, with none
+  let cons: ReturnType<typeof consumptionByProfile> = { groups: new Map<string, UsageConsumption[]>(), limited: false, cut: new Set<string>() };
+  try { cons = consumptionByProfile(db, CONSUMPTION_ROWS, signInEpochs(db)); } catch { /* unreadable: no consumption */ }
+  return (db.prepare('SELECT id, agent, root, origin FROM profiles ORDER BY agent, id LIMIT ?').all(MAX_SCOPES) as { id: string; agent: string; root: string; origin: string }[])
+    .filter((p) => AGENT_ID.test(p.agent) && isProfileKey(p.id)) // an id the reply parser refuses would void the whole reply
+    .map((p) => {
+      let signIn: SignInView | null = null;
+      // review H1: only a UUID profile can be declared or opened (the sign-in and integration requests need one)
+      if (UUID.test(p.id)) try { signIn = signInView(db, p.id); } catch { /* unreadable: no view */ }
+      return { profileId: p.id, agent: p.agent, label: profileLabel(p.origin, p.root, home), signIn, consumption: cons.groups.get(p.id) ?? [], consumptionLimited: cons.limited || cons.cut.has(p.id) };
+    });
+}
 export function answerUsage(db: DatabaseSync, req: PortRequest & { type: 'usage' }, home: string): PortMessage & { type: 'usage' } {
-  let scopes: UsageScope[] = [];
+  let scopes: UsageScope[] = [], profiles: UsageProfile[] = [];
   try { scopes = usageScopes(db, home); } catch { /* unreadable store: no scopes */ }
-  return { v: IPC_VERSION, type: 'usage', id: req.id, scopes };
+  try { profiles = usageProfiles(db, home); } catch { /* unreadable store: no profiles */ }
+  return { v: IPC_VERSION, type: 'usage', id: req.id, scopes, profiles };
 }
 
 export const HISTORY_MAX = MAX_RECORDS;
@@ -282,7 +320,7 @@ function largeSlice(db: DatabaseSync, session: number, key: string, offset: numb
 const stored = (agent: string, r: Pick<TrRow, 'kind' | 'role' | 'content' | 'raw'>): StoredRecord => ({ agent, kind: r.kind, role: r.role, injected: false, content: r.content, raw: r.raw });
 
 export function answerSession(db: DatabaseSync, req: PortRequest & { type: 'session' }, kinds: SessionKind[] = [], models: ModelEntry[] = [], live?: LiveOf,
-  managedDir?: string): PortMessage & { type: 'session' } {
+  managedDir?: string, limitsFor?: (agent: string) => string[]): PortMessage & { type: 'session' } {
   try {
     const r = db.prepare(`${ROW(db)} WHERE s.id = ? AND ${notPurging(db)}`).get(req.session) as Raw | undefined;
     if (!r) return { v: IPC_VERSION, type: 'session', id: req.id, detail: null };
@@ -304,7 +342,9 @@ export function answerSession(db: DatabaseSync, req: PortRequest & { type: 'sess
     } catch { context = null; }
     let nativeExpires: number | null = null; // P5-T12 (EC-23): an estimate; unreadable settings give none
     try { nativeExpires = nativeExpiresAt(db, r, managedDir); } catch { nativeExpires = null; }
-    return { v: IPC_VERSION, type: 'session', id: req.id, detail: { row, coverage, context, nativeExpiresAt: nativeExpires } };
+    // XAIBO-PROD-594 (P6-T08 slice E; US-8): surfaces Xaibo has not verified for this agent's detected version (the resolver's own bound)
+    const limits = limitsFor?.(r.agent).slice(0, 4);
+    return { v: IPC_VERSION, type: 'session', id: req.id, detail: { row, coverage, context, nativeExpiresAt: nativeExpires, ...(limits ? { limits } : {}) } };
   } catch { return { v: IPC_VERSION, type: 'session', id: req.id, detail: null }; }
 }
 

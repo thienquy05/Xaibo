@@ -1,11 +1,11 @@
 // XAIBO-PROD-529 (P5-T18 part 3a; design §6.4; look D-P5-09): the Session list as a history browser. Pure logic in
 // history/browse.ts: the query becomes the service filter, rows merge live updates by id (plain All view reorders and
 // inserts), row lines say pin/Keep/purge/Archived/Trash/native state, snippets split into text runs with the search
-// terms emphasized (never HTML), the mode group's roving keys, and map-group labels. Synthetic rows only.
+// terms emphasized (never HTML), and map-group labels (the mode group's roving keys: virtual-list-model nextFocus). Synthetic rows only.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { HistoryRow, MapNode, SessionRow } from '../../../src/shared/ipc.ts';
-import { canLoadMore, capped, COVERAGE, emphasis, failureNote, filterOf, groupLabel, initialQuery, isPlain, lastKnownRows, listTexts, mergeLive, mergeRows, MODES, modeKey, NO_MATCH, order, orderLabel,
+import { canLoadMore, capped, COVERAGE, emphasis, failureNote, filterOf, groupLabel, initialQuery, isPlain, lastKnownRows, listTexts, mergeLive, mergeRows, MODES, NO_MATCH, order, orderLabel,
   refill, rowLines, startLoad, type ListState } from '../../../src/renderer/history/browse.ts';
 
 const at = (d: number) => new Date(2026, 10, d, 12).getTime();
@@ -141,17 +141,6 @@ test('emphasis: search terms emphasized case-insensitively as text runs; no patt
   const terms = Array.from({ length: 17 }, (_, i) => `t${String.fromCharCode(97 + i)}`).join(' ');
   assert.deepEqual(emphasis('tq', terms), [{ text: 'tq', hit: false }], 'the 17th term is not searched');
   assert.deepEqual(emphasis('tp', terms), [{ text: 'tp', hit: true }]);
-});
-
-test('modeKey: Left/Right in DOM order without wrapping, Home/End; other keys do nothing', () => {
-  assert.equal(modeKey('ArrowRight', 0, 4), 1);
-  assert.equal(modeKey('ArrowRight', 3, 4), 3);
-  assert.equal(modeKey('ArrowLeft', 0, 4), 0);
-  assert.equal(modeKey('ArrowLeft', 2, 4), 1);
-  assert.equal(modeKey('Home', 2, 4), 0);
-  assert.equal(modeKey('End', 0, 4), 3);
-  assert.equal(modeKey('ArrowDown', 1, 4), null);
-  assert.equal(modeKey('Enter', 1, 4), null);
 });
 
 const node = (group: MapNode['group'], extra: Partial<MapNode> = {}): MapNode => ({ group, project: null, reasons: [], sessions: 3, live: 0, agents: ['claude'], ...extra });

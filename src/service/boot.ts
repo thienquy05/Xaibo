@@ -3,38 +3,50 @@
 // A read-only store (EC-45) is reported and skips ingest. P1-T12: commit and agent-status hooks for the renderer, and
 // a manual executable path ("Set path…") that re-detects that agent. P3-T04: once profiles are synced, the hook socket
 // listens and the spool replays, before the file backfill; a full disk is logged and its hook-only gap written on recovery.
-import { statSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
-import { OUTCOMES, REASONS, RULES, type AgentStatus, type Banner, type ClearUsageResult, type PURGE_RESULTS, type REIMPORT_RESULTS, type RetentionSetting, type SAVE_RESULTS, type LiveStatus, type NotifyState, type ServiceMetrics } from '../shared/ipc.ts';
+import { isActive, OUTCOMES, REASONS, RULES, type AgentStatus, type Banner, type ClearUsageResult, type PurgeResult, type ReimportResult, type RetentionSetting, type SaveRetentionResult, type LiveStatus, type NotifyState, type PriceCheck, type RescanResult, type ServiceMetrics, type CatalogImportResult } from '../shared/ipc.ts';
 import type { Logger } from '../shared/log.ts';
 import { AgyAdapter } from './adapters/agy/index.ts';
 import { ClaudeAdapter } from './adapters/claude/index.ts';
 import { CodexAdapter } from './adapters/codex/index.ts';
 import type { Ingester } from './adapters/tail-adapter.ts';
-import { detectAgent, manualPath, manualRoots, profileRoots, setManualPath, syncProfiles, type Detection, type Profile } from './catalog/detect.ts';
+import { detectAgent, manualPath, manualRoots, profileRoots, setManualPath, syncProfiles, type Detection, type ProbeGrant, type Profile } from './catalog/detect.ts';
 import { coverageBanners } from './status/coverage.ts';
 import { createEngine, type StatusEngine } from './status/engine.ts';
 import { fileObservations } from './status/feed.ts';
 import { readLoginEnv, type LoginEnv } from './catalog/env.ts';
 import { loadCatalog, type Catalog, type SessionKind } from './catalog/validate.ts';
+import { boundedOutcome, confirmGrant, grantOffer, grantState, importCatalogFile, loadImports, revokeGrant, type GrantConfirmResult, type GrantOfferResult,
+  type GrantRequest, type GrantState, type RevokeResult, type RevokeTarget, type RootPolicy } from './catalog/import.ts';
+import { setupAccess, type SetupAccess } from './catalog/setup-plans.ts';
+import { deniedRootsFrom } from './config/bounds.ts';
+import { within } from './config/transaction.ts';
 import type { ModelEntry } from './usage/models.ts';
 import { priceUsage } from './usage/cost.ts';
-import { loadPrices, type Prices } from './usage/prices.ts';
+import { checkOverride, loadPrices, type Prices } from './usage/prices.ts';
 import { errorCode } from '../shared/crash.ts';
 import { approvedLabel } from './history/overlay.ts';
 import { holdDeletes, resumePurges, spoolResumeDelay } from './history/purge.ts';
 import { retentionScheduler, runRetention, type RetentionResult } from './retention/job.ts';
-import { isActive } from './retention/policy.ts';
 import { loadInstallSecret } from '../shared/log.ts';
 import { openStore, type Store } from './store/db.ts';
 import { startHooks, type Hooks } from './receivers/intake.ts';
 import { Writer, type Batch } from './store/writer.ts';
 import { loadScopeSalt } from './usage/snapshots.ts';
+import { answerSignIn, mutationGate } from './usage/sign-in-state.ts';
+import type { SignInReplyCode, SignInRequest, SignInView } from '../shared/ipc.ts';
 import { applyClear, clearWatermarks, keysInWorker } from './usage/clear.ts';
-import { PurgeLimit, purgeManual, reimportKey, rerunner, saveRetention } from './history/tools.ts';
+import { purgeLimit, purgeManual, reimportKey, rerunner, saveRetention } from './history/tools.ts';
 
 export interface BootOptions {
   dataDir: string; home: string; shell?: string | undefined; catalog?: Catalog; intervalMs?: number; log?: Logger;
+  /** XAIBO-PROD-566 (P6-T07 part 2): disposable roots an approved imported profile root must stay inside (bounds.ts
+   *  writable()). None by default, so production drops every imported root until P6-T12. */
+  allowedRoots?: string[];
+  /** XAIBO-PROD-590 (P6-T08 slice A): least time between rescans (monotonic ms; default 5 s). Tests only lower it. */
+  rescanCooldownMs?: number;
   /** Status clock (tests); Date.now by default. */
   now?: () => number;
   onCommit?: (batch: Batch) => void;
@@ -60,14 +72,25 @@ export interface Service {
   done: Promise<void>;
   /** Agent status for the renderer; null until detection has run. */
   agents(): AgentStatus[] | null;
+  /** XAIBO-PROD-558 (P6-T03 part 1b): the synced profiles, null until profile sync ran (never on a read-only store). */
+  profiles(): Profile[] | null;
+  /** XAIBO-PROD-589 (P6-T09a slice B): a report agent's declared setup and access, read fresh from the import store per call;
+   *  null before the catalog loaded or when the agent declares none. */
+  setupAccess(agent: string): SetupAccess | null;
+  /** The login-shell environment read at start; null until read or when it could not be read (no PATH). */
+  loginEnv(): LoginEnv | null;
   /** Catalog session kinds for list badges (P2-T04); empty if the catalog failed to load. */
   kinds(): SessionKind[];
+  /** XAIBO-PROD-560 (P6-T03 part 2b): the loaded catalog for Connect route selection; null if it failed to load. */
+  catalog(): Catalog | null;
   /** Model list for display names (P2-T08; with the owner override, P2-T09); empty if the bundled list failed to load. */
   models(): ModelEntry[];
   /** Current prices (P2-T09): accepted revision, or the last valid one with an error code; null if the bundled list is invalid. */
   prices(): Prices | null;
   /** Re-reads <dataDir>/models.override.json (the reloadPrices command). */
   reloadPrices(): Prices | null;
+  /** XAIBO-PROD-568 (P6-T11 Validate): the override as Reload would read it; writes and switches nothing. */
+  checkPrices(): PriceCheck;
   /** P3-T10: live status of a session by agent, native id and profile (§5.5); null without evidence (or a read-only store). */
   status(agent: string, nativeSessionId: string, profileId: string): LiveStatus | null;
   /** Session keys (`agent\0profile\0native id`) whose status changed with time alone since the last call (settle,
@@ -79,6 +102,18 @@ export interface Service {
   metrics(): Omit<ServiceMetrics, 'deltaResyncs'>;
   /** Validates and stores a manual executable path, then re-detects that agent; false if refused. */
   setPath(agent: string, file: string): Promise<boolean>;
+  /** XAIBO-PROD-590 (P6-T08 slice A; EC-79, FR-01): re-detects agents and re-syncs profiles without a restart. */
+  rescan(): Promise<RescanResult>;
+  /** XAIBO-PROD-595: import a catalog entry file the owner picked (listed after a restart: the catalog is kept from startup). */
+  importCatalog(file: string): CatalogImportResult;
+  /** XAIBO-PROD-596 (P6-T08a slice A): the native confirmation's content for a grant (main only; writes nothing). */
+  grantOffer(r: GrantRequest): GrantOfferResult;
+  /** Main's confirmation of an offer's binding; on success detection and profiles are refreshed before it resolves. */
+  grantConfirm(r: GrantRequest, binding: string): Promise<GrantConfirmResult>;
+  /** Removes one stored grant (a root with the grants under it); refreshed before it resolves when something was removed. */
+  revoke(agent: string, t: RevokeTarget): Promise<RevokeResult>;
+  /** Grant state per declared item of an imported agent (no paths); null for bundled or unknown agents. */
+  grantState(agent: string): GrantState | 'unavailable' | null;
   /** P3-T12: the machine sleeps from `at` (main's clock); the status engine excludes the gap from R1/R5. */
   suspend(at?: number): void;
   /** Resumes the status engine now, then reconciles every adapter at once (FR-02, bounded scans). */
@@ -90,17 +125,23 @@ export interface Service {
   /** XAIBO-PROD-527 (P5-T18 part 1): a confirmed manual purge (capped per minute), Re-import by opaque key (sets Keep,
    *  then reconciles), and the retention setting saved through the writer. */
   purge(session: number): Promise<PurgeResult>;
-  reimport(key: string): ReimportOutcome;
-  saveRetention(value: RetentionSetting): SaveOutcome;
+  reimport(key: string): ReimportResult;
+  saveRetention(value: RetentionSetting): SaveRetentionResult;
+  /** XAIBO-PROD-572 (P6-T01a slice 3): the owner's sign-in declaration for a synced profile (read, set, clear, account change). */
+  signIn(req: SignInRequest): { code: SignInReplyCode; view: SignInView | null; changed: boolean };
   stop(): void;
 }
 
-type PurgeResult = (typeof PURGE_RESULTS)[number];
-type ReimportOutcome = (typeof REIMPORT_RESULTS)[number];
-type SaveOutcome = (typeof SAVE_RESULTS)[number];
 
 /** The turn-settle interval (PRD §6.2/§6.3, Q8 default; a setting with the Settings screen after Gate D, Q3-14). */
 const SETTLE_MS = 4000;
+// XAIBO-PROD-565/566/567 (P6-T07): bundled entries probe; imported ones run only their granted executables (part 3).
+const BUNDLED = { origin: 'bundled' } as const;
+// XAIBO-PROD-590: natively ingested agents (out of start, so a rescan can start an adapter for a new profile)
+const ADAPTERS: Record<string, typeof ClaudeAdapter | typeof CodexAdapter | typeof AgyAdapter> = { claude: ClaudeAdapter, codex: CodexAdapter, agy: AgyAdapter };
+/** Gate 6 G6B-2: own entries only, so an imported id such as `constructor` never resolves to an inherited Object member. */
+const adapterClass = (agent: string) => (Object.hasOwn(ADAPTERS, agent) ? ADAPTERS[agent] : undefined);
+const RESCAN_MS = 5_000;
 /** P5-T09: the first retention run waits this long after the backfill, off readiness and behind start-up work. */
 const RETENTION_DELAY_MS = 10 * 60_000;
 /** Gate 5 (perf probes): XAIBO_RETENTION_DELAY_MS overrides that wait, only under XAIBO_PERF_TRACE=1 (test only) and only
@@ -111,6 +152,25 @@ export function retentionDelayFromEnv(env: Record<string, string | undefined>): 
   const n = Number(v);
   return n <= 2_147_483_647 ? n : undefined; // review L: setTimeout clamps a larger delay to 1 ms
 }
+/** XAIBO-PROD-596 (P6-T08a slice A; D-P6-20 decision 2, security review H1): XAIBO_TEST_ALLOWED_ROOT, for the packaged app's
+ *  E2E only: one disposable allowed root, honoured only when HOME is an isolated home (real path, not /, neither inside nor
+ *  containing the account home from the user database), the root is a real folder strictly inside it and the data dir is
+ *  outside the account home; anything else gives none (production: HOME is the account home). Every grant still needs the
+ *  native confirmation and writable()'s checks. */
+export function allowedRootsFromEnv(env: Record<string, string | undefined>, o: { home: string; accountHome: string; dataDir: string }): string[] {
+  const v = env.XAIBO_TEST_ALLOWED_ROOT;
+  if (!v || !path.isAbsolute(v)) return [];
+  try {
+    const real = (p: string) => realpathSync.native(p);
+    const home = real(o.home), account = real(o.accountHome), dataDir = real(o.dataDir);
+    if (home === path.parse(home).root || within(home, account) || within(account, home) || within(dataDir, account)) return [];
+    return real(v) === v && v !== home && within(v, home) && statSync(v).isDirectory() ? [v] : [];
+  } catch { return []; }
+}
+/** XAIBO-PROD-553 (D-P5-22 diagnostic): XAIBO_TEMP_STORE=file puts SQLite temp storage on disk, only under
+ *  XAIBO_PERF_TRACE=1 (test only); anything else keeps the shipped MEMORY default. */
+export const tempStoreFromEnv = (env: Record<string, string | undefined>): 'file' | undefined =>
+  (env.XAIBO_PERF_TRACE === '1' && env.XAIBO_TEMP_STORE === 'file' ? 'file' : undefined);
 
 // P4-T10c2 parse lag: commit time minus a file's last write (its mtime at sync), for files written within LIVE_LAG_MS;
 // older files are history import and a future mtime is clock skew, so neither is lag. ponytail: mtime has the file
@@ -123,7 +183,8 @@ export function parseLagOf(now: number, mtime: number): number | null {
 }
 
 export async function boot(o: BootOptions): Promise<Service> {
-  const store = await openStore({ file: path.join(o.dataDir, 'xaibo.db'), backupDir: path.join(o.dataDir, 'backups') });
+  const temp = tempStoreFromEnv(process.env);
+  const store = await openStore({ file: path.join(o.dataDir, 'xaibo.db'), backupDir: path.join(o.dataDir, 'backups'), ...(temp ? { tempStore: temp } : {}) });
   const { db, readOnly } = store;
   let prices: Prices | null = null;
   // P2-T10/T14: after each commit price only usage rows above the high-water mark; after a price load, every pending row.
@@ -267,7 +328,11 @@ export async function boot(o: BootOptions): Promise<Service> {
   let profiles: Profile[] = [];
   let stopped = false;
   let catalog: Catalog | undefined;
+  let bundled: Catalog | undefined;
+  let imported = new Map<string, Record<string, string>>();
   let env: LoginEnv = {};
+  let synced = false; // XAIBO-PROD-558: Connect answers `starting` until profiles are synced
+  const signInGate = mutationGate(); // XAIBO-PROD-572 review M1
   let detected = false;
   let markDetected = () => {};
   const detection = new Promise<void>((resolve) => { markDetected = resolve; });
@@ -278,13 +343,115 @@ export async function boot(o: BootOptions): Promise<Service> {
   })));
   const announce = () => { const a = agents(); if (a) o.onAgents?.(a); };
 
+  // XAIBO-PROD-590 (P6-T08 slice A; EC-79, FR-01; D-P6-19, design .handoff/p6-t08-design.md with the fresh review): shared by
+  // startup and rescan. Bundled entries probe (manual path, login PATH, known locations); imported ones only through the grants
+  // loaded for this scan (P6-T07 part 3).
+  const detectAll = (grants: Map<string, ProbeGrant[]>, imp = imported) => Promise.all(catalog!.agents.map((a) => detectAgent(a, { env, home: o.home,
+    manualPath: readOnly || imp.has(a.id) ? undefined : manualPath(db, a.id), access: imp.has(a.id) ? { origin: 'imported', grants: grants.get(a.id) ?? [] } : BUNDLED, ...(o.log ? { log: o.log } : {}) })));
+  const manualOf = () => Object.fromEntries(catalog!.agents.map((a) => [a.id, manualRoots(db, a.id)]));
+  let salt: Buffer | null = null;
+  const adapted = new Set<string>(); // profile ids with an adapter
+  /** A new adapter for a profile of a natively ingested agent (watch it, then backfill). */
+  const adapterFor = (p: Profile) => {
+    // P6-T01a slice 4 (review M6): sign-in rules from the bundled catalog only, never the merged imports (none shipped)
+    const signInRules = p.agent === 'codex' ? bundled?.agents.find((x) => x.id === 'codex')?.signInRules ?? [] : [];
+    const a = new (adapterClass(p.agent)!)({ db, writer, profileId: p.id, root: p.root, accountSalt: p.agent === 'codex' ? salt : null, signInRules,
+      ...(o.intervalMs ? { intervalMs: o.intervalMs } : {}) });
+    adapters.push(a);
+    adapted.add(p.id);
+    return a;
+  };
+  let chain: Promise<unknown> = Promise.resolve();
+  const serial = <T>(fn: () => Promise<T>): Promise<T> => { const r = chain.then(fn); chain = r.catch(() => undefined); return r; };
+  let settled = false, started = false, scan: Promise<RescanResult> | null = null, lastScan = -Infinity, bg: Promise<void> = Promise.resolve();
+  /** The scan itself, always run on `serial`: grants and approved roots reloaded from the store (P3-3), detections replaced
+   *  in place, profiles re-synced, an adapter for each new profile. */
+  const scanBody = async (): Promise<RescanResult> => {
+    if (stopped || !db.isOpen) return { status: 'refused', code: 'unavailable' }; // code review L2: stopped while queued
+    const loaded = loadImports(o.dataDir, bundled!, { home: o.home, allowed: o.allowedRoots ?? [], denied: deniedRootsFrom(env) });
+    // code review H1: what is imported comes from the startup catalog, never from this load: a store that reads as corrupt
+    // now (mode, size, EMFILE) leaves its entries imported with no roots and no grants, never bundled
+    const fresh = new Map(catalog!.agents.filter((a) => !bundled!.agents.some((b) => b.id === a.id)).map((a) => [a.id, loaded.imported.get(a.id) ?? {}]));
+    const next = await detectAll(loaded.grants, fresh);
+    if (stopped) return { status: 'refused', code: 'unavailable' };
+    imported = fresh;
+    detections.splice(0, detections.length, ...next); // review M4: index.ts and Connect read this array live
+    profiles = syncProfiles(db, profileRoots(catalog!, env, o.home, manualOf(), imported)); // stable ids; hook status reads it
+    announce();
+    // ponytail (code review L3): a profile gone since startup keeps its adapter until restart (ingest goes on; status drops it)
+    for (const p of profiles.filter((x) => adapterClass(x.agent) && !adapted.has(x.id))) {
+      if (stopped) break;
+      const a = adapterFor(p);
+      await a.watch();
+      if (stopped) break; // code review L1
+      // the new profile's backfill runs after the reply, one at a time (code review L4; P3-T16e), never after a stop
+      bg = bg.then(() => (stopped ? undefined : a.backfill())).catch((e: unknown) => o.log?.log('rescan_backfill_failed', { error: errorCode(e) }));
+    }
+    o.log?.log('rescan', { agents: next.length, profiles: profiles.length });
+    return { status: 'ready' };
+  };
+  /** One scan at a time (callers join it), at most one per cooldown, never while starting, read-only or stopped. The catalog
+   *  and login environment stay as loaded at startup (review M1/M2; ponytail: a PATH or env change, or a catalog import added
+   *  at runtime, needs a restart: D-P6-20 kept the catalog swap out); grants and approved roots are reloaded for every scan. */
+  const rescan = (): Promise<RescanResult> => {
+    const no = (code: Exclude<RescanResult, { status: 'ready' }>['code']) => Promise.resolve<RescanResult>({ status: 'refused', code });
+    if (readOnly) return no('read-only');
+    if (stopped || !db.isOpen) return no('unavailable');
+    if (!settled) return no('starting');
+    if (!started) return no('unavailable'); // code review M1: a failed startup has no hooks, salt or scheduler to scan onto
+    if (!catalog || !bundled) return no('unavailable');
+    if (scan) return scan;
+    const now = performance.now(), cooldown = o.rescanCooldownMs ?? RESCAN_MS;
+    if (now - lastScan < cooldown) return Promise.resolve({ status: 'refused', code: 'rate-limited', retryAfterMs: Math.min(60_000, Math.ceil(cooldown - (now - lastScan))) });
+    lastScan = now;
+    scan = serial(scanBody)
+      .catch((e: unknown): RescanResult => { o.log?.log('rescan_failed', { error: errorCode(e) }); return { status: 'refused', code: 'failed' }; })
+      .finally(() => { scan = null; });
+    return scan;
+  };
+  // XAIBO-PROD-596 (P6-T08a slice A; D-P6-20, security review): grants. Offers are bound to this service instance's key; a
+  // confirm (main only) and a revoke run on `serial`, after any scan in flight, and a change is followed by its own scan
+  // (never joining one that loaded the old grants), cooldown skipped (every grant needs a native confirmation; a revoke scans
+  // only when it removed something) and counted for the renderer's rescan. A failed scan is logged; the change stands.
+  let grantKey = randomBytes(32); // code review L1: a new key after every change, so each binding confirms at most once
+  const policy = (): RootPolicy => ({ home: o.home, allowed: o.allowedRoots ?? [], denied: deniedRootsFrom(env) });
+  const grantable = () => !readOnly && !stopped && db.isOpen && settled && started && !!catalog && !!bundled;
+  const refresh = async () => {
+    lastScan = performance.now();
+    const r = await scanBody().catch((e: unknown): RescanResult => { o.log?.log('rescan_failed', { error: errorCode(e) }); return { status: 'refused', code: 'failed' }; });
+    if (r.status !== 'ready') o.log?.log('grant_refresh_skipped', { code: r.code });
+  };
+  const grantConfirm = (r: GrantRequest, binding: string): Promise<GrantConfirmResult> => (!grantable() ? Promise.resolve({ status: 'refused', code: 'unavailable' })
+    : serial(async (): Promise<GrantConfirmResult> => {
+      if (stopped) return { status: 'refused', code: 'unavailable' };
+      const res = confirmGrant(o.dataDir, bundled!, r, binding, policy(), grantKey);
+      if (res.status === 'granted') { grantKey = randomBytes(32); await refresh(); }
+      return res;
+    }));
+  const revoke = (agent: string, t: RevokeTarget): Promise<RevokeResult> => (!grantable() ? Promise.resolve('unavailable')
+    : serial(async (): Promise<RevokeResult> => {
+      if (stopped) return 'unavailable';
+      const res = revokeGrant(o.dataDir, bundled!, agent, t);
+      if (res === 'revoked') { grantKey = randomBytes(32); await refresh(); }
+      return res;
+    }));
+
   const start = async () => {
     try {
-      catalog = o.catalog ?? loadCatalog();
+      catalog = bundled = o.catalog ?? loadCatalog();
       env = await readLoginEnv({ shell: o.shell, ...(o.log ? { log: o.log } : {}) });
+      // XAIBO-PROD-566 (P6-T07 part 2): private imports merged onto the base catalog (read-only load, never throws; a store
+      // issue is logged as codes only). Merged onto an injected catalog too (deviation from review P2-6), so tests keep
+      // their temp-home locations and no installed agent is probed; no store leaves the catalog as it was.
+      // ponytail: the status engine keeps the bundled hook maps; imported hookMappings apply once generic setup can install
+      // their hooks (P6-T08/T09). Report events do not use the maps.
+      const loaded = loadImports(o.dataDir, bundled, { home: o.home, allowed: o.allowedRoots ?? [], denied: deniedRootsFrom(env) });
+      if (loaded.issues.length) o.log?.log('catalog_imports', { codes: [...new Set(loaded.issues.map((i) => i.code))].join(',') });
+      catalog = loaded.catalog;
+      imported = loaded.imported;
+      const grants = loaded.grants; // reloaded per scan, never cached (review P3-3)
       // A read-only store may lack kv (failed first migration): detect without manual paths then.
-      detections.push(...await Promise.all(catalog.agents.map((a) =>
-        detectAgent(a, { env, home: o.home, manualPath: readOnly ? undefined : manualPath(db, a.id), ...(o.log ? { log: o.log } : {}) }))));
+      detections.push(...await detectAll(grants));
       o.log?.log('detect', Object.fromEntries(detections.map((d) => [d.agent, d.state === 'detected'])));
     } finally { // a failed detection (e.g. a bad catalog) announces an empty list, never "detecting" forever
       detected = true;
@@ -292,8 +459,8 @@ export async function boot(o: BootOptions): Promise<Service> {
       announce();
     }
     if (stopped || readOnly) return;
-    const manual = Object.fromEntries(catalog.agents.map((a) => [a.id, manualRoots(db, a.id)]));
-    profiles = syncProfiles(db, profileRoots(catalog, env, o.home, manual));
+    profiles = syncProfiles(db, profileRoots(catalog, env, o.home, manualOf(), imported)); // imported ids: approved roots only (P2-1)
+    synced = true;
     hooks = await startHooks({
       dataDir: o.dataDir, db, writer, ...(o.log ? { log: o.log } : {}),
       publish: (e, durable) => {
@@ -302,7 +469,8 @@ export async function boot(o: BootOptions): Promise<Service> {
         try { engine.ingest({ source: 'hook', envelope: e }); watch(e.agent, e.profile_key, e.session_id); } catch (err) { o.log?.log('status_feed_failed', { error: errorCode(err) }); }
       },
       // Report deliveries arrive durable only when attributed to a profile of the registration's agent (P3-T13b/b2).
-      customAgent: (a) => !catalog?.agents.some((x) => x.id === a),
+      // P6-T07 part 2 (P2-5): not bundled, so an imported id keeps the attribution an unknown id had before imports
+      customAgent: (a) => !bundled?.agents.some((x) => x.id === a),
       publishReport: (e, durable) => {
         if (!durable || !engine || e.session_id === null) return;
         try { engine.ingest({ source: 'report', envelope: e }); } catch (err) { o.log?.log('status_feed_failed', { error: errorCode(err) }); }
@@ -313,17 +481,13 @@ export async function boot(o: BootOptions): Promise<Service> {
     // redone off readiness (review M: ingest never waits for its row batches); G5a-2: again shortly after each UTC
     // midnight (today's spool file a purge still owes)
     void resume();
-    const Adapters: Record<string, typeof ClaudeAdapter | typeof CodexAdapter | typeof AgyAdapter> = { claude: ClaudeAdapter, codex: CodexAdapter, agy: AgyAdapter };
     // P3-T15: the account-marker salt (created on first boot; review L1); null = no marker, Codex scopes stay unverified
-    const salt = loadScopeSalt(o.dataDir, o.log);
+    salt = loadScopeSalt(o.dataDir, o.log);
     // P3-T16e: every adapter watches before any backfills, so appends to one agent's files are seen while another
     // agent's backfill runs; backfills stay one at a time.
-    for (const p of profiles.filter((x) => Adapters[x.agent])) {
+    for (const p of profiles.filter((x) => adapterClass(x.agent))) {
       if (stopped) return;
-      const a = new Adapters[p.agent]!({ db, writer, profileId: p.id, root: p.root, accountSalt: p.agent === 'codex' ? salt : null,
-        ...(o.intervalMs ? { intervalMs: o.intervalMs } : {}) });
-      adapters.push(a);
-      await a.watch();
+      await adapterFor(p).watch();
     }
     for (const a of adapters) {
       if (stopped) return;
@@ -331,13 +495,29 @@ export async function boot(o: BootOptions): Promise<Service> {
     }
     o.log?.log('backfill_done', { profiles: profiles.length });
     if (!stopped) scheduler.start();
+    started = !stopped; // XAIBO-PROD-590 code review M1
   };
 
   // P5-T09 (FR-12): retention after the backfill (review H1: a session continued while Xaibo was off has its new records
   // first), then daily; a run whose wall clock ran more than 1 h ahead of the monotonic clock is skipped (review H3).
   let retentionRun: Promise<RetentionResult | null> | null = null;
   let clearing: Promise<ClearUsageResult> | null = null; // XAIBO-PROD-526: Clear usage history in progress
-  const purgeLimit = new PurgeLimit(() => performance.now()); // XAIBO-PROD-527 (D-P5-07); review L2: a monotonic clock
+  const takePurge = purgeLimit(() => performance.now()); // XAIBO-PROD-527 (D-P5-07); review L2: a monotonic clock; one per service
+  // XAIBO-PROD-527 (design review L6): fixed codes and result enums only in the log. XAIBO-PROD-550 (D-P5-15 item 9): the
+  // owner's history actions answer read-only / failed (stopped, store closed) at once; anything that throws, synchronously
+  // (the secret's read) or as a rejection, is logged as `failEvent` and answers failed (review L3); every result is logged.
+  // Synchronous work answers synchronously (index.ts posts the value; review L2 of PROD-550). A refused or throwing call
+  // answers a plain value even for async work, so an async caller wraps it (purge is async: diff review H1).
+  type Refused = 'read-only' | 'failed';
+  function guarded<R extends string>(event: string, failEvent: string, fn: () => Promise<R>): Promise<R | Refused> | Refused;
+  function guarded<R extends string>(event: string, failEvent: string, fn: () => R): R | Refused;
+  function guarded<R extends string>(event: string, failEvent: string, fn: () => R | Promise<R>): R | Refused | Promise<R | Refused> {
+    const failed = (e: unknown): Refused => { o.log?.log(failEvent, { error: errorCode(e) }); return 'failed'; };
+    const done = <X extends string>(result: X): X => { o.log?.log(event, { result }); return result; };
+    let r: R | Promise<R> | Refused;
+    try { r = readOnly ? 'read-only' : stopped || !db.isOpen ? 'failed' : fn(); } catch (e) { r = failed(e); }
+    return r instanceof Promise ? r.catch(failed).then(done) : done(r);
+  }
   // re-review M1: after a Re-import every adapter backfills against the reset checkpoints, one adapter and one sweep at a
   // time (as the boot backfill, P3-T16e); Re-imports during a sweep merge into one more. ponytail: every adapter, not only
   // the re-imported session's profile; narrow it if many profiles make sweeps slow.
@@ -347,12 +527,12 @@ export async function boot(o: BootOptions): Promise<Service> {
       try { await a.backfill(); } catch (e) { o.log?.log('reimport_sync_failed', { error: errorCode(e) }); }
     }
   });
-  const purgeLog = (event: string, fields?: Record<string, string | number>) => o.log?.log(event, fields);
+  const logTo = (event: string, fields?: Record<string, string | number>) => o.log?.log(event, fields);
   // review M: a purge stops between batches once the service stops (the store closes right after); resume finishes it
   // G5Rr1-2: a retention marker cleared by native activity seen during its purge: the adapters re-read its files
   const onReimport = () => { void resync(); };
   const files = () => ({ dataDir: o.dataDir, backupDir: path.join(o.dataDir, 'backups'), secret: loadInstallSecret(o.dataDir), now: clock(), chunks: hooks?.chunks(),
-    stopped: () => stopped, log: purgeLog, onReimport });
+    stopped: () => stopped, log: logTo, onReimport });
   let nightly: NodeJS.Timeout | undefined;
   const resume = async () => {
     try {
@@ -361,7 +541,7 @@ export async function boot(o: BootOptions): Promise<Service> {
       let secret: Buffer | undefined;
       try { secret = loadInstallSecret(o.dataDir); } catch { secret = undefined; }
       const resumed = await resumePurges(writer, { dataDir: o.dataDir, backupDir: path.join(o.dataDir, 'backups'), secret, now: clock(), chunks: hooks?.chunks(),
-        stopped: () => stopped, log: purgeLog, onReimport });
+        stopped: () => stopped, log: logTo, onReimport });
       if (resumed) o.log?.log('purge_resumed', { count: resumed });
     } catch (e) { o.log?.log('purge_resume_failed', { error: errorCode(e) }); }
     if (!stopped) nightly = setTimeout(() => { void resume(); }, spoolResumeDelay(clock())).unref();
@@ -369,9 +549,8 @@ export async function boot(o: BootOptions): Promise<Service> {
   const retention = (): Promise<RetentionResult | null> => {
     if (readOnly || stopped || !db.isOpen) return Promise.resolve(null);
     // diff review M1: everything, the secret's read included, inside the chain: a failure is a logged rejection
-    retentionRun ??= Promise.resolve().then(() => runRetention(writer, db, { dataDir: o.dataDir, backupDir: path.join(o.dataDir, 'backups'),
-      secret: loadInstallSecret(o.dataDir), now: clock(), active: (agent, profile, sid) => isActive(engine?.status(agent, profile, sid)?.lifecycle ?? null),
-      stopped: () => stopped, chunks: hooks?.chunks(), onReimport, ...(o.log ? { log: (event: string, fields?: Record<string, string | number>) => o.log!.log(event, fields) } : {}) }))
+    retentionRun ??= Promise.resolve().then(() => runRetention(writer, db, { ...files(),
+      active: (agent, profile, sid) => isActive(engine?.status(agent, profile, sid)?.lifecycle ?? null) }))
       .then((r) => { if (r.sessions || r.trash || r.quota) o.onRemoved?.(); return r; }) // G5b2-2
       .catch((e: unknown) => { o.log?.log('retention_failed', { error: errorCode(e) }); return null; })
       .finally(() => { retentionRun = null; });
@@ -379,16 +558,22 @@ export async function boot(o: BootOptions): Promise<Service> {
   };
   const scheduler = retentionScheduler({ run: () => { if (!stopped) void retention(); }, delayMs: o.retentionDelayMs ?? RETENTION_DELAY_MS,
     wall: Date.now, mono: () => performance.now(), setTimer: (fn, ms) => setTimeout(fn, ms).unref(), clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
-    ...(o.log ? { log: (event: string, fields?: Record<string, string | number>) => o.log!.log(event, fields) } : {}) });
+    log: logTo });
 
   const done = start();
+  void done.then(() => { settled = true; }, () => { settled = true; }); // XAIBO-PROD-590: rescan waits for startup (review M3)
   done.catch(() => undefined); // callers observe it; this only keeps an early failure from being unhandled meanwhile
   return {
     store, detections, adapters, done, agents,
+    profiles: () => (synced ? profiles : null),
+    setupAccess: (agent) => (bundled ? setupAccess(o.dataDir, bundled, agent, { home: o.home, allowed: o.allowedRoots ?? [], denied: deniedRootsFrom(env) }) : null),
+    loginEnv: () => (env.PATH ? env : null),
     kinds: () => catalog?.sessionKinds ?? [],
+    catalog: () => catalog ?? null,
     models: () => prices?.table.models ?? [],
     prices: () => prices,
     reloadPrices: () => reloadPrices(),
+    checkPrices: () => checkOverride(path.join(o.dataDir, 'models.override.json')),
     status,
     ticking,
     coverage: () => {
@@ -407,13 +592,23 @@ export async function boot(o: BootOptions): Promise<Service> {
     },
     async setPath(agent, file) {
       await Promise.race([detection, done.catch(() => undefined)]); // detection, not the whole backfill
-      const entry = catalog?.agents.find((a) => a.id === agent);
-      const i = detections.findIndex((d) => d.agent === agent);
-      if (stopped || readOnly || !entry || i < 0 || !(await setManualPath(db, agent, file))) return false;
-      detections[i] = await detectAgent(entry, { env, home: o.home, manualPath: manualPath(db, agent), ...(o.log ? { log: o.log } : {}) });
-      announce();
-      return true;
+      return serial(async () => { // XAIBO-PROD-590 (review L1): never interleaved with a rescan
+        const entry = catalog?.agents.find((a) => a.id === agent);
+        const i = detections.findIndex((d) => d.agent === agent);
+        // P6-T07 part 2 (P2-2): an imported id never gets a manual path (no stat, no kv write) until the part 3 grant
+        if (stopped || readOnly || !entry || i < 0 || imported.has(agent) || !(await setManualPath(db, agent, file))) return false;
+        detections[i] = await detectAgent(entry, { env, home: o.home, manualPath: manualPath(db, agent), access: BUNDLED, ...(o.log ? { log: o.log } : {}) });
+        announce();
+        return true;
+      });
     },
+    rescan,
+    grantOffer: (r) => (grantable() ? grantOffer(o.dataDir, bundled!, r, policy(), grantKey) : { status: 'refused', code: 'unavailable' }),
+    grantConfirm,
+    revoke,
+    grantState: (agent) => (bundled ? grantState(o.dataDir, bundled, agent, policy()) : null),
+    // import review L3: a service that cannot import says unavailable (never blames the file)
+    importCatalog: (file) => (bundled && !readOnly && !stopped ? boundedOutcome(importCatalogFile(o.dataDir, bundled, file)) : { status: 'rejected', issues: [{ code: 'unavailable', at: '/' }] }),
     suspend: (at) => engine?.suspend(at ?? clock()),
     wake: async () => { scheduler.wake(); engine?.resume(clock()); await Promise.all(adapters.map((a) => a.wake())); }, // sleep is no clock jump
     retention,
@@ -438,29 +633,16 @@ export async function boot(o: BootOptions): Promise<Service> {
     })().finally(() => { clearing = null; }),
     // XAIBO-PROD-527: fixed codes and result enums only in the log (design review L6)
     // review L3: anything that throws (the secret's read included) still answers failed
-    purge: async (session) => {
-      let result: PurgeResult = 'failed';
-      try {
-        result = readOnly ? 'read-only' : stopped || !db.isOpen ? 'failed'
-          : await purgeManual(writer, session, { ...files(), limit: purgeLimit, hidden: () => o.onRemoved?.() }); // design review M6: resync once hidden
-      } catch (e) { o.log?.log('purge_failed', { error: errorCode(e) }); }
-      o.log?.log('purge_manual', { result });
-      return result;
-    },
+    purge: async (session) => guarded('purge_manual', 'purge_failed', // design review M6: resync once hidden
+      () => purgeManual(writer, session, { ...files(), limit: takePurge, hidden: () => o.onRemoved?.() })),
     reimport: (key) => {
-      let result: ReimportOutcome = 'failed';
-      try { result = readOnly ? 'read-only' : stopped || !db.isOpen ? 'failed' : reimportKey(writer, db, key, files()); } catch (e) { o.log?.log('reimport_failed', { error: errorCode(e) }); }
-      o.log?.log('reimport', { result });
+      const result = guarded('reimport', 'reimport_failed', () => reimportKey(writer, db, key, files()));
       // review H2: backfill syncs against the stored checkpoints (reset by the Re-import); a scan only sees changed files
       if (result === 'ok') resync();
       return result;
     },
-    saveRetention: (value) => {
-      let result: SaveOutcome = 'failed';
-      try { result = readOnly ? 'read-only' : stopped || !db.isOpen ? 'failed' : saveRetention(writer, value); } catch (e) { o.log?.log('retention_set_failed', { error: errorCode(e) }); }
-      o.log?.log('retention_set', { result });
-      return result;
-    },
+    saveRetention: (value) => guarded('retention_set', 'retention_set_failed', () => saveRetention(writer, value)),
+    signIn: (req) => answerSignIn({ db, writer, readOnly: readOnly || stopped, profile: (id) => (synced ? profiles.some((p) => p.id === id) : null), allow: signInGate }, req, Date.now()),
     stop: () => {
       stopped = true;
       if (due) clearTimeout(due.timer);

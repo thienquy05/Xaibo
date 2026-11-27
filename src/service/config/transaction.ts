@@ -17,7 +17,11 @@ import { isDeepStrictEqual } from 'node:util';
 import { isObj } from '../../shared/ipc.ts';
 import { atomicWrite, fsyncDir, privateDir, writeExclusive } from '../fs-private.ts';
 
-export type Route = 'claude-plugin' | 'claude-settings-fallback' | 'claude-tee' | 'codex-hooks' | 'agy-hooks';
+// XAIBO-PROD-589 (P6-T09a slice B, D-P6-18): report-setup, one fixed route for every report-v1 agent's declared reportSetup
+const ROUTES = ['claude-plugin', 'claude-settings-fallback', 'claude-tee', 'codex-hooks', 'agy-hooks', 'claude-retention', 'report-setup'] as const;
+export type Route = (typeof ROUTES)[number];
+/** P6-T02 (EC-73, FR-33): the retention offer's target value. */
+export const RETENTION_DAYS = 45;
 export type Op = { op: 'set' | 'append'; pointer: string; value: unknown };
 /** Realpaths: every target must resolve inside `root` and outside every `denied` root. */
 export interface Bounds { root: string; denied: string[] }
@@ -28,7 +32,15 @@ export type Code =
   // P3-T05 (claude-plugin route, EC-09): one install per profile; plugin and settings fallback exclude each other.
   | 'duplicate' | 'exclusive' | 'not-installed' | 'cli' | 'shim-missing' | 'route'
   // P3-T14 (claude-tee): an existing statusLine that is not a command statusLine cannot be teed.
-  | 'statusline';
+  | 'statusline'
+  // Gate 6 G6A-1 (D-P6-08): a Claude plugin registry or settings file in a layout Xaibo does not support (never "removed").
+  | 'layout'
+  // P6-T02 (EC-73): the claude-retention route only raises cleanupPeriodDays to 45 over an absent or lower readable value.
+  | 'retention'
+  // P6-T03 part 2a (config/lock.ts): another writer holds the operation lock; its holder is gone (never taken over).
+  | 'busy' | 'stale-lock'
+  // P6-T03 part 2b: the claude executable or its interpreter is not the detected one, or cannot be resolved.
+  | 'unverified';
 export class ConfigError extends Error {
   readonly code: Code;
   constructor(code: Code) {
@@ -50,6 +62,13 @@ export interface ManifestEntry {
   partial?: true;
   /** codex-hooks (P3-T06): the last observed fingerprint of Xaibo's declarations and the time it was first seen. */
   seen?: { hash: string; since: number };
+  /** claude-plugin (P6-T03 part 2b): the last CLI step started (a lower bound: a crash may follow a step that succeeded) and
+   *  the executable the CLI ran as. Never logged, never on the wire. */
+  phase?: 'marketplace' | 'install';
+  exe?: { path: string; id: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number } };
+  /** claude-plugin (part 2c): the profile key the plugin copy was written for, and settings.json's mode before install. */
+  profileKey?: string;
+  preMode?: number;
 }
 export interface RevertResult { result: 'restored' | 'removed' | 'structural' | 'unchanged'; conflicts: Array<{ pointer: string }> }
 
@@ -58,7 +77,7 @@ const NEW_FILE_MODE = 0o600;
 const FORBIDDEN_SEGMENTS = new Set(['__proto__', 'constructor', 'prototype']);
 const FORBIDDEN_HOOK_TYPES = new Set(['prompt', 'agent']);
 const SYNC_CLAUDE_EVENTS = new Set(['Stop']); // S3 decision: Stop synchronous, every other event async
-const BACKUP_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.bak$/;
+export const BACKUP_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.bak$/;
 const INDEX = /^(0|[1-9]\d*)$/;
 
 const fail = (code: Code): never => { throw new ConfigError(code); };
@@ -154,7 +173,7 @@ function encode(doc: unknown, s: Style): string {
   return (s.eol === '\n' ? text : text.replaceAll('\n', s.eol)) + (s.trailing ? s.eol : '');
 }
 
-function segments(pointer: string): string[] {
+export function segments(pointer: string): string[] {
   if (typeof pointer !== 'string' || !pointer.startsWith('/')) fail('pointer');
   const segs = pointer.slice(1).split('/').map((s) => s.replaceAll('~1', '/').replaceAll('~0', '~'));
   if (segs.some((s) => s === '' || s === '-' || FORBIDDEN_SEGMENTS.has(s))) fail('pointer');
@@ -193,12 +212,19 @@ function remove(doc: unknown, segs: string[]) {
 /** Undo owned values on a copy: unchanged ones are removed (or their replaced foreign value restored), changed ones
  * are conflicts; then Xaibo-created containers are dropped if empty. `lastOnly` (codex-hooks, S5-C5): Codex keys hook
  * trust by array position, so an owned element with anything after it is a conflict too, never shifted out. */
-function strip(doc: Record<string, unknown>, owned: Owned[], created: string[], lastOnly = false) {
+function strip(doc: Record<string, unknown>, owned: Owned[], created: string[], lastOnly = false, relocate = false) {
   const out = structuredClone(doc);
   const conflicts: Array<{ pointer: string }> = [];
   for (const o of [...owned].reverse()) {
-    const segs = segments(o.pointer);
+    let segs = segments(o.pointer);
     const parent = get(out, segs.slice(0, -1));
+    // XAIBO-PROD-564 (P6-T06, EC-72; review R1-R3): revert only. An appended element another tool's edits moved within
+    // its array is found by content: exactly one deep-equal element (FR-34 is value-based; Xaibo's group names its data-dir
+    // shim and profile key). None or several stay a conflict at the recorded pointer; codex-hooks (lastOnly) stay positional.
+    if (relocate && !lastOnly && Array.isArray(parent) && !('old' in o) && !isDeepStrictEqual(get(out, segs), o.value)) {
+      const hits = parent.flatMap((x, i) => (isDeepStrictEqual(x, o.value) ? [i] : []));
+      if (hits.length === 1) segs = [...segs.slice(0, -1), String(hits[0])];
+    }
     if (!isDeepStrictEqual(get(out, segs), o.value)
       || (lastOnly && Array.isArray(parent) && Number(segs.at(-1)) !== parent.length - 1)) { conflicts.push({ pointer: o.pointer }); continue; }
     if ('old' in o) (get(out, segs.slice(0, -1)) as Record<string, unknown>)[segs.at(-1)!] = o.old;
@@ -245,6 +271,7 @@ export function plan(target: string, route: Route, ops: Op[], bounds: Bounds): P
   const file = resolveTarget(target, bounds);
   const cur = readFile(file);
   const { doc: base, style } = cur ? decode(cur.bytes) : { doc: {}, style: DEFAULT_STYLE };
+  if (route === 'claude-retention') checkRetention(ops, base);
   const doc = structuredClone(base);
   const owned: Owned[] = [];
   const created: string[] = [];
@@ -277,6 +304,16 @@ export function plan(target: string, route: Route, ops: Op[], bounds: Bounds): P
   };
 }
 
+/** P6-T02 design review H1: whatever a caller passes, this route never lowers a value, never replaces one it cannot read
+ *  (the file may have changed since the offer) and writes nothing but the 45-day value. */
+function checkRetention(ops: Op[], base: object) {
+  const [o] = ops;
+  if (ops.length !== 1 || o!.op !== 'set' || o!.pointer !== '/cleanupPeriodDays' || o!.value !== RETENTION_DAYS) fail('retention');
+  if (!Object.hasOwn(base, 'cleanupPeriodDays')) return;
+  const v = (base as Record<string, unknown>)['cleanupPeriodDays'];
+  if (typeof v !== 'number' || !Number.isSafeInteger(v) || v <= 0 || v >= RETENTION_DAYS) fail('retention');
+}
+
 const MANIFEST_VERSION = 1;
 
 export function readManifest(dataDir: string): ManifestEntry[] {
@@ -291,8 +328,11 @@ export function readManifest(dataDir: string): ManifestEntry[] {
 
 /** Adds or replaces (by id) an entry written outside apply(): the claude-plugin route (P3-T05). */
 export function recordEntry(dataDir: string, entry: ManifestEntry): void {
-  writeManifest(dataDir, [...readManifest(dataDir).filter((e) => e.id !== entry.id), entry]);
+  writeManifest(dataDir, upsert(readManifest(dataDir), entry));
 }
+/** P6-T03 design review M2: an entry is replaced where it stands, so manifest order stays creation order (newest last). */
+const upsert = (entries: ManifestEntry[], entry: ManifestEntry) =>
+  (entries.some((e) => e.id === entry.id) ? entries.map((e) => (e.id === entry.id ? entry : e)) : [...entries, entry]);
 export function dropEntry(dataDir: string, id: string): void {
   writeManifest(dataDir, readManifest(dataDir).filter((e) => e.id !== id));
 }
@@ -332,7 +372,11 @@ export function apply(p: Plan, o: ApplyOptions): ManifestEntry {
   if (resolveTarget(p.target, o.bounds) !== p.target) fail('changed');
   const dirs = privateDirs(o.dataDir);
   if (p.route === 'claude-plugin') fail('route'); // installs through `claude plugin` (adapters/claude/setup.ts)
-  assertExclusive(readManifest(o.dataDir), p.target, p.route);
+  const others = readManifest(o.dataDir);
+  assertExclusive(others, p.target, p.route);
+  // P6-T02 design review H2, generalised by P6-T03 review H2: one entry per file and route, so a revert can never remove a
+  // value the owner set since and a re-Connect never appends Xaibo's hooks twice
+  if (others.some((e) => e.target === p.target && e.route === p.route)) fail('duplicate');
   const before = readFile(p.target);
   if (!sameFile(p, before)) fail('changed');
   const backup = before ? `${randomUUID()}.bak` : null;
@@ -341,7 +385,6 @@ export function apply(p: Plan, o: ApplyOptions): ManifestEntry {
     id: randomUUID(), target: p.target, route: p.route, state: 'pending', existed: p.existed, preHash: p.preHash,
     postHash: sha256(p.after), owned: p.owned, created: p.created, backup, at: new Date().toISOString(),
   };
-  const others = readManifest(o.dataDir);
   try {
     writeManifest(o.dataDir, [...others, entry]); // pending first: a crash after the rename still leaves a revertable entry
   } catch (e) {
@@ -375,8 +418,22 @@ export function apply(p: Plan, o: ApplyOptions): ManifestEntry {
 }
 
 function checkEntry(e: ManifestEntry) {
+  if (!(ROUTES as readonly string[]).includes(e.route)) fail('manifest'); // P6-T02 design review L1: revert branches on the route
   if (e.backup !== null && !BACKUP_NAME.test(e.backup)) fail('manifest');
   [...e.owned.map((x) => x.pointer), ...e.created].forEach(segments);
+}
+
+/** XAIBO-PROD-561 (P6-T03 part 2c): puts `target` back to `bytes` with `mode`, or removes it (`bytes` null), only while it
+ *  still hashes to `expect` (null = absent), rechecked just before the rename; a file already holding the result is left as
+ *  it is (idempotent after a crash). ponytail: the recheck-to-rename window is the one apply() and revert() accept. */
+export function restoreFile(target: string, bytes: Buffer | null, expect: string | null, mode: number): void {
+  const cur = readFile(target);
+  if (bytes === null ? cur === null : !!cur && cur.bytes.equals(bytes) && cur.mode === mode) return;
+  const still = () => { const now = readFile(target); if ((now ? sha256(now.bytes) : null) !== expect) fail('changed'); };
+  still();
+  if (bytes === null) { removeFile(target); return; }
+  atomicWrite(target, bytes, mode, still);
+  fsyncDir(path.dirname(target));
 }
 
 export function revert(entry: ManifestEntry, o: { dataDir: string; bounds: Bounds }): RevertResult {
@@ -407,7 +464,7 @@ export function revert(entry: ManifestEntry, o: { dataDir: string; bounds: Bound
     return done('restored');
   }
   const { doc, style } = decode(cur.bytes);
-  const { doc: stripped, conflicts } = strip(doc, entry.owned, entry.created, entry.route === 'codex-hooks');
+  const { doc: stripped, conflicts } = strip(doc, entry.owned, entry.created, entry.route === 'codex-hooks', true);
   const text = encode(stripped, style);
   if (!isDeepStrictEqual(stripped, doc)) {
     atomicWrite(entry.target, text, cur.mode, unchangedSince);
@@ -415,6 +472,6 @@ export function revert(entry: ManifestEntry, o: { dataDir: string; bounds: Bound
   }
   if (!conflicts.length) return done('structural');
   const left = new Set(conflicts.map((c) => c.pointer));
-  writeManifest(o.dataDir, [...others, { ...entry, owned: entry.owned.filter((x) => left.has(x.pointer)), postHash: sha256(text), partial: true }]);
+  writeManifest(o.dataDir, upsert(readManifest(o.dataDir), { ...entry, owned: entry.owned.filter((x) => left.has(x.pointer)), postHash: sha256(text), partial: true }));
   return { result: 'structural', conflicts };
 }

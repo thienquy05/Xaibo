@@ -8,6 +8,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { answerUsage, answerUsageHistory, HISTORY_MAX } from '../../src/service/api.ts';
+import { parsePortMessage } from '../../src/shared/ipc.ts';
 import { openStore } from '../../src/service/store/db.ts';
 
 const HOME = '/tmp/xaibo-fixture/home';
@@ -43,7 +44,8 @@ test('usage: newest measurement per scope and stream as raw fields; agy passive;
   const reply = answerUsage(db, { v: 1, type: 'usage', id: 3 }, HOME);
   assert.equal(reply.id, 3);
   const base = { verified: null, stream: null, windowMinutes: null, usedPercent: null, resetsAt: null, plan: null, credits: null, asOf: null, firstObservedAt: null, measuredAt: null };
-  assert.deepEqual(reply.scopes, [
+  // XAIBO-PROD-582: identity and sign-in fields are checked in their own test below
+  assert.deepEqual(reply.scopes.map(({ profileId: _p, generation: _g, boundary: _b, ...rest }) => rest), [
     { ...base, scope: null, agent: 'agy', profile: 'Default profile', unavailable: 'passive' },
     { scope: s1, agent: 'claude', profile: 'Default profile', verified: false, stream: 'five_hour', windowMinutes: 300, usedPercent: 101, resetsAt: T + 60 * MIN,
       plan: null, credits: null, asOf: null, firstObservedAt: T + 5 * MIN, measuredAt: T + 5 * MIN, unavailable: null },
@@ -84,9 +86,40 @@ test('usageHistory: one scope and stream, window [from, to), time order, keyset 
 test('a store that cannot answer gives empty replies', async () => {
   const { db, s1 } = await store();
   db.close();
-  assert.deepEqual(answerUsage(db, { v: 1, type: 'usage', id: 2 }, HOME), { v: 1, type: 'usage', id: 2, scopes: [] });
+  assert.deepEqual(answerUsage(db, { v: 1, type: 'usage', id: 2 }, HOME), { v: 1, type: 'usage', id: 2, scopes: [], profiles: [] });
   assert.deepEqual(answerUsageHistory(db, { v: 1, type: 'usageHistory', id: 4, scope: s1, stream: 'five_hour', from: 0, to: 1, cursor: null, limit: 50 }),
     { v: 1, type: 'usageHistory', id: 4, records: [], next: null });
+});
+
+// XAIBO-PROD-582 (P6-T10a unit 1; design .handoff/p6-t10a-design.md, review R4, D-P6-17): each scope names its profile, its
+// sign-in generation and that generation's boundary (generation 0: none, never invented; a later change never relabels it);
+// every profile is listed once with its current sign-in view, from the database only.
+test('P6-T10a: scopes carry profile, generation and that generation\'s boundary; every profile listed with its sign-in view', async () => {
+  const { db, s1, s2, put } = await store();
+  db.prepare("INSERT INTO profiles (id, agent, root, origin) VALUES ('r1', '9code', '/tmp/xaibo-fixture/reg', 'registration'), ('r2', 'acme', '/tmp/xaibo-fixture/acme', 'registration')").run();
+  put(s1, 'five_hour', T, { used: 40 });
+  db.prepare("INSERT INTO sign_in_boundaries (profile_id, generation, revision, at, reason, method) VALUES ('c1', 1, 1, ?, 'method', 'api-key'), ('c1', 2, 2, ?, 'declared-account', 'subscription')").run(T, T + MIN);
+  db.prepare('UPDATE usage_scopes SET sign_in_generation = 1 WHERE id = ?').run(s2); // an older epoch: the profile is on generation 2 now
+  put(s2, 'codex:primary', T + MIN, { used: 25 });
+  const reply = answerUsage(db, { v: 1, type: 'usage', id: 5 }, HOME);
+  const pick = (s: (typeof reply.scopes)[number]) => [s.profileId, s.generation, s.boundary];
+  assert.deepEqual(pick(reply.scopes.find((s) => s.scope === s1)!), ['p1', 0, null], 'generation 0: no invented provenance');
+  assert.deepEqual(pick(reply.scopes.find((s) => s.scope === s2)!), ['c1', 1, { method: 'api-key', at: T, reason: 'method' }], 'its own generation, not today\'s');
+  assert.deepEqual(reply.scopes.filter((s) => s.scope === null).map(pick), [['a1', null, null], ['p2', null, null], ['c2', null, null]]);
+  assert.deepEqual(reply.profiles.map((p) => [p.profileId, p.agent, p.label]), [
+    ['r2', 'acme', '/tmp/xaibo-fixture/acme'], ['a1', 'agy', 'Default profile'], ['p1', 'claude', 'Default profile'], ['p2', 'claude', '~/work/.claude-alt'],
+    ['c1', 'codex', 'Default profile'], ['c2', 'codex', '/tmp/xaibo-fixture/elsewhere'],
+  ].sort((a, b) => (a[1]! < b[1]! ? -1 : a[1]! > b[1]! ? 1 : a[0]! < b[0]! ? -1 : 1)), 'agent then id; a custom agent included, one whose id the parser refuses (9code) left out');
+  // review H1: only a UUID profile can be declared or opened; any other id (a registration profile key) carries no view
+  assert.ok(reply.profiles.every((p) => p.signIn === null), 'these fixture ids are not UUIDs');
+  const U = '00000000-0000-4000-8000-0000000c8211';
+  db.prepare("INSERT INTO profiles (id, agent, root, origin) VALUES (?, 'claude', '/tmp/xaibo-fixture/u', 'manual')").run(U);
+  const withU = answerUsage(db, { v: 1, type: 'usage', id: 6 }, HOME);
+  const u = withU.profiles.find((p) => p.profileId === U)!;
+  assert.equal(u.signIn?.profileId, U);
+  assert.equal(u.signIn?.method, 'unknown', 'no declaration, no shipped rules: Unknown');
+  assert.ok(parsePortMessage(withU), 'review H1: the whole reply passes the renderer parser with a registration profile in it');
+  assert.ok(!JSON.stringify(reply).includes(`${HOME}/`), 'home directory never sent');
 });
 
 test('review M/L: a custom registration profile adds no row; a trailing slash in home still hides it', async () => {

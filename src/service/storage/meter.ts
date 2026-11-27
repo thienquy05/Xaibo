@@ -10,7 +10,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
 import type { StorageCategory, StorageReport } from '../../shared/ipc.ts';
-export type { StorageCategory, StorageReport }; // XAIBO-PROD-527: shared with the renderer
+export type { StorageCategory }; // XAIBO-PROD-527: shared with the renderer
 
 const USAGE = new Set(['usage', 'usage_history', 'usage_scopes', 'usage_snapshots', 'context_snapshots', 'cost_estimates', 'monthly_quota_peaks',
   'monthly_sessions', 'monthly_usage', 'settled_contributions']);

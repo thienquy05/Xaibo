@@ -1,18 +1,22 @@
 // Main process (P1-T04): private data dir, single instance, locked-down window, tray, the service process.
 // Close hides the window and collection continues; Quit stops the service, then exits. The service is supervised
 // (P1-T06): restarted with backoff, a fresh port brokered to the renderer after every start and every page load.
-import { app, BrowserWindow, dialog, ipcMain, Menu, MessageChannelMain, Notification, powerMonitor, utilityProcess } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, MessageChannelMain, Notification, powerMonitor, shell, utilityProcess } from 'electron';
 import type { MessagePortMain, Tray } from 'electron';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, realpathSync } from 'node:fs';
 import { release } from 'node:os';
 import path from 'node:path';
 import { installCrashPolicy } from '../shared/crash.ts';
-import { AGENT_ID, IPC_VERSION, type ServiceMetrics } from '../shared/ipc.ts';
+import { AGENT_ID, IPC_VERSION, parseApplyAsk, parseGrantAsk, type ApplyOutcome, type GrantOutcome, type RevealResult, type ServiceMetrics, type StartupReply } from '../shared/ipc.ts';
+import { grantFlow } from './grants.ts';
+import { applyFlow } from './apply-confirm.ts';
 import { appendQuiet, createLogger, loadInstallSecret } from '../shared/log.ts';
-import { initDataDir } from './app-paths.ts';
+import { initDataDir, serviceEnv } from './app-paths.ts';
 import { buildBundle, foldMetrics, readLogTail, writeBundle } from './diagnostics.ts';
 import { notificationText, showNotification } from './notifications.ts';
 import { forwardPower } from './power.ts';
+import { fromOurWindow, revealOverride } from './reveal.ts';
+import { answerStartup, stubLoginItems, type LoginItems } from './startup.ts';
 import { APP_ORIGIN, devOrigin } from './policy.ts';
 import { lockDown, registerAppScheme, webPreferences } from './security.ts';
 import { Supervisor } from './service-supervisor.ts';
@@ -51,14 +55,40 @@ function start(dataDir: string) {
     const port = supervisor.connect();
     if (port) win.webContents.postMessage('port', null, [port]);
   };
+  // XAIBO-PROD-597 (P6-T08a slice B; D-P6-20, security review): main owns the grant confirmation (grants.ts). The picker and the
+  // message box are sheets on our window and are refused while it does not exist; only the grant button sends the binding.
+  const grants = grantFlow({
+    pickExecutable: async () => {
+      if (!win || win.isDestroyed()) return null;
+      const r = await dialog.showOpenDialog(win, { title: 'Choose the agent executable to grant', properties: ['openFile'] });
+      return r.canceled ? null : r.filePaths[0] ?? null;
+    },
+    realpath: (p) => realpathSync.native(p),
+    confirm: async (d) => (win && !win.isDestroyed() ? (await dialog.showMessageBox(win, d)).response === 1 : false),
+    send: (c) => supervisor.send(c),
+    setTimer: (fn, ms) => setTimeout(fn, ms),
+    clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
+    now: () => performance.now(),
+  });
+  // XAIBO-PROD-600 (P6-T12 slice 2; D-P6-21): main owns the confirmation of a real-profile apply (apply-confirm.ts); the message
+  // box is a sheet on our window and refused while it does not exist; only the apply button sends the binding.
+  const applies = applyFlow({
+    confirm: async (d) => (win && !win.isDestroyed() ? (await dialog.showMessageBox(win, d)).response === 1 : false),
+    send: (c) => supervisor.send(c),
+    setTimer: (fn, ms) => setTimeout(fn, ms),
+    clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
+    now: () => performance.now(),
+  });
   const notifyStub = process.env.XAIBO_NOTIFY_STUB === '1' ? path.join(app.getPath('logs'), 'notify-stub.jsonl') : null;
   const supervisor = new Supervisor<MessagePortMain>({
     fork: () => utilityProcess.fork(path.join(here, '..', 'service', 'index.js'), [], {
-      serviceName: 'xaibo-service', env: { ...process.env, XAIBO_DATA_DIR: dataDir },
+      serviceName: 'xaibo-service', env: serviceEnv(process.env, { dataDir, packaged: app.isPackaged, resourcesPath: process.resourcesPath }),
     }),
     channel: () => new MessageChannelMain(),
     onHealth: (h) => win?.webContents.send('health', h),
-    onSpawn: () => { serviceMetrics = null; sendPort(); }, // a new service process: no stale metrics (review L1)
+    onSpawn: () => { serviceMetrics = null; grants.reset(); applies.reset(); sendPort(); }, // a new service process: no stale metrics (review L1), grant or apply flow
+    onGrant: (g) => grants.receive(g),
+    onApply: (a) => applies.receive(a),
     setTimer: (fn, ms) => setTimeout(fn, ms),
     clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
     now: Date.now,
@@ -108,6 +138,33 @@ function start(dataDir: string) {
     appendQuiet(trace, `${JSON.stringify({ ev: 'paint', delta, t: t.toString() })}\n`); // XAIBO-PROD-430: never throws
   });
   // "Set path…" (P1-T08/T12): only from our window, only an agent id; the user picks the file, the service validates it.
+  // XAIBO-PROD-595 (P6-T08 slice E part 2; D-P6-19 1a): Import catalog entry. Only from our window, no argument; the user picks a
+  // JSON file and the service reads and validates it (bounded). Importing grants nothing.
+  ipcMain.on('import-catalog', (e) => {
+    if (!win || !fromOurWindow(e, win)) return; // import review L2: our window's main frame only
+    void dialog.showOpenDialog(win, { title: 'Choose an agent catalog entry', properties: ['openFile'], filters: [{ name: 'Agent catalog entry', extensions: ['json'] }] }).then((r) => {
+      const file = r.filePaths[0];
+      if (!r.canceled && file) supervisor.send({ v: IPC_VERSION, type: 'importCatalog', path: file });
+    });
+  });
+  // XAIBO-PROD-597: Approve root / Grant probe / Grant setup. Our window's main frame only, ids only (parsed here); the outcome
+  // carries no path or binding, and the log only the action and outcome (review L13).
+  ipcMain.handle('grant', async (e, request: unknown): Promise<GrantOutcome> => {
+    const ask = parseGrantAsk(request);
+    if (!win || win.isDestroyed() || !fromOurWindow(e, win) || !ask) return { status: 'refused', code: 'invalid' };
+    const out = await grants.ask(ask);
+    log.log(`grant_${ask.action}_${out.status === 'refused' ? out.code : out.status}`);
+    return out;
+  });
+  // XAIBO-PROD-600: Apply / Disconnect / Clean up on a real profile. Our window's main frame only, a kind and a preview id only
+  // (parsed here); the outcome is the service's bound-checked reply; the log names only the kind and outcome.
+  ipcMain.handle('confirm-apply', async (e, request: unknown): Promise<ApplyOutcome> => {
+    const ask = parseApplyAsk(request);
+    if (!win || win.isDestroyed() || !fromOurWindow(e, win) || !ask) return { status: 'refused', code: 'invalid' };
+    const out = await applies.ask(ask);
+    log.log(`apply_${ask.kind}_${out.status === 'refused' ? out.code : out.status}`);
+    return out;
+  });
   ipcMain.on('set-agent-path', (e, agent: unknown) => {
     if (!win || e.sender !== win.webContents || typeof agent !== 'string' || !AGENT_ID.test(agent)) return;
     void dialog.showOpenDialog(win, { title: 'Choose the agent executable', properties: ['openFile'] }).then((r) => {
@@ -115,6 +172,22 @@ function start(dataDir: string) {
       if (!r.canceled && file) supervisor.send({ v: IPC_VERSION, type: 'setPath', agent, path: file });
     });
   });
+
+  // XAIBO-PROD-568 (P6-T11, SEC1; review R1-R3): Reveal override file. Our window's main frame only, no argument read; the
+  // path is fixed in reveal.ts; Finder only selects. XAIBO_REVEAL_STUB=1 (E2E) records the kind only, never calls Finder.
+  const revealStub = process.env.XAIBO_REVEAL_STUB === '1' ? path.join(app.getPath('logs'), 'reveal-stub.jsonl') : null;
+  ipcMain.handle('reveal-price-override', (e): RevealResult => {
+    if (!fromOurWindow(e, win)) return 'failed';
+    const kind = revealOverride(dataDir, revealStub ? () => {} : (p) => shell.showItemInFolder(p));
+    if (revealStub) appendQuiet(revealStub, `${JSON.stringify({ kind })}\n`);
+    return kind;
+  });
+
+  // XAIBO-PROD-569 (P6-T10 unit 1, design §6.6 Startup): read or save Start at login for our main frame only; the request is
+  // parsed in startup.ts. XAIBO_LOGIN_ITEM_STUB=1 (every E2E run) keeps it in a file, never the machine's login items.
+  const loginItems: LoginItems = process.env.XAIBO_LOGIN_ITEM_STUB === '1' ? stubLoginItems(path.join(app.getPath('logs'), 'login-item-stub.json'))
+    : { get: () => app.getLoginItemSettings().openAtLogin, set: (on) => app.setLoginItemSettings({ openAtLogin: on }) };
+  ipcMain.handle('startup', (e, request: unknown): StartupReply => (fromOurWindow(e, win) ? answerStartup(request, loginItems) : { status: 'failed', code: 'invalid', enabled: null }));
 
   void app.whenReady().then(() => {
     lockDown(path.join(here, '..', '..', 'dist', 'renderer'), dev, (count) => { blocked = count; log.log('request_blocked', { count }); });

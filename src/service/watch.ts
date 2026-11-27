@@ -3,6 +3,7 @@
 // under an FD cap; a failing watch just leaves that file to the scan; wake() reconciles at once.
 import { watch as fsWatch } from 'node:fs';
 import { stat } from 'node:fs/promises';
+import { counters } from './perf-counters.ts';
 
 export interface Closable { close(): void; on(event: 'error', fn: () => void): unknown }
 export type WatchFn = (path: string, listener: () => void) => Closable;
@@ -72,7 +73,7 @@ export class Watcher<E extends { path: string }> {
       try { st = await stat(e.path); } catch { this.#seen.delete(e.path); this.#unwatch(e.path); continue; } // gone since listing, or unreadable (EC-71; any errno: the next good scan re-reports it from its checkpoint)
       const prev = this.#seen.get(e.path);
       this.#seen.set(e.path, { size: st.size, mtime: st.mtimeMs, ino: st.ino });
-      if (!initial && (!prev || prev.size !== st.size || prev.mtime !== st.mtimeMs || prev.ino !== st.ino)) this.#o.onChange(e);
+      if (!initial && (!prev || prev.size !== st.size || prev.mtime !== st.mtimeMs || prev.ino !== st.ino)) { counters.scanChanges++; this.#o.onChange(e); }
       this.#manageWatch(e, this.#o.now() - st.mtimeMs < this.#o.activeMs, st.mtimeMs, st.ino);
     }
     // EC-71: a forgotten path (failed sync) has no seen entry but may still hold a watch, so both maps are swept
@@ -100,6 +101,7 @@ export class Watcher<E extends { path: string }> {
       const held = { w: undefined as unknown as Closable, mtime, ino };
       held.w = this.#o.watch(e.path, () => {
         held.mtime = Math.max(held.mtime, this.#o.now()); // review M2: a change through the watch is fresh activity
+        counters.watchChanges++; // XAIBO-PROD-552 (perf trace only)
         this.#o.onChange(e);
       });
       held.w.on('error', () => { if (this.#watchers.get(e.path) === held) this.#unwatch(e.path); }); // review L3: only this handle

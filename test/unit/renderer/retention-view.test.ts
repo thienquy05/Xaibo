@@ -9,7 +9,8 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import ts from 'typescript';
 import { RETENTION_MAX, type StorageReport } from '../../../src/shared/ipc.ts';
-import { DEFAULT_DAYS, draftOf, formatBytes, initialRetention, lastRunText, measureStorage, RANGE_ERROR, retentionReducer, saveText, settingOf, storageView, storageWhen, toSend,
+import { RETENTION_DEFAULT } from '../../../src/shared/ipc.ts';
+import { draftOf, formatBytes, initialRetention, lastRunText, measureStorage, RANGE_ERROR, retentionReducer, saveText, settingOf, storageView, storageWhen, toSend,
   type RetentionAction, type RetentionState } from '../../../src/renderer/settings/retention-view.ts';
 
 const loader = registerHooks({ load(url, context, nextLoad) {
@@ -22,7 +23,7 @@ const { Settings, RetentionSection } = await import(new URL('../../../src/render
 loader.deregister();
 
 test('draftOf: the stored setting picks the radio; unreadable checks none', () => {
-  assert.equal(DEFAULT_DAYS, 45);
+  assert.equal(RETENTION_DEFAULT, 45);
   assert.deepEqual(draftOf({ days: 45 }), { choice: 'default', days: '' });
   assert.deepEqual(draftOf('never'), { choice: 'never', days: '' });
   assert.deepEqual(draftOf({ days: 90 }), { choice: 'other', days: '90' });

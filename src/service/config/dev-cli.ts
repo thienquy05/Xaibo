@@ -20,15 +20,19 @@
 //   P3-T13b report registrations: register --agent <id> --profile-key <key> [--yes] | revoke --id <uuid> [--yes]
 //   register prints the registration id and its token once (only the token's hash is stored, <dataDir>/registrations.json);
 //   --yes is accepted only for a data dir strictly below the temp dir. Revoking cuts the producer's open connections.
-import { closeSync, constants, fstatSync, openSync, readSync, realpathSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { parseArgs as parseFlags } from 'node:util';
-import { deployShim, installPlugin, installTee, MARKETPLACE, PLUGIN_REF, teePlan, uninstallPlugin } from '../adapters/claude/setup.ts';
+import {
+  deployShim, installPlugin, installTee, MARKETPLACE, PLUGIN_REF, previewPlugin, teePlan, uninstallPlugin, type PluginOptions,
+} from '../adapters/claude/setup.ts';
 import { checkAgyInstall, installAgyHooks } from '../adapters/agy/setup.ts';
 import { codexHookOps, codexTrustSteps, installCodexHooks, shimPath } from '../adapters/codex/setup.ts';
 import { readLoginEnv } from '../catalog/env.ts';
+import { deniedRootsFrom, real } from './bounds.ts';
+import { acquireLock, type Lock } from './lock.ts';
 import { addRegistration, RegistrationError, removeRegistration } from '../receivers/registrations.ts';
 import {
   apply, ConfigError, plan, readManifest, resolveTarget, revert, validateOps, within, type Bounds, type Plan, type Route,
@@ -42,14 +46,11 @@ const TARGETS: Record<string, { file: string; route: Route | null }> = {
   'agy-hooks': { file: '.gemini/config/hooks.json', route: 'agy-hooks' },
 };
 const COMMANDS = new Set(['plan', 'apply', 'revert', 'status']);
-const ROOT_NAMES = ['.claude', '.codex', '.gemini', '.claude.json'];
-const ENV_ROOTS = ['CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'GEMINI_CLI_HOME'] as const;
 const MAX_OPS_BYTES = 1 << 20;
 const REPO = path.resolve(import.meta.dirname, '..', '..', '..');
 
 class UsageError extends Error {}
 const refuse = (msg: string): never => { throw new UsageError(msg); };
-const real = (p: string) => { try { return realpathSync.native(p); } catch { return path.resolve(p); } };
 
 /** Strict flags (node:util): a value never comes from the next flag, no positionals, `--flag=value` accepted
  * (a value starting with '-' needs that form). Only parse errors become usage errors. */
@@ -77,13 +78,8 @@ function cliArgs(argv: string[]) {
 }
 
 async function deniedRoots(): Promise<string[]> {
-  const login = await readLoginEnv({ shell: process.env['SHELL'] });
-  if (!login.PATH) refuse('refused: the login shell environment could not be read, so agent home overrides are unknown');
-  const homes = new Set([os.homedir(), os.userInfo().homedir]);
-  return [
-    ...[...homes].flatMap((h) => ROOT_NAMES.map((n) => path.join(h, n))),
-    ...ENV_ROOTS.flatMap((k) => [login[k], process.env[k]]).filter((v): v is string => !!v),
-  ].map(real);
+  const denied = deniedRootsFrom(await readLoginEnv({ shell: process.env['SHELL'] })); // P6-T03: shared with the service
+  return denied ?? refuse('refused: the login shell environment could not be read, so agent home overrides are unknown');
 }
 
 /** `--yes` only for a profile strictly below the temp dir (unless that holds the real home) or .cache/profiles/. */
@@ -119,6 +115,14 @@ function readOps(file: string) {
 }
 
 const show = (v: unknown) => JSON.stringify(v);
+
+/** P6-T03 part 2a (review M2): the operation lock around a write, taken only after the owner confirmed (a waiting prompt never
+ *  blocks the service); Ctrl-C or SIGTERM while held releases it (review M1). */
+let held: Lock | null = null;
+async function locked<T>(dataDir: string, fn: () => Promise<T> | T): Promise<T> {
+  held = acquireLock(dataDir);
+  try { return await fn(); } finally { held.release(); held = null; }
+}
 
 /** P3-T13b: approve or revoke a report producer. --yes only for a data dir strictly below the temp dir (tests). */
 async function registration(argv: string[]): Promise<number> {
@@ -172,7 +176,10 @@ async function main(argv: string[]): Promise<number> {
     const entry = readManifest(dataDir!).filter((e) => e.target === target).at(-1);
     if (!entry) refuse(`${a.target}: no Xaibo change to revert`);
     await confirm(a.yes, profile, `revert Xaibo changes in ${a.target}`);
-    const r = revert(entry!, { dataDir: dataDir!, bounds });
+    const r = await locked(dataDir!, () => { // part 2a review M2: the entry as it is now, under the lock (the service may have reverted it)
+      const now = readManifest(dataDir!).find((e) => e.id === entry!.id);
+      return now ? revert(now, { dataDir: dataDir!, bounds }) : refuse(`${a.target}: that Xaibo change is no longer recorded`);
+    });
     console.log(`${a.target}: ${r.result}`);
     for (const c of r.conflicts) console.log(`conflict (changed since Xaibo wrote it, kept): ${c.pointer}`);
     return r.conflicts.length ? 2 : 0;
@@ -182,7 +189,7 @@ async function main(argv: string[]): Promise<number> {
   const p = printPlan(a.target, plan(target, spec.route!, readOps(a.change!), bounds));
   if (a.cmd === 'plan') return 0;
   await confirm(a.yes, profile, `write ${a.target}`);
-  const entry = apply(p, { dataDir: dataDir!, bounds });
+  const entry = await locked(dataDir!, () => apply(p, { dataDir: dataDir!, bounds }));
   console.log(`${a.target}: applied ${entry.id}`);
   return 0;
 }
@@ -202,9 +209,11 @@ async function codex(a: ReturnType<typeof cliArgs>, dataDir: string, profile: st
   const p = printPlan(a.target, plan(target, 'codex-hooks', codexHookOps(shimPath(dataDir), a.profileKey!), bounds));
   if (a.cmd === 'plan') return 0;
   await confirm(a.yes, profile, 'write codex-hooks');
-  deployShim(dataDir, { hook: path.join(REPO, 'src', 'forwarder', 'xaibo-hook'), forwarder: real(a.forwarder ?? path.join(REPO, '.cache', 'sea', 'xaibo-forwarder')) });
   const codexHome = path.join(profile, '.codex');
-  const entry = installCodexHooks({ dataDir, codexHome, profileKey: a.profileKey!, bounds }, p); // the plan shown (G3a-2)
+  const entry = await locked(dataDir, () => {
+    deployShim(dataDir, { hook: path.join(REPO, 'src', 'forwarder', 'xaibo-hook'), forwarder: real(a.forwarder ?? path.join(REPO, '.cache', 'sea', 'xaibo-forwarder')) });
+    return installCodexHooks({ dataDir, codexHome, profileKey: a.profileKey!, bounds }, p); // the plan shown (G3a-2)
+  });
   console.log(`codex-hooks: applied ${entry.id}; installed, awaiting trust`);
   codexTrustSteps(codexHome, shimPath(dataDir), a.profileKey!).forEach((s, i) => console.log(`${i + 1}. ${s}`));
   return 0;
@@ -217,8 +226,10 @@ async function agy(a: ReturnType<typeof cliArgs>, dataDir: string, profile: stri
   const p = printPlan(a.target, plan(file, 'agy-hooks', ops, bounds));
   if (a.cmd === 'plan') return 0;
   await confirm(a.yes, profile, 'write agy-hooks');
-  deployShim(dataDir, { hook: path.join(REPO, 'src', 'forwarder', 'xaibo-hook'), forwarder: real(a.forwarder ?? path.join(REPO, '.cache', 'sea', 'xaibo-forwarder')) });
-  const entry = installAgyHooks(o, p); // the plan shown (G3a-2)
+  const entry = await locked(dataDir, () => {
+    deployShim(dataDir, { hook: path.join(REPO, 'src', 'forwarder', 'xaibo-hook'), forwarder: real(a.forwarder ?? path.join(REPO, '.cache', 'sea', 'xaibo-forwarder')) });
+    return installAgyHooks(o, p); // the plan shown (G3a-2)
+  });
   console.log(`agy-hooks: applied ${entry.id}`);
   return 0;
 }
@@ -230,9 +241,11 @@ async function tee(a: ReturnType<typeof cliArgs>, dataDir: string, profile: stri
   const p = printPlan(a.target, teePlan(o));
   if (a.cmd === 'plan') return 0;
   await confirm(a.yes, profile, 'write claude-tee');
-  deployShim(dataDir, { hook: path.join(REPO, 'src', 'forwarder', 'xaibo-hook'), forwarder: real(a.forwarder ?? path.join(REPO, '.cache', 'sea', 'xaibo-forwarder')),
-    statusline: real(a.statusline ?? path.join(REPO, '.cache', 'sea', 'xaibo-statusline')) });
-  const entry = installTee(o, p); // the plan shown (G3a-2)
+  const entry = await locked(dataDir, () => {
+    deployShim(dataDir, { hook: path.join(REPO, 'src', 'forwarder', 'xaibo-hook'), forwarder: real(a.forwarder ?? path.join(REPO, '.cache', 'sea', 'xaibo-forwarder')),
+      statusline: real(a.statusline ?? path.join(REPO, '.cache', 'sea', 'xaibo-statusline')) });
+    return installTee(o, p); // the plan shown (G3a-2)
+  });
   console.log(`claude-tee: applied ${entry.id}`);
   return 0;
 }
@@ -240,7 +253,9 @@ async function tee(a: ReturnType<typeof cliArgs>, dataDir: string, profile: stri
 /** P3-T05: the hooks-only plugin, through `claude plugin` in the disposable profile only. */
 async function plugin(a: ReturnType<typeof cliArgs>, dataDir: string, profile: string, bounds: Bounds): Promise<number> {
   if (!a.claude || !a.profileKey) refuse('claude-plugin needs --claude <exe> and --profile-key <key>');
-  const o = { dataDir, profileKey: a.profileKey!, configDir: path.join(profile, '.claude'), claude: real(a.claude!), bounds, env: { PATH: process.env['PATH'] ?? '', HOME: profile } };
+  // P6-T03 part 2b: the CLI gets the login PATH and nothing else inherited (setup.ts builds its environment)
+  const PATH = (await readLoginEnv({ shell: process.env['SHELL'] })).PATH ?? refuse('refused: the login shell PATH could not be read');
+  const o: PluginOptions = { dataDir, profileKey: a.profileKey!, configDir: path.join(profile, '.claude'), claude: real(a.claude!), bounds, path: PATH };
   if (a.cmd === 'plan') {
     console.log(`claude-plugin: CLAUDE_CONFIG_DIR=${o.configDir}`);
     for (const argv of [['plugin', 'marketplace', 'add', '<appdata>/integrations/claude-plugin/' + a.profileKey], ['plugin', 'install', PLUGIN_REF, '-s', 'user']]) console.log(`+ claude ${argv.join(' ')}`);
@@ -248,14 +263,18 @@ async function plugin(a: ReturnType<typeof cliArgs>, dataDir: string, profile: s
   }
   if (a.cmd === 'revert') {
     await confirm(a.yes, profile, `uninstall ${PLUGIN_REF} and remove marketplace ${MARKETPLACE}`);
-    const r = await uninstallPlugin(o);
+    const r = await locked(dataDir, () => uninstallPlugin(o));
     console.log(`claude-plugin: uninstalled; ${r.preHashRestored ? 'pre-install settings restored' : 'settings differ from before install (Claude-owned edits)'}`);
     for (const k of r.residue) console.log(`residue: enabledPlugins ${k}`);
-    return r.residue.length ? 2 : 0;
+    for (const c of r.conflicts) console.log(`conflict: ${c.pointer} (not Xaibo's as recorded; nothing overwritten)`); // part 2c
+    return r.residue.length || r.conflicts.length ? 2 : 0;
   }
-  await confirm(a.yes, profile, `install ${PLUGIN_REF} into ${o.configDir}`);
-  deployShim(dataDir, { hook: path.join(REPO, 'src', 'forwarder', 'xaibo-hook'), forwarder: real(a.forwarder ?? path.join(REPO, '.cache', 'sea', 'xaibo-forwarder')) });
-  const entry = await installPlugin(o);
+  const pv = previewPlugin(o); // the confirmation binds settings.json, the executable and the argv (part 2b)
+  await confirm(a.yes, profile, `install ${PLUGIN_REF} into ${o.configDir} with ${pv.exe.path}`);
+  const entry = await locked(dataDir, () => {
+    deployShim(dataDir, { hook: path.join(REPO, 'src', 'forwarder', 'xaibo-hook'), forwarder: real(a.forwarder ?? path.join(REPO, '.cache', 'sea', 'xaibo-forwarder')) });
+    return installPlugin(o, pv);
+  });
   console.log(`claude-plugin: installed ${entry.id}`);
   return 0;
 }
@@ -266,6 +285,8 @@ const MESSAGES: Partial<Record<ConfigError['code'], string>> = {
   'parent-missing': 'refused: the config directory does not exist in this profile',
   changed: 'aborted: the file changed since it was read; nothing written',
   duplicate: 'refused: Xaibo hooks are already installed in this profile (or its selected project)',
+  busy: 'refused: another Xaibo operation is changing agent configuration; try again when it finishes',
+  'stale-lock': 'refused: a Xaibo operation stopped without releasing its lock (integrations/operation.lock); nothing was changed',
   exclusive: 'refused: this profile already has the other Claude hook route (plugin and settings fallback are exclusive)',
   'not-installed': 'nothing to uninstall: no Xaibo plugin recorded for this profile',
   cli: 'failed: a `claude plugin` step did not succeed; rolled back',
@@ -275,6 +296,7 @@ const MESSAGES: Partial<Record<ConfigError['code'], string>> = {
 };
 
 if (import.meta.main) {
+  for (const sig of ['SIGINT', 'SIGTERM'] as const) process.on(sig, () => { held?.release(); process.exit(130); });
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; }, (e: unknown) => {
     if (e instanceof UsageError) console.error(e.message);
     else if (e instanceof ConfigError) console.error(MESSAGES[e.code] ?? e.message);

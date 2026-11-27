@@ -9,25 +9,36 @@
 // with a matching aria-invalid, and are never clamped; a failed Save focuses the invalid field. Storage is passive service
 // data (one measurement per 60 s at most in the service) and never shows a disk capacity.
 import { useEffect, useId, useReducer, useRef, useState } from 'react';
-import type { ClearUsageResult, RetentionSetting, SAVE_RESULTS, StorageReport } from '../../shared/ipc.ts';
+import type { IntegrationKey, UsageProfile, ClearUsageResult, PriceCheck, PriceOp, PriceView, RetentionSetting, RevealResult, SaveRetentionResult, StartupReply, StartupRequest, StorageReport } from '../../shared/ipc.ts';
+import { ConfirmDialog } from '../components/ConfirmDialog.tsx';
+import { SignInFieldset, type SignInApi } from '../usage/SignInFieldset.tsx';
+import { settingsProfiles } from '../usage/sign-in-view.ts';
+import { APPLYING, RESULT_UNAVAILABLE } from '../model.ts';
+import { asOfText, checkText, fallbackRows, reloadText, revealText, sourceText } from './prices-view.ts';
+import { canSave, startupText } from './startup-view.ts';
 import { initialRetention, lastRunText, measureStorage, retentionReducer, saveText, storageView, storageWhen, toSend, type Draft, type RetentionState, type StorageRow } from './retention-view.ts';
 
 export interface SettingsApi {
   clearUsage(): Promise<ClearUsageResult>;
   retention(): Promise<{ setting: RetentionSetting | null; lastRunAt: number | null }>;
-  setRetention(value: RetentionSetting): Promise<(typeof SAVE_RESULTS)[number]>;
+  setRetention(value: RetentionSetting): Promise<SaveRetentionResult>;
   storage(refresh: boolean): Promise<{ report: StorageReport | null; failed: boolean }>;
+  /** XAIBO-PROD-568 (P6-T11): Local prices; reveal asks main to select the override file in Finder. */
+  prices(op: PriceOp): Promise<{ view: PriceView | null; check: PriceCheck | null }>;
+  reveal(): Promise<RevealResult>;
+  /** XAIBO-PROD-569: Start at login through main; null = no answer or a malformed one. */
+  startup(request: StartupRequest): Promise<StartupReply | null>;
 }
 type Phase = 'applying' | ClearUsageResult | 'unavailable' | null;
 
 export function clearStatusText(p: Phase): string {
   switch (p) {
     case null: return '';
-    case 'applying': return 'Applying changes…';
+    case 'applying': return APPLYING;
     case 'cleared': return 'Usage history cleared. Usage observed from now on will appear.';
     case 'read-only': return 'Usage history was not cleared: the store is read-only.';
     case 'failed': return 'Usage history was not cleared. Nothing was changed.';
-    case 'unavailable': return 'The result is unavailable. Closing this dialog does not cancel the operation.';
+    case 'unavailable': return RESULT_UNAVAILABLE;
   }
 }
 
@@ -39,7 +50,10 @@ export function routeResult(r: Exclude<Phase, 'applying' | null>, dialogOpen: bo
   return dialogOpen ? { close: false, dialog: r, section: null } : { close: false, dialog: null, section: r };
 }
 
-export function Settings({ api, readOnly }: { api: SettingsApi; readOnly: boolean }) {
+/** XAIBO-PROD-586 (P6-T10a unit 4b, D-P6-17): what the Sign-in declarations section needs; absent, the section is left out. */
+export interface SignInSettings { profiles(): Promise<UsageProfile[]>; api: SignInApi; name: (agent: string) => string; open: (key: IntegrationKey) => void; live: boolean }
+
+export function Settings({ api, readOnly, signIn }: { api: SettingsApi; readOnly: boolean; signIn?: SignInSettings }) {
   const [phase, setPhase] = useState<Phase>(null); // the dialog's transaction
   const [section, setSection] = useState<Phase>(null); // the announcement next to the button
   const dialog = useRef<HTMLDialogElement>(null);
@@ -76,6 +90,8 @@ export function Settings({ api, readOnly }: { api: SettingsApi; readOnly: boolea
         <div className="x-settings-controls"><p>Auto-empty after <strong>30 days</strong></p></div>
       </section>
       <StorageSection api={api} />
+      <PricesSection api={api} />
+      {signIn ? <SignInSection s={signIn} /> : null}
       <section className="x-settings-section" aria-labelledby="usage-history-heading">
         <div>
           <h2 id="usage-history-heading">Usage history</h2>
@@ -93,24 +109,58 @@ export function Settings({ api, readOnly }: { api: SettingsApi; readOnly: boolea
           <span aria-live="polite">{clearStatusText(section)}</span>
         </div>
       </section>
-      {/* Escape is Cancel before submission and blocked while applying (§5.1) */}
-      <dialog ref={dialog} className="x-dialog" aria-labelledby="clear-usage-title" aria-describedby="clear-usage-body"
-        onCancel={(e) => { e.preventDefault(); if (phase !== 'applying') close(); }} onClose={closed}>
-        <h2 id="clear-usage-title">Clear usage history?</h2>
-        <p id="clear-usage-body">
-          The monthly totals are removed and every usage record already observed is left out of them from now on. Usage observed
-          afterwards appears as usual. Sessions, account usage snapshots and quotas are not deleted.
-        </p>
-        <p aria-live="polite">{clearStatusText(phase)}</p>
-        <div className="x-dialog-actions">{/* Close replaces the pressed button after a failure, so it takes focus */}
-          {phase === null || phase === 'applying' ? <>
-            <button type="button" className="x-btn x-btn-secondary" aria-disabled={phase === 'applying' || undefined} onClick={() => { if (phase === null) close(); }}>Cancel</button>
-            <button type="button" className="x-btn x-btn-primary" aria-disabled={phase === 'applying' || undefined} aria-busy={phase === 'applying' || undefined}
-              onClick={() => { if (phase === null) confirm(); }}>Clear usage history</button>
-          </> : <button type="button" className="x-btn x-btn-secondary" autoFocus onClick={close}>Close</button>}
-        </div>
-      </dialog>
+      <ConfirmDialog dialog={dialog} name="clear-usage" title="Clear usage history?" phase={phase} text={clearStatusText(phase)} confirm="Clear usage history"
+        body={'The monthly totals are removed and every usage record already observed is left out of them from now on. Usage observed'
+          + ' afterwards appears as usual. Sessions, account usage snapshots and quotas are not deleted.'}
+        onConfirm={confirm} onDismiss={close} onClosed={closed} />
+      <StartupSection api={api} />
     </div>
+  );
+}
+
+/** XAIBO-PROD-586 (P6-T10a unit 4b, D-P6-17): every profile from the usage reply (database only), named agent and profile; a
+ *  declarable (UUID) one takes the shared fieldset and Open integration (its Agent Map panel, the one place that writes connection
+ *  and configuration). A registration profile's id is not a UUID, so neither the sign-in request nor the integration route can
+ *  address it: it is listed with a sentence. The list reloads when the service comes back. */
+function SignInSection({ s }: { s: SignInSettings }) {
+  const [raw, setRaw] = useState<UsageProfile[] | 'loading' | 'failed'>('loading');
+  const [pick, setPick] = useState<string | null>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
+  const load = (refocus = false) => {
+    setRaw('loading');
+    s.profiles().then((ps) => { setRaw(ps); setPick((p) => (p && ps.some((x) => x.profileId === p) ? p : ps[0]?.profileId ?? null)); }, () => setRaw('failed'))
+      .finally(() => { if (refocus) heading.current?.focus(); }); // review L6: Retry's button goes away
+  };
+  useEffect(() => load(), []);
+  const wasLive = useRef(s.live);
+  useEffect(() => { if (s.live && !wasLive.current) load(); wasLive.current = s.live; }, [s.live]); // review L4
+  const list = Array.isArray(raw) ? settingsProfiles(raw, s.name) : raw; // review L5: names as they are now
+  const chosen = Array.isArray(list) ? list.find((x) => x.profileId === pick) ?? null : null;
+  return (
+    <section className="x-settings-section" aria-labelledby="sign-in-heading">
+      <div>
+        <h2 id="sign-in-heading" ref={heading} tabIndex={-1}>Sign-in declarations</h2>
+        <p id="sign-in-hint" className="x-hint">Tell Xaibo how each profile signs in, so usage leads with quota windows or estimated cost. Connection and configuration live in each profile's integration panel.</p>
+      </div>
+      <div className="x-settings-controls x-integration">
+        {list === 'loading' ? <p className="x-hint">Loading profiles…</p>
+          : list === 'failed' ? <p className="x-hint">Profiles could not be loaded. <button type="button" className="x-btn x-btn-quiet" onClick={() => load(true)}>Retry</button></p>
+          : !list.length ? <p className="x-hint">No profile yet.</p>
+          : (
+            <>
+              <label className="x-field">Profile
+                <select id="sign-in-profile" value={pick ?? ''} aria-describedby="sign-in-hint" onChange={(e) => setPick(e.target.value)}>
+                  {list.map((p) => <option key={p.profileId} value={p.profileId}>{p.label}</option>)}
+                </select>
+              </label>
+              {chosen?.declarable ? <>
+                <SignInFieldset profileId={chosen.profileId} api={s.api} live={s.live} />
+                <button type="button" className="x-btn x-btn-secondary" aria-describedby="sign-in-profile" onClick={() => s.open({ agent: chosen.agent, profileId: chosen.profileId })}>Open integration</button>
+              </> : chosen ? <p className="x-hint">Sign-in declarations and the integration panel are not available for this profile.</p> : null}
+            </>
+          )}
+      </div>
+    </section>
   );
 }
 
@@ -237,6 +287,137 @@ function StorageSection({ api }: { api: SettingsApi }) {
           {v.disk.length ? <StorageTable caption="On disk" rows={v.disk} /> : null}
           {v.inside ? <StorageTable caption="Inside the database" rows={v.inside} />
             : state !== 'loading' && v.disk.length ? <p className="x-hint">Inside the database: Unavailable</p> : null}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/** XAIBO-PROD-568 (P6-T11; design §6.6 Local prices / Owner-set fallback, §529, A6): the current table and its revision,
+ *  Reveal override file -> Validate -> Reload. Validate switches nothing; an error from a Reload is announced once (alert),
+ *  an error already present on load is shown without one. Focus stays on the invoking button; a running action is
+ *  aria-disabled. No editor and no network: the owner edits the private file. */
+export function PricesSection({ api }: { api: SettingsApi }) {
+  const [view, setView] = useState<PriceView | null | 'loading' | 'failed'>('loading');
+  const [busy, setBusy] = useState<PriceOp | 'reveal' | null>(null);
+  const [note, setNote] = useState('');
+  const [reloads, setReloads] = useState(0); // > 0: the error shown came from a Reload
+  const live = useRef(true);
+  useEffect(() => {
+    live.current = true;
+    api.prices('get').then((r) => { if (live.current) setView(r.view); }, () => { if (live.current) setView('failed'); });
+    return () => { live.current = false; };
+  }, [api]);
+  const run = (op: PriceOp | 'reveal') => {
+    if (busy) return;
+    setBusy(op);
+    setNote('');
+    const done = (text: string) => { if (live.current) { setBusy(null); setNote(text); } };
+    if (op === 'reveal') { api.reveal().then((r) => done(revealText(r)), () => done(revealText('failed'))); return; }
+    api.prices(op).then((r) => {
+      if (!live.current) return;
+      setView(r.view);
+      if (op === 'reload') setReloads((n) => n + 1);
+      // a Reload error is the alert below, not also this polite line
+      done(!r.view ? RESULT_UNAVAILABLE : op === 'validate' ? (r.check ? checkText(r.check) : RESULT_UNAVAILABLE) : r.view.error ? '' : reloadText(r.view));
+    }, () => done(RESULT_UNAVAILABLE));
+  };
+  const v = typeof view === 'object' ? view : null;
+  const rows = v ? fallbackRows(v) : [];
+  const action = (op: PriceOp | 'reveal', label: string) => (
+    <button type="button" className="x-btn x-btn-secondary" aria-disabled={busy !== null || undefined} aria-busy={busy === op || undefined}
+      onClick={() => run(op)}>{label}</button>
+  );
+  return (
+    <section className="x-settings-section" aria-labelledby="prices-heading">
+      <div>
+        <h2 id="prices-heading">Local prices</h2>
+        <p className="x-hint">
+          Estimated costs use this price table. To change a rate, edit the private override file, then Validate and Reload. Xaibo
+          never fetches prices; an old date is not a market check, and existing estimates keep the prices they were made with.
+        </p>
+      </div>
+      <div className="x-settings-controls x-stack">
+        {view === 'loading' ? <p>Loading prices…</p> : view === 'failed' || view === null ? <p>Prices are unavailable.</p> : (
+          <>
+            <p>{asOfText(view)}</p>
+            <p className="x-hint">Source: {sourceText(view)}</p>
+          </>
+        )}
+        {v?.error ? <p key={reloads} className="x-error" role={reloads > 0 ? 'alert' : undefined}>{reloadText(v)}</p> : null}
+        <div className="x-save-row">
+          {action('reveal', 'Reveal override file')}
+          {action('validate', 'Validate')}
+          {action('reload', 'Reload')}
+          <span aria-live="polite">{busy === 'validate' ? 'Validating…' : note}</span>
+        </div>
+        {v ? (
+          <div className="x-storage">
+            {rows.length ? (
+              <table>
+                <caption>Owner-set fallback</caption>
+                <tbody>
+                  {rows.map((r) => (
+                    <tr key={r.key}>
+                      <th scope="row">{r.models}<br /><span className="x-hint">{r.scope}</span></th>
+                      <td>{r.rates.map((x) => <span key={x.label} className="x-rate">{x.label}: {x.text}</span>)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : <p className="x-hint">No owner-set fallback rates.</p>}
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+/** XAIBO-PROD-569 (P6-T10 unit 1; design §6.6 Startup): Start at login, off by default. The checkbox is a draft until Save;
+ *  the result line says what macOS has afterwards (Save keeps focus). */
+export function StartupSection({ api }: { api: SettingsApi }) {
+  const [loaded, setLoaded] = useState<boolean | null | 'loading'>('loading');
+  const [draft, setDraft] = useState(false);
+  const [touched, setTouched] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState('');
+  const live = useRef(true);
+  useEffect(() => {
+    live.current = true;
+    api.startup({ op: 'read' }).then((r) => {
+      if (!live.current) return;
+      const on = r?.status === 'ready' ? r.enabled : null;
+      setLoaded(on);
+      setDraft(on === true);
+    }, () => { if (live.current) setLoaded(null); });
+    return () => { live.current = false; };
+  }, [api]);
+  const blocked = busy || !canSave(loaded, touched);
+  const save = () => {
+    if (blocked) return;
+    setBusy(true);
+    setNote('');
+    const done = (r: StartupReply | null) => {
+      if (!live.current) return;
+      setBusy(false);
+      setNote(startupText(r));
+      if (r && r.enabled !== null) { setLoaded(r.enabled); setDraft(r.enabled); }
+    };
+    api.startup({ op: 'save', enabled: draft }).then(done, () => done(null));
+  };
+  return (
+    <section className="x-settings-section" aria-labelledby="startup-heading">
+      <div>
+        <h2 id="startup-heading">Startup</h2>
+        <p className="x-hint" id="startup-hint">Off by default. Closing the window keeps collection running; Quit stops it.</p>
+      </div>
+      <div className="x-settings-controls x-stack">
+        {loaded === 'loading' ? <p>Loading the current setting…</p> : loaded === null ? <p>The current setting is unavailable.</p> : null}
+        <label className="x-radio"><input type="checkbox" checked={draft} aria-describedby="startup-hint" disabled={loaded === 'loading'}
+          onChange={(e) => { setTouched(true); setDraft(e.target.checked); }} /> Start Xaibo at login</label>
+        <div className="x-save-row">
+          <button type="button" className="x-btn x-btn-primary" aria-disabled={blocked || undefined} aria-busy={busy || undefined} onClick={save}>Save</button>
+          <span aria-live="polite">{busy ? 'Saving…' : note}</span>
         </div>
       </div>
     </section>

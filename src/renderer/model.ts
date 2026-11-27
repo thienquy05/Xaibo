@@ -120,6 +120,11 @@ export function clock(ms: number | null): string {
 export const shortTime = (at: number, now: number): string =>
   (new Date(at).toDateString() === new Date(now).toDateString() ? clock(at) : formatTime(at));
 export const SEC = 1000, MIN = 60 * SEC, HOUR = 60 * MIN, DAY = 24 * HOUR;
+/** XAIBO-PROD-551 (D-P5-15 item 11): the local date YYYY-MM-DD of `ms`. */
+export const day = (ms: number): string => formatTime(ms).slice(0, 10);
+/** Design §5.1 dialog transactions: said while a confirmed action runs, and when its reply is lost. */
+export const APPLYING = 'Applying changes…';
+export const RESULT_UNAVAILABLE = 'The result is unavailable. Closing this dialog does not cancel the operation.';
 
 /** Health and last-turn words beside the status badge (design §3.2; full health/ownership presentation is P4-T04). */
 export function statusExtras(s: LiveStatus): string[] {
@@ -144,7 +149,7 @@ export function costText(usd: number | null, coverage: CostCoverage): string {
   return `~$${amount}${coverage === 'full' ? '' : ' known subtotal'}`;
 }
 
-const GAP: Record<Extract<Banner, { kind: 'hook-gap' }>['reason'], string> = {
+export const GAP: Record<Extract<Banner, { kind: 'hook-gap' }>['reason'], string> = {
   'spool-overflow': 'spool overflow', 'spool-saturated': 'spool overflow, count unknown', 'spool-torn': 'damaged spool file', 'disk-full': 'disk full',
 };
 /** Banner text; `name` maps a catalog agent id to its display name. */

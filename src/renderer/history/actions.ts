@@ -3,8 +3,8 @@
 // refreshed row is placed back in the service order, or removed when gone or outside the current list, never at a
 // guessed position; focus falls back to the following record, then the previous (VirtualList's neighbour handover),
 // then the results heading.
-import type { HistoryRow, LiveStatus, OVERLAY_ERRORS, OverlayOp } from '../../shared/ipc.ts';
-import { formatTime } from '../model.ts';
+import { isActive, type HistoryRow, type LiveStatus, type OVERLAY_ERRORS, type OverlayOp } from '../../shared/ipc.ts';
+import { day } from '../model.ts';
 import { order, type BrowseRow, type Query } from './browse.ts';
 
 export type ActionKind = 'move' | 'pin' | 'archive' | 'keep' | 'trash';
@@ -40,6 +40,7 @@ export const opOf = (kind: Toggle, r: HistoryRow): OverlayOp => ({ kind, session
 export function matches(q: Query, r: HistoryRow): boolean {
   if (q.agent !== null && r.agent !== q.agent) return false;
   if (q.group && (q.group.project === null ? r.project !== null : r.project?.id !== q.group.project)) return false;
+  if ((q.state === 'pinned' && !r.pinned) || (q.state === 'kept' && !r.keep)) return false; // XAIBO-PROD-555 review M1
   switch (q.mode) {
     case 'all': return r.trashedAt === null;
     case 'archived': return r.archivedAt !== null && r.trashedAt === null;
@@ -64,7 +65,9 @@ export function place(rows: BrowseRow[], id: number, row: HistoryRow | null, q: 
     const replaced = rows.map((r) => (r.id === id ? row : r));
     return { rows: searching ? replaced : replaced.sort(order), placed: true };
   }
-  if (searching || past || (q.group && q.group.at !== null)) return { rows, placed: false };
+  // XAIBO-PROD-555 review M1: cwd, activity, model and the native states are not on a history row either
+  if (searching || past || (q.group && q.group.at !== null) || q.cwd !== null || q.from !== null || q.model !== null
+    || q.state === 'native-deleted' || q.state === 'native-archived') return { rows, placed: false };
   return { rows: [...rows, row].sort(order), placed: true };
 }
 
@@ -99,9 +102,6 @@ export const undoLabel = (u: Undo) => (u.stacked ? 'Undo latest Trash' : 'Undo')
 export const undoFocus = (id: number, openId: number | null, placed: boolean): 'title' | 'record' | 'heading' =>
   (id === openId ? 'title' : placed ? 'record' : 'heading');
 
-const day = (ms: number) => formatTime(ms).slice(0, 10);
-/** Retention never purges an active session (EC-22; service retention/policy.isActive). */
-const ACTIVE: readonly LiveStatus['lifecycle'][] = ['busy', 'waiting-for-permission', 'needs-input'];
 /** XAIBO-PROD-533 (design §6.3): the open session's retention line from its fresh history row (undefined = not read
  *  yet: Loading) and its current live state. Not read, failed or gone never shows a default (design security review L3). */
 export function retentionLine(h: { row: HistoryRow | null; failed: boolean } | undefined, live: LiveStatus | null): string {
@@ -111,7 +111,8 @@ export function retentionLine(h: { row: HistoryRow | null; failed: boolean } | u
   if (r.trashedAt !== null) return r.trashPurgeAt !== null ? `In Trash · Auto-empty ${day(r.trashPurgeAt)}` : 'In Trash';
   if (r.keep) return 'Kept';
   if (r.purgeAt === null) return 'No purge scheduled';
-  return live && ACTIVE.includes(live.lifecycle) ? 'Active; retention paused' : `Purge scheduled ${day(r.purgeAt)}`;
+  // EC-22: retention never purges an active session
+  return live && isActive(live.lifecycle) ? 'Active; retention paused' : `Purge scheduled ${day(r.purgeAt)}`;
 }
 
 /** XAIBO-PROD-533: a history row shared between the list and the open session; row null = the session is gone. */

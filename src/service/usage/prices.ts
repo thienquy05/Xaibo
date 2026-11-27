@@ -7,11 +7,11 @@
 import { createHash } from 'node:crypto';
 import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
-import { isObj } from '../../shared/ipc.ts';
+import { isObj, type PriceCheck, type PriceError, type PriceView } from '../../shared/ipc.ts';
 import type { Logger } from '../../shared/log.ts';
 import { loadModels, validateModels, type ModelEntry, type ModelList, type Rates } from './models.ts';
 
-export type PriceError = 'override_unreadable' | 'override_not_regular' | 'override_too_large' | 'override_json' | 'override_schema';
+export type { PriceError };
 export interface Prices { table: ModelList; source: 'bundled' | 'override'; revisionId: number | null; error: PriceError | null }
 export interface PriceRates {
   modelId: string; rates: Rates; tiers?: ModelEntry['tiers']; qualifiers?: Record<string, string[]>; basis: 'token_table' | 'owner_fallback';
@@ -96,6 +96,21 @@ export function loadPrices(o: PriceOptions): Prices {
     if (last) return { ...last, error };
   }
   return { table, source, revisionId: o.db ? accept(o.db, source, table, bundled.revision) : null, error };
+}
+
+/** XAIBO-PROD-568 (P6-T11): what Settings shows of the current table (no model list; owner-set fallbacks in full). */
+export const priceView = (p: Prices): PriceView => ({
+  source: p.source, revision: p.table.revision, pricesAsOf: p.table.prices_as_of, error: p.error,
+  fallbacks: (p.table.fallbacks ?? []).map((f) => ({ models: f.models, agent: f.agent ?? null, rates: f.rates })),
+});
+
+/** XAIBO-PROD-568 (P6-T11 Validate; review R4): the override checked as Reload would read it, without writing or switching a
+ *  revision (read and merge only). */
+export function checkOverride(overridePath: string, bundledUrl?: URL): PriceCheck {
+  const read = readOverride(overridePath);
+  if (!read) return 'absent';
+  if ('error' in read) return read.error;
+  return merge(loadModels(bundledUrl), read.value) ? 'valid' : 'override_schema';
 }
 
 /** Verified table rates for the exact model id, else an in-scope owner fallback, else null (~$ unavailable). */

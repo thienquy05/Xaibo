@@ -2,9 +2,10 @@
 // pushed deltas and agent status go to their handlers; every message is validated (src/shared/ipc.ts) and invalid ones
 // are counted; an invalid reply rejects its request, so the caller can recover. A service restart brings a new port
 // and a new client; replies owed on the old one never arrive.
-import { accept, IPC_VERSION, isObj, parsePortMessage } from '../shared/ipc.ts';
-import type { RetentionSetting, SearchKey, SuppressedCursor } from '../shared/ipc.ts';
-import type { AgentStatus, Banner, CostDetail, Cursor, FileItem, HistoryCursor, HistoryFilter, HistoryKey, HistoryRow, LedgerFilter, MapGroup, MapNode, MCursor, ModelMarker, Named, OverlayOp, OverlayResult, Page, PortMessage, PortRequest, SessionDetail, SessionRow, SubagentItem, TCursor, ToolItem, TranscriptAt, TranscriptItem, UsageRecord, UsageScope } from '../shared/ipc.ts';
+import { type CatalogImportResult, accept, IPC_VERSION, isObj, parsePortMessage } from '../shared/ipc.ts';
+import type { SignInCommand } from './usage/sign-in-view.ts';
+import type { CleanupReply, ConnectReply, IntegrationDetailResult, IntegrationKey, IntegrationPageResult, PriceOp, RemovalReply, RetentionSetting, RevokeResult, RevokeTarget, SearchKey, SuppressedCursor } from '../shared/ipc.ts';
+import type { AgentStatus, Banner, CostDetail, Cursor, FileItem, HistoryCursor, HistoryFilter, HistoryKey, HistoryRow, LedgerFilter, MapGroup, MapNode, MCursor, ModelMarker, Named, OverlayOp, OverlayResult, Page, PortMessage, PortRequest, SessionDetail, SessionRow, SubagentItem, TCursor, ToolItem, TranscriptAt, TranscriptItem, UsageRecord } from '../shared/ipc.ts';
 
 export interface LiveSet { rows: SessionRow[]; more: boolean }
 export interface PortLike { onmessage: ((e: { data: unknown }) => void) | null; postMessage(m: unknown): void; close(): void }
@@ -13,6 +14,8 @@ export interface Pushes {
   sessions(rows: SessionRow[], delta?: number): void; agents(agents: AgentStatus[] | null): void; coverage?(banners: Banner[]): void;
   /** P4-T10c1: the service dropped a delta too large to send; reload by cursor. */
   resync?(): void;
+  /** XAIBO-PROD-595: a catalog import's outcome (after the owner picked a file in main's dialog). */
+  catalogImport?(result: CatalogImportResult): void;
 }
 
 /** P4-T02: main's window hide/show, forwarded by the preload as `{ xaiboVisible: boolean }`; anything else is null. */
@@ -21,6 +24,8 @@ export function parseVisible(x: unknown): boolean | null {
 }
 
 type Reply = Extract<PortMessage, { id: number }>;
+/** The reply a request type gets; XAIBO-PROD-579: also a reply whose `type` is a union (connectPreview | connectApply). */
+type ReplyOf<T> = Reply extends infer M ? (M extends { type: infer K } ? (T extends K ? M : never) : never) : never;
 /** A request as a method writes it; `ask` adds the version and the id. */
 type Body = PortRequest extends infer R ? (R extends { id: number } ? Omit<R, 'v' | 'id'> : never) : never;
 
@@ -35,6 +40,7 @@ export function createClient(port: PortLike, push: Pushes) {
     } else if (m.type === 'sessions') push.sessions(m.rows, m.delta);
     else if (m.type === 'coverage') push.coverage?.(m.banners);
     else if (m.type === 'resync') push.resync?.();
+    else if (m.type === 'catalogImport') push.catalogImport?.(m.result);
     else push.agents(m.agents);
   });
   port.onmessage = (e) => {
@@ -46,7 +52,7 @@ export function createClient(port: PortLike, push: Pushes) {
       if (p && p.type === m.type) { pending.delete(m.id); p.reject(new Error('invalid reply')); }
     }
   };
-  const ask = <T extends Reply['type']>(body: Body, type: T) => new Promise<Extract<Reply, { type: T }>>((resolve, reject) => {
+  const ask = <T extends Reply['type']>(body: Body, type: T) => new Promise<ReplyOf<T>>((resolve, reject) => {
     const id = nextId++;
     pending.set(id, { type, resolve: resolve as (m: Reply) => void, reject });
     port.postMessage({ ...body, v: IPC_VERSION, id });
@@ -61,8 +67,8 @@ export function createClient(port: PortLike, push: Pushes) {
       const m = await ask({ type: 'liveSet' }, 'liveSet');
       return { rows: m.rows, more: m.more };
     },
-    /** P4-T04b1: usage scopes with their newest measurements. */
-    async usage(): Promise<UsageScope[]> { return (await ask({ type: 'usage' }, 'usage')).scopes; },
+    /** XAIBO-PROD-586: the whole usage reply (scopes and the per-profile list; Settings' sign-in profiles). */
+    async usageAll() { const m = await ask({ type: 'usage' }, 'usage'); return { scopes: m.scopes, profiles: m.profiles }; },
     /** P5-T17a/b: one page of the monthly usage ledger (failed = the store could not answer). */
     async monthly(filter: LedgerFilter, end: string | null, limit: number) {
       const { v: _v, type: _t, id: _i, ...page } = await ask({ type: 'monthly', filter, end, limit }, 'monthly');
@@ -70,6 +76,10 @@ export function createClient(port: PortLike, push: Pushes) {
     },
     /** P5-T16: Clear usage history (after the owner's confirmation). */
     async clearUsage() { return (await ask({ type: 'clearUsage' }, 'clearUsage')).result; },
+    /** XAIBO-PROD-590 (P6-T08 slice A): rescan agents and profiles without a restart. */
+    async rescan() { return (await ask({ type: 'agentRescan' }, 'agentRescan')).result; },
+    /** XAIBO-PROD-598 (P6-T08a slice C): revoke one grant of an imported agent; ids only (granting goes through main). */
+    async grantRevoke(agent: string, target: RevokeTarget): Promise<RevokeResult> { return (await ask({ type: 'grantRevoke', agent, target }, 'grantRevoke')).result; },
     // XAIBO-PROD-527 (P5-T18 part 1): history tools and retention/storage settings
     async search(query: string, filter: HistoryFilter, cursor: SearchKey | null, limit: number) {
       const { v: _v, type: _t, id: _i, ...page } = await ask({ type: 'search', query, filter, cursor, limit }, 'search');
@@ -91,6 +101,8 @@ export function createClient(port: PortLike, push: Pushes) {
     async reimport(key: string) { return (await ask({ type: 'reimport', key }, 'reimport')).result; },
     async retention() { const { setting, lastRunAt } = await ask({ type: 'retention' }, 'retention'); return { setting, lastRunAt }; },
     async setRetention(value: RetentionSetting) { return (await ask({ type: 'setRetention', value }, 'setRetention')).result; },
+    /** XAIBO-PROD-568 (P6-T11): Local prices (get, Validate, Reload). */
+    async prices(op: PriceOp) { const { view, check } = await ask({ type: 'prices', op }, 'prices'); return { view, check }; },
     async storage(refresh: boolean) { const { report, failed } = await ask({ type: 'storage', refresh }, 'storage'); return { report, failed: failed === true }; },
     /** P4-T04b1: one scope+stream's observations in [from, to). */
     async usageHistory(scope: number, stream: string, from: number, to: number, cursor: HistoryCursor | null, limit: number): Promise<{ records: UsageRecord[]; next: HistoryCursor | null }> {
@@ -147,6 +159,24 @@ export function createClient(port: PortLike, push: Pushes) {
       if (m.failed) throw new Error('map groups unavailable');
       return { groups: m.groups, next: m.next };
     },
+    /** XAIBO-PROD-575 (P6-T10 unit 2b): one Agents list page, forward from `cursor`; a refusal is a result, not a throw. */
+    async integrationPage(cursor: IntegrationKey | null, limit: number): Promise<IntegrationPageResult> {
+      return (await ask({ type: 'integrationPage', cursor, direction: 'next', limit }, 'integrationPage')).result;
+    },
+    /** XAIBO-PROD-578: the integration panel's read; a refusal is a result. */
+    async integrationDetail(key: IntegrationKey): Promise<IntegrationDetailResult> { return (await ask({ type: 'integrationDetail', key }, 'integrationDetail')).result; },
+    /** XAIBO-PROD-579: the integration panel's previewed writes; a refusal is a result. Connect never asks for the tee (unit 6). */
+    async connectPreview(profileId: string, retention: boolean): Promise<ConnectReply> { return (await ask({ type: 'connectPreview', profileId, selections: { retention, tee: false } }, 'connectPreview')).result; },
+    async connectApply(previewId: string): Promise<ConnectReply> { return (await ask({ type: 'connectApply', previewId }, 'connectApply')).result; },
+    async removalPreview(profileId: string | null): Promise<RemovalReply> { return (await ask({ type: 'removalPreview', profileId }, 'removalPreview')).result; },
+    async removalApply(previewId: string): Promise<RemovalReply> { return (await ask({ type: 'removalApply', previewId }, 'removalApply')).result; },
+    async cleanupPreview(profileId: string): Promise<CleanupReply> { return (await ask({ type: 'cleanupPreview', profileId }, 'cleanupPreview')).result; },
+    async cleanupApply(previewId: string): Promise<CleanupReply> { return (await ask({ type: 'cleanupApply', previewId }, 'cleanupApply')).result; },
+    /** XAIBO-PROD-585 (P6-T10a unit 4a): the sign-in read or one mutation, by profile id and loaded revision; the code is a result. */
+    async signIn(profileId: string, command: SignInCommand) { const m = await ask({ type: 'signIn', profileId, ...command }, 'signIn'); return { code: m.code, view: m.view }; },
+    /** XAIBO-PROD-581: the separate tee's previews (unit 6a). */
+    async teePreview(profileId: string): Promise<ConnectReply> { return (await ask({ type: 'teePreview', profileId }, 'teePreview')).result; },
+    async teeRemovalPreview(profileId: string): Promise<RemovalReply> { return (await ask({ type: 'teeRemovalPreview', profileId }, 'teeRemovalPreview')).result; },
     async overlay(op: OverlayOp): Promise<OverlayResult> { return (await ask({ type: 'overlay', op }, 'overlay')).result; },
     /** P4-T07a: the session's cost breakdown; null for an unknown session. */
     async cost(session: number): Promise<CostDetail | null> { return (await ask({ type: 'cost', session }, 'cost')).cost; },

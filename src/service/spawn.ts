@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import type { Logger } from '../shared/log.ts';
 
-export interface RunOptions { timeoutMs: number; maxBytes: number; env?: NodeJS.ProcessEnv; log?: Logger }
+export interface RunOptions { timeoutMs: number; maxBytes: number; env?: NodeJS.ProcessEnv; log?: Logger; /** P6-T03 2b: a private dir for the plugin CLI */ cwd?: string }
 export interface RunResult { code: number | null; signal: NodeJS.Signals | null; stdout: Buffer; timedOut: boolean; overflow: boolean; error: boolean }
 
 export const succeeded = (r: RunResult) => r.code === 0 && !r.timedOut && !r.overflow && !r.error;
@@ -36,7 +36,7 @@ export function run(file: string, args: readonly string[], o: RunOptions): Promi
       finish(null); // do not wait for 'close': a descendant that left the group could hold the pipe
     };
     try {
-      child = spawn(file, args, { shell: false, detached: true, stdio: ['ignore', 'pipe', 'ignore'], env: o.env ?? process.env });
+      child = spawn(file, args, { shell: false, detached: true, stdio: ['ignore', 'pipe', 'ignore'], env: o.env ?? process.env, ...(o.cwd ? { cwd: o.cwd } : {}) });
     } catch { return finish(null, true); }
     timer = setTimeout(() => { timedOut = true; killGroup(); }, o.timeoutMs);
     child.stdout!.on('data', (d: Buffer) => {

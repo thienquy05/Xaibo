@@ -25,6 +25,11 @@ test('the edge fetch fires once per edge: ArrowDown on the last loaded record wi
   assert.equal(edge('ArrowDown', 9, 10, true), true, 'fires at the edge');
   assert.equal(edge('ArrowDown', 9, 10, true), false, 'only once for this edge');
   assert.equal(edge('ArrowDown', 19, 20, true), true, 'the next page brings a new edge');
+  // XAIBO-PROD-575 review M1: a page dropped from the front keeps the count; a new last record is still a new edge
+  const bounded = createEdgeFetch();
+  assert.equal(bounded('ArrowDown', 29, 30, true, 'r29'), true);
+  assert.equal(bounded('ArrowDown', 29, 30, true, 'r29'), false, 'same edge');
+  assert.equal(bounded('ArrowDown', 29, 30, true, 'r39'), true, 'same count, new last record');
 });
 
 test('rows inserted above the anchor shift it by their measured heights; rows below or a lost anchor shift nothing', () => {

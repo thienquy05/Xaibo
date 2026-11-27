@@ -23,10 +23,11 @@ export function rovingKey(e: { key: string; preventDefault(): void }, index: num
 
 /** ArrowDown on the last loaded record with more available asks for the next page once per edge (End only jumps). */
 export function createEdgeFetch() {
-  let firedAt = -1;
-  return (key: string, index: number, count: number, hasMore: boolean): boolean => {
-    if (key !== 'ArrowDown' || !hasMore || index !== count - 1 || firedAt === count) return false;
-    firedAt = count;
+  let firedAt: unknown = -1;
+  // XAIBO-PROD-575 review M1: latched on the last record's key when given, since a page dropped from the front keeps the count
+  return (key: string, index: number, count: number, hasMore: boolean, last: unknown = count): boolean => {
+    if (key !== 'ArrowDown' || !hasMore || index !== count - 1 || firedAt === last) return false;
+    firedAt = last;
     return true;
   };
 }

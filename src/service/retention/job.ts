@@ -32,7 +32,6 @@ export interface RetentionOptions {
 }
 export interface RetentionResult { sessions: number; trash: number; quota: number; skipped: null | 'clock-behind' | 'invalid-setting' }
 
-const LAST_RUN = LAST_RUN_KEY;
 const QUOTA_BATCH = 500;
 /** P5-T11 (EC-99): the next stream of an account scope after `limit_id`, one seek on usage_history_stream (stream ids are
  *  never empty, so '' starts the walk). */
@@ -44,7 +43,7 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 export async function runRetention(writer: Writer, db: DatabaseSync, o: RetentionOptions): Promise<RetentionResult> {
   const r: RetentionResult = { sessions: 0, trash: 0, quota: 0, skipped: null };
-  const lastRun = Number((db.prepare('SELECT value FROM kv WHERE key = ?').get(LAST_RUN) as { value: string } | undefined)?.value ?? -Infinity);
+  const lastRun = Number((db.prepare('SELECT value FROM kv WHERE key = ?').get(LAST_RUN_KEY) as { value: string } | undefined)?.value ?? -Infinity);
   // review H3: a clock behind the last run (set back after running ahead) purges nothing until it catches up. ponytail: a
   // clock already ahead at the first run after boot is not detected here; the daily timer compares wall and monotonic time.
   if (o.now < lastRun) { o.log?.('retention_skipped', { reason: 'clock-behind' }); return { ...r, skipped: 'clock-behind' }; }
@@ -165,7 +164,7 @@ export async function runRetention(writer: Writer, db: DatabaseSync, o: Retentio
     if (!gone) break;
     r.quota += gone;
   }
-  writer.transact((tdb) => tdb.prepare('INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value').run(LAST_RUN, String(o.now)));
+  writer.transact((tdb) => tdb.prepare('INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value').run(LAST_RUN_KEY, String(o.now)));
   return finish();
 
   async function finish(): Promise<RetentionResult> {

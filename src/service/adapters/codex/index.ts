@@ -15,6 +15,8 @@ import { TailAdapter, type OversizedSink } from '../tail-adapter.ts';
 import { discover, type CodexFile } from './discover.ts';
 import { reconcileNative } from '../../history/native-availability.ts';
 import { parseLine, type CodexRecord } from './parse.ts';
+import { codexRateLimits } from '../../usage/tokens.ts';
+import { evaluateMethod, type MethodResult } from '../../usage/sign-in.ts';
 
 /** Hash of the first line (without its newline) and, when within `cap`, its bytes; undefined until the line is complete. */
 async function firstLine(stream: Readable, cap: number): Promise<{ identity: string; bytes?: Buffer } | undefined> {
@@ -95,7 +97,8 @@ export function threadNames(text: string): Map<string, string> {
 }
 
 export class CodexAdapter extends TailAdapter<CodexFile, CodexRecord> {
-  readonly #files = new Map<string, { identity: string; sessionId: string }>(); // per path, from the first line
+  // per path, from the first line; version: the CLI version of the records read next (P6-T01a slice 4, review H2)
+  readonly #files = new Map<string, { identity: string; sessionId: string; version: string | null }>();
   readonly #names = new Map<string, string>(); // thread names last read from the index
   #indexSig = '';
 
@@ -145,7 +148,10 @@ export class CodexAdapter extends TailAdapter<CodexFile, CodexRecord> {
     if (!first) return false; // first line not complete yet: native ids would change; the next change retries
     const meta = first.bytes ? parseLine(first.bytes, { offset: 0, fileIdentity: first.identity, fileMtime: 0, receivedTs: 0 }) : null;
     const metaId = meta?.ok && meta.record.kind === 'session' ? meta.record.sessionId : undefined;
-    this.#files.set(file.path, { identity: first.identity, sessionId: metaId ?? file.sessionId });
+    // slice-4 review H2: resumed after a checkpoint, a later session_meta may have changed the version: unknown until the
+    // next one. ponytail: persist the version with the checkpoint if restarts lose too much evidence.
+    const version = fromStart && meta?.ok && meta.record.kind === 'session' ? meta.record.cliVersion ?? null : null;
+    this.#files.set(file.path, { identity: first.identity, sessionId: metaId ?? file.sessionId, version });
     return true;
   }
 
@@ -161,8 +167,32 @@ export class CodexAdapter extends TailAdapter<CodexFile, CodexRecord> {
     return { feed: () => [], end: () => ({ records: [], unreadable: true }) };
   }
 
+  /** P6-T01a slice 4: rate-limit records judged by the bundled sign-in rules on what production keeps of them, under the
+   *  file's current version. Only matched or ambiguous results ride on the row, and of a run of equal results only the
+   *  first and the last (slice-4 review M5); no rule for the version, no evaluation. */
+  #signIn(records: CodexRecord[], entry: { version: string | null }): Map<CodexRecord, NonNullable<EventRow['signIn']>> {
+    const out = new Map<CodexRecord, NonNullable<EventRow['signIn']>>();
+    const rules = this.o.signInRules ?? [];
+    let prevKey = '', lastRecord: CodexRecord | undefined, lastValue: NonNullable<EventRow['signIn']> | undefined;
+    for (const r of records) {
+      if (r.kind === 'session' && r.cliVersion) entry.version = r.cliVersion;
+      if (r.kind !== 'token_count' || !r.rateLimits || !rules.some((x) => x.version === entry.version)) continue;
+      const plan = codexRateLimits(r.rateLimits).plan;
+      const projected = { type: r.type, payload: { type: r.payloadType, rate_limits: plan === null ? {} : { plan_type: plan } } };
+      const result: MethodResult = evaluateMethod({ source: 'codex-rollout', version: entry.version, projected }, rules);
+      if (result.kind !== 'matched' && result.reason !== 'ambiguous') continue;
+      const value = { result, source: 'codex-rollout' as const, version: entry.version, sourceAt: r.sourceTs ?? null };
+      const key = JSON.stringify(result);
+      if (key !== prevKey) out.set(r, value);
+      prevKey = key; lastRecord = r; lastValue = value;
+    }
+    if (lastRecord && lastValue) out.set(lastRecord, lastValue);
+    return out;
+  }
+
   protected toBatch(file: CodexFile, cp: SourceFileCheckpoint, records: CodexRecord[], quarantine: QuarantineRow[]): Batch {
     const sid = this.fileSession(file);
+    const signIn = this.#signIn(records, this.#files.get(file.path) ?? { version: null });
     const s: SessionUpsert = { nativeSessionId: sid, nativeArchived: file.archived };
     const title = this.#names.get(sid);
     if (title) s.title = title;
@@ -185,6 +215,7 @@ export class CodexAdapter extends TailAdapter<CodexFile, CodexRecord> {
         nativeSessionId: sid, source: 'rollout', confidence: 'confirmed', nativeId: r.nativeId, kind: r.kind, role: r.role,
         byteOffset: r.sourceSeq, sourceSeq: r.sourceSeq, sourceTs: r.sourceTs, fileMtime: r.fileMtime, receivedTs: r.receivedTs,
         injected: r.injected, content: r.content, raw: r.raw, toolCalls: toolCalls(r), turn: turnEdge(r), usage: usageOf(r), model: modelOf(r), context: contextOf(r),
+        ...(signIn.has(r) ? { signIn: signIn.get(r) } : {}),
       };
     });
     if (records.length && s.lastActivity === undefined) s.lastActivity = cp.mtime; // records but none with a timestamp

@@ -263,10 +263,15 @@ export function liveMonthly(db: DatabaseSync, secret: Buffer): Monthly {
   const t = frozen(db);
   const settled = db.prepare('SELECT 1 FROM settled_contributions WHERE key = ?');
   const cleared = clearedSession(db);
-  for (const gen of [sessionContributions(db, secret, null), quotaContributions(db, secret, null)]) {
-    for (const c of gen) if (!settled.get(c.key) && !cleared(c)) t.add(c);
-  }
+  for (const c of contributions(db, secret, { sessions: null, quota: null })) if (!settled.get(c.key) && !cleared(c)) t.add(c);
   return t.result();
+}
+
+/** XAIBO-PROD-550 (D-P5-15 item 16): the session contributions, then the quota contributions, of a selection (null =
+ *  all, [] = none). `upTo` bounds sessions by every watermark and quota by its history watermark (Clear usage history). */
+export function* contributions(db: DatabaseSync, secret: Buffer, sel: { sessions: number[] | null; quota: number[] | null }, upTo?: Watermarks): Generator<Contribution> {
+  yield* sessionContributions(db, secret, sel.sessions, upTo);
+  yield* quotaContributions(db, secret, sel.quota, upTo?.history);
 }
 
 /** XAIBO-PROD-525 review M2: a session's per-model count in a month whose session count was cleared (Clear usage

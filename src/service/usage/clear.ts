@@ -15,8 +15,9 @@
 // keeps its cleared key, and batches still queued in the writer count (review L2/L3). A record with no time at all (nor
 // its session) has no month and gets no marker (review L1).
 import { DatabaseSync } from 'node:sqlite';
-import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
-import { quotaContributions, sessionContributions, type Watermarks } from './monthly.ts';
+import { isMainThread, parentPort, workerData } from 'node:worker_threads';
+import { contributions, type Watermarks } from './monthly.ts';
+import { runWorker } from '../worker.ts';
 
 export interface Mark { key: string; month: string; offset: number }
 export const CLEAR_TIMEOUT_MS = 120_000;
@@ -34,9 +35,7 @@ export function clearKeys(db: DatabaseSync, secret: Buffer, upTo?: Watermarks): 
   const marks: Mark[] = [];
   // ponytail: the whole key list is held in memory and copied once to the service thread (~100 bytes per contribution);
   // stream it in pages if a T3-size store makes that too large.
-  for (const gen of [sessionContributions(db, secret, null, upTo), quotaContributions(db, secret, null, upTo?.history)]) {
-    for (const c of gen) if (!settled.get(c.key)) marks.push({ key: c.key, month: c.at.month, offset: c.at.offset });
-  }
+  for (const c of contributions(db, secret, { sessions: null, quota: null }, upTo)) if (!settled.get(c.key)) marks.push({ key: c.key, month: c.at.month, offset: c.at.offset });
   return marks;
 }
 
@@ -59,22 +58,9 @@ export function clearUsageHistory(db: DatabaseSync, secret: Buffer, now: number)
 
 /** clearKeys in a worker thread on its own read-only connection, in one snapshot. Rejects with a fixed code. */
 export function keysInWorker(o: { file: string; secret: Buffer; timeoutMs?: number; watermarks?: Watermarks }): Promise<Mark[]> {
-  return new Promise<Mark[]>((resolve, reject) => {
-    let settled = false; // the worker's exit follows its message: only the first outcome counts
-    const fail = (code: string) => { if (settled) return; settled = true; clearTimeout(timer); reject(new Error(code)); };
-    // a tight copy (a pooled Buffer would clone its whole backing slab into the worker)
-    const w = new Worker(new URL(import.meta.url), { workerData: { xaiboClear: { file: o.file, secret: new Uint8Array(o.secret), watermarks: o.watermarks } } });
-    const timer = setTimeout(() => { void w.terminate(); fail('timeout'); }, o.timeoutMs ?? CLEAR_TIMEOUT_MS);
-    w.once('message', (m: { ok: true; marks: Mark[] } | { ok: false }) => {
-      if (!m.ok) return fail('store');
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(m.marks);
-    });
-    w.once('error', () => fail('error'));
-    w.once('exit', (c) => fail(`exit-${c}`));
-  });
+  // a tight copy (a pooled Buffer would clone its whole backing slab into the worker)
+  const data = { xaiboClear: { file: o.file, secret: new Uint8Array(o.secret), watermarks: o.watermarks } };
+  return runWorker<{ ok: true; marks: Mark[] }>(new URL(import.meta.url), data, o.timeoutMs ?? CLEAR_TIMEOUT_MS).then((m) => m.marks);
 }
 
 const job = (workerData as { xaiboClear?: { file: string; secret: Uint8Array; watermarks?: Watermarks } } | null)?.xaiboClear;

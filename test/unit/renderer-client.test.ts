@@ -108,17 +108,32 @@ test('liveSet resolves with its own reply, ignores a page reply with its id, and
 test('usage and usageHistory resolve their own replies; a reply of another type never settles them', async () => {
   const f = fakePort();
   const c = createClient(f.port, { sessions() {}, agents() {} });
-  const u = c.usage();
+  const u = c.usageAll();
   const h = c.usageHistory(4, 'five_hour', 10, 20, null, 50);
   assert.deepEqual(f.sent, [{ v: 1, type: 'usage', id: 1 }, { v: 1, type: 'usageHistory', id: 2, scope: 4, stream: 'five_hour', from: 10, to: 20, cursor: null, limit: 50 }]);
   f.deliver({ v: 1, type: 'liveSet', id: 1, rows: [], more: false });
   f.deliver({ v: 1, type: 'usageHistory', id: 2, records: [], next: null });
-  f.deliver({ v: 1, type: 'usage', id: 1, scopes: [] });
-  assert.deepEqual(await u, []);
+  f.deliver({ v: 1, type: 'usage', id: 1, scopes: [], profiles: [] });
+  assert.deepEqual(await u, { scopes: [], profiles: [] });
   assert.deepEqual(await h, { records: [], next: null });
-  const bad = c.usage();
+  const bad = c.usageAll();
   f.deliver({ v: 1, type: 'usage', id: 3, scopes: 'none' });
   await assert.rejects(bad, /invalid reply/);
+});
+
+// XAIBO-PROD-585 (P6-T10a unit 4a): the sign-in read and its three mutations, by profile id and loaded revision only
+test('signIn sends the profile id, op and revision only, and resolves the code and view of its own reply', async () => {
+  const f = fakePort();
+  const c = createClient(f.port, { sessions() {}, agents() {} });
+  const P = '00000000-0000-4000-8000-0000000c8501';
+  const r = c.signIn(P, { op: 'set', method: 'api-key', expectedRevision: 2 });
+  const rd = c.signIn(P, { op: 'read' });
+  assert.deepEqual(f.sent, [{ v: 1, type: 'signIn', id: 1, profileId: P, op: 'set', method: 'api-key', expectedRevision: 2 }, { v: 1, type: 'signIn', id: 2, profileId: P, op: 'read' }]);
+  f.deliver({ v: 1, type: 'signIn', id: 2, code: 'unavailable', view: null });
+  f.deliver({ v: 1, type: 'signIn', id: 1, code: 'stale', view: { profileId: P, revision: 3, method: 'unknown', source: null, at: null, declaration: null, evidence: null, conflict: false, usingDeclaration: false, outputStatus: 'unavailable', generation: 0, boundary: null } });
+  assert.deepEqual((await r).code, 'stale');
+  assert.equal((await r).view?.revision, 3);
+  assert.deepEqual(await rd, { code: 'unavailable', view: null });
 });
 
 // XAIBO-PROD-412 (P4-T05c): the session workspace calls; each settles only on its own reply type and id.
@@ -259,4 +274,18 @@ test('historyRow: its own row or null; failed rejects; a row for another session
     f.deliver({ v: 1, type: 'historyRow', id: 5 + i, ...bad });
     await assert.rejects(p, /invalid reply/, JSON.stringify(bad));
   }
+});
+
+// XAIBO-PROD-598 (P6-T08a slice C): Revoke sends ids only over the port and resolves with its own result.
+test('grantRevoke: an ids-only request; the result of its own reply', async () => {
+  const f = fakePort();
+  const c = createClient(f.port, { sessions() {}, agents() {} });
+  const p = c.grantRevoke('synthagent', { kind: 'root', id: 'user' });
+  assert.deepEqual(f.sent.at(-1), { v: 1, type: 'grantRevoke', id: 1, agent: 'synthagent', target: { kind: 'root', id: 'user' } });
+  f.deliver({ v: 1, type: 'grantRevoke', id: 1, result: 'revoked' });
+  assert.equal(await p, 'revoked');
+  const s = c.grantRevoke('synthagent', { kind: 'setup' });
+  assert.deepEqual(f.sent.at(-1), { v: 1, type: 'grantRevoke', id: 2, agent: 'synthagent', target: { kind: 'setup' } });
+  f.deliver({ v: 1, type: 'grantRevoke', id: 2, result: 'granted' });
+  await assert.rejects(s, /invalid reply/);
 });

@@ -2,11 +2,11 @@
 // paged by the service's {at, key} cursor. Each record shows its suppression metadata only (suppressed.ts) and opens the
 // metadata pane with Re-import; a record that left (Re-import) is removed here. Strings render as text (EC-55).
 import { useEffect, useRef, useState } from 'react';
-import type { SuppressedCursor, SuppressedRow } from '../../shared/ipc.ts';
+import type { ReimportResult, SuppressedCursor, SuppressedRow } from '../../shared/ipc.ts';
 import { VirtualList } from '../components/VirtualList.tsx';
 import { PAGE } from '../model.ts';
 import { visible } from '../text.ts';
-import { appendPage, newGone, recordName, suppressedLines, type ReimportResult } from './suppressed.ts';
+import { appendPage, newGone, recordName, suppressedLines } from './suppressed.ts';
 
 export interface SuppressedApi {
   suppressed(cursor: SuppressedCursor | null, limit: number): Promise<{ rows: SuppressedRow[]; next: SuppressedCursor | null; failed?: true }>;

@@ -1,0 +1,59 @@
+{
+  "note": "S14 draft (P6-S14-T1). Candidates only: nothing here is verified until the live run and review record it in docs/plans/phase0_spikes.md. 'unverified' is not a valid rule version, so no rule can match before reduce substitutes the exact tested version. P6-T01a moves reviewed rules into the production catalog through its own pipeline.",
+  "rules": [
+    {
+      "id": "claude-five-hour-window",
+      "source": "claude-statusline",
+      "version": "unverified",
+      "record": {},
+      "field": "rate_limits.five_hour",
+      "test": {
+        "nonEmptyObject": true
+      },
+      "method": "subscription"
+    },
+    {
+      "id": "claude-seven-day-window",
+      "source": "claude-statusline",
+      "version": "unverified",
+      "record": {},
+      "field": "rate_limits.seven_day",
+      "test": {
+        "nonEmptyObject": true
+      },
+      "method": "subscription"
+    }
+  ],
+  "coverage": [
+    {
+      "agent": "claude",
+      "surface": "claude-statusline",
+      "status": "presence-verified",
+      "note": "Claude 2.1.332 (owner subscription, 2 starts, guard MATCH): rate_limits.five_hour and seven_day present and repeatable, production-reachable. Not a discriminator: API key, cloud and gateway were not run (D-P6-14), so the rules keep version 'unverified' and cannot match. Promote only after an alternative-method run on the same version shows them absent."
+    },
+    {
+      "agent": "claude",
+      "surface": "claude-transcript",
+      "status": "no-candidate",
+      "note": "message.usage (tokens, cache, service_tier), model and cost are never method evidence. Live run records key names only, to look for an explicit field for review."
+    },
+    {
+      "agent": "codex",
+      "surface": "codex-rollout",
+      "status": "not-run",
+      "note": "payload.rate_limits.plan_type is the strongest candidate (survives parseLine and codexRateLimits), but its enum literals are unobserved per method, so no rule is written. limit_id and windows are supporting only. Credits, account marker, tokens and model are excluded."
+    },
+    {
+      "agent": "agy",
+      "surface": "agy-transcript",
+      "status": "no-candidate",
+      "note": "No method field in the parsed transcript. Google sign-in is not labelled subscription. Default: Unknown or owner declaration."
+    },
+    {
+      "agent": "claude",
+      "surface": "claude-statusline",
+      "status": "not-run",
+      "note": "API key, Bedrock, Vertex, gateway and mixed: no access (D-P6-14). Mixed is covered by synthetic tests only."
+    }
+  ]
+}

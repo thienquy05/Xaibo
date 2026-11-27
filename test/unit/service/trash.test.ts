@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { openStore } from '../../../src/service/store/db.ts';
 import { applyOverlay, listHistory } from '../../../src/service/history/overlay.ts';
-import { expiredTrash, TRASH_MS, trashExpired, trashPurgeAt } from '../../../src/service/history/trash.ts';
+import { TRASH_MS, trashPurgeAt } from '../../../src/service/history/trash.ts';
 import { answerLiveSet, listSessions, sessionsByKey } from '../../../src/service/api.ts';
 import type { HistoryFilter, LiveStatus, OverlayOp } from '../../../src/shared/ipc.ts';
 
@@ -68,41 +68,10 @@ test('Undo and Restore put the overlay back exactly, including no overlay row at
   assert.deepEqual(op(db, { kind: 'trash', session: 99, on: true }), { ok: false, error: 'not-found' });
 });
 
-test('EC-42: expiry is elapsed 30 × 24 h from deletion, whatever the zone or DST; Keep does not protect Trash', async () => {
+test('EC-42: the purge date is elapsed 30 × 24 h from deletion, whatever the zone or DST (the job applies it: retention-job.test.ts)', () => {
   assert.equal(TRASH_MS, 30 * DAY);
-  const db = await store(1);
   const at = Date.UTC(2026, 2, 1, 12); // a span crossing a spring-forward change in DST zones
-  trash(db, 1, true, at);
-  db.prepare('UPDATE overlays SET keep = 1').run();
   assert.equal(trashPurgeAt(at), at + 30 * DAY);
-  assert.deepEqual(expiredTrash(db, at + 30 * DAY - 1, 10), []);
-  assert.deepEqual(expiredTrash(db, at + 30 * DAY, 10), [1]);
-  assert.deepEqual(expiredTrash(db, at + 30 * DAY - 3600_000, 10), []); // 30 local calendar days across a DST change is 1 h short
-  assert.deepEqual(expiredTrash(db, at - 1, 10), []); // a clock set back never expires early
-  for (const [now, want] of [[at + 30 * DAY - 1, false], [at + 30 * DAY, true], [at + 30 * DAY - 3600_000, false], [at - 1, false]] as const) {
-    assert.equal(trashExpired(at, now), want, String(now - at)); // the same rule for a single row
-  }
-});
-
-test('expiredTrash lists eligible sessions oldest deletion first, bounded, through the trashed_at index', async () => {
-  const db = await store(5);
-  trash(db, 3, true, T - 40 * DAY);
-  trash(db, 1, true, T - 31 * DAY);
-  trash(db, 2, true, T - 30 * DAY);
-  trash(db, 4, true, T - 29 * DAY);  // not yet
-  trash(db, 5, true, T - 50 * DAY);
-  trash(db, 5, false);               // restored
-  assert.deepEqual(expiredTrash(db, T, 100), [3, 1, 2]);
-  assert.deepEqual(expiredTrash(db, T, 2), [3, 1]);
-  const seen: string[] = [];
-  const spy = new Proxy(db, { get(t, k) {
-    if (k === 'prepare') return (sql: string) => { seen.push(sql); return t.prepare(sql); };
-    const v = Reflect.get(t, k) as unknown;
-    return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(t) : v;
-  } });
-  expiredTrash(spy, T, 10);
-  const plan = seen.flatMap((sql) => (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(T, 10) as { detail: string }[]).map((r) => r.detail));
-  assert.ok(plan.some((d) => d.includes('overlays_trashed')), plan.join(' | '));
 });
 
 test('trashed sessions leave the session list page, the live set and live deltas; restore brings them back', async () => {

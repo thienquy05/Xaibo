@@ -12,5 +12,5 @@
     "outDir": "app/build"
   },
   "include": ["**/*.ts", "**/*.cts", "**/*.mts"],
-  "exclude": ["app/build"]
+  "exclude": ["app/build", "s14"]
 }

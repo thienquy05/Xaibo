@@ -82,10 +82,10 @@ test('moveText: every outcome in words; failures say nothing was moved; unavaila
 });
 
 test('routeMove: moved closes the dialog; other results stay in an open dialog (Close only) or go beside the trigger', () => {
-  assert.deepEqual(routeMove('moved', true), { close: true, moved: true, refresh: true, dialog: null, note: moveText('moved') });
-  assert.deepEqual(routeMove('moved', false), { close: false, moved: true, refresh: true, dialog: null, note: moveText('moved') });
-  assert.deepEqual(routeMove('limit', true), { close: false, moved: false, refresh: false, dialog: 'limit', note: null });
-  assert.deepEqual(routeMove('unavailable', false), { close: false, moved: false, refresh: true, dialog: null, note: moveText('unavailable') });
+  assert.deepEqual(routeMove('moved', true), { close: true, done: true, refresh: true, dialog: null, note: moveText('moved') });
+  assert.deepEqual(routeMove('moved', false), { close: false, done: true, refresh: true, dialog: null, note: moveText('moved') });
+  assert.deepEqual(routeMove('limit', true), { close: false, done: false, refresh: false, dialog: 'limit', note: null });
+  assert.deepEqual(routeMove('unavailable', false), { close: false, done: false, refresh: true, dialog: null, note: moveText('unavailable') });
 });
 
 test('routeMove (review M3): a lost reply or not-found reads the row again, as the plain row actions do; a definite failure does not', () => {

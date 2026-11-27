@@ -172,6 +172,40 @@ test('wake() reconciles at once; a second boot resumes without duplicates', asyn
   again.stop();
 });
 
+// XAIBO-PROD-550 (diff review H1/L3): the owner's history actions through guarded(): purge answers with a Promise on every
+// path (index.ts chains .then on it), reimport and saveRetention synchronously; read-only and stopped answers are logged
+// under the same event codes, and a refused Re-import starts no resync.
+test('guarded history actions: purge is always a Promise; read-only and stopped answers keep their event codes', async () => {
+  const s = setup();
+  const events: [string, unknown][] = [];
+  const log = { log: (e: string, f?: unknown) => { events.push([e, f]); } };
+  const svc = await boot({ dataDir: s.dataDir, home: s.home, catalog, intervalMs: 60_000, log });
+  await svc.done;
+  svc.stop();
+  const p = svc.purge(1);
+  assert.ok(p instanceof Promise, 'stopped: purge still answers with a Promise');
+  assert.equal(await p, 'failed');
+  assert.equal(svc.reimport('k'), 'failed');
+  assert.equal(svc.saveRetention({ days: 30 }), 'failed');
+  for (const e of ['purge_manual', 'reimport', 'retention_set']) assert.ok(events.some(([n, f]) => n === e && (f as { result?: string })?.result === 'failed'), e);
+  assert.ok(!events.some(([n]) => n === 'reimport_sync_failed'), 'no resync for a refused Re-import');
+
+  const r = setup();
+  mkdirSync(r.dataDir, { recursive: true });
+  const pre = new DatabaseSync(join(r.dataDir, 'xaibo.db'));
+  pre.exec('CREATE TABLE profiles (x)'); // makes migration 001 fail: read-only
+  pre.close();
+  const ro = await boot({ dataDir: r.dataDir, home: r.home, catalog, intervalMs: 60_000 });
+  try {
+    await ro.done;
+    const q = ro.purge(1);
+    assert.ok(q instanceof Promise, 'read-only: purge still answers with a Promise');
+    assert.equal(await q, 'read-only');
+    assert.equal(ro.reimport('k'), 'read-only');
+    assert.equal(ro.saveRetention('never'), 'read-only');
+  } finally { ro.stop(); }
+});
+
 test('a read-only store (failed migration) is reported and nothing is ingested', async () => {
   const s = setup();
   mkdirSync(s.dataDir, { recursive: true });

@@ -66,7 +66,7 @@ CREATE TABLE events (
   ingest_id TEXT,
   injected INTEGER NOT NULL DEFAULT 0,
   content TEXT,
-  raw TEXT, revision_status TEXT NOT NULL DEFAULT 'current' CHECK (revision_status IN ('current', 'superseded', 'rewound')),
+  raw TEXT, revision_status TEXT NOT NULL DEFAULT 'current' CHECK (revision_status IN ('current', 'superseded', 'rewound')), sign_in_generation INTEGER NOT NULL DEFAULT 0 CHECK (sign_in_generation >= 0),
   UNIQUE (session_id, source, native_id)
 );
 CREATE INDEX events_current_seq ON events (session_id, source, source_seq) WHERE revision_status = 'current';
@@ -87,6 +87,7 @@ CREATE TABLE hook_delivery (
   committed_ts INTEGER NOT NULL,
   unattributed TEXT CHECK (unattributed IN ('unknown-profile', 'no-session'))
 );
+CREATE INDEX hook_delivery_receipt ON hook_delivery (agent, profile_key, received_ts);
 CREATE TABLE hook_gaps (
   id INTEGER PRIMARY KEY,
   reason TEXT NOT NULL CHECK (reason IN ('spool-overflow', 'spool-saturated', 'spool-torn', 'disk-full')),
@@ -166,6 +167,28 @@ CREATE TABLE price_revisions (
 );
 CREATE TRIGGER price_revisions_immutable BEFORE UPDATE ON price_revisions
 BEGIN SELECT RAISE(ABORT, 'price_revisions is immutable'); END;
+CREATE TABLE profile_sign_in (
+  profile_id TEXT PRIMARY KEY REFERENCES profiles(id),
+  revision INTEGER NOT NULL CHECK (revision >= 0),
+  generation INTEGER NOT NULL CHECK (generation BETWEEN 0 AND 256),
+  boundary_method TEXT NOT NULL CHECK (boundary_method IN ('subscription', 'api-key', 'cloud-provider', 'gateway', 'mixed', 'unknown')),
+  boundary_at INTEGER,
+  declared_method TEXT CHECK (declared_method IN ('subscription', 'api-key', 'cloud-provider', 'gateway', 'mixed', 'unknown')),
+  declared_at INTEGER,
+  output_method TEXT CHECK (output_method IN ('subscription', 'api-key', 'cloud-provider', 'gateway', 'mixed')),
+  output_source TEXT CHECK (output_source IN ('claude-statusline', 'claude-transcript', 'codex-rollout', 'agy-transcript')),
+  output_version TEXT CHECK (length(output_version) <= 64),
+  output_rule_id TEXT CHECK (length(output_rule_id) <= 64),
+  output_observed_at INTEGER,
+  output_source_at INTEGER,
+  output_order_at INTEGER,
+  output_ambiguous INTEGER CHECK (output_ambiguous IN (0, 1)),
+  CHECK ((declared_method IS NULL) = (declared_at IS NULL)),
+  CHECK ((output_method IS NULL) = (output_source IS NULL) AND (output_method IS NULL) = (output_version IS NULL)
+    AND (output_method IS NULL) = (output_rule_id IS NULL) AND (output_method IS NULL) = (output_observed_at IS NULL)
+    AND (output_method IS NULL) = (output_source_at IS NULL) AND (output_method IS NULL) = (output_order_at IS NULL)
+    AND (output_method IS NULL) = (output_ambiguous IS NULL))
+);
 CREATE TABLE "profiles" (
   id TEXT PRIMARY KEY,
   agent TEXT NOT NULL,
@@ -215,6 +238,7 @@ CREATE TABLE report_delivery (
   unattributed TEXT CHECK (unattributed IN ('unknown-profile')), has_model INTEGER NOT NULL DEFAULT 0 CHECK (has_model IN (0, 1)),
   PRIMARY KEY (registration_id, delivery_id)
 );
+CREATE INDEX report_delivery_receipt ON report_delivery (agent, profile_key, received_ts);
 CREATE INDEX report_delivery_seq ON report_delivery (registration_id, producer_id, native_session_id, producer_seq) WHERE has_model = 1;
 CREATE TABLE report_rejects (
   registration_id TEXT NOT NULL,
@@ -264,6 +288,16 @@ CREATE TABLE settled_contributions (
   settled_at INTEGER NOT NULL,
   cleared INTEGER NOT NULL DEFAULT 0 CHECK (cleared IN (0, 1))
 ) WITHOUT ROWID;
+CREATE TABLE sign_in_boundaries (
+  profile_id TEXT NOT NULL REFERENCES profiles(id),
+  generation INTEGER NOT NULL CHECK (generation BETWEEN 1 AND 256),
+  revision INTEGER NOT NULL CHECK (revision > 0),
+  at INTEGER NOT NULL,
+  reason TEXT NOT NULL CHECK (reason IN ('method', 'declared-account')),
+  method TEXT NOT NULL CHECK (method IN ('subscription', 'api-key', 'cloud-provider', 'gateway', 'mixed', 'unknown')),
+  PRIMARY KEY (profile_id, generation)
+);
+CREATE INDEX sign_in_boundaries_time ON sign_in_boundaries (profile_id, at, generation);
 CREATE TABLE source_files (
   id INTEGER PRIMARY KEY,
   profile_id TEXT NOT NULL REFERENCES profiles(id),
@@ -386,7 +420,7 @@ CREATE TABLE usage_scopes (
   epoch TEXT,
   session_id INTEGER REFERENCES sessions(id),
   verified INTEGER NOT NULL CHECK (verified IN (0, 1))
-);
+, sign_in_generation INTEGER NOT NULL DEFAULT 0 CHECK (sign_in_generation >= 0));
 CREATE INDEX usage_session ON usage (session_id);
 CREATE TABLE usage_snapshots (
   id INTEGER PRIMARY KEY,

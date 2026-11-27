@@ -1,8 +1,9 @@
 // Usage scope presentation (P4-T04b2; design §6.1 usage scopes, §7.1 countdown/freshness, §7.2 C16-C20; PRD §5.11,
 // FR-46): derived at render time from the service's raw newest measurement, against the local clock. Nothing here asks
 // an agent or provider for anything; a missing value is a phrase, never 0.
-import type { UsageScope } from '../../shared/ipc.ts';
-import { DAY as D, formatTime, HOUR as H, MIN as M, SEC as S, shortTime } from '../model.ts';
+import type { SignInMethod, SignInView, UsageConsumption, UsageProfile, UsageScope } from '../../shared/ipc.ts';
+import { usdText } from '../workspace/cost/present.ts';
+import { day, DAY as D, formatTime, HOUR as H, MIN as M, SEC as S, shortTime } from '../model.ts';
 import { visible } from '../text.ts';
 
 export const STALE_MS = 15 * 60_000;
@@ -17,10 +18,12 @@ const UNAVAILABLE: Record<string, string> = {
   claude: 'Unavailable — no statusLine quota observation',
   codex: 'Unavailable — no rate-limit observation',
 };
-function windowTitle(minutes: number | null, stream: string | null): string {
-  if (minutes === null) return stream === null ? 'Quota' : visible(stream);
-  if (minutes % 1440 === 0) return `${minutes / 1440}-day window`;
-  if (minutes % 60 === 0) return `${minutes / 60}-hour window`;
+/** XAIBO-PROD-551 (D-P5-15 item 13): a quota window in words (usage rows and the monthly quota table); `unknown` when the
+ *  window is not reported. A non-positive window is never a day or hour window. */
+export function windowTitle(minutes: number | null, unknown: string): string {
+  if (minutes === null) return unknown;
+  if (minutes > 0 && minutes % 1440 === 0) return `${minutes / 1440}-day window`;
+  if (minutes > 0 && minutes % 60 === 0) return `${minutes / 60}-hour window`;
   return `${minutes}-minute window`;
 }
 const pct = (p: number) => {
@@ -61,7 +64,7 @@ export function usageView(s: UsageScope, now: number, lastKnown: string | null =
     ? `Reported credits ${visible(s.credits.balance)}` : s.credits?.hasCredits === false ? 'No credits' : null;
   const measured = s.measuredAt ?? s.firstObservedAt; // review: a reading with no measured time ages from its first observation
   const labels = readingLabels(s.asOf, s.firstObservedAt, measured, measured !== null && now - measured > STALE_MS);
-  const base = { ...empty, title: windowTitle(s.windowMinutes, s.stream), freshness: labels.freshness, unverified: s.verified === false, plan: s.plan ? `Plan ${visible(s.plan)}` : null, credits,
+  const base = { ...empty, title: windowTitle(s.windowMinutes, s.stream === null ? 'Quota' : visible(s.stream)), freshness: labels.freshness, unverified: s.verified === false, plan: s.plan ? `Plan ${visible(s.plan)}` : null, credits,
     lastKnown: lastKnown === null ? null : `Last known · ${lastKnown}` };
   if (s.resetsAt !== null && now >= s.resetsAt) return { ...base, value: 'Reset passed; awaiting observation' };
   return {
@@ -74,6 +77,23 @@ export function usageView(s: UsageScope, now: number, lastKnown: string | null =
   };
 }
 
+/** XAIBO-PROD-584 (P6-T10a unit 3; PRD §6.9, design "Usage scopes"): what leads a profile's usage by its effective sign-in
+ *  method: subscription the quota windows, API key / cloud provider / gateway the estimated cost and observed tokens, mixed both
+ *  (never summed), unknown neither. */
+export const usageLead = (m: SignInMethod): 'quota' | 'consumption' | 'both' | 'none' =>
+  m === 'subscription' ? 'quota' : m === 'mixed' ? 'both' : m === 'unknown' ? 'none' : 'consumption';
+/** One consumption group in words: the retained interval, observed tokens, the ~$ estimate (a list-price estimate for cloud
+ *  provider and gateway: review R9), and why a value is a known subtotal or capped. Missing values stay Unavailable. */
+export function consumptionLines(c: UsageConsumption, m: SignInMethod): string[] {
+  const list = m === 'cloud-provider' || m === 'gateway' ? ' (list-price estimate)' : '';
+  return [
+    c.from === null || c.to === null ? 'Retained observed consumption' : `Retained observed consumption, ${formatTime(c.from)} to ${formatTime(c.to)}`,
+    `Observed tokens: ${c.tokens === null ? 'Unavailable' : c.tokens.toLocaleString('en-US')}`,
+    `Estimated cost: ${c.estimatedUsd === null ? 'Unavailable' : usdText(c.estimatedUsd) + list}`,
+    ...(c.coverage === 'partial' && !c.limited ? ['Known subtotal: some requests are missing tokens or estimates.'] : []), // review L6: capped only is said below
+    ...(c.limited ? ['Older requests beyond the read limit are not counted.'] : []),
+  ];
+}
 export const HISTORY_DAYS = 45; // fixed observed-history retention (design §6.1)
 /** Local day start moved by whole days (calendar arithmetic, so DST days stay one day). */
 export function shiftDay(dayStart: number, days: number): number {
@@ -83,7 +103,7 @@ export function shiftDay(dayStart: number, days: number): number {
 /** The local day holding `ms`: [midnight, next midnight) and its YYYY-MM-DD label. */
 export function dayRange(ms: number): { from: number; to: number; date: string } {
   const from = shiftDay(ms, 0);
-  return { from, to: shiftDay(from, 1), date: formatTime(from).slice(0, 10) };
+  return { from, to: shiftDay(from, 1), date: day(from) };
 }
 /** First and last day starts the Observed history pager may show: today and the 44 days before it. */
 export const historyBounds = (now: number) => ({ first: shiftDay(now, -(HISTORY_DAYS - 1)), last: shiftDay(now, 0) });
@@ -94,13 +114,50 @@ export interface ScopeBlock { key: string; agent: string; profile: string; scope
 export function scopeBlocks(scopes: UsageScope[]): ScopeBlock[] {
   const blocks = new Map<string, ScopeBlock>();
   scopes.forEach((s, i) => {
-    const key = s.scope === null ? `profile:${s.agent}:${s.profile}:${i}` : `scope:${s.scope}`;
+    const key = s.scope === null ? `profile:${s.profileId}` : `scope:${s.scope}`; // unit 5 review L6: identities, never labels (one scope-less row per profile)
     const b = blocks.get(key);
     if (b) b.rows.push(s);
     else blocks.set(key, { key, agent: s.agent, profile: s.profile, scope: s.scope, unverified: s.verified === false, rows: [s] });
   });
   return [...blocks.values()];
 }
+
+/** XAIBO-PROD-587 (P6-T10a unit 5; PRD §6.9, review R1, D-P6-17): a scope block with its sign-in method (the current method for the
+ *  current epoch; an earlier epoch keeps its own boundary's method; Unknown when nothing says), the lead that method gives, and
+ *  its consumption groups: a verified (Codex) scope takes the group with its scope id, a scope-less profile row takes the
+ *  profile's other groups, a per-session unverified scope takes none (Session Cost covers its requests). Groups left over form
+ *  one consumption-only block per profile (an API-key profile with no quota reading still shows). Nothing is summed. */
+/** signIn: the profile's current view on a current-epoch block (its provenance); limited: the consumption read was capped. */
+export interface UsageBlock extends ScopeBlock { profileId: string | null; method: SignInMethod; lead: ReturnType<typeof usageLead>; current: boolean; consumption: UsageConsumption[]; limited: boolean; signIn: SignInView | null }
+export function usageBlocks(scopes: UsageScope[], profiles: UsageProfile[]): UsageBlock[] {
+  const byId = new Map(profiles.map((p) => [p.profileId, p]));
+  const used = new Set<UsageConsumption>();
+  const out: UsageBlock[] = scopeBlocks(scopes).map((b) => {
+    const r = b.rows[0]!, p = byId.get(r.profileId), now = p?.signIn ?? null;
+    const current = !now || r.generation === null || r.generation === now.generation;
+    const method: SignInMethod = !now ? 'unknown' : current ? now.method : r.boundary?.method ?? 'unknown';
+    // review M1: a scope-less row holds the current epoch's scope-less groups only (an older epoch is never relabelled)
+    const groups = (p?.consumption ?? []).filter((c) => (b.scope === null ? c.scope === null && (!now || c.generation === now.generation) : !b.unverified && c.scope === b.scope));
+    for (const c of groups) used.add(c);
+    return { ...b, profileId: r.profileId, method, lead: usageLead(method), current, consumption: groups, limited: p?.consumptionLimited ?? false, signIn: current ? now : null };
+  });
+  for (const p of profiles) {
+    const byGen = new Map<number, UsageConsumption[]>();
+    for (const c of p.consumption) if (!used.has(c)) byGen.set(c.generation, [...(byGen.get(c.generation) ?? []), c]);
+    for (const [gen, left] of byGen) { // one block per profile and epoch, with that epoch's own method
+      const now = p.signIn, current = !now || gen === now.generation;
+      const method: SignInMethod = current ? now?.method ?? 'unknown'
+        : scopes.find((x) => x.profileId === p.profileId && x.generation === gen && x.boundary)?.boundary?.method ?? 'unknown';
+      out.push({ key: `consumption:${p.profileId}:${gen}`, agent: p.agent, profile: p.label, scope: null, unverified: false, rows: [], profileId: p.profileId, method,
+        lead: usageLead(method), current, consumption: left, limited: p.consumptionLimited, signIn: current ? now : null });
+    }
+  }
+  return out;
+}
+
+/** A block's region name: agent and profile, and ' · earlier usage epoch' on an earlier epoch's block (two blocks of one profile never
+ *  share a name). */
+export const blockName = (b: UsageBlock, agentName: string) => `${agentName} · ${visible(b.profile)}${b.current ? '' : ' · earlier usage epoch'}`;
 
 /** XAIBO-PROD-436: the usage view reads at most every 5 s, except once right after a first failure (a read pending when
  *  the service restarted fails with its old port; the reconnect's tick retries it at once). Review M: `failures` counts

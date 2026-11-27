@@ -8,12 +8,15 @@
 // with workerData) on its own read-only connection, because liveMonthly and monthStatus rescan retained history
 // (P5-T04 review L8); the result is cached until a commit invalidates it, the month changes or it is MAX_AGE_MS old.
 import { DatabaseSync } from 'node:sqlite';
-import { isMainThread, parentPort, Worker, workerData } from 'node:worker_threads';
+import { isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { AGENT_ID, LEDGER_MONTHS, MAX_LEDGER_AGENTS, MAX_LEDGER_MODELS, MAX_LEDGER_QUOTA, MAX_MODEL, MAX_REVISIONS, type LedgerFilter, type LedgerMonth, type LedgerPage, type LedgerQuota, type PortMessage, type PortRequest } from '../../shared/ipc.ts';
 import type { LogFields } from '../../shared/log.ts';
 import { profileLabel } from '../api.ts';
 import { monthStatus, type MonthStatus } from './availability.ts';
 import { filterMonthly, liveMonthly, monthOf, scopeKey, type Monthly } from './monthly.ts';
+import { runWorker } from '../worker.ts';
+
+const WORKER_CODE = /^(timeout|store|error|exit-\d+)$/;
 
 export interface LedgerInput { monthly: Monthly; status: MonthStatus[]; scopeLabels: Record<string, string> }
 
@@ -121,23 +124,17 @@ export class MonthlyCache {
   #run(now: number): Promise<LedgerInput> {
     this.#dirty = false; // an invalidate during the run marks the result stale again
     this.runs++;
-    return new Promise<LedgerInput>((resolve, reject) => {
-      let settled = false; // the worker's exit follows its message: only the first outcome counts
+    // review L4: a tight copy (a pooled Buffer would clone its whole backing slab into the worker)
+    const data = { xaiboLedger: { file: this.#o.file, secret: new Uint8Array(this.#o.secret), home: this.#o.home, now } };
+    return runWorker<{ ok: true; input: LedgerInput }>(new URL(import.meta.url), data, this.#o.timeoutMs).then((m) => {
+      if (!this.#dirty) this.#value = { input: m.input, at: now, month: monthOf(now).month }; // review M1: not one invalidated meanwhile
+      return m.input;
+    }, (e: unknown) => {
+      this.#dirty = true;
       // review L8: a fixed code only (no message text, no path)
-      const fail = (code: string) => { if (settled) return; settled = true; clearTimeout(timer); this.#dirty = true; this.#o.log('ledger_worker_failed', { code }); reject(new Error(code)); };
-      // review L4: a tight copy (a pooled Buffer would clone its whole backing slab into the worker)
-      const w = new Worker(new URL(import.meta.url), { workerData: { xaiboLedger: { file: this.#o.file, secret: new Uint8Array(this.#o.secret), home: this.#o.home, now } } });
-      const timer = setTimeout(() => { void w.terminate(); fail('timeout'); }, this.#o.timeoutMs);
-      w.once('message', (m: { ok: true; input: LedgerInput } | { ok: false }) => {
-        if (!m.ok) return fail('store');
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        if (!this.#dirty) this.#value = { input: m.input, at: now, month: monthOf(now).month }; // review M1: not one invalidated meanwhile
-        resolve(m.input);
-      });
-      w.once('error', () => fail('error'));
-      w.once('exit', (c) => fail(`exit-${c}`));
+      const code = e instanceof Error && WORKER_CODE.test(e.message) ? e.message : 'error';
+      this.#o.log('ledger_worker_failed', { code });
+      throw new Error(code);
     });
   }
 }
