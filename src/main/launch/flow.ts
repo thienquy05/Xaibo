@@ -84,6 +84,9 @@ interface Preview {
    *  (Launch: the pre-allocated one; Resume: the session's; Fork: none) and the re-read before execution (the agent's entry when
    *  nothing changed). */
   grantKey: string; rowNativeId: string | null; recheck: () => Promise<LaunchAgentInfo | null | 'concurrent'>;
+  /** G7R-1: liveness only, after the acknowledged registration (the launch's own reservation disables the resume template, so
+   *  recheck cannot run there); null when it may open. */
+  safe: () => Promise<null | 'concurrent' | 'changed'>;
 }
 const sameAgent = (a: LaunchAgentInfo | undefined, p: Pick<Preview, 'exe' | 'names' | 'profileId' | 'envKeys'>) => !!a && a.executable === p.exe && a.names.join('\0') === p.names.join('\0')
   && a.profiles.some((x) => x.id === p.profileId && launchable(x) && (x.envKey === null ? [] : [x.envKey]).join('\0') === p.envKeys.join('\0'));
@@ -139,7 +142,7 @@ export function launchFlow(d: LaunchFlowDeps) {
       let cwd: string;
       try { cwd = realpathSync.native(ask.cwd); } catch { return refused('cwd'); }
       const names = [...a.names], profileId = ask.profileId;
-      return hold({ agent: a.agent, profileId, cwd, nativeId, exe, args, names, envKeys, grantKey: a.agent, rowNativeId: nativeId ?? null,
+      return hold({ agent: a.agent, profileId, cwd, nativeId, exe, args, names, envKeys, grantKey: a.agent, rowNativeId: nativeId ?? null, safe: async () => null,
         recheck: async () => { const x = (await d.info())?.find((y) => y.agent === a.agent); return x && 'args' in x.launch && sameArgs(x.launch.args, args) && sameAgent(x, { exe, names, profileId, envKeys }) ? x : null; } }, b.argv);
     },
     /** XAIBO-PROD-626 (P7-T05, P7-T09): what one stored session offers; each null is available, a string says why not. */
@@ -173,6 +176,11 @@ export function launchFlow(d: LaunchFlowDeps) {
       // ponytail: confirmed comes from the renderer, so the warning is a UX guard, not a main-process control (like D-P7-08)
       const warnedAt = mode === 'resume' && confirmed ? t.liveness : 'not-live';
       return hold({ agent: a.agent, profileId, cwd, nativeId, exe, args, names, envKeys, grantKey: `${a.agent}-${mode}`, rowNativeId: mode === 'resume' ? nativeId : null,
+        safe: async () => {
+          if (mode !== 'resume') return null;
+          const t3 = await d.target(session);
+          return !t3 ? 'changed' : WORSE[t3.liveness] > WORSE[warnedAt] ? 'concurrent' : null;
+        },
         recheck: async () => {
           const [t2, i2] = await Promise.all([d.target(session), d.info()]);
           if (mode === 'resume' && t2 && WORSE[t2.liveness] > WORSE[warnedAt]) return 'concurrent'; // G7-2: the warning is needed (again) now
@@ -217,6 +225,10 @@ export function launchFlow(d: LaunchFlowDeps) {
         const key = d.uuid();
         const row: ProvisionalRow = { key, agent: p.agent, profileId: p.profileId, cwd: p.cwd, nativeId: p.rowNativeId, startedAt: d.now(), state: 'starting', reason: null };
         if (!(await d.register(row))) { d.remove(key); return refused('unavailable'); } // G7-3: no acknowledged row, no Terminal (reviews M1: nor an orphan)
+        // G7R-1: the acknowledgement can take seconds; liveness may have changed meanwhile (a failing read refuses). ponytail: the
+        // milliseconds between this read and the spawn stay unchecked (terminal.ts revalidates the grant there, not liveness)
+        const late = await p.safe().catch(() => 'changed' as const);
+        if (late) { d.remove(key); return refused(late); }
         let r: Awaited<ReturnType<typeof launchInTerminal>>;
         try { r = await launchInTerminal({ agent: p.agent, grantKey: p.grantKey, executable: p.exe, args: p.args, ...(p.nativeId ? { nativeId: p.nativeId } : {}), cwd: p.cwd, names: p.names, envKeys: p.envKeys, dataDir: d.dataDir }, d.spawner, d.now()); }
         catch (e) { d.remove(key); throw e; }

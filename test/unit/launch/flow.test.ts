@@ -13,7 +13,7 @@ import { parseLaunchAsk, parseLaunchReply, type LaunchAgentInfo, type Provisiona
 const SID = '00000000-0000-4000-8000-0000000d0abc';
 
 const UUID = '00000000-0000-4000-8000-0000000d0001';
-function world(over: Partial<{ open: boolean; confirm: boolean; clickMs: number; ack: boolean; ackFailed: boolean; onConfirm: () => void }> = {}) {
+function world(over: Partial<{ open: boolean; confirm: boolean; clickMs: number; ack: boolean; ackFailed: boolean; onConfirm: () => void; onAck: () => void }> = {}) {
   const opened2: string[] = [];
   const root = realpathSync(tempDir('xlflow-'));
   const bin = path.join(root, 'bin'); mkdirSync(bin);
@@ -31,18 +31,19 @@ function world(over: Partial<{ open: boolean; confirm: boolean; clickMs: number;
   const dialogs: LaunchDialog[] = [], opened: string[] = [], rows: ProvisionalRow[] = [], log: string[] = [];
   const reg = new Map<string, ProvisionalRow>(); // the service's rows: a starting resume row locks its session (G7-1, OQ-P7-3)
   let mono = 0, ids = 0;
+  let broken = false; // a target read that throws (service channel error)
   let target: ResumeTarget | null = { agent: 'claude', profileId: 'p1', nativeId: SID, cwd, resume: { args: ['--resume', '{id}'] }, fork: { args: ['--resume', '{id}', '--fork-session'] }, vscode: null, liveness: 'uncertain' };
   const flow = launchFlow({
     dataDir, info: async () => info, uuid: () => (ids++ === 0 ? UUID : `00000000-0000-4000-8000-${(0xd0001 + ids).toString(16).padStart(12, '0')}`), now: () => 5_000, mono: () => mono,
     confirm: async (d) => { dialogs.push(d); mono += over.clickMs ?? 1_000; over.onConfirm?.(); return over.confirm ?? true; },
     spawner: { open: async (f) => { opened.push(f); log.push('open'); return over.open ?? true; } },
-    register: async (r) => { rows.push(r); log.push(`register ${r.state}`); if (over.ack === false || (r.state === 'failed' && over.ackFailed === false)) return false; reg.set(r.key, r); return true; },
+    register: async (r) => { rows.push(r); log.push(`register ${r.state}`); if (over.ack === false || (r.state === 'failed' && over.ackFailed === false)) return false; reg.set(r.key, r); if (r.state === 'starting') over.onAck?.(); return true; },
     remove: (key) => { log.push('remove'); reg.delete(key); },
-    target: async (session) => (session !== 7 || !target ? null
-      : [...reg.values()].some((r) => r.state === 'starting' && r.agent === target!.agent && r.nativeId === target!.nativeId) ? { ...target, resume: { disabled: 'A resume from Xaibo is still starting' } } : target),
+    target: async (session) => { if (broken) throw new Error('channel closed'); return session !== 7 || !target ? null
+      : [...reg.values()].some((r) => r.state === 'starting' && r.agent === target!.agent && r.nativeId === target!.nativeId) ? { ...target, resume: { disabled: 'A resume from Xaibo is still starting' } } : target; },
     openExternal: async (url) => { opened2.push(url); },
   });
-  return { flow, exe, cwd, dataDir, dialogs, opened, rows, opened2, log, reg, setTarget: (f: (t: ResumeTarget) => ResumeTarget) => { target = f(target!); }, tick: (ms: number) => { mono += ms; }, setInfo: (f: (i: LaunchAgentInfo[]) => LaunchAgentInfo[]) => { info = f(info); } };
+  return { flow, exe, cwd, dataDir, dialogs, opened, rows, opened2, log, reg, breakTarget: () => { broken = true; }, setTarget: (f: (t: ResumeTarget) => ResumeTarget) => { target = f(target!); }, tick: (ms: number) => { mono += ms; }, setInfo: (f: (i: LaunchAgentInfo[]) => LaunchAgentInfo[]) => { info = f(info); } };
 }
 
 test('options: enabled agents, disabled with reasons, only the default profile launches', async () => {
@@ -292,4 +293,23 @@ test('G7-3 (EC-85): the provisional row is registered, acknowledged, before Term
   const pf = await f.flow.preview({ agent: 'claude', profileId: 'p1', cwd: f.cwd });
   assert.equal((await f.flow.launch(pf.status === 'ok' ? pf.previewId : '')).status, 'failed');
   assert.deepEqual(f.log, ['register starting', 'open', 'register failed', 'remove'], 'an unacknowledged failed update removes the row');
+});
+
+test('G7R-1: the session turning live while the row awaits its acknowledgement refuses concurrent, removes the row, opens nothing', async () => {
+  let flip = () => {};
+  const w = world({ onAck: () => flip() });
+  w.setTarget((t) => ({ ...t, liveness: 'not-live' }));
+  flip = () => w.setTarget((t) => ({ ...t, liveness: 'live' }));
+  const p = await w.flow.resumePreview(7, 'resume');
+  assert.deepEqual(await w.flow.launch(p.status === 'ok' ? p.previewId : ''), { status: 'refused', code: 'concurrent' });
+  assert.deepEqual([w.log, w.opened], [['register starting', 'remove'], []]);
+  let brk = () => {};
+  const t = world({ onAck: () => brk() });
+  brk = () => t.breakTarget();
+  const pt = await t.flow.resumePreview(7, 'resume', true);
+  assert.deepEqual(await t.flow.launch(pt.status === 'ok' ? pt.previewId : ''), { status: 'refused', code: 'changed' }, 'review MEDIUM: a failing check refuses and removes the row');
+  assert.deepEqual([t.log, t.opened], [['register starting', 'remove'], []]);
+  const ok = world({ onAck: () => {} }); // its own reservation (resume disabled while it is pending) does not refuse it
+  const po = await ok.flow.resumePreview(7, 'resume', true);
+  assert.equal((await ok.flow.launch(po.status === 'ok' ? po.previewId : '')).status, 'started');
 });

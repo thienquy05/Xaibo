@@ -39,7 +39,7 @@ export function Workspace({ list, changes, browse, agents, live, lastKnown, api,
 }) {
   const [opened, setOpened] = useState<SessionRow | null>(request);
   const [showList, setShowList] = useState(true);
-  useEffect(() => { if (request) { setOpened(request); onRequestDone(); } }, [request, onRequestDone]);
+  useEffect(() => { if (request) { setProv(null); setBinding(null); setOpened(request); onRequestDone(); } }, [request, onRequestDone]); // Gate 7: a late binding never replaces it
   // XAIBO-PROD-424: a delta naming the open session (any record timestamp) or a resync bumps its change generation, and
   // its row follows the delta even outside the loaded list (Codex review).
   const [gen, setGen] = useState(0);
