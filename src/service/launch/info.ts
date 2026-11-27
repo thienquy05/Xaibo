@@ -18,6 +18,7 @@ const label = (p: Profile, home: string) => (p.origin === 'default' ? 'Default p
 export function launchInfo(catalog: Catalog | null, detections: readonly Detection[], profiles: readonly Profile[] | null, home: string): LaunchAgentInfo[] {
   return (catalog?.agents ?? []).map((a) => {
     const d = detections.find((x) => x.agent === a.id);
+    const overrides = a.profileRoots.filter((r) => r.envOverride); // 624 reviews: the variable is known only when exactly one root has one
     return {
       agent: a.id, name: a.displayName,
       version: d?.state === 'detected' ? d.version : null,
@@ -25,7 +26,7 @@ export function launchInfo(catalog: Catalog | null, detections: readonly Detecti
       names: a.detection.binaries.flatMap((b) => b.names),
       launch: launchTemplate(catalog!, a.id),
       profiles: (profiles ?? []).filter((p) => p.agent === a.id && p.id.length <= 64).slice(0, PROFILES_MAX) // 622 review: never an id the parser refuses
-        .map((p) => ({ id: p.id, label: clamp(label(p, home)), default: p.origin === 'default' })),
+        .map((p) => ({ id: p.id, label: clamp(label(p, home)), default: p.origin === 'default', envKey: p.origin === 'env' && overrides.length === 1 ? overrides[0]!.envOverride!.name : null })),
     };
   });
 }

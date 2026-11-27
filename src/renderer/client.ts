@@ -187,6 +187,8 @@ export function createClient(port: PortLike, push: Pushes) {
     async cost(session: number): Promise<CostDetail | null> { return (await ask({ type: 'cost', session }, 'cost')).cost; },
     /** P4-T02: live session deltas while the window is visible; paused while hidden (resync by cursor on show). */
     setLive(on: boolean): void { port.postMessage({ v: IPC_VERSION, type: 'live', on } satisfies PortRequest); },
+    /** XAIBO-PROD-624: Remove provisional row (the provisional push follows). */
+    removeProvisional(key: string): void { port.postMessage({ v: IPC_VERSION, type: 'removeProvisional', key } satisfies PortRequest); },
     get dropped() { return receive.dropped; },
     // XAIBO-PROD-434: a request still waiting on this port settles now (a restarted service answers on its new port);
     // left unsettled, the section that asked would stay loading and never refetch

@@ -4,7 +4,7 @@ import { StrictMode, useCallback, useEffect, useLayoutEffect, useMemo, useReduce
 import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { type CatalogImportResult, parseHealth, parseStartupReply } from '../shared/ipc.ts';
-import type { AgentStatus, Banner, GrantAsk, Health, IntegrationKey, LedgerFilter, RevokeTarget, SessionRow, StartupRequest } from '../shared/ipc.ts';
+import type { AgentStatus, Banner, GrantAsk, Health, IntegrationKey, LedgerFilter, ProvisionalRow, RevokeTarget, SessionRow, StartupRequest } from '../shared/ipc.ts';
 import { askGrant } from './agent-map/grants-view.ts';
 import { askLockClear, confirmedApply } from './agent-map/integration-dialog.ts';
 import { focusInvoker } from './agent-map/integration-panel.ts';
@@ -25,6 +25,7 @@ import { Settings, type SettingsApi } from './settings/Settings.tsx';
 import type { BrowseApi } from './history/SessionBrowser.tsx';
 import { AgentMap, type MapSnapshot } from './agent-map/AgentMap.tsx';
 import { Workspace } from './workspace/Workspace.tsx';
+import { launchApi } from './workspace/launch.ts';
 import { monthRange, type Query } from './history/browse.ts';
 import type { LedgerSnap } from './history/MonthlyChart.tsx';
 import type { SessionChanges } from './workspace/view.ts';
@@ -32,7 +33,7 @@ import type { WorkspaceApi } from './workspace/OpenSession.tsx';
 import { workspaceApiOf } from './workspace/workspace-api.ts';
 import './styles/tokens.css';
 
-declare global { interface Window { xaibo?: { setAgentPath(agent: string): void; importCatalog?(): void; paintAck(delta: number): void; revealPriceOverride?(): Promise<unknown>; startup?(request: StartupRequest): Promise<unknown>; grant?(request: unknown): Promise<unknown>; confirmApply?(request: unknown): Promise<unknown> } } }
+declare global { interface Window { xaibo?: { setAgentPath(agent: string): void; importCatalog?(): void; paintAck(delta: number): void; revealPriceOverride?(): Promise<unknown>; startup?(request: StartupRequest): Promise<unknown>; grant?(request: unknown): Promise<unknown>; confirmApply?(request: unknown): Promise<unknown>; launch?(request: unknown): Promise<unknown> } } }
 
 // M3 marks (P1-T14): read through the Performance API by test/perf.
 // ponytail: distinct sessions changed within one frame before the batch is dropped for a cursor resync; raise if a
@@ -50,6 +51,10 @@ function App() {
   const [list, setList] = useState<ListState>(emptyList);
   const [banners, setBanners] = useState<Banner[]>([]);
   const [catalogImport, setCatalogImport] = useState<CatalogImportResult | null>(null); // XAIBO-PROD-595
+  // XAIBO-PROD-624 (P7-T04): provisional launch rows from the service and the latest binding; launch asks go to main
+  const [provisional, setProvisional] = useState<ProvisionalRow[]>([]);
+  const [bound, setBound] = useState<{ items: { key: string; session: number }[]; n: number } | null>(null);
+  const launch = useMemo(() => launchApi(window.xaibo?.launch), []);
   const [liveSet, setLiveSet] = useState<LiveSetState>(emptyLiveSet);
   const [area, setArea] = useState<Area>('dashboard');
   const [tick, setTick] = useState(0); // session activity: the usage view refreshes on it (throttled there)
@@ -113,7 +118,8 @@ function App() {
       if (e.source !== window) return;
       if (e.data === 'xaibo-port' && e.ports[0]) { // a (re)started service: new client, reload the first page
         client.current?.close();
-        const c = createClient(e.ports[0] as unknown as PortLike, { sessions, agents: setAgents, coverage: setBanners, resync, catalogImport: setCatalogImport });
+        const c = createClient(e.ports[0] as unknown as PortLike, { sessions, agents: setAgents, coverage: setBanners, resync, catalogImport: setCatalogImport,
+          provisional: (rows, b) => { setProvisional(rows); if (b.length) setBound((x) => ({ items: b, n: (x?.n ?? 0) + 1 })); } });
         client.current = c;
         if (!visible()) c.setLive(false);
         // An invalid first page leaves the list empty; deltas and the next restart still fill it.
@@ -358,7 +364,8 @@ function App() {
             onMonthSessions={openMonth} ledgerRestore={ledgerRestore} onOpenIntegration={(key, invoker) => toIntegration(key, invoker)} />
           : <Workspace list={list} changes={changes} browse={browseApi} agents={agents ?? []} live={{ rows: liveSet.rows, loaded: liveSet.loaded, failed: liveFailed, more: liveSet.more }} lastKnown={lastKnown !== null} api={workspaceApi} request={request} onRequestDone={clearRequest}
             returnFor={returnFor} onReturn={returnTo === 'Agent Map' ? returnToMap : returnToDashboard} returnTo={returnTo} onListOpen={clearReturn}
-            preset={preset} onReturnList={preset ? returnToLedger : null} />}
+            preset={preset} onReturnList={preset ? returnToLedger : null}
+            provisional={provisional} bound={bound} launch={launch} removeProvisional={(key) => client.current?.removeProvisional(key)} />}
       </main>
     </div>
   );

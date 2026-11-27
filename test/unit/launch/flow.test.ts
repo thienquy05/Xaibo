@@ -21,7 +21,8 @@ function world(over: Partial<{ open: boolean; confirm: boolean; clickMs: number 
   const dataDir = path.join(root, 'data'); mkdirSync(dataDir, { mode: 0o700 });
   let info: LaunchAgentInfo[] = [
     { agent: 'claude', name: 'Claude Code', version: '2.1.332', executable: exe, names: ['claude'], launch: { args: ['--session-id', '{id}'], preallocatedId: true },
-      profiles: [{ id: 'p1', label: 'Default profile', default: true }, { id: 'p2', label: '~/alt', default: false }] },
+      profiles: [{ id: 'p1', label: 'Default profile', default: true, envKey: null }, { id: 'p2', label: '~/alt', default: false, envKey: null },
+        { id: 'p3', label: '~/env-root', default: false, envKey: 'CLAUDE_CONFIG_DIR' }] },
     { agent: 'codex', name: 'Codex', version: null, executable: null, names: ['codex'], launch: { args: [], preallocatedId: false }, profiles: [] },
     { agent: 'agy', name: 'Antigravity', version: '1.0.0', executable: exe, names: ['agy'], launch: { disabled: 'agy interactive launch not verified' }, profiles: [] },
   ];
@@ -40,7 +41,8 @@ test('options: enabled agents, disabled with reasons, only the default profile l
   const w = world();
   assert.deepEqual(await w.flow.options(), { status: 'ok', agents: [
     { agent: 'claude', name: 'Claude Code', version: '2.1.332', disabled: null, preallocatedId: true,
-      profiles: [{ id: 'p1', label: 'Default profile', disabled: null }, { id: 'p2', label: '~/alt', disabled: 'Launch from this profile is not supported yet' }] },
+      profiles: [{ id: 'p1', label: 'Default profile', disabled: null }, { id: 'p2', label: '~/alt', disabled: 'Launch from this profile is not supported yet' },
+        { id: 'p3', label: '~/env-root', disabled: null }] },
     { agent: 'codex', name: 'Codex', version: null, disabled: 'Not detected', preallocatedId: false, profiles: [] },
     { agent: 'agy', name: 'Antigravity', version: '1.0.0', disabled: 'agy interactive launch not verified', preallocatedId: false, profiles: [] },
   ] });
@@ -55,6 +57,8 @@ test('preview: the exact quoted command and cwd from main; refusals before any w
   assert.equal(p.cwd, w.cwd);
   assert.deepEqual(p.env, ['PATH', 'HOME', 'LANG', 'TERM', 'USER', 'SHELL', 'TMPDIR']);
   assert.deepEqual(await w.flow.preview({ agent: 'claude', profileId: 'p2', cwd: w.cwd }), { status: 'refused', code: 'profile' });
+  const env = await w.flow.preview({ agent: 'claude', profileId: 'p3', cwd: w.cwd });
+  assert.deepEqual(env.status === 'ok' && env.env.at(-1), 'CLAUDE_CONFIG_DIR', '624: an env-chosen profile passes its variable name through');
   assert.deepEqual(await w.flow.preview({ agent: 'agy', profileId: 'p1', cwd: w.cwd }), { status: 'refused', code: 'disabled' });
   assert.deepEqual(await w.flow.preview({ agent: 'codex', profileId: 'p1', cwd: w.cwd }), { status: 'refused', code: 'not-detected' });
   assert.deepEqual(await w.flow.preview({ agent: 'claude', profileId: 'p1', cwd: path.join(w.cwd, 'missing') }), { status: 'refused', code: 'cwd' });
@@ -150,4 +154,14 @@ test('623 reviews: one launch at a time, 2 s apart, 5 s after a cancel; expiry b
   const n = world();
   n.setInfo(() => null as unknown as LaunchAgentInfo[]);
   assert.deepEqual(await n.flow.options(), { status: 'refused', code: 'unavailable' });
+});
+
+test('624 security review: only a profile directory variable is passed through, never NODE_OPTIONS or DYLD_*', async () => {
+  const w = world();
+  for (const bad of ['NODE_OPTIONS', 'DYLD_INSERT_LIBRARIES', 'BASH_ENV']) {
+    w.setInfo((i) => i.map((a) => (a.agent === 'claude' ? { ...a, profiles: [{ id: 'p9', label: '~/x', default: false, envKey: bad }] } : a)));
+    assert.deepEqual(await w.flow.preview({ agent: 'claude', profileId: 'p9', cwd: w.cwd }), { status: 'refused', code: 'profile' }, bad);
+    const o = await w.flow.options();
+    assert.equal(o.status === 'ok' && o.agents[0]!.profiles[0]!.disabled, 'Launch from this profile is not supported yet');
+  }
 });

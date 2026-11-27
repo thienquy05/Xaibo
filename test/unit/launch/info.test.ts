@@ -31,11 +31,11 @@ test('launch info: found path, names, template or reason, profiles with labels; 
     agent: 'claude', name: 'Claude Code', version: '2.1.332', executable: `${HOME}/.local/bin/claude`,
     names: catalog.agents.find((a) => a.id === 'claude')!.detection.binaries.flatMap((b) => b.names),
     launch: { args: ['--session-id', '{id}'], preallocatedId: true },
-    profiles: [{ id: 'p1', label: 'Default profile', default: true }, { id: 'p2', label: '~/work/claude-alt', default: false }],
+    profiles: [{ id: 'p1', label: 'Default profile', default: true, envKey: null }, { id: 'p2', label: '~/work/claude-alt', default: false, envKey: null }],
   });
   assert.equal(codex!.executable, '/opt/synthetic/codex.js', 'no found path: the realpath');
   assert.deepEqual(codex!.launch, { args: [], preallocatedId: false });
-  assert.deepEqual(codex!.profiles, [{ id: 'p3', label: '/Volumes/synthetic/codex', default: false }]);
+  assert.deepEqual(codex!.profiles, [{ id: 'p3', label: '/Volumes/synthetic/codex', default: false, envKey: "CODEX_HOME" }]);
   assert.deepEqual({ ...agy, names: [] }, { agent: 'agy', name: catalog.agents.find((a) => a.id === 'agy')!.displayName, version: null, executable: null, names: [],
     launch: { disabled: 'agy interactive launch not verified' }, profiles: [] });
   assert.deepEqual(launchInfo(null, detections, profiles, HOME), [], 'no catalog: nothing to launch');
@@ -58,4 +58,10 @@ test('launchInfo command and event: exact keys, bounded, main only', () => {
     { ...agents[0], extra: 1 },
   ]) assert.equal(parseServiceEvent({ v: 1, type: 'launchInfo', id: 7, agents: [bad] }), null, JSON.stringify(bad));
   assert.equal(parseServiceEvent({ v: 1, type: 'launchInfo', id: 7, agents: Array(65).fill(agents[2]) }), null, 'bounded');
+});
+
+test('624 reviews: an env-chosen profile names its variable only when one root of the agent declares one', () => {
+  const two = { ...catalog, agents: catalog.agents.map((a) => (a.id === 'claude' ? { ...a, profileRoots: [...a.profileRoots, { ...a.profileRoots.find((r) => r.envOverride)!, id: 'second' }] } : a)) };
+  const [claude] = launchInfo(two, detections, [{ id: 'e1', agent: 'claude', root: '/synthetic/env-root', origin: 'env' }], HOME);
+  assert.deepEqual(claude!.profiles, [{ id: 'e1', label: '/synthetic/env-root', default: false, envKey: null }], 'ambiguous: not launchable');
 });

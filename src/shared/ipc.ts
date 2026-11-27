@@ -50,8 +50,9 @@ export type ServiceEvent =
 export interface LaunchAgentInfo {
   agent: string; name: string; version: string | null; executable: string | null; names: string[];
   launch: { args: string[]; preallocatedId: boolean } | { disabled: string };
-  /** default (XAIBO-PROD-623): the agent's default profile, the only one a Terminal launch can use. */
-  profiles: { id: string; label: string; default: boolean }[];
+  /** default (XAIBO-PROD-623): the agent's default profile; envKey (XAIBO-PROD-624): for a profile chosen by a login environment
+   *  variable, its name (the launch passes it through from Terminal's own environment). Other profiles cannot launch. */
+  profiles: { id: string; label: string; default: boolean; envKey: string | null }[];
 }
 const LAUNCH_AGENTS_MAX = 64;
 function parseLaunchAgent(x: unknown): LaunchAgentInfo | null {
@@ -61,7 +62,8 @@ function parseLaunchAgent(x: unknown): LaunchAgentInfo | null {
   const launch = isObj(l) && exactKeys(l, ['args', 'preallocatedId']) && Array.isArray(l.args) && l.args.length <= 8 && l.args.every((s) => text(s, 256)) && typeof l.preallocatedId === 'boolean'
     ? { args: [...(l.args as string[])], preallocatedId: l.preallocatedId }
     : isObj(l) && exactKeys(l, ['disabled']) && text(l.disabled, 256) && l.disabled !== '' ? { disabled: l.disabled } : null;
-  const profiles = Array.isArray(x.profiles) && x.profiles.length <= 64 ? x.profiles.map((p) => (isObj(p) && exactKeys(p, ['id', 'label', 'default']) && text(p.id, 64) && p.id !== '' && text(p.label, 4096) && typeof p.default === 'boolean' ? { id: p.id, label: p.label, default: p.default } : null)) : null;
+  const profiles = Array.isArray(x.profiles) && x.profiles.length <= 64 ? x.profiles.map((p) => (isObj(p) && exactKeys(p, ['id', 'label', 'default', 'envKey']) && text(p.id, 64) && p.id !== '' && text(p.label, 4096) && typeof p.default === 'boolean'
+    && (p.envKey === null || (typeof p.envKey === 'string' && /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(p.envKey))) ? { id: p.id, label: p.label, default: p.default, envKey: p.envKey as string | null } : null)) : null;
   const exeOk = x.executable === null || (text(x.executable, 4096) && x.executable.startsWith('/') && !x.executable.includes('\0'));
   return text(x.agent, 32) && AGENT_ID.test(x.agent) && text(x.name, 128) && (x.version === null || text(x.version, 64)) && exeOk && strs(x.names, 8, 128) && launch && profiles && profiles.every((p) => p !== null)
     ? { agent: x.agent, name: x.name, version: x.version as string | null, executable: x.executable as string | null, names: [...x.names], launch, profiles: profiles as LaunchAgentInfo['profiles'] } : null;
