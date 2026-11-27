@@ -13,5 +13,5 @@ export const allowedExternal = (url: string): boolean => ALLOWED.test(url);
 export async function openInVsCode(id: string, openExternal: (url: string) => Promise<void>): Promise<'opened' | 'invalid' | 'failed'> {
   const url = vscodeUrl(id);
   if (url === null || !allowedExternal(url)) return 'invalid';
-  try { await openExternal(url); return 'opened'; } catch { return 'failed'; } // no registered handler, or the OS refused
+  try { await openExternal(url); return 'opened'; } catch { return 'failed'; } // the opener rejected
 }
