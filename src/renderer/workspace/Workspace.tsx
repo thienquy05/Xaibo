@@ -13,8 +13,9 @@ import type { ListState } from '../model.ts';
 import { OpenSession, type WorkspaceApi } from './OpenSession.tsx';
 import { openChange, type SessionChanges } from './view.ts';
 import { LaunchDialog, type LaunchDone, type Prefill } from './LaunchDialog.tsx';
-import { elapsed, FAILED_TEXT, minutes, PENDING_OWNERSHIP, type LaunchApi } from './launch.ts';
+import { elapsed, FAILED_TEXT, minutes, type LaunchApi } from './launch.ts';
 import { visible } from '../text.ts';
+import { OwnershipBadge } from '../status/Ownership.tsx';
 
 // XAIBO-PROD-529 (P5-T18 part 3a): the list pane is the history browser (history/SessionBrowser.tsx); `list` (the live
 // session feed) still keeps the open session's row current.
@@ -196,7 +197,7 @@ function ProvisionalPane({ row, name, binding, onBack, onRemove, onRetry }: {
     <section className="x-pane x-provisional-pane" aria-labelledby="provisional-title">
       <div className="x-open-title"><button type="button" className="x-btn x-btn-secondary x-back" onClick={onBack}>Back to session list</button></div>
       <h2 id="provisional-title" ref={heading} tabIndex={-1}>{failed ? 'Launch failed' : 'Starting…'}</h2>
-      <p>{PENDING_OWNERSHIP}</p>
+      <p><OwnershipBadge kind="unavailable" /></p>
       {row ? <p>{visible(name)} · {visible(row.cwd)}</p> : null}
       {row && !failed ? <p>Elapsed <Clock since={row.startedAt} every={1000} show={elapsed} /></p> : null}
       <p aria-live="polite">{failed ? (row?.reason === 'write' || row?.reason === 'open' ? FAILED_TEXT[row.reason] : 'The launch did not start.')

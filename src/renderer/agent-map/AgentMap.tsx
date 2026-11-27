@@ -12,6 +12,8 @@ import { VirtualList } from '../components/VirtualList.tsx';
 import { rovingKey } from '../components/virtual-list-model.ts';
 import { formatTime } from '../model.ts';
 import { Icon } from '../status/StatusBadge.tsx';
+import { OwnershipBadge } from '../status/Ownership.tsx';
+import { ownershipOf } from '../status/ownership-view.ts';
 import { Title } from '../SessionList.tsx';
 import { show, visible } from '../text.ts';
 import { compactStatus } from '../workspace/view.ts';
@@ -445,7 +447,7 @@ function Node({ r, name, lastKnown, onToggle, onActivate }: { r: Row; name: (a: 
         <span className="x-map-chev" aria-hidden="true" />
         <span className="x-map-box x-map-leaf">
           <span className="x-map-label"><Icon id="file" /><span><Title row={row} /></span></span>
-          <span className="x-map-sub"><span className={`x-dot x-dot-${st.tone}`} aria-hidden="true" /> {visible(name(row.agent))} · {lastKnown ? 'Last known: ' : null}{st.text} · {formatTime(row.lastActivity)}</span>
+          <span className="x-map-sub"><span className={`x-dot x-dot-${st.tone}`} aria-hidden="true" /> {visible(name(row.agent))} · {lastKnown ? 'Last known: ' : null}{st.text} · {formatTime(row.lastActivity)} · <OwnershipBadge kind={ownershipOf(row)} /></span>
           <span className="x-map-sub x-map-path">{show(row.cwd, 'Cwd unavailable')}</span>
         </span>
         </span>

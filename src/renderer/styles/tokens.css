@@ -799,3 +799,11 @@ html, .x-shell.x-fixed { scroll-padding-top: var(--x-frame-pad, 8px); } /* clear
 .x-provisional-pane h2 { margin: 0; }
 .x-provisional-pane p { margin: 0; overflow-wrap: anywhere; }
 .x-provisional-actions { justify-content: flex-start; }
+
+/* XAIBO-PROD-625 (design §3.2, §6.9): the static ownership badge (16 px icon + exact words, one phrase) and its explanation */
+.x-own { display: inline-flex; align-items: flex-start; gap: var(--x-space-1); max-width: 100%; min-width: 0; color: var(--x-muted); } /* moves to its own line first; wraps inside only when wider than the row (text scaling) */
+.x-own > span { min-width: 0; overflow-wrap: anywhere; }
+.x-own .x-icon { width: 16px; height: 16px; flex: none; }
+.x-own-controlled-here { color: var(--x-accent); }
+.x-own-about { min-height: 28px; font-size: var(--x-text-small); }
+.x-own-note { flex-basis: 100%; margin: 0; font-size: var(--x-text-small); color: var(--x-muted); }

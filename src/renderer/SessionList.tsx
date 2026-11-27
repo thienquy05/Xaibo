@@ -5,6 +5,8 @@
 import type { SessionRow } from '../shared/ipc.ts';
 import { contextText, costText, formatTime, markers, originText } from './model.ts';
 import { Icon, StatusLine } from './status/StatusBadge.tsx';
+import { OwnershipBadge } from './status/Ownership.tsx';
+import { ownershipOf } from './status/ownership-view.ts';
 import { show, visible } from './text.ts';
 
 /** XAIBO-PROD-509 (EC-66): the native title, else "Untitled" followed by a muted first-prompt excerpt (in-app only). */
@@ -25,7 +27,7 @@ export function Record({ row, lastKnown = false, onOpen, openLabel }: { row: Ses
         <span className="x-record-path" data-field="folder">{show(row.cwd, 'Unknown')}</span>
       </p>
       <p className="x-record-status" data-field="status">
-        <StatusLine status={row.live} lastKnown={lastKnown} />
+        <StatusLine status={row.live} lastKnown={lastKnown} /> <OwnershipBadge kind={ownershipOf(row)} />
       </p>
       <dl className="x-record-fields">
         <div><dt>Origin</dt><dd data-field="origin">{originText(row)}</dd></div>

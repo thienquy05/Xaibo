@@ -16,6 +16,8 @@ import { Title } from '../SessionList.tsx';
 import { rovingKey } from '../components/virtual-list-model.ts';
 import { retryIdle, retryStep } from '../retry.ts';
 import { Icon, StatusLine } from '../status/StatusBadge.tsx';
+import { AboutOwnership, OwnershipBadge } from '../status/Ownership.tsx';
+import { ownershipOf } from '../status/ownership-view.ts';
 import { visible } from '../text.ts';
 import { ContextPane } from './context/ContextSection.tsx';
 import { CostPane } from './cost/CostSection.tsx';
@@ -311,6 +313,8 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
           {drift ? <span className="x-chip x-chip-warn"><Icon id="finding" />Source format drift detected</span> : null}
           <span className="x-chip">{visible(row.model)}</span>
           <span className="x-chip">{visible(row.agent)}</span>
+          <OwnershipBadge kind={ownershipOf(row)} />
+          <AboutOwnership />
         </div>
         {trashRow && banner ? ( // design §5.1 Banner: glyph, heading, explanation, actions
           <section className="x-banner" aria-labelledby="trash-banner-heading">
