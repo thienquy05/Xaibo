@@ -25,7 +25,7 @@ export function launchInfo(catalog: Catalog | null, detections: readonly Detecti
       names: a.detection.binaries.flatMap((b) => b.names),
       launch: launchTemplate(catalog!, a.id),
       profiles: (profiles ?? []).filter((p) => p.agent === a.id && p.id.length <= 64).slice(0, PROFILES_MAX) // 622 review: never an id the parser refuses
-        .map((p) => ({ id: p.id, label: clamp(label(p, home)) })),
+        .map((p) => ({ id: p.id, label: clamp(label(p, home)), default: p.origin === 'default' })),
     };
   });
 }

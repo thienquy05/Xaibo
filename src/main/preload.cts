@@ -18,4 +18,5 @@ contextBridge.exposeInMainWorld('xaibo', {
   startup: (request: unknown) => ipcRenderer.invoke('startup', request) as Promise<unknown>,
   grant: (request: unknown) => ipcRenderer.invoke('grant', request) as Promise<unknown>, // XAIBO-PROD-597: ids only; main parses and confirms natively
   confirmApply: (request: unknown) => ipcRenderer.invoke('confirm-apply', request) as Promise<unknown>, // XAIBO-PROD-600: kind and preview id only
+  launch: (request: unknown) => ipcRenderer.invoke('launch', request) as Promise<unknown>, // XAIBO-PROD-623: options, preview, launch; parsed in main
 });

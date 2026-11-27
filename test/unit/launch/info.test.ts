@@ -31,11 +31,11 @@ test('launch info: found path, names, template or reason, profiles with labels; 
     agent: 'claude', name: 'Claude Code', version: '2.1.332', executable: `${HOME}/.local/bin/claude`,
     names: catalog.agents.find((a) => a.id === 'claude')!.detection.binaries.flatMap((b) => b.names),
     launch: { args: ['--session-id', '{id}'], preallocatedId: true },
-    profiles: [{ id: 'p1', label: 'Default profile' }, { id: 'p2', label: '~/work/claude-alt' }],
+    profiles: [{ id: 'p1', label: 'Default profile', default: true }, { id: 'p2', label: '~/work/claude-alt', default: false }],
   });
   assert.equal(codex!.executable, '/opt/synthetic/codex.js', 'no found path: the realpath');
   assert.deepEqual(codex!.launch, { args: [], preallocatedId: false });
-  assert.deepEqual(codex!.profiles, [{ id: 'p3', label: '/Volumes/synthetic/codex' }]);
+  assert.deepEqual(codex!.profiles, [{ id: 'p3', label: '/Volumes/synthetic/codex', default: false }]);
   assert.deepEqual({ ...agy, names: [] }, { agent: 'agy', name: catalog.agents.find((a) => a.id === 'agy')!.displayName, version: null, executable: null, names: [],
     launch: { disabled: 'agy interactive launch not verified' }, profiles: [] });
   assert.deepEqual(launchInfo(null, detections, profiles, HOME), [], 'no catalog: nothing to launch');

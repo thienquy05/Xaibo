@@ -50,7 +50,8 @@ export type ServiceEvent =
 export interface LaunchAgentInfo {
   agent: string; name: string; version: string | null; executable: string | null; names: string[];
   launch: { args: string[]; preallocatedId: boolean } | { disabled: string };
-  profiles: { id: string; label: string }[];
+  /** default (XAIBO-PROD-623): the agent's default profile, the only one a Terminal launch can use. */
+  profiles: { id: string; label: string; default: boolean }[];
 }
 const LAUNCH_AGENTS_MAX = 64;
 function parseLaunchAgent(x: unknown): LaunchAgentInfo | null {
@@ -60,7 +61,7 @@ function parseLaunchAgent(x: unknown): LaunchAgentInfo | null {
   const launch = isObj(l) && exactKeys(l, ['args', 'preallocatedId']) && Array.isArray(l.args) && l.args.length <= 8 && l.args.every((s) => text(s, 256)) && typeof l.preallocatedId === 'boolean'
     ? { args: [...(l.args as string[])], preallocatedId: l.preallocatedId }
     : isObj(l) && exactKeys(l, ['disabled']) && text(l.disabled, 256) && l.disabled !== '' ? { disabled: l.disabled } : null;
-  const profiles = Array.isArray(x.profiles) && x.profiles.length <= 64 ? x.profiles.map((p) => (isObj(p) && exactKeys(p, ['id', 'label']) && text(p.id, 64) && p.id !== '' && text(p.label, 4096) ? { id: p.id, label: p.label } : null)) : null;
+  const profiles = Array.isArray(x.profiles) && x.profiles.length <= 64 ? x.profiles.map((p) => (isObj(p) && exactKeys(p, ['id', 'label', 'default']) && text(p.id, 64) && p.id !== '' && text(p.label, 4096) && typeof p.default === 'boolean' ? { id: p.id, label: p.label, default: p.default } : null)) : null;
   const exeOk = x.executable === null || (text(x.executable, 4096) && x.executable.startsWith('/') && !x.executable.includes('\0'));
   return text(x.agent, 32) && AGENT_ID.test(x.agent) && text(x.name, 128) && (x.version === null || text(x.version, 64)) && exeOk && strs(x.names, 8, 128) && launch && profiles && profiles.every((p) => p !== null)
     ? { agent: x.agent, name: x.name, version: x.version as string | null, executable: x.executable as string | null, names: [...x.names], launch, profiles: profiles as LaunchAgentInfo['profiles'] } : null;
@@ -80,6 +81,55 @@ function parseProvisionalRow(x: unknown): ProvisionalRow | null {
     && Number.isFinite(x.startedAt) && (x.startedAt as number) > 0 && (x.state === 'starting' || x.state === 'failed') && (x.reason === null || (text(x.reason, 64) && x.reason !== ''));
   return ok ? { key: x.key as string, agent: x.agent as string, profileId: x.profileId as string, cwd: x.cwd as string, nativeId: x.nativeId as string | null,
     startedAt: x.startedAt as number, state: x.state as ProvisionalRow['state'], reason: x.reason as string | null } : null;
+}
+// XAIBO-PROD-623 (P7-T04, design §6.7): the renderer's launch asks to main (ipcMain.handle('launch'), our window only) and the
+// replies. The renderer never assembles a command: the preview's command text comes from main's launch layer (P7-T02).
+export type LaunchAsk = { op: 'options' } | { op: 'preview'; agent: string; profileId: string; cwd: string } | { op: 'launch'; previewId: string };
+export const LAUNCH_REFUSALS = ['invalid', 'unavailable', 'busy', 'disabled', 'not-detected', 'profile', 'executable', 'interpreter', 'name', 'cwd', 'id',
+  'placeholder', 'text', 'env', 'expired', 'changed', 'grant'] as const;
+export type LaunchRefusal = (typeof LAUNCH_REFUSALS)[number];
+export interface LaunchOption {
+  agent: string; name: string; version: string | null; disabled: string | null; preallocatedId: boolean;
+  profiles: { id: string; label: string; disabled: string | null }[];
+}
+export type LaunchOptionsReply = { status: 'ok'; agents: LaunchOption[] } | { status: 'refused'; code: LaunchRefusal };
+export type LaunchPreviewReply = { status: 'ok'; previewId: string; command: string; cwd: string; env: string[] } | { status: 'refused'; code: LaunchRefusal };
+export type LaunchReply = { status: 'started'; key: string } | { status: 'failed'; key: string; reason: 'write' | 'open' } | { status: 'cancelled' } | { status: 'refused'; code: LaunchRefusal };
+export function parseLaunchAsk(x: unknown): LaunchAsk | null {
+  if (!isObj(x)) return null;
+  if (x.op === 'options') return exactKeys(x, ['op']) ? { op: 'options' } : null;
+  if (x.op === 'preview') return exactKeys(x, ['op', 'agent', 'profileId', 'cwd']) && text(x.agent, 32) && AGENT_ID.test(x.agent) && text(x.profileId, 64) && x.profileId !== '' && absPath(x.cwd)
+    ? { op: 'preview', agent: x.agent, profileId: x.profileId, cwd: x.cwd } : null;
+  if (x.op === 'launch') return exactKeys(x, ['op', 'previewId']) && typeof x.previewId === 'string' && KEY_UUID.test(x.previewId) ? { op: 'launch', previewId: x.previewId } : null;
+  return null;
+}
+const launchRefusal = (x: Msg): { status: 'refused'; code: LaunchRefusal } | null => (exactKeys(x, ['status', 'code']) && oneOf(LAUNCH_REFUSALS, x.code) ? { status: 'refused', code: x.code } : null);
+export function parseLaunchReply(x: unknown): LaunchReply | null {
+  if (!isObj(x)) return null;
+  if (x.status === 'started') return exactKeys(x, ['status', 'key']) && typeof x.key === 'string' && KEY_UUID.test(x.key) ? { status: 'started', key: x.key } : null;
+  if (x.status === 'failed') return exactKeys(x, ['status', 'key', 'reason']) && typeof x.key === 'string' && KEY_UUID.test(x.key) && (x.reason === 'write' || x.reason === 'open') ? { status: 'failed', key: x.key, reason: x.reason } : null;
+  if (x.status === 'cancelled') return exactKeys(x, ['status']) ? { status: 'cancelled' } : null;
+  return x.status === 'refused' ? launchRefusal(x) : null;
+}
+export function parseLaunchPreviewReply(x: unknown): LaunchPreviewReply | null {
+  if (!isObj(x)) return null;
+  if (x.status === 'refused') return launchRefusal(x);
+  return x.status === 'ok' && exactKeys(x, ['status', 'previewId', 'command', 'cwd', 'env']) && typeof x.previewId === 'string' && KEY_UUID.test(x.previewId) && text(x.command, 64 * 1024)
+    && absPath(x.cwd) && Array.isArray(x.env) && x.env.length <= 64 && x.env.every((k) => typeof k === 'string' && /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(k))
+    ? { status: 'ok', previewId: x.previewId, command: x.command, cwd: x.cwd, env: [...(x.env as string[])] } : null;
+}
+export function parseLaunchOptionsReply(x: unknown): LaunchOptionsReply | null {
+  if (!isObj(x)) return null;
+  if (x.status === 'refused') return launchRefusal(x);
+  if (x.status !== 'ok' || !exactKeys(x, ['status', 'agents']) || !Array.isArray(x.agents) || x.agents.length > LAUNCH_AGENTS_MAX) return null;
+  const reason = (v: unknown): v is string | null => v === null || (text(v, 256) && v !== '');
+  const agents = x.agents.map((a): LaunchOption | null => {
+    if (!isObj(a) || !exactKeys(a, ['agent', 'name', 'version', 'disabled', 'preallocatedId', 'profiles']) || !Array.isArray(a.profiles) || a.profiles.length > 64) return null;
+    const profiles = a.profiles.map((p) => (isObj(p) && exactKeys(p, ['id', 'label', 'disabled']) && text(p.id, 64) && p.id !== '' && text(p.label, 4096) && reason(p.disabled) ? { id: p.id, label: p.label, disabled: p.disabled } : null));
+    return text(a.agent, 32) && AGENT_ID.test(a.agent) && text(a.name, 128) && (a.version === null || text(a.version, 64)) && reason(a.disabled) && typeof a.preallocatedId === 'boolean' && profiles.every((p) => p !== null)
+      ? { agent: a.agent, name: a.name, version: a.version as string | null, disabled: a.disabled, preallocatedId: a.preallocatedId, profiles: profiles as LaunchOption['profiles'] } : null;
+  });
+  return agents.every((a) => a !== null) ? { status: 'ok', agents: agents as LaunchOption[] } : null;
 }
 export type HealthState = 'starting' | 'running' | 'restarting' | 'stopped';
 /** main -> renderer; attempt counts consecutive restarts (0 unless restarting). */

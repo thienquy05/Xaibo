@@ -32,6 +32,8 @@ export interface SupervisorDeps<P> {
   onGrant?(g: Extract<ServiceEvent, { type: 'grant' }>): void;
   /** XAIBO-PROD-600 (P6-T12 slice 2): a validated reply to main's apply offer or confirm. */
   onApply?(a: Extract<ServiceEvent, { type: 'apply' }>): void;
+  /** XAIBO-PROD-623 (P7-T04): a validated reply to main's launchInfo. */
+  onLaunchInfo?(l: Extract<ServiceEvent, { type: 'launchInfo' }>): void;
 }
 
 export class Supervisor<P> {
@@ -41,6 +43,7 @@ export class Supervisor<P> {
     else if (m.type === 'metrics') this.#d.onMetrics?.(m);
     else if (m.type === 'grant') this.#d.onGrant?.(m); // review M5: explicit, never a notification
     else if (m.type === 'apply') this.#d.onApply?.(m);
+    else if (m.type === 'launchInfo') this.#d.onLaunchInfo?.(m);
     else if (m.type === 'notify') this.#d.onNotify?.(m);
   });
   #child: Child<P> | null = null;

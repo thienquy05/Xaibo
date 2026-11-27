@@ -3,11 +3,14 @@
 // (P1-T06): restarted with backoff, a fresh port brokered to the renderer after every start and every page load.
 import { app, BrowserWindow, dialog, ipcMain, Menu, MessageChannelMain, Notification, powerMonitor, shell, utilityProcess } from 'electron';
 import type { MessagePortMain, Tray } from 'electron';
-import { appendFileSync, realpathSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { appendFileSync, readFileSync, realpathSync, unlinkSync } from 'node:fs';
 import { release } from 'node:os';
 import path from 'node:path';
 import { installCrashPolicy } from '../shared/crash.ts';
-import { AGENT_ID, IPC_VERSION, parseApplyAsk, parseGrantAsk, type ApplyOutcome, type GrantOutcome, type RevealResult, type ServiceMetrics, type StartupReply } from '../shared/ipc.ts';
+import { AGENT_ID, IPC_VERSION, parseApplyAsk, parseGrantAsk, parseLaunchAsk, type ApplyOutcome, type GrantOutcome, type LaunchAgentInfo, type LaunchOptionsReply, type LaunchPreviewReply, type LaunchReply, type RevealResult, type ServiceMetrics, type StartupReply } from '../shared/ipc.ts';
+import { launchFlow } from './launch/flow.ts';
+import { sweepLaunchScripts, terminalSpawner } from './launch/terminal.ts';
 import { grantFlow } from './grants.ts';
 import { applyFlow } from './apply-confirm.ts';
 import { appendQuiet, createLogger, loadInstallSecret } from '../shared/log.ts';
@@ -80,6 +83,26 @@ function start(dataDir: string) {
     clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
     now: () => performance.now(),
   });
+  // XAIBO-PROD-623 (P7-T04, design §6.7): main owns the launch (launch/flow.ts): the service supplies the launch info (one reply per
+  // request id, 10 s, none after a service restart); the grant dialog is a sheet on our window and refused while it does not exist;
+  // the provisional row goes to the service. XAIBO_LAUNCH_STUB=1 (E2E, behind the XAIBO_E2E marker) records the script instead of
+  // opening Terminal, then removes it as Terminal's run would.
+  const infoWaits = new Map<number, (agents: LaunchAgentInfo[] | null) => void>();
+  let infoId = 0;
+  const launchStub = trusted.XAIBO_LAUNCH_STUB === '1' ? path.join(app.getPath('logs'), 'launch-stub.jsonl') : null;
+  const launches = launchFlow({
+    dataDir: dataDir!,
+    info: () => new Promise((resolve) => {
+      const id = ++infoId;
+      const timer = setTimeout(() => { infoWaits.delete(id); resolve(null); }, 10_000);
+      infoWaits.set(id, (agents) => { clearTimeout(timer); infoWaits.delete(id); resolve(agents); });
+      supervisor.send({ v: IPC_VERSION, type: 'launchInfo', id });
+    }),
+    uuid: randomUUID, now: Date.now, mono: () => performance.now(),
+    confirm: async (d) => (win && !win.isDestroyed() ? (await dialog.showMessageBox(win, d)).response === 1 : false),
+    spawner: launchStub ? { open: async (file) => { appendQuiet(launchStub, `${JSON.stringify({ script: readFileSync(file, 'utf8') })}\n`); unlinkSync(file); return true; } } : terminalSpawner,
+    register: (row) => supervisor.send({ v: IPC_VERSION, type: 'provisional', row }),
+  });
   const notifyStub = trusted.XAIBO_NOTIFY_STUB === '1' ? path.join(app.getPath('logs'), 'notify-stub.jsonl') : null;
   const supervisor = new Supervisor<MessagePortMain>({
     fork: () => utilityProcess.fork(path.join(here, '..', 'service', 'index.js'), [], {
@@ -87,9 +110,10 @@ function start(dataDir: string) {
     }),
     channel: () => new MessageChannelMain(),
     onHealth: (h) => win?.webContents.send('health', h),
-    onSpawn: () => { serviceMetrics = null; grants.reset(); applies.reset(); sendPort(); }, // a new service process: no stale metrics (review L1), grant or apply flow
+    onSpawn: () => { serviceMetrics = null; grants.reset(); applies.reset(); for (const w of [...infoWaits.values()]) w(null); sendPort(); }, // a new service process: no stale metrics (review L1), grant or apply flow
     onGrant: (g) => grants.receive(g),
     onApply: (a) => applies.receive(a),
+    onLaunchInfo: (l) => infoWaits.get(l.id)?.(l.agents),
     setTimer: (fn, ms) => setTimeout(fn, ms),
     clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
     now: Date.now,
@@ -166,6 +190,16 @@ function start(dataDir: string) {
     log.log(`apply_${ask.kind}_${out.status === 'refused' ? out.code : out.status}`);
     return out;
   });
+  // XAIBO-PROD-623: Launch (options, preview, launch). Our window's main frame only, parsed here; the log names only the outcome.
+  ipcMain.handle('launch', async (e, request: unknown): Promise<LaunchOptionsReply | LaunchPreviewReply | LaunchReply> => {
+    const ask = parseLaunchAsk(request);
+    if (!win || win.isDestroyed() || !fromOurWindow(e, win) || !ask) return { status: 'refused', code: 'invalid' };
+    if (ask.op === 'options') return launches.options();
+    if (ask.op === 'preview') return launches.preview(ask);
+    const out = await launches.launch(ask.previewId);
+    log.log(`launch_${out.status === 'refused' ? out.code : out.status}`);
+    return out;
+  });
   ipcMain.on('set-agent-path', (e, agent: unknown) => {
     if (!win || e.sender !== win.webContents || typeof agent !== 'string' || !AGENT_ID.test(agent)) return;
     void dialog.showOpenDialog(win, { title: 'Choose the agent executable', properties: ['openFile'] }).then((r) => {
@@ -191,6 +225,7 @@ function start(dataDir: string) {
   ipcMain.handle('startup', (e, request: unknown): StartupReply => (fromOurWindow(e, win) ? answerStartup(request, loginItems) : { status: 'failed', code: 'invalid', enabled: null }));
 
   void app.whenReady().then(() => {
+    sweepLaunchScripts(dataDir!); // XAIBO-PROD-623: scripts Terminal never ran
     lockDown(path.join(here, '..', '..', 'dist', 'renderer'), dev, (count) => { blocked = count; log.log('request_blocked', { count }); });
     const save = () => void saveDiagnostics().catch(() => log.log('diagnostics_failed'));
     tray = createTray({ show, saveDiagnostics: save, quit: () => app.quit() });
