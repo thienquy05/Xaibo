@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { acquireLock, lockHeld, lockState, tryLock } from '../../src/service/config/lock.ts';
+import { acquireLock, lockState, tryLock } from '../../src/service/config/lock.ts';
 import { ConfigError } from '../../src/service/config/transaction.ts';
 
 const dirs: string[] = [];
@@ -24,12 +24,12 @@ const code = (f: () => unknown) => { try { f(); return 'ok'; } catch (e) { retur
 test('one holder: a second acquire is busy; release frees it; the file is private', () => {
   const d = dataDir();
   const l = acquireLock(d);
-  assert.equal(lockHeld(d), true);
+  assert.equal(lockState(d), 'busy');
   assert.equal(code(() => acquireLock(d)), 'busy', 'this process again');
   assert.equal(tryLock(d), null);
   assert.equal((JSON.parse(readFileSync(lockFile(d), 'utf8')) as { pid: number }).pid, process.pid);
   l.release();
-  assert.equal(lockHeld(d), false);
+  assert.equal(lockState(d), 'free');
   acquireLock(d).release();
 });
 

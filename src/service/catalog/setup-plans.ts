@@ -50,9 +50,6 @@ export function claudeConnectRoute(catalog: Catalog, d: Detection | undefined, p
   return ok.includes('claude-plugin') ? 'claude-plugin' : ok.includes('claude-settings-fallback') ? 'claude-settings-fallback' : null;
 }
 
-/** EC-90, D-19: Gemini's maxAge raise stays off until S11 runtime-verifies retention; reads nothing. */
-export const geminiRetentionOffer = (): RetentionOffer => ({ offered: false, reason: 'unverified', days: null });
-
 /** XAIBO-PROD-589 (P6-T09a slice B, D-P6-18): a report-v1 agent's declared setup, the approved root it may write under (null:
  *  none approved) and whether the owner authorized it (granted). */
 export interface SetupAccess { setup: ReportSetup; root: string | null; granted: boolean }

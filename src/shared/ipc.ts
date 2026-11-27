@@ -356,13 +356,13 @@ export const CLEAR_USAGE_RESULTS = ['cleared', 'read-only', 'failed'] as const;
 /** XAIBO-PROD-595: a catalog import's outcome, broadcast to the windows: the agent id, or fixed codes and pointers only. */
 export type CatalogImportResult = { status: 'imported'; agent: string } | { status: 'rejected'; issues: { code: string; at: string }[] };
 /** XAIBO-PROD-590 (P6-T08 slice A, EC-79): a rescan's answer; retryAfterMs (rate-limited only) is at most a minute. */
-export const RESCAN_CODES = ['starting', 'read-only', 'rate-limited', 'unavailable', 'failed'] as const;
+const RESCAN_CODES = ['starting', 'read-only', 'rate-limited', 'unavailable', 'failed'] as const;
 export type RescanResult = { status: 'ready' } | { status: 'refused'; code: (typeof RESCAN_CODES)[number]; retryAfterMs?: number };
 export type ClearUsageResult = (typeof CLEAR_USAGE_RESULTS)[number];
 /** XAIBO-PROD-558 (P6-T03 part 1b; design review L1/L2): Connect replies, bounded; never an op, a plan or a foreign value
  *  (diff lines carry Xaibo's values and a replaced value's type + 12-hex hash only). An over-bound reply is refused by the
  *  service (too-large), never truncated. */
-export const CONNECT_TYPES = ['connectPreview', 'connectApply', 'teePreview'] as const; // XAIBO-PROD-580: a tee-on preview is a Connect preview
+const CONNECT_TYPES = ['connectPreview', 'connectApply', 'teePreview'] as const; // XAIBO-PROD-580: a tee-on preview is a Connect preview
 export const CONNECT_ROUTES = ['claude-plugin', 'claude-settings-fallback', 'claude-retention', 'claude-tee', 'codex-hooks', 'agy-hooks', 'report-setup'] as const;
 export type ConnectRoute = (typeof CONNECT_ROUTES)[number];
 export const CONNECT_LIMITS = { steps: 3, diff: 64, value: 16_384, text: 8_192, trust: 8, entries: 8, list: 256 } as const;
@@ -388,7 +388,7 @@ export type ConnectReply = ConnectPreview | ConnectRefused | { status: 'applied'
  *  and its reconcile state (reason: why it is unreadable, e.g. refused for a target outside the writable roots); no path or
  *  value. At most REMOVAL_LIMIT items, the core's own cap. */
 export const RECONCILE_STATES = ['connected', 'disconnected-externally', 'drifted', 'pending-recovery', 'unreadable'] as const;
-export const LEFTOVERS = ['manifest-entry', 'backup', 'plugin-copy', 'marketplace'] as const;
+const LEFTOVERS = ['manifest-entry', 'backup', 'plugin-copy', 'marketplace'] as const;
 export const REMOVAL_LIMIT = 256;
 export interface RemovalItem { entry: string; route: ConnectRoute; profileId: string | null; state: (typeof RECONCILE_STATES)[number]; reason: string | null }
 export type RemovalPreview = { status: 'preview'; previewId: string; profileId: string | null; ttlMs: number; items: RemovalItem[] };
@@ -1340,7 +1340,7 @@ export const SIGN_IN_METHODS = ['subscription', 'api-key', 'cloud-provider', 'ga
 export type SignInMethod = (typeof SIGN_IN_METHODS)[number];
 const SIGN_IN_KNOWN = SIGN_IN_METHODS.filter((m) => m !== 'unknown');
 const SIGN_IN_SOURCES = ['claude-statusline', 'claude-transcript', 'codex-rollout', 'agy-transcript'] as const;
-export const SIGN_IN_CODES = ['ok', 'stale', 'profile-not-found', 'limit', 'read-only', 'unavailable', 'failed'] as const;
+const SIGN_IN_CODES = ['ok', 'stale', 'profile-not-found', 'limit', 'read-only', 'unavailable', 'failed'] as const;
 export type SignInReplyCode = (typeof SIGN_IN_CODES)[number];
 export type SignInRequest = { v: 1; type: 'signIn'; id: number; profileId: string } & (
   | { op: 'read' }
@@ -1399,7 +1399,7 @@ export const INTEGRATION_STATES = ['detected', 'setup-required', 'awaiting-trust
 export const INTEGRATION_FACTS = ['no-executable', 'probe-not-granted', 'probe-grant-stale', 'version-unknown', 'version-unqualified', 'no-profile', 'not-connected',
   'evidence-unavailable', 'drifted', 'disconnected-externally', 'pending-recovery', 'unreadable', 'hooks-blocked', 'no-receipt', 'waiting-for-receipt', 'hook-gap',
   'content-unavailable'] as const;
-export const CONTENT_MODES = ['native-transcript', 'report-full', 'report-state-only', 'unavailable'] as const;
+const CONTENT_MODES = ['native-transcript', 'report-full', 'report-state-only', 'unavailable'] as const;
 export const INTEGRATION_REFUSALS = ['starting', 'unavailable', 'stale-cursor', 'too-large', 'failed'] as const;
 export const INTEGRATION_PAGE_MAX = 10;
 export type IntegrationState = (typeof INTEGRATION_STATES)[number];
@@ -1494,7 +1494,7 @@ export interface GrantOffer {
 export type GrantOfferResult = { status: 'offer'; offer: GrantOffer } | { status: 'refused'; code: GrantRefusal };
 export type GrantConfirmResult = { status: 'granted' } | { status: 'refused'; code: (typeof CONFIRM_REFUSALS)[number] };
 export type RevokeTarget = { kind: 'root' | 'probe'; id: string } | { kind: 'setup' };
-export const REVOKE_RESULTS = ['revoked', 'unchanged', 'not-found', 'unavailable'] as const;
+const REVOKE_RESULTS = ['revoked', 'unchanged', 'not-found', 'unavailable'] as const;
 export type RevokeResult = (typeof REVOKE_RESULTS)[number];
 /** Grant state for the integration detail, one state per declared item; no paths, digests or argv. */
 export interface GrantState {
@@ -1503,7 +1503,7 @@ export interface GrantState {
   setup: { root: string; state: 'granted' | 'stale' | 'none' } | null;
 }
 export type GrantAsk = { action: 'root'; agent: string; root: string } | { action: 'probe'; agent: string; binary: string } | { action: 'setup'; agent: string };
-export const GRANT_CODES = ['not-found', 'root-unavailable', 'root-not-approved', 'executable-invalid', 'stale', 'busy', 'unavailable', 'failed', 'invalid', 'oversize', 'unknown'] as const;
+const GRANT_CODES = ['not-found', 'root-unavailable', 'root-not-approved', 'executable-invalid', 'stale', 'busy', 'unavailable', 'failed', 'invalid', 'oversize', 'unknown'] as const;
 /** unknown: the confirm was sent but no reply came in time (the grant may have been written: reread, never retry). */
 export type GrantOutcome = { status: 'granted' } | { status: 'cancelled' } | { status: 'refused'; code: (typeof GRANT_CODES)[number] };
 const REFUSED_CODES = [...OFFER_REFUSALS, ...CONFIRM_REFUSALS] as const;
@@ -1543,15 +1543,15 @@ function parseGrantResult(r: unknown): GrantOfferResult | GrantConfirmResult | n
 // of a real-class apply. The renderer asks main with a kind and a preview id only (ApplyAsk, invoke 'confirm-apply'); main alone
 // sends applyOffer/applyConfirm (the renderer port has neither); the offer's items are labelled from a closed set and carry
 // values main quotes; a confirmed apply answers with the request's own reply shape, through its own bound check.
-export const APPLY_KINDS = ['connect', 'removal', 'cleanup'] as const;
+const APPLY_KINDS = ['connect', 'removal', 'cleanup'] as const;
 export type ApplyKind = (typeof APPLY_KINDS)[number];
 export interface ApplyAsk { kind: ApplyKind; previewId: string }
-export const APPLY_LABELS = ['agent', 'profile', 'folder', 'scope', 'file', 'change', 'value', 'retention', 'tee', 'helper', 'entries', 'real-entries', 'records', 'backups', 'manual'] as const;
+const APPLY_LABELS = ['agent', 'profile', 'folder', 'scope', 'file', 'change', 'value', 'retention', 'tee', 'helper', 'entries', 'real-entries', 'records', 'backups', 'manual'] as const;
 export type ApplyLabel = (typeof APPLY_LABELS)[number];
 export const APPLY_ITEMS = 64;
 export interface ApplyOffer { kind: ApplyKind; previewId: string; items: [ApplyLabel, string][]; binding: string }
 /** unknown: the confirm was sent but no reply came (the apply may have run: reread, never retry). */
-export const APPLY_REFUSALS = ['not-real', 'preview-invalid', 'preview-expired', 'stale', 'oversize', 'bounds-unavailable', 'unavailable', 'starting', 'read-only', 'busy', 'failed', 'unknown', 'invalid'] as const;
+const APPLY_REFUSALS = ['not-real', 'preview-invalid', 'preview-expired', 'stale', 'oversize', 'bounds-unavailable', 'unavailable', 'starting', 'read-only', 'busy', 'failed', 'unknown', 'invalid'] as const;
 export type ApplyRefusal = { status: 'refused'; code: (typeof APPLY_REFUSALS)[number] };
 export type ApplyReply = ConnectReply | RemovalReply | CleanupReply;
 export type ApplyOfferResult = { status: 'offer'; offer: ApplyOffer } | ApplyRefusal;
@@ -1564,7 +1564,7 @@ export function parseApplyAsk(x: unknown): ApplyAsk | null {
 }
 const applyReply = (kind: ApplyKind, r: unknown): ApplyReply | null =>
   (kind === 'connect' ? parseConnectReply(r) : kind === 'removal' ? parseRemovalReply('removalApply', r) : parseCleanupReply('cleanupApply', r));
-export function parseApplyResult(x: unknown): ApplyOfferResult | ApplyConfirmResult | null {
+function parseApplyResult(x: unknown): ApplyOfferResult | ApplyConfirmResult | null {
   if (exactKeys(x, ['status', 'code']) && x.status === 'refused') return oneOf(APPLY_REFUSALS, x.code) ? { status: 'refused', code: x.code } : null;
   if (exactKeys(x, ['status', 'kind', 'reply']) && x.status === 'done' && oneOf(APPLY_KINDS, x.kind)) {
     const reply = applyReply(x.kind, x.reply);

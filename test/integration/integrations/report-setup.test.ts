@@ -272,3 +272,25 @@ test('a report lifecycle delivery after setup is the receipt; an earlier one, co
   assert.deepEqual(row()?.receipt, { source: 'report', event: 'turn.end', receivedAt: 6_000 });
   assert.equal(row()?.state, 'partial-coverage', 'connected config is not verified content coverage');
 });
+
+
+// Gate 6 second review item 4 (XAIBO-PROD-608): one read of the private import store per report agent per page request,
+// and preview; today every profile of a report agent, and preview twice, read it again
+test('XAIBO-PROD-608: reconcile reads setupAccess once per report agent; preview once; apply once before and once under the lock', async () => {
+  const w = world();
+  let calls = 0;
+  const counted: ConnectContext = { ...w.ctx, setupAccess: (agent) => { calls++; return w.ctx.setupAccess!(agent); } };
+  const c = createConnect(counted);
+  const second: Profile = { id: '00000000-0000-4000-8000-0000000a5e02', agent: 'synthagent', root: join(w.base, 'home', '.other'), origin: 'manual' };
+  c.reconcile([w.profile, second]);
+  assert.equal(calls, 1, 'one page reconcile, two profiles of one report agent');
+  calls = 0;
+  const pv = c.previewConnect(w.profile, { retention: false, tee: false });
+  assert.equal(pv.status, 'preview', JSON.stringify(pv));
+  assert.equal(calls, 1, 'preview');
+  calls = 0;
+  const r = await c.applyConnect(pv.status === 'preview' ? pv.previewId : '');
+  assert.equal(r.status, 'applied', JSON.stringify(r));
+  // apply reads twice on purpose: the pre-lock real-profile check, then the revalidation under the lock (review H1)
+  assert.equal(calls, 2, 'apply: once before the lock, once under it');
+});

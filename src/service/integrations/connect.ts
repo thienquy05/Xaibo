@@ -188,10 +188,10 @@ export function createConnect(ctx: ConnectContext) {
    *  through a linked folder (code review M2: the manifest records the resolved path, so Disconnect would miss the entry).
    *  ponytail (code review L2): once the root approval lapses, per-profile Disconnect answers unverified and only Full
    *  Uninstall reverts the entry; resolve report targets from the manifest if that ever strands an owner. */
-  const targetFor = (p: Profile): Target | null => {
+  const targetFor = (p: Profile, access = onceEach()): Target | null => {
     const native = targetOf(p);
     if (native) return native;
-    const a = ctx.setupAccess?.(p.agent);
+    const a = access(p.agent);
     if (!a?.root) return null;
     let root: string;
     try { root = realpathSync.native(p.root); } catch { return null; }
@@ -200,6 +200,12 @@ export function createConnect(ctx: ConnectContext) {
     try { if (realpathSync.native(path.dirname(file)) !== path.dirname(file)) return null; } catch { /* no parent folder: plan() refuses it */ }
     return { dir: root, file, routes: ['report-setup'] };
   };
+  /** XAIBO-PROD-608 (Gate 6 second review 4): each setupAccess call reads the private import store, so a scan, a preview and
+   *  an apply each read it at most once per agent. */
+  function onceEach(): (agent: string) => SetupAccess | null {
+    const m = new Map<string, SetupAccess | null>();
+    return (a) => { if (!m.has(a)) m.set(a, ctx.setupAccess?.(a) ?? null); return m.get(a)!; };
+  }
   /** Xaibo's own data dir is never a report-setup target (review: deniedRootsFrom lists agent roots only). */
   const reportDenied = (d: string[]) => [...d, real(ctx.dataDir)];
   const previews = new Map<string, Held>();
@@ -272,14 +278,15 @@ export function createConnect(ctx: ConnectContext) {
     if (!denied) return refused('bounds-unavailable');
     if (sel.teeOnly && p.agent !== 'claude') return refused('unsupported'); // XAIBO-PROD-580: only Claude has the statusLine tee
     // XAIBO-PROD-589 (design §3): a report agent's root approval and setup grant, before any target is read
-    const report = targetOf(p) ? null : ctx.setupAccess?.(p.agent) ?? null;
+    const access = onceEach();
+    const report = targetOf(p) ? null : access(p.agent);
     if (report) {
       let root: string | null = null;
       try { root = realpathSync.native(p.root); } catch { /* no profile folder: not the approved root */ }
       if (!report.root || root !== report.root) return refused('root-not-approved');
       if (!report.granted) return refused('setup-not-granted');
     }
-    const t = targetFor(p);
+    const t = targetFor(p, access);
     if (!t) return refused('unverified');
     const bounds = boundsFor(p, t);
     if (!bounds) return refusal(); // before any offer read (review H3, M4)
@@ -333,12 +340,13 @@ export function createConnect(ctx: ConnectContext) {
     if (!h || h.owner !== owner) return refused('preview-invalid');
     if (now() > h.expiresAt) return refused('preview-expired');
     if (!denied) return refused('bounds-unavailable');
+    const access = onceEach();
     const again = (): ConnectResult => ({ status: 'needs-preview', preview: preview(h.profile, h.sel, h.owner) }); // 1b review M1; we hold the lock
     if (h.report) { // XAIBO-PROD-589: the grant, root and declared setup still as previewed, before any helper is deployed
-      const a = ctx.setupAccess?.(h.profile.agent);
+      const a = access(h.profile.agent);
       if (!a?.granted || a.root !== h.report.root || !isDeepStrictEqual(a.setup, h.report.setup)) return again();
     }
-    const t = targetFor(h.profile);
+    const t = targetFor(h.profile, access);
     const bounds = t && boundsFor(h.profile, t);
     if (!t || !bounds) return refusal();
     if (!confirmed && !permitted(t)) return refused('needs-confirmation'); // review H1: decided again under the lock
@@ -443,12 +451,11 @@ export function createConnect(ctx: ConnectContext) {
     for (const [id, r] of removals) if (r.owner === owner) removals.delete(id); // XAIBO-PROD-576 plan review L5
   };
 
-  /** XAIBO-PROD-562 (P6-T04 part 1, EC-26): the read-only reconcile over the current profiles; the latest report is kept for
-   *  the IPC read (P6-T10). Same denylist and writable roots as every write. */
-  // ponytail (code review 6): kept for its first reader, the P6-T10 IPC read; only tests read it until then
+  /** XAIBO-PROD-562 (P6-T04 part 1, EC-26): the read-only reconcile over the current profiles; the IPC reads (P6-T10) run their
+   *  own fresh reconcile, the latest report is kept for tests and cleanup's refresh. Same denylist and writable roots as every write. */
   let latest: ReconcileReport | null = null;
   const allowedTarget = (t: Target, p: Profile) => !!boundsFor(p, t);
-  const reconcile = (profiles: readonly Profile[]) => (latest = scan({ dataDir: ctx.dataDir, denied, profiles, target: targetFor, permitted: allowedTarget }));
+  const reconcile = (profiles: readonly Profile[]) => { const a = onceEach(); return (latest = scan({ dataDir: ctx.dataDir, denied, profiles, target: (p) => targetFor(p, a), permitted: allowedTarget })); };
   const reconciled = () => latest;
 
   // XAIBO-PROD-563 (P6-T04 part 2; slice and review C1-C8 in .handoff/p6-t04-design.md): one preview and one confirmation
@@ -456,7 +463,7 @@ export function createConnect(ctx: ConnectContext) {
   // values are already gone, so no agent profile file is written and no CLI runs; the plugin copy and a still-registered
   // marketplace stay manual (P6-T12). Previews as Connect's (TTL, single use, owner-bound, max 32) in their own map (C7).
   const cleanups = new Map<string, { profiles: readonly Profile[]; entries: ManifestEntry[]; owner: unknown; expiresAt: number; scope?: string; real: boolean }>();
-  const current = (profiles: readonly Profile[], held: boolean) => scan({ dataDir: ctx.dataDir, denied, profiles, target: targetFor, permitted: allowedTarget, held });
+  const current = (profiles: readonly Profile[], held: boolean) => { const a = onceEach(); return scan({ dataDir: ctx.dataDir, denied, profiles, target: (p) => targetFor(p, a), permitted: allowedTarget, held }); };
 
   /** `scope` (XAIBO-PROD-576 plan review M2): the profile the IPC asked for; one held preview per scope, busy checked first. */
   function previewCleanup(profiles: readonly Profile[], ids: readonly string[], owner?: unknown, scope?: string): CleanupPreview | Refused {

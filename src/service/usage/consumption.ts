@@ -15,7 +15,7 @@ import { notPurging } from '../history/suppression.ts';
 import { scopeKey } from './snapshots.ts';
 
 export const CONSUMPTION_ROWS = 10_000;
-export const MAX_CONSUMPTION = 64;
+const MAX_CONSUMPTION = 64;
 const SKEW_MS = 5 * 60_000; // as snapshots.sourceTime: a source time this far after its observation is not trusted
 type Row = {
   profile_id: string; epoch: string | null; uncached_input: number | null; cache_read: number | null; cache_write: number | null; output: number | null;

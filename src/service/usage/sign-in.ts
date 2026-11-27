@@ -3,8 +3,8 @@
 // of the production projection (review H1): nothing else, so model, tokens, cost, credits, account ids, quota windows and
 // limit ids can never select a method. S14 Pass-narrowed (D-P6-15): the bundled catalog ships no rules, so every profile
 // stays Unknown unless the owner declares a method. Pure: no file, environment, process or network access.
-export const KNOWN_METHODS = ['subscription', 'api-key', 'cloud-provider', 'gateway', 'mixed'] as const;
-export const SIGNAL_SOURCES = ['claude-statusline', 'claude-transcript', 'codex-rollout', 'agy-transcript'] as const;
+const KNOWN_METHODS = ['subscription', 'api-key', 'cloud-provider', 'gateway', 'mixed'] as const;
+const SIGNAL_SOURCES = ['claude-statusline', 'claude-transcript', 'codex-rollout', 'agy-transcript'] as const;
 export type KnownMethod = (typeof KNOWN_METHODS)[number];
 export type Method = KnownMethod | 'unknown';
 export type SignalSource = (typeof SIGNAL_SOURCES)[number];

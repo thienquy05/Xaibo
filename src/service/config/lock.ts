@@ -54,4 +54,3 @@ export function lockState(dataDir: string): 'free' | 'busy' | 'stale-lock' {
   try { lstatSync(f); } catch { return 'free'; }
   return holder(f);
 }
-export const lockHeld = (dataDir: string) => lockState(dataDir) !== 'free';

@@ -8,8 +8,9 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { claudeRetentionOffer, geminiRetentionOffer, RETENTION_DAYS, retentionOps } from '../../../src/service/catalog/setup-plans.ts';
+import { claudeRetentionOffer, RETENTION_DAYS, retentionOps } from '../../../src/service/catalog/setup-plans.ts';
 import { claudeCleanupDays } from '../../../src/service/history/native-availability.ts';
+import { targetOf } from '../../../src/service/integrations/connect.ts';
 import { apply, ConfigError, plan, readManifest, revert, type Bounds, type Op } from '../../../src/service/config/transaction.ts';
 
 const dirs: string[] = [];
@@ -117,8 +118,9 @@ test('Disconnect after the owner changed the value: a conflict, the owner value 
   }
 });
 
-test('EC-90: the Gemini maxAge offer is not offered until S11 runtime-verifies retention', () => {
-  assert.deepEqual(geminiRetentionOffer(), { offered: false, reason: 'unverified', days: null });
+test('EC-90: a Gemini profile has no Connect target, so no maxAge offer until S11 runtime-verifies retention', () => {
+  // XAIBO-PROD-608: the dead geminiRetentionOffer builder is gone; a Gemini profile has no Connect target, so no plan or offer
+  assert.equal(targetOf({ id: '00000000-0000-4000-8000-0000000e9001', agent: 'gemini', root: realpathSync(tmpdir()), origin: 'default' }), null);
 });
 
 test('claudeCleanupDays keeps its answers on the layer-aware resolver', () => {

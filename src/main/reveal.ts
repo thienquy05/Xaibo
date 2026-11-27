@@ -7,7 +7,7 @@ import { lstatSync } from 'node:fs';
 import path from 'node:path';
 import type { RevealResult } from '../shared/ipc.ts';
 
-export const OVERRIDE_FILE = 'models.override.json';
+const OVERRIDE_FILE = 'models.override.json';
 const lstat = (p: string) => { try { return lstatSync(p, { throwIfNoEntry: false }); } catch { return undefined; } }; // ENOTDIR, EACCES
 
 export function revealOverride(dataDir: string, show: (p: string) => void): RevealResult {

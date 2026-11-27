@@ -8,7 +8,7 @@
 import { IPC_VERSION, type ApplyAsk, type ApplyKind, type ApplyLabel, type ApplyOffer, type ApplyOutcome, type ServiceCommand, type ServiceEvent } from '../shared/ipc.ts';
 import { q, type GrantDialog } from './grants.ts';
 
-export const EDITS = "Xaibo will change this agent's own configuration files.";
+const EDITS = "Xaibo will change this agent's own configuration files.";
 const CLEANUP = "Xaibo removes only its own records and backups; the agent's files are not changed.";
 const OFFER_MS = 10_000;
 const CONFIRM_MS = 60_000; // under the operation lock; the settings routes run no CLI
