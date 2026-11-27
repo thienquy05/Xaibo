@@ -201,9 +201,9 @@ test('real or denied profile roots and Gemini are refused before anything is rea
   const outside = realpathSync.native(mkdtempSync(join(tmpdir(), 'xreal-')));
   dirs.push(outside);
   mkdirSync(join(outside, '.claude'));
-  assert.deepEqual(w.c.previewConnect({ ...w.profiles.claude, root: join(outside, '.claude') }, { retention: true, tee: false }), { status: 'refused', code: 'real-profile' });
+  assert.deepEqual(w.c.previewConnect({ ...w.profiles.claude, root: join(outside, '.claude') }, { retention: true, tee: false }), { status: 'refused', code: 'unsafe-profile' });
   mkdirSync(join(w.base, 'real', '.claude'), { recursive: true });
-  assert.deepEqual(w.c.previewConnect({ ...w.profiles.claude, root: join(w.base, 'real', '.claude') }, { retention: true, tee: false }), { status: 'refused', code: 'real-profile' });
+  assert.deepEqual(w.c.previewConnect({ ...w.profiles.claude, root: join(w.base, 'real', '.claude') }, { retention: true, tee: false }), { status: 'refused', code: 'unsafe-profile' });
   assert.deepEqual(w.c.previewConnect(w.profiles.gemini, { retention: true, tee: false }), { status: 'refused', code: 'unverified' });
   assert.equal(existsSync(join(w.dataDir, 'integrations')), false);
 });
@@ -252,14 +252,14 @@ test('refused: an allowed root holding the home, group-writable folders, a symli
   const w = await world();
   const home = process.env['HOME'];
   process.env['HOME'] = join(w.base, 'someone');
-  try { assert.deepEqual(w.c.previewConnect(w.profiles.claude, { retention: false, tee: false }), { status: 'refused', code: 'real-profile' }); } finally { process.env['HOME'] = home; }
+  try { assert.deepEqual(w.c.previewConnect(w.profiles.claude, { retention: false, tee: false }), { status: 'refused', code: 'unsafe-profile' }); } finally { process.env['HOME'] = home; }
   chmodSync(join(w.home, '.gemini', 'config'), 0o775);
-  assert.deepEqual(w.c.previewConnect(w.profiles.agy, { retention: false, tee: false }), { status: 'refused', code: 'real-profile' }, 'the agy hooks folder itself');
+  assert.deepEqual(w.c.previewConnect(w.profiles.agy, { retention: false, tee: false }), { status: 'refused', code: 'unsafe-profile' }, 'the agy hooks folder itself');
   chmodSync(w.profiles.claude.root, 0o775);
-  assert.deepEqual(w.c.previewConnect(w.profiles.claude, { retention: false, tee: false }), { status: 'refused', code: 'real-profile' });
+  assert.deepEqual(w.c.previewConnect(w.profiles.claude, { retention: false, tee: false }), { status: 'refused', code: 'unsafe-profile' });
   mkdirSync(join(w.base, 'real', '.claude'), { recursive: true, mode: 0o755 });
   symlinkSync(join(w.base, 'real', '.claude'), join(w.home, 'linked'));
-  assert.deepEqual(w.c.previewConnect({ ...w.profiles.claude, root: join(w.home, 'linked') }, { retention: false, tee: false }), { status: 'refused', code: 'real-profile' });
+  assert.deepEqual(w.c.previewConnect({ ...w.profiles.claude, root: join(w.home, 'linked') }, { retention: false, tee: false }), { status: 'refused', code: 'unsafe-profile' });
   assert.equal(existsSync(join(w.dataDir, 'integrations')), false);
 });
 

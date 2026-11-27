@@ -1,7 +1,7 @@
 // XAIBO-PROD-599 (P6-T12 slice 1; D-P6-21; design .handoff/p6-t12-design.md and its fresh security review H1-H4, M6, M7, L8):
 // the real-profile target policy behind REAL_PROFILE_ENABLED. Synthetic "real" roots only: a temp HOME whose agent folders
-// are on the injected denylist, exactly as deniedRootsFrom lists the owner's. Flag off (the literal, the default): every
-// non-disposable target is refused before any read. Flag on (the test-only override): a native target of a default/env
+// are on the injected denylist, exactly as deniedRootsFrom lists the owner's. Flag off (the test-only override): every
+// non-disposable target is refused before any read. Flag on (the literal since the Gate 6 merge, XAIBO-PROD-607): a native target of a default/env
 // profile whose own root is a known real root previews, applies and reverts; manual origin, overlapping denied roots, a
 // linked or shared folder and the Claude plugin route refuse; reversal never follows a manifest entry alone.
 import { after, test } from 'node:test';
@@ -72,8 +72,8 @@ async function applyReal(w: W, previewId: string, kind: 'connect' | 'removal' = 
   return (r as { reply: { status: string; code?: string } }).reply;
 }
 
-test('L8: the shipped flag is the literal false and no production caller can set the override', async () => {
-  assert.equal(REAL_PROFILE_ENABLED, false);
+test('L8 (XAIBO-PROD-607): the shipped flag is the literal true and no production caller can set the override', async () => {
+  assert.equal(REAL_PROFILE_ENABLED, true);
   const ctx = connectContext({ dataDir: iso, login: { PATH: '/usr/bin:/bin' }, bin: '', catalog: null, detection: () => undefined });
   assert.ok(!('realProfiles' in ctx), 'connectContext never sets it');
   // code review: every source file, not a list: only connect.ts names the override
@@ -81,8 +81,8 @@ test('L8: the shipped flag is the literal false and no production caller can set
   assert.deepEqual(names('src'), [join('src', 'service', 'integrations', 'connect.ts')]);
 });
 
-test('flag off (default): real Claude, Codex and agy profiles are refused real-profile before any read; nothing written', async () => {
-  const w = await world();
+test('flag off (override): real Claude, Codex and agy profiles are refused real-profile before any read; nothing written', async () => {
+  const w = await world({ real: false });
   const before = hashes(w);
   for (const p of Object.values(w.profiles)) {
     assert.deepEqual(w.c.previewConnect(p, SEL), { status: 'refused', code: 'real-profile' }, p.agent);

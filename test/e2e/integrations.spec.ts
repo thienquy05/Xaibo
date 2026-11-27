@@ -241,7 +241,7 @@ test('Agents mode: 31 rows, every FR-06 state, bounded paging, mode anchors, res
 
 // XAIBO-PROD-579 (P6-T10 unit 5; design §6.5.2, §5.1, §5.4): the integration diff dialog over the real service, in disposable
 // profiles under the run's TMPDIR. Claude Connect previews with retention selected; deselecting it replans and drops its
-// change; Escape cancels and nothing is written. The real default profile is refused with Close. Codex Connect: a file
+// change; Escape cancels and nothing is written. The real default profile previews and Cancel in main's confirmation writes nothing. Codex Connect: a file
 // changed after the preview answers a fresh preview that waits for another Apply; the applied hooks keep the foreign
 // command; Disconnect restores; Clean up clears a record of hooks removed outside Xaibo; Full Uninstall names every profile
 // and lists the conflict; the Agents list refreshes; narrow dialog wraps.
@@ -346,10 +346,31 @@ test('Integration diff dialog: Connect with retention, changed file, Disconnect,
   await expect(claude).toContainText('Status-line tee off.');
   await expect(teeBox).not.toBeChecked();
   expect(existsSync(path.join(claudeA, 'settings.json')) ? readFileSync(path.join(claudeA, 'settings.json'), 'utf8') : '').not.toContain('xaibo-statusline');
-  // the real default profile: refused before any read, with Close only
+  // XAIBO-PROD-607 (flag on since the Gate 6 merge): the default profile (the run's synthetic HOME, a real-class root)
+  // previews through the settings fallback, never the plugin route; Apply asks main's native confirmation (stubbed: a
+  // Cancel-first warning box answering Cancel after the click guard), and Cancel there writes nothing
+  const settings = path.join(xaibo.home, '.claude', 'settings.json');
+  const bytes = (f: string) => (existsSync(f) ? readFileSync(f, 'utf8') : null);
+  const [settingsBefore, manifestBefore] = [bytes(settings), bytes(manifest)];
+  await run.app!.evaluate(({ dialog: d }) => {
+    const g = globalThis as unknown as { xaiboBoxes: unknown[] };
+    g.xaiboBoxes = [];
+    d.showMessageBox = (async (...args: unknown[]) => {
+      g.xaiboBoxes.push(args.at(-1));
+      await new Promise((r) => setTimeout(r, 900));
+      return { response: 0, checkboxChecked: false };
+    }) as typeof d.showMessageBox;
+  });
   await claude.getByRole('combobox', { name: 'Profile' }).selectOption({ label: 'Default profile' });
   await claude.getByRole('button', { name: 'Connect', exact: true }).click();
-  await expect(dialog).toContainText('real-profile changes stay off until Gate 6', { timeout: 20_000 });
+  await expect(dialog).toContainText('Profile: Default profile', { timeout: 20_000 });
+  await expect(dialog.getByRole('region', { name: 'Changes to apply' })).toContainText(path.join('.claude', 'settings.json'));
+  await expect(dialog).not.toContainText('plugin marketplace');
+  await dialog.getByRole('button', { name: 'Apply selected changes' }).click();
+  await expect(dialog).toContainText('Cancelled in the confirmation dialog. Nothing was changed.', { timeout: 20_000 });
+  const boxes = await run.app!.evaluate(() => (globalThis as unknown as { xaiboBoxes: { type: string; buttons: string[]; defaultId: number; cancelId: number }[] }).xaiboBoxes);
+  expect(boxes.map((x) => [x.type, x.buttons[0], x.defaultId, x.cancelId])).toEqual([['warning', 'Cancel', 0, 0]]);
+  expect([bytes(settings), bytes(manifest)]).toEqual([settingsBefore, manifestBefore]);
   await expect(dialog.getByRole('button', { name: 'Apply selected changes' })).toHaveCount(0);
   await expect(dialog.getByRole('button', { name: 'Close' })).toBeFocused();
   await page.keyboard.press('Enter');

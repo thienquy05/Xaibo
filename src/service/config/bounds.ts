@@ -3,8 +3,8 @@
 // and this process) are denied, with no override; a login environment that could not be read gives no list (callers refuse).
 // Disposable profiles: strictly below an allowed root, every directory from the profile up to that root owned by this user
 // and not group/world-writable (a shared /tmp fallback is refused), and never a root that holds the home (P6-T03 code review
-// M-b). XAIBO-PROD-599 (P6-T12 slice 1, D-P6-21): real profiles only while REAL_PROFILE_ENABLED, a literal flipped in the
-// Gate 6 merge; never an env var, an IPC field or a setting (connect.ts realBounds). GEMINI_CLI_HOME holds a .gemini
+// M-b). XAIBO-PROD-599 (P6-T12 slice 1, D-P6-21): real profiles only while REAL_PROFILE_ENABLED, a literal flipped on in
+// the Gate 6 merge (XAIBO-PROD-607); never an env var, an IPC field or a setting (connect.ts realBounds). GEMINI_CLI_HOME holds a .gemini
 // folder, so that folder is denied, not GEMINI_CLI_HOME itself (review M7).
 // ponytail: owner and the 022 mode bits only; macOS ACLs granting others write are not read.
 import { lstatSync, realpathSync } from 'node:fs';
@@ -13,8 +13,9 @@ import path from 'node:path';
 import type { LoginEnv } from '../catalog/env.ts';
 import { within } from './transaction.ts';
 
-/** XAIBO-PROD-599: off on the branch until the Gate 6 merge (FR-32, D-P6-21); tests override it through createConnect only. */
-export const REAL_PROFILE_ENABLED = false;
+/** XAIBO-PROD-599, XAIBO-PROD-607: on since the Gate 6 merge (FR-32, D-P6-21, owner decision at the Gate 6 stop); tests
+ *  override it through createConnect only. */
+export const REAL_PROFILE_ENABLED = true;
 const ENV_ROOTS = { CLAUDE_CONFIG_DIR: '', CODEX_HOME: '', GEMINI_CLI_HOME: '.gemini' } as const;
 export const real = (p: string) => { try { return realpathSync.native(p); } catch { return path.resolve(p); } };
 

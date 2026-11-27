@@ -125,12 +125,12 @@ export function IntegrationDiffDialog({ open, detail, api, lastKnown, onDone }: 
           {conflicts.length ? <><h3>Conflicts</h3><ul className="x-integration-list">{conflicts.map((c, k) => <li key={k}>{visible(c)}</li>)}</ul></> : null}
           {effects.length ? <><h3>What happens</h3><ul className="x-integration-list">{effects.map((f, k) => <li key={k}>{visible(f)}</li>)}</ul></> : null}
           <p aria-live="polite">{s.text}</p>
-          <div className="x-dialog-actions">{/* Close replaces the pressed buttons after a failure, so it takes focus */}
+          <div className="x-dialog-actions">{/* Close replaces the pressed buttons after a failure, so it takes focus (XAIBO-PROD-607: its own key, so React mounts a fresh button and autoFocus runs, never the reused Cancel node) */}
             {pending ? <>
               <button type="button" className="x-btn x-btn-secondary" autoFocus aria-disabled={applying || undefined} onClick={() => { if (!applying) close('trigger', null); }}>Cancel</button>
               <button type="button" className={`x-btn ${s.action.kind === 'connect' || s.action.kind === 'cleanup' || (s.action.kind === 'tee' && s.action.enabled) ? 'x-btn-primary' : 'x-btn-danger'}`} aria-disabled={!canApply(s) || undefined} aria-busy={applying || undefined}
                 onClick={() => step({ type: 'apply' })}>{applyLabel(s.action)}</button>
-            </> : <button type="button" className="x-btn x-btn-secondary" autoFocus onClick={() => close('trigger', null)}>Close</button>}
+            </> : <button key="close" type="button" className="x-btn x-btn-secondary" autoFocus onClick={() => close('trigger', null)}>Close</button>}
           </div>
         </>
       ) : null}

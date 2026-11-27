@@ -140,7 +140,7 @@ test('a real or unknown profile is refused before any read; one held preview per
   const realRoot = join(w.base, 'real', '.claude');
   mkdirSync(realRoot, { recursive: true });
   w.live.profiles = [...w.live.profiles, { id: NONE, agent: 'claude', root: realRoot, origin: 'manual' }];
-  assert.deepEqual(await ask(w.deps, { type: 'removalPreview', profileId: NONE }, A), { status: 'refused', code: 'real-profile' });
+  assert.deepEqual(await ask(w.deps, { type: 'removalPreview', profileId: NONE }, A), { status: 'refused', code: 'unsafe-profile' });
   assert.deepEqual(await ask(w.deps, { type: 'removalPreview', profileId: '00000000-0000-4000-8000-0000000c76fe' }, A), { status: 'refused', code: 'profile-not-found' });
   const first = await ask(w.deps, { type: 'removalPreview', profileId: P1 }, A);
   const second = await ask(w.deps, { type: 'removalPreview', profileId: P1 }, A);
