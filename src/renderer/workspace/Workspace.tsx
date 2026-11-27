@@ -177,7 +177,8 @@ export function Workspace({ list, changes, browse, agents, live, lastKnown, api,
         {prov ? <ProvisionalPane key={prov} row={provRow} name={provRow ? agentName(provRow.agent) : ''} binding={binding !== null} onBack={back}
           onRemove={() => removeProv(prov)} onRetry={() => { if (provRow) openLaunch({ agent: provRow.agent, profileId: provRow.profileId, cwd: provRow.cwd }, provRow.key); }} />
           : row ? <OpenSession key={row.id} row={row} changed={gen} api={api} lastKnown={lastKnown} listShown={showList} onShowList={() => setShowList(true)} onBack={back}
-          onReturn={row.id === returnFor ? onReturn : undefined} returnTo={returnTo} history={history} onHistory={shareHistory} onTrashed={onTrashed} />
+          onReturn={row.id === returnFor ? onReturn : undefined} returnTo={returnTo} history={history} onHistory={shareHistory} onTrashed={onTrashed}
+          actions={{ api: launch, onStarted: (key) => launched({ key, note: null }) }} />
           : supp ? <SuppressedPane key={supp.key} row={supp} inflight={reimporting.current.has(supp.key)} send={sendReimport} outcome={outcome} onBack={back} onGone={goneSupp} />
             : <section className="x-pane x-choose" aria-label="Open session"><p>Choose a session to read its conversation</p></section>}
       </div>

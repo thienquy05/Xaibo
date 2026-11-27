@@ -17,6 +17,8 @@ import { rovingKey } from '../components/virtual-list-model.ts';
 import { retryIdle, retryStep } from '../retry.ts';
 import { Icon, StatusLine } from '../status/StatusBadge.tsx';
 import { AboutOwnership, OwnershipBadge } from '../status/Ownership.tsx';
+import { resumeLine, SessionActions, type Options } from './SessionActions.tsx';
+import type { LaunchApi } from './launch.ts';
 import { ownershipOf } from '../status/ownership-view.ts';
 import { visible } from '../text.ts';
 import { ContextPane } from './context/ContextSection.tsx';
@@ -93,7 +95,7 @@ const SECTIONS = ['conversation', 'timeline', 'tools', 'subagents', 'files', 'co
 type Section = (typeof SECTIONS)[number];
 const SECTION_TEXT: Record<Section, string> = { conversation: 'Conversation', timeline: 'Timeline', tools: 'Tools', subagents: 'Subagents', files: 'Files', context: 'Context', cost: 'Cost' };
 
-export function OpenSession({ row, changed, api, lastKnown, listShown, onShowList, onBack, onReturn, returnTo = 'Dashboard', history = null, onHistory, onTrashed }: {
+export function OpenSession({ row, changed, api, lastKnown, listShown, onShowList, onBack, onReturn, returnTo = 'Dashboard', history = null, onHistory, onTrashed, actions }: {
   row: SessionRow; changed: number; api: WorkspaceApi; lastKnown: boolean; listShown: boolean; onShowList: () => void; onBack: () => void;
   /** XAIBO-PROD-437 (design §6.3 Return to source): set when the session was opened from the Dashboard or (XAIBO-PROD-539)
    *  the Agent Map, which `returnTo` names. */
@@ -102,6 +104,8 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
   history?: Shared | null; onHistory?: (id: number, r: HistoryRow | null) => void;
   /** Gate 5 G5d-3: a header Move to Trash that succeeded; the Session list shows its Undo notice. */
   onTrashed?: (id: number) => void;
+  /** XAIBO-PROD-627: Resume, Fork and Open in VS Code (main's launch asks) and the provisional row of a started one. */
+  actions?: { api: LaunchApi; onStarted: (key: string) => void };
 }) {
   const id = row.id;
   // XAIBO-PROD-424: the session's change generation (deltas naming it, resyncs); a lastActivity bucket missed records
@@ -110,6 +114,7 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [section, setSection] = useState<Section>('conversation');
   const [drawer, setDrawer] = useState(false);
+  const [resumeOpts, setResumeOpts] = useState<Options | null>(null); // XAIBO-PROD-627: shown in Details
   const titleRef = useRef<HTMLHeadingElement>(null);
   const detailsRef = useRef<HTMLButtonElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -315,6 +320,7 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
           <span className="x-chip">{visible(row.agent)}</span>
           <OwnershipBadge kind={ownershipOf(row)} />
           <AboutOwnership />
+          {actions && !trashRow ? <SessionActions row={row} api={actions.api} onStarted={actions.onStarted} onOptions={setResumeOpts} /> : null}
         </div>
         {trashRow && banner ? ( // design §5.1 Banner: glyph, heading, explanation, actions
           <section className="x-banner" aria-labelledby="trash-banner-heading">
@@ -404,6 +410,7 @@ export function OpenSession({ row, changed, api, lastKnown, listShown, onShowLis
             <div><dt>Estimated cost</dt><dd>{costText(row.costUsd, row.costCoverage)}</dd></div>
             <div><dt>Coverage</dt><dd>{gaps.length || rowMarkers(row).length
               ? [...gaps.map((g) => `Content incomplete: ${g}`), ...rowMarkers(row)].join('; ') : 'No known gaps'}</dd></div>
+            {resumeOpts ? <div><dt>Resume</dt><dd data-field="resume">{visible(resumeLine(resumeOpts))}</dd></div> : null}
             {detail?.limits?.length ? <div><dt>Other surfaces</dt><dd>{detail.limits.map((l) => visible(l)).join('; ')}</dd></div> : null}
           </dl>
         </div>

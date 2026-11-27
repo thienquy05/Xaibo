@@ -16,13 +16,13 @@ function setup(existing: string[] | null = [], over: Record<string, Partial<Stor
   let now = 1_000;
   const pushes: unknown[] = [];
   const stored: Record<string, StoredSession | null> = {
-    ['claude\0p1\0' + ID]: { id: 41, startedAt: 1_000, cwdKey: '/synthetic/proj' },
-    'codex\0p2\0n-new': { id: 42, startedAt: 1_500, cwdKey: '/synthetic/proj' },
-    'codex\0p2\0n-old': { id: 40, startedAt: 500, cwdKey: '/synthetic/proj' },
-    'codex\0p2\0n-early': { id: 44, startedAt: 1_000 - 2_001, cwdKey: '/synthetic/proj' }, // before the launch, past the skew
-    'codex\0p2\0n-elsewhere': { id: 43, startedAt: 1_500, cwdKey: '/synthetic/other' },
-    'codex\0p2\0n-hook': { id: 45, startedAt: null, cwdKey: '/synthetic/proj' },
-    'codex\0p2\0n-later': { id: 46, startedAt: 1_000 + BIND_MS, cwdKey: '/synthetic/proj' },
+    ['claude\0p1\0' + ID]: { id: 41, startedAt: 1_000, cwdKey: '/synthetic/proj', lastActivity: 1_100 },
+    'codex\0p2\0n-new': { id: 42, startedAt: 1_500, cwdKey: '/synthetic/proj', lastActivity: 1_500 },
+    'codex\0p2\0n-old': { id: 40, startedAt: 500, cwdKey: '/synthetic/proj', lastActivity: 500 },
+    'codex\0p2\0n-early': { id: 44, startedAt: 1_000 - 2_001, cwdKey: '/synthetic/proj', lastActivity: 1_000 - 2_001 }, // before the launch, past the skew
+    'codex\0p2\0n-elsewhere': { id: 43, startedAt: 1_500, cwdKey: '/synthetic/other', lastActivity: 1_500 },
+    'codex\0p2\0n-hook': { id: 45, startedAt: null, cwdKey: '/synthetic/proj', lastActivity: null },
+    'codex\0p2\0n-later': { id: 46, startedAt: 1_000 + BIND_MS, cwdKey: '/synthetic/proj', lastActivity: 1_000 + BIND_MS },
   };
   for (const [k, v] of Object.entries(over)) stored[k] = v === null ? null : { ...stored[k]!, ...v };
   const reg = provisionalRows({
@@ -124,4 +124,17 @@ test('621 review MEDIUM: an over-bound agent value is clamped, never failing the
   assert.ok(claude.profiles.every((p) => p.label.length <= 4096));
   const odd = launchInfo(loadCatalog(), [], [{ id: 'x'.repeat(65), agent: 'claude', root: '/r', origin: 'manual' }, { id: 'ok', agent: 'claude', root: '/r', origin: 'default' }], '/synthetic-home');
   assert.deepEqual(odd.find((a) => a.agent === 'claude')!.profiles.map((p) => p.id), ['ok'], '622 security review: an over-long profile id is left out');
+});
+
+test('627: a row bound by id needs session activity from the launch on (a resume never binds on the old records)', () => {
+  const { reg, pushes, at } = setup([], { ['claude\0p1\0' + ID]: { lastActivity: 500 } });
+  reg.register({ ...base, key: 'r1', nativeId: ID, startedAt: 10_000 });
+  at(10_500);
+  reg.offer('claude', 'p1', ID);
+  assert.equal(reg.list().length, 1, 'activity from before the resume: not bound');
+  const later = setup([], { ['claude\0p1\0' + ID]: { lastActivity: 10_200 } });
+  later.reg.register({ ...base, key: 'r2', nativeId: ID, startedAt: 10_000 });
+  later.reg.offer('claude', 'p1', ID);
+  assert.deepEqual(later.pushes.at(-1), { rows: [], bound: [{ key: 'r2', session: 41 }] });
+  void pushes; void at;
 });

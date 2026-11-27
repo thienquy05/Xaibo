@@ -86,8 +86,8 @@ const provisional = provisionalRows({
   stored: (agent, profileId, sid) => {
     try {
       const db = svc?.store.db;
-      const r = db?.isOpen ? db.prepare('SELECT id, started_at AS startedAt, cwd_key AS cwdKey FROM sessions WHERE agent = ? AND profile_id = ? AND native_session_id = ?').get(agent, profileId, sid) as { id: number; startedAt: number | null; cwdKey: string | null } | undefined : undefined;
-      return r ? { id: r.id, startedAt: r.startedAt, cwdKey: r.cwdKey } : null;
+      const r = db?.isOpen ? db.prepare('SELECT id, started_at AS startedAt, cwd_key AS cwdKey, last_activity AS lastActivity FROM sessions WHERE agent = ? AND profile_id = ? AND native_session_id = ?').get(agent, profileId, sid) as { id: number; startedAt: number | null; cwdKey: string | null; lastActivity: number | null } | undefined : undefined;
+      return r ? { id: r.id, startedAt: r.startedAt, cwdKey: r.cwdKey, lastActivity: r.lastActivity } : null;
     } catch { return null; }
   },
   changed: (m) => broadcast({ v: IPC_VERSION, type: 'provisional', ...m }),

@@ -17,7 +17,7 @@ export const BIND_MS = 60_000;
 const SKEW_MS = 2_000;
 const MAX = 32;
 
-export interface StoredSession { id: number; startedAt: number | null; cwdKey: string | null }
+export interface StoredSession { id: number; startedAt: number | null; cwdKey: string | null; lastActivity: number | null }
 export interface ProvisionalDeps {
   now(): number;
   /** Native session ids already stored for this agent and profile (taken at registration); null when the store cannot tell. */
@@ -53,7 +53,10 @@ export function provisionalRows(d: ProvisionalDeps) {
       const same = (r: Entry) => r.row.state === 'starting' && r.row.agent === agent && r.row.profileId === profileId;
       let e = rows.find((r) => same(r) && r.row.nativeId === nativeSessionId);
       let s: StoredSession | null = null;
-      if (!e) {
+      if (e) { // 627: by id only on activity from the launch on (a resumed session's old records never bind it)
+        s = d.stored(agent, profileId, nativeSessionId);
+        if (!s || s.lastActivity === null || s.lastActivity < e.row.startedAt - SKEW_MS) return;
+      } else {
         const now = d.now();
         const fresh = (r: Entry) => same(r) && r.row.nativeId === null && now >= r.row.startedAt && now - r.row.startedAt <= BIND_MS;
         if (!rows.some(fresh)) return;

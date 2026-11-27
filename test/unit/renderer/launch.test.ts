@@ -3,7 +3,7 @@
 // first, distinct); elapsed time for the Starting… row; refusal and failure texts.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cwdChoices, elapsed, envHint, FAILED_TEXT, launchApi, minutes, PENDING_OWNERSHIP, REFUSAL_TEXT } from '../../../src/renderer/workspace/launch.ts';
+import { afterRefusal, cwdChoices, elapsed, envHint, FAILED_TEXT, launchApi, lastKnownLine, minutes, PENDING_OWNERSHIP, REFUSAL_TEXT } from '../../../src/renderer/workspace/launch.ts';
 import { LAUNCH_REFUSALS, type SessionRow } from '../../../src/shared/ipc.ts';
 
 const UUID = '00000000-0000-4000-8000-0000000e0001';
@@ -41,4 +41,23 @@ test('624 reviews: environment hint and coarse elapsed label for list rows', () 
   assert.equal(envHint(base), 'Environment: PATH, HOME, LANG, TERM, USER, SHELL, TMPDIR (no granted keys)');
   assert.equal(envHint([...base, 'CLAUDE_CONFIG_DIR']), "Environment: PATH, HOME, LANG, TERM, USER, SHELL, TMPDIR, CLAUDE_CONFIG_DIR (CLAUDE_CONFIG_DIR as set in Terminal's environment)");
   assert.deepEqual([minutes(0), minutes(59_999), minutes(60_000), minutes(150_000)], ['under 1 min', 'under 1 min', '1 min', '2 min']);
+});
+
+test('627: resume asks parse through the bridge; the warning names the last known state, never claims safety', async () => {
+  const seen: unknown[] = [];
+  const api = launchApi(async (r) => { seen.push(r); const op = (r as { op: string }).op;
+    return op === 'resumeOptions' ? { status: 'ok', resume: null, fork: 'Fork not verified for this agent', vscode: 'VS Code history visibility: unverified for 2.1.319', liveness: 'uncertain' }
+      : op === 'vscode' ? { status: 'refused', code: 'disabled' } : { status: 'refused', code: 'concurrent' }; });
+  assert.deepEqual(await api.resumeOptions(7), { status: 'ok', resume: null, fork: 'Fork not verified for this agent', vscode: 'VS Code history visibility: unverified for 2.1.319', liveness: 'uncertain' });
+  assert.deepEqual(await api.resumePreview(7, 'resume', false), { status: 'refused', code: 'concurrent' });
+  assert.deepEqual(await api.vscode(7), { status: 'refused', code: 'disabled' });
+  assert.deepEqual(seen, [{ op: 'resumeOptions', session: 7 }, { op: 'resumePreview', session: 7, mode: 'resume', confirmed: false }, { op: 'vscode', session: 7 }]);
+  assert.equal(lastKnownLine({ lifecycle: 'busy', confidence: 'inferred', health: 'connected' } as never, 120_000), 'Last known: Busy · inferred · Health: connected · 2 min ago');
+  assert.equal(lastKnownLine(null, null), 'Last known: no status evidence');
+});
+
+test('627 review: a resume main refuses as concurrent goes to the warning; other refusals are said', () => {
+  assert.equal(afterRefusal('concurrent'), 'warn');
+  assert.equal(afterRefusal('busy'), 'say');
+  assert.equal(afterRefusal('disabled'), 'say');
 });

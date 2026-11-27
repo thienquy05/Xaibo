@@ -807,3 +807,12 @@ html, .x-shell.x-fixed { scroll-padding-top: var(--x-frame-pad, 8px); } /* clear
 .x-own-controlled-here { color: var(--x-accent); }
 .x-own-about { min-height: 28px; font-size: var(--x-text-small); }
 .x-own-note { flex-basis: 100%; margin: 0; font-size: var(--x-text-small); color: var(--x-muted); }
+
+/* XAIBO-PROD-627 (design §6.7, §6.8): the open session's Resume / Fork / Open in VS Code with adjacent reasons, and the warning */
+.x-session-actions { display: contents; } /* flows in the header's chip row: no extra row unless the width runs out */
+.x-act { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px var(--x-space-1); max-width: 100%; }
+.x-act > .x-btn { min-height: 28px; font-size: var(--x-text-small); }
+.x-act-reason, .x-act-note { margin: 0; overflow-wrap: anywhere; }
+.x-act-note { flex-basis: 100%; }
+.x-act-note:empty { display: none; }
+.x-warn-actions { flex-wrap: wrap; align-items: flex-start; }

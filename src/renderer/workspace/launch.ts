@@ -3,12 +3,17 @@
 // parsed replies: anything unparsed or a missing bridge is "unavailable". The cwd defaults only from folders sessions were
 // evidenced in (never guessed from a title or content) and stays editable.
 import { OWNERSHIP_TEXT } from '../../service/status/ownership.ts';
-import { parseLaunchOptionsReply, parseLaunchPreviewReply, parseLaunchReply, type LaunchOptionsReply, type LaunchPreviewReply, type LaunchRefusal, type LaunchReply, type SessionRow } from '../../shared/ipc.ts';
+import { parseLaunchOptionsReply, parseLaunchPreviewReply, parseLaunchReply, parseResumeOptionsReply, parseVsCodeReply, type LaunchOptionsReply, type LaunchPreviewReply, type LaunchRefusal, type LaunchReply, type LiveStatus,
+  type ResumeOptionsReply, type SessionRow, type VsCodeReply } from '../../shared/ipc.ts';
 
 export interface LaunchApi {
   options(): Promise<LaunchOptionsReply>;
   preview(ask: { agent: string; profileId: string; cwd: string }): Promise<LaunchPreviewReply>;
   launch(previewId: string): Promise<LaunchReply>;
+  /** XAIBO-PROD-627: Resume, Fork, Open in VS Code for one stored session. */
+  resumeOptions(session: number): Promise<ResumeOptionsReply>;
+  resumePreview(session: number, mode: 'resume' | 'fork', confirmed: boolean): Promise<LaunchPreviewReply>;
+  vscode(session: number): Promise<VsCodeReply>;
 }
 const UNAVAILABLE = { status: 'refused', code: 'unavailable' } as const;
 export function launchApi(invoke: ((request: unknown) => Promise<unknown>) | undefined): LaunchApi {
@@ -18,6 +23,9 @@ export function launchApi(invoke: ((request: unknown) => Promise<unknown>) | und
     options: () => ask({ op: 'options' }, parseLaunchOptionsReply),
     preview: (a) => ask({ op: 'preview', agent: a.agent, profileId: a.profileId, cwd: a.cwd }, parseLaunchPreviewReply),
     launch: (previewId) => ask({ op: 'launch', previewId }, parseLaunchReply),
+    resumeOptions: (session) => ask({ op: 'resumeOptions', session }, parseResumeOptionsReply),
+    resumePreview: (session, mode, confirmed) => ask({ op: 'resumePreview', session, mode, confirmed }, parseLaunchPreviewReply),
+    vscode: (session) => ask({ op: 'vscode', session }, parseVsCodeReply),
   };
 }
 
@@ -44,6 +52,8 @@ export const REFUSAL_TEXT: Record<LaunchRefusal, string> = {
 export const FAILED_TEXT = { write: 'Xaibo could not write the launch script.', open: 'Terminal did not open the launch script.' } as const;
 export const PENDING_OWNERSHIP = OWNERSHIP_TEXT.unavailable;
 export const CANCELLED_TEXT = 'Launch grant not given. Nothing was started.';
+/** 627 review: main refused a resume as concurrent (the session became live since the options were read): show the warning. */
+export const afterRefusal = (code: LaunchRefusal): 'warn' | 'say' => (code === 'concurrent' ? 'warn' : 'say');
 
 const CHOICES_MAX = 12;
 const base = (p: string) => p.replace(/\/+$/, '').split('/').pop() || p;
@@ -64,6 +74,13 @@ export function envHint(env: readonly string[]): string {
 }
 /** A coarse elapsed label for list rows (an accessible name that changes once a minute, not every second). */
 export function minutes(ms: number): string { const m = Math.floor(Math.max(0, ms) / 60_000); return m < 1 ? 'under 1 min' : `${m} min`; }
+const LIFE: Record<LiveStatus['lifecycle'], string> = { idle: 'Idle', busy: 'Busy', 'waiting-for-permission': 'Waiting for permission', 'needs-input': 'Needs input', error: 'Error', ended: 'Ended', unknown: 'Unknown' };
+/** XAIBO-PROD-627 (design §6.8): the concurrency warning's last known state, confidence, health and time; never a safety claim. */
+export function lastKnownLine(s: Pick<LiveStatus, 'lifecycle' | 'confidence' | 'health'> | null, agoMs: number | null): string {
+  if (!s) return 'Last known: no status evidence';
+  const m = agoMs === null ? null : Math.floor(Math.max(0, agoMs) / 60_000);
+  return `Last known: ${LIFE[s.lifecycle]} · ${s.confidence} · Health: ${s.health}${m === null ? '' : m < 1 ? ' · under 1 min ago' : ` · ${m} min ago`}`;
+}
 /** m:ss, or h:mm:ss from an hour. */
 export function elapsed(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000)), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = String(s % 60).padStart(2, '0');
