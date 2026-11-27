@@ -21,7 +21,7 @@ The short list an agent starts from. Before starting, check the task's row in §
 | Task | What | Deps | Plan | Who starts it | Branch |
 |---|---|---|---|---|---|
 | P7-T01 owner check | Optional owner real-profile Connect/Disconnect check (OQ-P6-1) | P7-T01 | [Phase 7](xaibo_plan.md#phase-7--control-mvp-gate) | **owner-started: ask first** | `feat/phase7-control` |
-| Phase 7 cleanup | Slices 1-2 done (runs 244, 245), D2-3 and F-1 done. Left: D1-3 Return to Dashboard, ponytail pre-freeze items, Claude second-review items 1 (stuck lock: needs a design), 5; generic main confirmation flow (D-P6-24) | P7-T01 | [Gate 6 record](gates/gate6.md) "Deferred to Phase 7" | agent | `feat/phase7-control` |
+| Phase 7 cleanup | Slices 1-2 done (runs 244, 245), D2-3 and F-1 done, `allRows` not adopted. Left: D1-3 Return to Dashboard; Claude second-review items 1 (stuck lock: needs a design) and 5 (packaged env/temp allowance); the generic main confirmation flow (security-reviewed code); `lock.ts` trailing newline and the `index.ts` reconcile comment (D-P6-24) | P7-T01 | [Gate 6 record](gates/gate6.md) "Deferred to Phase 7" | agent | `feat/phase7-control` |
 | P7-T02 | Launch argument safety (EC-76), `security-change` | P7-T01 | [Phase 7](xaibo_plan.md#phase-7--control-mvp-gate) | agent | `feat/phase7-control` |
 | P7-T03 | Launch grants and revalidation (EC-84), `security-change` | P7-T02 | [Phase 7](xaibo_plan.md#phase-7--control-mvp-gate) | agent | `feat/phase7-control` |
 | v1-M setup | After the MVP Gate: owner approves the S18 spike plan, then v1-M setup drafts tasks from PRD v1.4 (S-45) and design §6.14 (D-M-01) | MVP Gate | [v1-M](xaibo_plan.md#v1-m--missions-prd-v14-approved-2026-11-25) | **owner-started (S18)** | `feat/v1m-missions` |
