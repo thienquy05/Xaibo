@@ -30,6 +30,16 @@
         },
         "badge": { "$ref": "#/$defs/displayText" },
         "interactive": { "type": "boolean" },
+        "fork": {
+          "description": "XAIBO-PROD-626 (P7-T05, OQ-P7-5): the tested interactive fork template (whole tokens; {id} the source session's UUID); bundled catalog only; never a headless mode.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["args", "evidence"],
+          "properties": {
+            "args": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "type": "string", "pattern": "^(?:[A-Za-z0-9@%+=:,./_-]+|\\{id\\})$" } },
+            "evidence": { "type": "string", "minLength": 1, "maxLength": 256 }
+          }
+        },
         "resume": {
           "type": "object",
           "additionalProperties": false,

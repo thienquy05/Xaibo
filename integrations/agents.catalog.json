@@ -73,7 +73,7 @@
   ],
   "sessionKinds": [
     { "agent": "claude", "id": "cli", "match": { "entrypoint": "cli" }, "badge": "CLI", "interactive": true,
-      "resume": { "args": ["--resume", "{id}"] }, "evidence": "S7, Claude Code 2.1.322" },
+      "resume": { "args": ["--resume", "{id}"] }, "fork": { "args": ["--resume", "{id}", "--fork-session"], "evidence": "S7 t1 (--resume <id> --fork-session: new session id), Claude Code 2.1.322" }, "evidence": "S7, Claude Code 2.1.322" },
     { "agent": "claude", "id": "sdk-cli", "match": { "entrypoint": "sdk-cli" }, "badge": "CLI -p", "interactive": false,
       "resume": { "args": ["-p", "--resume", "{id}"], "promptRequired": true }, "evidence": "S7 (claude -p), S9, Claude Code 2.1.322" },
     { "agent": "claude", "id": "claude-vscode", "match": { "entrypoint": "claude-vscode" }, "badge": "VS Code", "interactive": true,

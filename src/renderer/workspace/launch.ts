@@ -39,6 +39,7 @@ export const REFUSAL_TEXT: Record<LaunchRefusal, string> = {
   expired: 'The preview expired. Check the command again.',
   changed: 'The agent changed since the preview. Check the command again.',
   grant: 'The launch grant no longer matches the agent. Launch again to renew it.',
+  concurrent: 'This session may still be running elsewhere. Confirm the concurrency warning first.',
 };
 export const FAILED_TEXT = { write: 'Xaibo could not write the launch script.', open: 'Terminal did not open the launch script.' } as const;
 export const PENDING_OWNERSHIP = OWNERSHIP_TEXT.unavailable;

@@ -9,10 +9,12 @@ import { chmodSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { tempDir } from '../../helpers/tmp.ts';
 import { launchFlow, type LaunchDialog } from '../../../src/main/launch/flow.ts';
-import { parseLaunchAsk, parseLaunchReply, type LaunchAgentInfo, type ProvisionalRow } from '../../../src/shared/ipc.ts';
+import { parseLaunchAsk, parseLaunchReply, type LaunchAgentInfo, type ProvisionalRow, type ResumeTarget } from '../../../src/shared/ipc.ts';
+const SID = '00000000-0000-4000-8000-0000000d0abc';
 
 const UUID = '00000000-0000-4000-8000-0000000d0001';
 function world(over: Partial<{ open: boolean; confirm: boolean; clickMs: number }> = {}) {
+  const opened2: string[] = [];
   const root = realpathSync(tempDir('xlflow-'));
   const bin = path.join(root, 'bin'); mkdirSync(bin);
   const exe = path.join(bin, 'claude');
@@ -28,13 +30,16 @@ function world(over: Partial<{ open: boolean; confirm: boolean; clickMs: number 
   ];
   const dialogs: LaunchDialog[] = [], opened: string[] = [], rows: ProvisionalRow[] = [];
   let mono = 0, ids = 0;
+  let target: ResumeTarget | null = { agent: 'claude', profileId: 'p1', nativeId: SID, cwd, resume: { args: ['--resume', '{id}'] }, fork: { args: ['--resume', '{id}', '--fork-session'] }, vscode: null, liveness: 'uncertain' };
   const flow = launchFlow({
     dataDir, info: async () => info, uuid: () => (ids++ === 0 ? UUID : `00000000-0000-4000-8000-${(0xd0001 + ids).toString(16).padStart(12, '0')}`), now: () => 5_000, mono: () => mono,
     confirm: async (d) => { dialogs.push(d); mono += over.clickMs ?? 1_000; return over.confirm ?? true; },
     spawner: { open: async (f) => { opened.push(f); return over.open ?? true; } },
     register: (r) => rows.push(r),
+    target: async (session) => (session === 7 ? target : null),
+    openExternal: async (url) => { opened2.push(url); },
   });
-  return { flow, exe, cwd, dataDir, dialogs, opened, rows, tick: (ms: number) => { mono += ms; }, setInfo: (f: (i: LaunchAgentInfo[]) => LaunchAgentInfo[]) => { info = f(info); } };
+  return { flow, exe, cwd, dataDir, dialogs, opened, rows, opened2, setTarget: (f: (t: ResumeTarget) => ResumeTarget) => { target = f(target!); }, tick: (ms: number) => { mono += ms; }, setInfo: (f: (i: LaunchAgentInfo[]) => LaunchAgentInfo[]) => { info = f(info); } };
 }
 
 test('options: enabled agents, disabled with reasons, only the default profile launches', async () => {
@@ -164,4 +169,62 @@ test('624 security review: only a profile directory variable is passed through, 
     const o = await w.flow.options();
     assert.equal(o.status === 'ok' && o.agents[0]!.profiles[0]!.disabled, 'Launch from this profile is not supported yet');
   }
+});
+
+test('626: resume and fork options, previews and launches through their own grants', async () => {
+  const w = world();
+  assert.deepEqual(await w.flow.resumeOptions(7), { status: 'ok', resume: null, fork: null, vscode: null, liveness: 'uncertain' });
+  assert.deepEqual(await w.flow.resumeOptions(8), { status: 'refused', code: 'unavailable' });
+  const r = await w.flow.resumePreview(7, 'resume', true);
+  assert.equal(r.status === 'ok' && r.command, `'${w.exe}' '--resume' '${SID}'`);
+  assert.equal((await w.flow.launch(r.status === 'ok' ? r.previewId : '')).status, 'started');
+  assert.deepEqual(w.rows.at(-1)!.nativeId, SID, 'a resume binds by the session id');
+  assert.equal(w.dialogs.at(-1)!.title, 'Grant launch');
+  assert.match(w.dialogs.at(-1)!.detail, /Template: \["--resume","\{id\}"\]/);
+  w.tick(2_000);
+  const f = await w.flow.resumePreview(7, 'fork');
+  assert.equal(f.status === 'ok' && f.command, `'${w.exe}' '--resume' '${SID}' '--fork-session'`);
+  assert.equal((await w.flow.launch(f.status === 'ok' ? f.previewId : '')).status, 'started');
+  assert.equal(w.rows.at(-1)!.nativeId, null, 'a fork binds by its first start');
+  assert.equal(w.dialogs.length, 2, 'resume and fork each have their own grant');
+  w.tick(2_000);
+  const again = await w.flow.resumePreview(7, 'resume', true);
+  assert.equal((await w.flow.launch(again.status === 'ok' ? again.previewId : '')).status, 'started', 'the grant is kept: no dialog');
+  assert.equal(w.dialogs.length, 2);
+  w.setTarget((t) => ({ ...t, fork: { disabled: 'Fork not verified for this agent' }, vscode: 'VS Code history visibility: unverified for 2.1.332' }));
+  assert.deepEqual(await w.flow.resumeOptions(7), { status: 'ok', resume: null, fork: 'Fork not verified for this agent', vscode: 'VS Code history visibility: unverified for 2.1.332', liveness: 'uncertain' });
+  assert.deepEqual(await w.flow.resumePreview(7, 'fork'), { status: 'refused', code: 'disabled' });
+});
+
+test('626 reviews: resume needs the warning confirmed while not proven idle; bundled launch template only; never headless; VS Code spaced', async () => {
+  const w = world();
+  assert.deepEqual(await w.flow.resumePreview(7, 'resume'), { status: 'refused', code: 'concurrent' }, 'uncertain: the concurrency warning first');
+  assert.equal((await w.flow.resumePreview(7, 'fork')).status, 'ok', 'a fork writes a new session: no warning needed');
+  w.setTarget((t) => ({ ...t, liveness: 'not-live' }));
+  assert.equal((await w.flow.resumePreview(7, 'resume')).status, 'ok');
+  w.setTarget((t) => ({ ...t, resume: { args: ['-p', '--resume', '{id}'] } }));
+  assert.deepEqual(await w.flow.resumePreview(7, 'resume'), { status: 'refused', code: 'disabled' }, 'main repeats the never-headless check');
+  w.setTarget((t) => ({ ...t, resume: { args: ['--resume', '{id}'] } }));
+  w.setInfo((i) => i.map((a) => (a.agent === 'claude' ? { ...a, launch: { disabled: 'not verified' } } : a)));
+  assert.deepEqual(await w.flow.resumePreview(7, 'resume', true), { status: 'refused', code: 'disabled' }, 'only an agent with a bundled, enabled launch template');
+  const o = await w.flow.resumeOptions(7);
+  assert.deepEqual(o.status === 'ok' && [o.resume, o.fork], ['not verified', 'not verified']);
+  const v = world();
+  assert.deepEqual(await v.flow.openVsCode(7), { status: 'opened' });
+  assert.deepEqual(await v.flow.openVsCode(7), { status: 'refused', code: 'busy' }, 'spaced like launches');
+  assert.deepEqual(parseLaunchAsk({ op: 'resumePreview', session: 7, mode: 'resume', confirmed: true }), { op: 'resumePreview', session: 7, mode: 'resume', confirmed: true });
+});
+
+test('626: Open in VS Code only when the target allows it, only the allowlisted URL', async () => {
+  const w = world();
+  assert.deepEqual(await w.flow.openVsCode(7), { status: 'opened' });
+  assert.deepEqual(w.opened2, [`vscode://anthropic.claude-code/open?session=${SID}`]);
+  w.tick(2_000);
+  w.setTarget((t) => ({ ...t, vscode: 'VS Code history visibility: unverified for 2.1.332' }));
+  assert.deepEqual(await w.flow.openVsCode(7), { status: 'refused', code: 'disabled' });
+  assert.deepEqual(await w.flow.openVsCode(8), { status: 'refused', code: 'unavailable' });
+  assert.deepEqual(parseLaunchAsk({ op: 'resumeOptions', session: 7 }), { op: 'resumeOptions', session: 7 });
+  assert.deepEqual(parseLaunchAsk({ op: 'resumePreview', session: 7, mode: 'fork', confirmed: false }), { op: 'resumePreview', session: 7, mode: 'fork', confirmed: false });
+  assert.deepEqual(parseLaunchAsk({ op: 'vscode', session: 7 }), { op: 'vscode', session: 7 });
+  assert.equal(parseLaunchAsk({ op: 'resumePreview', session: 7, mode: 'print', confirmed: false }), null);
 });

@@ -7,7 +7,7 @@ import { homedir, userInfo } from 'node:os';
 import path from 'node:path';
 import { errorCode, installCrashPolicy } from '../shared/crash.ts';
 import { accept, IPC_VERSION, parsePortRequest, parseServiceCommand } from '../shared/ipc.ts';
-import type { Banner, PortMessage, ServiceEvent, StorageReport, IntegrationDetailResult, IntegrationPageResult, GrantConfirmResult, GrantOfferResult, ApplyConfirmResult, ApplyOfferResult, LaunchAgentInfo, RevokeResult } from '../shared/ipc.ts';
+import type { Banner, PortMessage, ServiceEvent, StorageReport, IntegrationDetailResult, IntegrationPageResult, GrantConfirmResult, GrantOfferResult, ApplyConfirmResult, ApplyOfferResult, LaunchAgentInfo, ResumeTarget, RevokeResult } from '../shared/ipc.ts';
 import { appendQuiet, createLogger, loadInstallSecret, type Logger } from '../shared/log.ts';
 import { answer, answerCost, answerFiles, answerLiveSet, answerMarkers, answerSession, answerSlice, answerSubagents, answerTools, answerTranscript, answerUsage, answerUsageHistory, coalesce, createHub, sessionsByKey, type LiveOf } from './api.ts';
 import { allowedRootsFromEnv, boot, retentionDelayFromEnv, type Service } from './boot.ts';
@@ -26,6 +26,7 @@ import { createConnect } from './integrations/connect.ts';
 import { compatibility } from './catalog/capabilities.ts';
 import { launchInfo } from './launch/info.ts';
 import { provisionalRows } from './launch/provisional.ts';
+import { resumeTarget } from './launch/resume-target.ts';
 
 // P3-T10: 50 ms keeps one push per window while leaving most of M1's 250 ms hook-to-paint budget; the tick re-reads
 // sessions whose status changes with time alone (settle within interval + 250 ms, M1), coverage is re-read slowly.
@@ -280,6 +281,20 @@ const command = accept(parseServiceCommand, (m, transferred: MessagePortMain[]) 
   }
   // XAIBO-PROD-621 (P7-T04): main's launch flow reads the launch info; the reply goes to main only, never a port, always one
   else if (m.type === 'provisional') provisional.register(m.row); // XAIBO-PROD-622: main's launch outcome
+  // XAIBO-PROD-626 (P7-T05): one stored session's resume target; the reply goes to main only, always one (null: not stored)
+  else if (m.type === 'resumeTarget') {
+    const reply = (target: ResumeTarget | null) => parent.postMessage({ v: IPC_VERSION, type: 'resumeTarget', id: m.id, target } satisfies ServiceEvent);
+    void booted.then((s): ResumeTarget | null => {
+      const cat = s.catalog(), db = s.store.db;
+      if (!cat || !db.isOpen) return null;
+      const r = db.prepare('SELECT agent, profile_id AS profileId, native_session_id AS sid, cwd, entrypoint, originator, native_available AS na FROM sessions WHERE id = ?')
+        .get(m.session) as { agent: string; profileId: string; sid: string; cwd: string | null; entrypoint: string | null; originator: string | null; na: number } | undefined;
+      if (!r) return null;
+      const d = s.detections.find((x) => x.agent === r.agent), st = s.status(r.agent, r.sid, r.profileId);
+      return resumeTarget(cat, { agent: r.agent, profileId: r.profileId, nativeSessionId: r.sid, cwd: r.cwd, entrypoint: r.entrypoint, originator: r.originator, nativeAvailable: r.na !== 0,
+        live: st ? { lifecycle: st.lifecycle, health: st.health } : null }, d?.state === 'detected' ? d.version : null);
+    }).catch((): null => null).then(reply);
+  }
   else if (m.type === 'launchInfo') {
     const reply = (agents: LaunchAgentInfo[]) => parent.postMessage({ v: IPC_VERSION, type: 'launchInfo', id: m.id, agents } satisfies ServiceEvent);
     void booted.then((s) => launchInfo(s.catalog(), s.detections, s.profiles(), homedir())).catch((): LaunchAgentInfo[] => []).then(reply);

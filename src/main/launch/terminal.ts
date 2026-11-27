@@ -18,7 +18,8 @@ import { buildCommand, quote, type LaunchCommand, type Refusal } from './command
 import { revalidate, type Field } from './grants.ts';
 
 export interface Spawner { open(file: string): Promise<boolean> }
-export interface LaunchRequest extends LaunchCommand { dataDir: string }
+/** grantKey (XAIBO-PROD-626): the grant this launch kind binds (the agent for Launch; <agent>-resume / <agent>-fork). */
+export interface LaunchRequest extends LaunchCommand { dataDir: string; grantKey?: string }
 export type LaunchResult = { status: 'started'; argv: string[] } | { status: 'blocked'; blocked: 'grant required' }
   | { status: 'blocked'; blocked: 'renewal required'; field: Field } | { status: 'refused'; reason: Refusal } | { status: 'failed'; reason: 'write' | 'open' };
 
@@ -44,7 +45,7 @@ export function sweepLaunchScripts(dataDir: string, now = Date.now()) {
 }
 
 export async function launchInTerminal(r: LaunchRequest, spawner: Spawner, now = Date.now()): Promise<LaunchResult> {
-  const check = await revalidate(r.dataDir, r.agent, { exe: r.executable, template: r.args, envKeys: r.envKeys });
+  const check = await revalidate(r.dataDir, r.grantKey ?? r.agent, { exe: r.executable, template: r.args, envKeys: r.envKeys });
   if (!check.ok) return check.blocked === 'grant required' ? { status: 'blocked', blocked: 'grant required' } : { status: 'blocked', blocked: 'renewal required', field: check.field };
   const b = buildCommand(r);
   if (!b.ok) return { status: 'refused', reason: b.reason };

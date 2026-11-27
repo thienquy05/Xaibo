@@ -27,7 +27,9 @@ export type ServiceCommand = { v: 1; type: 'quit' | 'wake' | 'port' | 'reloadPri
   /** XAIBO-PROD-621 (P7-T04): main's launch flow asks for the launch info (main only; correlated by id). */
   | { v: 1; type: 'launchInfo'; id: number }
   /** XAIBO-PROD-622 (P7-T04, EC-85): main registers a provisional launch row (started, or failed with its reason). */
-  | { v: 1; type: 'provisional'; row: ProvisionalRow };
+  | { v: 1; type: 'provisional'; row: ProvisionalRow }
+  /** XAIBO-PROD-626 (P7-T05): main asks for one stored session's resume target (main only; correlated by id). */
+  | { v: 1; type: 'resumeTarget'; id: number; session: number };
 /** service -> main; notify (P3-T11, EC-59) carries only the agent display name, the approved project label (null until
  *  one exists, FR-10) and the wait state. */
 export type NotifyState = 'waiting-for-permission' | 'needs-input';
@@ -44,7 +46,9 @@ export type ServiceEvent =
   /** XAIBO-PROD-600: the reply to main's applyOffer or applyConfirm (never sent to a renderer port). */
   | { v: 1; type: 'apply'; id: number; result: ApplyOfferResult | ApplyConfirmResult }
   /** XAIBO-PROD-621: the reply to main's launchInfo (never sent to a renderer port). */
-  | { v: 1; type: 'launchInfo'; id: number; agents: LaunchAgentInfo[] };
+  | { v: 1; type: 'launchInfo'; id: number; agents: LaunchAgentInfo[] }
+  /** XAIBO-PROD-626: the reply to main's resumeTarget; null when the session is not stored (never sent to a renderer port). */
+  | { v: 1; type: 'resumeTarget'; id: number; target: ResumeTarget | null };
 /** XAIBO-PROD-621 (P7-T04, design §6.7): one catalog agent for main's launch flow. executable: as found (absolute), null when
  *  not detected; names: the catalog's executable names; launch: the bundled template or the disabled reason. */
 export interface LaunchAgentInfo {
@@ -86,9 +90,46 @@ function parseProvisionalRow(x: unknown): ProvisionalRow | null {
 }
 // XAIBO-PROD-623 (P7-T04, design §6.7): the renderer's launch asks to main (ipcMain.handle('launch'), our window only) and the
 // replies. The renderer never assembles a command: the preview's command text comes from main's launch layer (P7-T02).
-export type LaunchAsk = { op: 'options' } | { op: 'preview'; agent: string; profileId: string; cwd: string } | { op: 'launch'; previewId: string };
+export type LaunchAsk = { op: 'options' } | { op: 'preview'; agent: string; profileId: string; cwd: string } | { op: 'launch'; previewId: string }
+  /** XAIBO-PROD-626 (P7-T05, P7-T09): Resume, Fork and Open in VS Code for one stored session (ids only). */
+  | { op: 'resumeOptions'; session: number } | { op: 'resumePreview'; session: number; mode: 'resume' | 'fork'; confirmed: boolean } | { op: 'vscode'; session: number };
+/** XAIBO-PROD-626: one stored session's resume target (service → main). Templates are whole tokens with {id}; a disabled one
+ *  carries its reason; vscode null = the handoff is verified for the detected version, else why not. */
+export type LiveTemplate = { args: string[] } | { disabled: string };
+export interface ResumeTarget {
+  agent: string; profileId: string; nativeId: string; cwd: string | null;
+  resume: LiveTemplate; fork: LiveTemplate; vscode: string | null; liveness: 'live' | 'uncertain' | 'not-live';
+}
+/** Each null = available; a string is the reason it is not. */
+export type ResumeOptionsReply = { status: 'ok'; resume: string | null; fork: string | null; vscode: string | null; liveness: ResumeTarget['liveness'] } | { status: 'refused'; code: LaunchRefusal };
+export type VsCodeReply = { status: 'opened' } | { status: 'failed' } | { status: 'refused'; code: LaunchRefusal };
+const LIVENESS = ['live', 'uncertain', 'not-live'] as const;
+function parseTemplate(x: unknown): LiveTemplate | null {
+  if (isObj(x) && exactKeys(x, ['args']) && Array.isArray(x.args) && x.args.length >= 1 && x.args.length <= 8 && x.args.every((t) => text(t, 256) && t !== '')) return { args: [...(x.args as string[])] };
+  return isObj(x) && exactKeys(x, ['disabled']) && text(x.disabled, 256) && x.disabled !== '' ? { disabled: x.disabled } : null;
+}
+function parseResumeTarget(x: unknown): ResumeTarget | null {
+  if (!isObj(x) || !exactKeys(x, ['agent', 'profileId', 'nativeId', 'cwd', 'resume', 'fork', 'vscode', 'liveness'])) return null;
+  const resume = parseTemplate(x.resume), fork = parseTemplate(x.fork);
+  return text(x.agent, 32) && AGENT_ID.test(x.agent) && text(x.profileId, 64) && x.profileId !== '' && text(x.nativeId, 128) && x.nativeId !== '' && !x.nativeId.includes('\0')
+    && (x.cwd === null || (text(x.cwd, 4096) && x.cwd.startsWith('/') && !x.cwd.includes('\0'))) && resume && fork && (x.vscode === null || (text(x.vscode, 256) && x.vscode !== ''))
+    && oneOf(LIVENESS, x.liveness)
+    ? { agent: x.agent, profileId: x.profileId, nativeId: x.nativeId, cwd: x.cwd as string | null, resume, fork, vscode: x.vscode as string | null, liveness: x.liveness } : null;
+}
+export function parseResumeOptionsReply(x: unknown): ResumeOptionsReply | null {
+  if (!isObj(x)) return null;
+  if (x.status === 'refused') return launchRefusal(x);
+  const reason = (v: unknown): v is string | null => v === null || (text(v, 256) && v !== '');
+  return x.status === 'ok' && exactKeys(x, ['status', 'resume', 'fork', 'vscode', 'liveness']) && reason(x.resume) && reason(x.fork) && reason(x.vscode) && oneOf(LIVENESS, x.liveness)
+    ? { status: 'ok', resume: x.resume, fork: x.fork, vscode: x.vscode, liveness: x.liveness } : null;
+}
+export function parseVsCodeReply(x: unknown): VsCodeReply | null {
+  if (!isObj(x)) return null;
+  if (x.status === 'opened' || x.status === 'failed') return exactKeys(x, ['status']) ? { status: x.status } : null;
+  return x.status === 'refused' ? launchRefusal(x) : null;
+}
 export const LAUNCH_REFUSALS = ['invalid', 'unavailable', 'busy', 'disabled', 'not-detected', 'profile', 'executable', 'interpreter', 'name', 'cwd', 'id',
-  'placeholder', 'text', 'env', 'expired', 'changed', 'grant'] as const;
+  'placeholder', 'text', 'env', 'expired', 'changed', 'grant', 'concurrent'] as const;
 export type LaunchRefusal = (typeof LAUNCH_REFUSALS)[number];
 export interface LaunchOption {
   agent: string; name: string; version: string | null; disabled: string | null; preallocatedId: boolean;
@@ -103,6 +144,10 @@ export function parseLaunchAsk(x: unknown): LaunchAsk | null {
   if (x.op === 'preview') return exactKeys(x, ['op', 'agent', 'profileId', 'cwd']) && text(x.agent, 32) && AGENT_ID.test(x.agent) && text(x.profileId, 64) && x.profileId !== '' && absPath(x.cwd)
     ? { op: 'preview', agent: x.agent, profileId: x.profileId, cwd: x.cwd } : null;
   if (x.op === 'launch') return exactKeys(x, ['op', 'previewId']) && typeof x.previewId === 'string' && KEY_UUID.test(x.previewId) ? { op: 'launch', previewId: x.previewId } : null;
+  const session = count(x.session) && (x.session as number) > 0 ? x.session as number : null;
+  if (x.op === 'resumeOptions' || x.op === 'vscode') return exactKeys(x, ['op', 'session']) && session !== null ? { op: x.op, session } : null;
+  if (x.op === 'resumePreview') return exactKeys(x, ['op', 'session', 'mode', 'confirmed']) && session !== null && (x.mode === 'resume' || x.mode === 'fork') && typeof x.confirmed === 'boolean'
+    ? { op: 'resumePreview', session, mode: x.mode, confirmed: x.confirmed } : null;
   return null;
 }
 const launchRefusal = (x: Msg): { status: 'refused'; code: LaunchRefusal } | null => (exactKeys(x, ['status', 'code']) && oneOf(LAUNCH_REFUSALS, x.code) ? { status: 'refused', code: x.code } : null);
@@ -175,6 +220,7 @@ export function parseServiceCommand(x: unknown): ServiceCommand | null {
     return exactKeys(m, ['v', 'type', 'id', 'ask', 'binding']) && typeof m.binding === 'string' && BINDING.test(m.binding) ? { v: 1, type: 'applyConfirm', id: m.id, ask, binding: m.binding } : null;
   }
   if (m.type === 'launchInfo') return exactKeys(m, ['v', 'type', 'id']) && count(m.id) ? { v: 1, type: 'launchInfo', id: m.id } : null;
+  if (m.type === 'resumeTarget') return exactKeys(m, ['v', 'type', 'id', 'session']) && count(m.id) && count(m.session) && (m.session as number) > 0 ? { v: 1, type: 'resumeTarget', id: m.id, session: m.session as number } : null;
   if (m.type === 'provisional') { const row = parseProvisionalRow(m.row); return exactKeys(m, ['v', 'type', 'row']) && row ? { v: 1, type: 'provisional', row } : null; }
   if (m.type === 'importCatalog') return text(m.path, 4096) && m.path.startsWith('/') && !m.path.includes('\0') ? { v: 1, type: 'importCatalog', path: m.path } : null;
   if (m.type !== 'setPath' || !text(m.agent) || !AGENT_ID.test(m.agent)) return null;
@@ -195,6 +241,10 @@ export function parseServiceEvent(x: unknown): ServiceEvent | null {
   if (m?.type === 'apply') {
     const result = parseApplyResult(m.result);
     return exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) && result ? { v: 1, type: 'apply', id: m.id, result } : null;
+  }
+  if (m?.type === 'resumeTarget') {
+    const target = m.target === null ? null : parseResumeTarget(m.target);
+    return exactKeys(m, ['v', 'type', 'id', 'target']) && count(m.id) && (m.target === null || target) ? { v: 1, type: 'resumeTarget', id: m.id, target } : null;
   }
   if (m?.type === 'launchInfo') {
     const agents = Array.isArray(m.agents) && m.agents.length <= LAUNCH_AGENTS_MAX ? m.agents.map(parseLaunchAgent) : null;

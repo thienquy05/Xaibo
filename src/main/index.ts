@@ -8,7 +8,7 @@ import { appendFileSync, readFileSync, realpathSync, unlinkSync } from 'node:fs'
 import { release } from 'node:os';
 import path from 'node:path';
 import { installCrashPolicy } from '../shared/crash.ts';
-import { AGENT_ID, IPC_VERSION, parseApplyAsk, parseGrantAsk, parseLaunchAsk, type ApplyOutcome, type GrantOutcome, type LaunchAgentInfo, type LaunchOptionsReply, type LaunchPreviewReply, type LaunchReply, type RevealResult, type ServiceMetrics, type StartupReply } from '../shared/ipc.ts';
+import { AGENT_ID, IPC_VERSION, parseApplyAsk, parseGrantAsk, parseLaunchAsk, type ApplyOutcome, type GrantOutcome, type LaunchAgentInfo, type LaunchOptionsReply, type LaunchPreviewReply, type LaunchReply, type ResumeOptionsReply, type ResumeTarget, type VsCodeReply, type RevealResult, type ServiceMetrics, type StartupReply } from '../shared/ipc.ts';
 import { launchFlow } from './launch/flow.ts';
 import { sweepLaunchScripts, terminalSpawner } from './launch/terminal.ts';
 import { grantFlow } from './grants.ts';
@@ -89,6 +89,10 @@ function start(dataDir: string) {
   // opening Terminal, then removes it as Terminal's run would.
   const infoWaits = new Map<number, (agents: LaunchAgentInfo[] | null) => void>();
   let infoId = 0;
+  // XAIBO-PROD-626: resume targets (same correlation as the launch info); Open in VS Code through shell.openExternal, or (E2E,
+  // XAIBO_EXTERNAL_STUB=1 behind the marker) a record of the allowlisted URL
+  const targetWaits = new Map<number, (t: ResumeTarget | null) => void>();
+  const externalStub = trusted.XAIBO_EXTERNAL_STUB === '1' ? path.join(app.getPath('logs'), 'external-stub.jsonl') : null;
   const launchStub = trusted.XAIBO_LAUNCH_STUB === '1' ? path.join(app.getPath('logs'), 'launch-stub.jsonl') : null;
   const launches = launchFlow({
     dataDir: dataDir!,
@@ -102,6 +106,13 @@ function start(dataDir: string) {
     confirm: async (d) => (win && !win.isDestroyed() ? (await dialog.showMessageBox(win, d)).response === 1 : false),
     spawner: launchStub ? { open: async (file) => { appendQuiet(launchStub, `${JSON.stringify({ script: readFileSync(file, 'utf8') })}\n`); unlinkSync(file); return true; } } : terminalSpawner,
     register: (row) => supervisor.send({ v: IPC_VERSION, type: 'provisional', row }),
+    target: (session) => new Promise((resolve) => {
+      const id = ++infoId;
+      const timer = setTimeout(() => { targetWaits.delete(id); resolve(null); }, 10_000);
+      targetWaits.set(id, (t) => { clearTimeout(timer); targetWaits.delete(id); resolve(t); });
+      supervisor.send({ v: IPC_VERSION, type: 'resumeTarget', id, session });
+    }),
+    openExternal: async (url) => { if (externalStub) appendQuiet(externalStub, `${JSON.stringify({ url })}\n`); else await shell.openExternal(url); },
   });
   const notifyStub = trusted.XAIBO_NOTIFY_STUB === '1' ? path.join(app.getPath('logs'), 'notify-stub.jsonl') : null;
   const supervisor = new Supervisor<MessagePortMain>({
@@ -110,10 +121,11 @@ function start(dataDir: string) {
     }),
     channel: () => new MessageChannelMain(),
     onHealth: (h) => win?.webContents.send('health', h),
-    onSpawn: () => { serviceMetrics = null; grants.reset(); applies.reset(); for (const w of [...infoWaits.values()]) w(null); sendPort(); }, // a new service process: no stale metrics (review L1), grant or apply flow
+    onSpawn: () => { serviceMetrics = null; grants.reset(); applies.reset(); for (const w of [...infoWaits.values()]) w(null); for (const w of [...targetWaits.values()]) w(null); sendPort(); }, // a new service process: no stale metrics (review L1), grant or apply flow
     onGrant: (g) => grants.receive(g),
     onApply: (a) => applies.receive(a),
     onLaunchInfo: (l) => infoWaits.get(l.id)?.(l.agents),
+    onResumeTarget: (r) => targetWaits.get(r.id)?.(r.target),
     setTimer: (fn, ms) => setTimeout(fn, ms),
     clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
     now: Date.now,
@@ -191,11 +203,14 @@ function start(dataDir: string) {
     return out;
   });
   // XAIBO-PROD-623: Launch (options, preview, launch). Our window's main frame only, parsed here; the log names only the outcome.
-  ipcMain.handle('launch', async (e, request: unknown): Promise<LaunchOptionsReply | LaunchPreviewReply | LaunchReply> => {
+  ipcMain.handle('launch', async (e, request: unknown): Promise<LaunchOptionsReply | LaunchPreviewReply | LaunchReply | ResumeOptionsReply | VsCodeReply> => {
     const ask = parseLaunchAsk(request);
     if (!win || win.isDestroyed() || !fromOurWindow(e, win) || !ask) return { status: 'refused', code: 'invalid' };
     if (ask.op === 'options') return launches.options();
     if (ask.op === 'preview') return launches.preview(ask);
+    if (ask.op === 'resumeOptions') return launches.resumeOptions(ask.session);
+    if (ask.op === 'resumePreview') return launches.resumePreview(ask.session, ask.mode, ask.confirmed);
+    if (ask.op === 'vscode') { const v = await launches.openVsCode(ask.session); log.log(`vscode_${v.status === 'refused' ? v.code : v.status}`); return v; }
     const out = await launches.launch(ask.previewId);
     log.log(`launch_${out.status === 'refused' ? out.code : out.status}`);
     return out;

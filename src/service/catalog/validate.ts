@@ -50,6 +50,8 @@ export interface SessionKind {
   agent: string; id: string; match: { entrypoint?: string; originator?: string };
   badge?: string; interactive?: boolean; evidence: string;
   resume?: { args: string[]; promptRequired?: boolean }; resumeDisabled?: string;
+  /** XAIBO-PROD-626 (P7-T05): the tested interactive fork template; bundled only. */
+  fork?: { args: string[]; evidence: string };
 }
 export interface Catalog { schemaVersion: 1; agents: AgentEntry[]; sessionKinds: SessionKind[] }
 
@@ -135,12 +137,21 @@ export function catalogIssues(value: unknown, bundled?: Catalog): CatalogIssue[]
       if ((a.launch.preallocatedId === true) !== a.launch.args.includes('{id}')) add('unsafe-value', `${p}/launch/preallocatedId`);
     }
     if (!bundled) return;
-    if (bundled.agents.some((b) => b.id === a.id.toLowerCase())) add('shadow', `${p}/id`);
+    // 626 reviews: <agent>-resume / <agent>-fork are main's launch-grant keys, never an imported agent's id
+    if (bundled.agents.some((b) => b.id === a.id.toLowerCase()) || /-(?:resume|fork)$/.test(a.id)) add('shadow', `${p}/id`);
     a.detection.binaries.forEach((b, k) => b.names.forEach((n, j) => { if (names.has(binaryName(n))) add('shadow', `${p}/detection/binaries/${k}/names/${j}`); }));
     a.profileRoots.forEach((r, j) => { if (roots.some((x) => overlaps(rootKey(r.relative), x))) add('shadow', `${p}/profileRoots/${j}/relative`); });
   });
   const agents = new Set(c.agents.map((a) => a.id));
   c.sessionKinds.forEach((k, j) => { if (!agents.has(k.agent)) add('unknown-reference', `/sessionKinds/${j}/agent`); });
   dup(c.sessionKinds.map((k) => `${k.agent}\0${k.id}`), (j) => `/sessionKinds/${j}/id`);
+  // XAIBO-PROD-626: a fork template is Xaibo's own tested data (bundled only), interactive (never a headless token) and names the
+  // source session ({id})
+  c.sessionKinds.forEach((k, j) => {
+    if (!k.fork) return;
+    if (bundled) { add('unsafe-value', `/sessionKinds/${j}/fork`); return; }
+    k.fork.args.forEach((t, i) => { if (/^(?:-p|--print|exec|--headless)$/.test(t)) add('unsafe-value', `/sessionKinds/${j}/fork/args/${i}`); });
+    if (!k.fork.args.includes('{id}')) add('unsafe-value', `/sessionKinds/${j}/fork`);
+  });
   return out;
 }
