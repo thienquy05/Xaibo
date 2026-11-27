@@ -717,6 +717,7 @@ html, .x-shell.x-fixed { scroll-padding-top: var(--x-frame-pad, 8px); } /* clear
 @media (max-width: 799px) { .x-map-panel-open .x-map-tree { display: none; } }
 .x-agent-open { justify-self: start; margin-top: var(--x-space-1); }
 .x-integration .x-pane-head { flex-wrap: wrap; }
+.x-integration .x-pane-head h2 { margin-right: auto; } /* XAIBO-PROD-610: Back to map and Return to Dashboard stay together */
 .x-integration h3 { margin: 0; font-size: var(--x-text-body); }
 .x-integration-list { margin: 0; padding-left: var(--x-space-4); display: grid; gap: var(--x-space-1); overflow-wrap: anywhere; }
 .x-receipt-test { display: grid; gap: var(--x-space-1); justify-items: start; }

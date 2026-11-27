@@ -47,7 +47,7 @@ export interface MapApi extends WriteApi, GrantApi {
 type Child = MapNode | HistoryRow;
 interface State { roots: Level<MapNode, MapGroup>; kids: Kids; exp: Expansion; selected: string | null }
 /** XAIBO-PROD-539: the map as it was left for a session (bounded: the resident pages and four paths of State). */
-type Panel = { key: IntegrationKey; origin: string } | null;
+type Panel = { key: IntegrationKey; origin: string; fromOpen?: true } | null; // fromOpen: opened by the `open` request (XAIBO-PROD-610); inert without onReturnDashboard
 export interface MapSnapshot { state: State; mode: Mode; agents: AgentsSnapshot | null; panel: Panel }
 /** A request in flight when the map was left never answers this instance (review M1: resumeLevel). */
 const resume = (x: State): State => ({ ...x, roots: resumeLevel(x.roots), kids: Object.fromEntries(Object.entries(x.kids).map(([k, l]) => [k, resumeLevel(l)])) });
@@ -56,7 +56,7 @@ const leafFilter = (group: MapGroup): HistoryFilter => ({ mode: 'all', agent: nu
 
 /** `tick` counts session activity: an empty map loads its first page again when sessions arrive (an import after start);
  *  Gate 5 G5d-1: a shown map, and one restored (Return or the nav link), fetches its resident pages again instead. */
-export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, restoreId = null, onSave, open = null, importResult = null, onImport }: {
+export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, restoreId = null, onSave, open = null, onReturnDashboard, importResult = null, onImport }: {
   api: MapApi; agents: AgentStatus[]; lastKnown: string | null; tick: number; onOpen: (row: HistoryRow) => void;
   /** XAIBO-PROD-539 Return to Agent Map: the map as left and the session to return to; `onSave` keeps it on leaving. */
   saved?: MapSnapshot | null; restoreId?: number | null; onSave?: (m: MapSnapshot) => void;
@@ -64,6 +64,8 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
   importResult?: CatalogImportResult | null; onImport?: () => void;
   /** XAIBO-PROD-586 (D-P6-17): open this profile's integration panel (Agents mode) on arrival, e.g. from Settings. */
   open?: IntegrationKey | null;
+  /** XAIBO-PROD-610 (Gate 6 D1-3): the `open` request came from the Dashboard; its panel offers Return to Dashboard. */
+  onReturnDashboard?: (() => void) | undefined;
 }) {
   const name = useMemo(() => { const m = new Map(agents.map((a) => [a.agent, a.name])); return (id: string) => m.get(id) ?? id; }, [agents]);
   const [s, setS] = useState<State>(() => (saved ? resume(saved.state) : start()));
@@ -74,7 +76,7 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
   modeRef.current = mode;
   const agentsStore = useRef<AgentsSnapshot | null>(saved?.agents ?? null);
   // XAIBO-PROD-578: the open integration panel (Agents mode) and the row it was opened from
-  const [panel, setPanel] = useState<Panel>(open ? { key: open, origin: agentKey(open) } : saved?.panel ?? null);
+  const [panel, setPanel] = useState<Panel>(open ? { key: open, origin: agentKey(open), fromOpen: true } : saved?.panel ?? null);
   const panelRef = useRef(panel);
   panelRef.current = panel;
   const [agentsFocus, setAgentsFocus] = useState<{ key: string; n: number } | null>(null);
@@ -347,7 +349,7 @@ export function AgentMap({ api, agents, lastKnown, tick, onOpen, saved = null, r
             onCancel={() => { setAdding(false); requestAnimationFrame(() => addRef.current?.focus()); }}
             onDone={(key) => { setAdding(false); setListTick((t) => t + 1); setPanel({ key, origin: agentKey(key) }); }} />
         ) : panel ? (
-          <IntegrationPanel key={panel.origin} fetchDetail={api.integrationDetail} fetchPage={api.integrationPage} write={api} signIn={api.signIn} grants={api} target={panel.key} lastKnown={lastKnown} onBack={backToMap} onChanged={() => setListTick((t) => t + 1)}
+          <IntegrationPanel key={panel.origin} fetchDetail={api.integrationDetail} fetchPage={api.integrationPage} write={api} signIn={api.signIn} grants={api} target={panel.key} lastKnown={lastKnown} onBack={backToMap} onReturn={panel.fromOpen ? onReturnDashboard : undefined} onChanged={() => setListTick((t) => t + 1)}
             onProfile={(id) => setPanel((p) => (p ? { ...p, key: { agent: p.key.agent, profileId: id } } : p))} />
         ) : null) : (
         <section className="x-pane x-map-detail" aria-labelledby="map-detail-heading">

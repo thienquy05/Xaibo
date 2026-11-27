@@ -7,6 +7,7 @@ import { type CatalogImportResult, parseHealth, parseStartupReply } from '../sha
 import type { AgentStatus, Banner, GrantAsk, Health, IntegrationKey, LedgerFilter, RevokeTarget, SessionRow, StartupRequest } from '../shared/ipc.ts';
 import { askGrant } from './agent-map/grants-view.ts';
 import { confirmedApply } from './agent-map/integration-dialog.ts';
+import { focusInvoker } from './agent-map/integration-panel.ts';
 import type { SignInCommand } from './usage/sign-in-view.ts';
 import { createClient, parseVisible, type Client, type PortLike } from './client.ts';
 import { HealthStatus } from './Health.tsx';
@@ -217,8 +218,19 @@ function App() {
   const mapSaved = useRef<MapSnapshot | null>(null);
   // XAIBO-PROD-586 (D-P6-17): one route to a profile's integration panel (Settings now; the Dashboard usage blocks next)
   const [openIntegration, setOpenIntegration] = useState<IntegrationKey | null>(null);
-  useEffect(() => { if (area !== 'map') setOpenIntegration(null); }, [area]); // the map reads it on arrival only
-  const toIntegration = (key: IntegrationKey) => { clearReturn(); setPreset(null); setLedgerRestore(null); setMapReturn(null); setOpenIntegration(key); setArea('map'); };
+  // XAIBO-PROD-610 (Gate 6 D1-3, design §6.5.2): the Dashboard button that opened the panel, for its Return to Dashboard
+  const [integrationReturn, setIntegrationReturn] = useState<string | null>(null);
+  useEffect(() => { if (area !== 'map') { setOpenIntegration(null); setIntegrationReturn(null); } }, [area]); // the map reads it on arrival only
+  const toIntegration = (key: IntegrationKey, invoker: string | null = null) => { clearReturn(); setPreset(null); setLedgerRestore(null); setMapReturn(null); setOpenIntegration(key); setIntegrationReturn(invoker); setArea('map'); };
+  const returnFromIntegration = () => {
+    const label = integrationReturn;
+    setDashView('usage');
+    setArea('dashboard');
+    // review M: only while nothing else took focus (the user may move on before the usage blocks draw)
+    const idle = () => document.activeElement === null || document.activeElement === document.body;
+    void focusInvoker(() => (idle() ? [...document.querySelectorAll<HTMLElement>('#view-usage button[aria-label]')].find((b) => b.getAttribute('aria-label') === label) ?? null : null),
+      () => (idle() ? document.getElementById('view-usage-heading') : null), () => new Promise((r) => setTimeout(r, 100)));
+  };
   const [mapReturn, setMapReturn] = useState<number | null>(null);
   const [focusId, setFocusId] = useState<number | null>(null);
   const liveRows = useRef(liveSet.rows);
@@ -336,11 +348,11 @@ function App() {
             profiles: () => client.current?.usageAll().then((r) => r.profiles) ?? Promise.reject(new Error('no service connection')), api: mapApi.signIn,
             name: (a) => agents?.find((x) => x.agent === a)?.name ?? a, open: toIntegration, live: lastKnown === null }} />
           : area === 'map' ? <AgentMap api={mapApi} importResult={catalogImport} onImport={() => window.xaibo?.importCatalog?.()} agents={agents ?? []} lastKnown={lastKnown} tick={tick} onOpen={openFromMap}
-            saved={mapSaved.current} restoreId={mapReturn} onSave={(m) => { mapSaved.current = m; }} open={openIntegration} />
+            saved={mapSaved.current} restoreId={mapReturn} onSave={(m) => { mapSaved.current = m; }} open={openIntegration} onReturnDashboard={integrationReturn ? returnFromIntegration : undefined} />
           : area === 'dashboard'
           ? <Dashboard live={liveSet} liveFailed={liveFailed} liveRetry={liveRetry} onRetryLive={retryLive} lastKnown={lastKnown} agents={agents} banners={banners} api={api} tick={tick}
             onSetPath={(agent) => window.xaibo?.setAgentPath(agent)} onOpen={openSession} view={dashView} onView={(v) => { setLedgerRestore(null); setDashView(v); }} focusId={focusId}
-            onMonthSessions={openMonth} ledgerRestore={ledgerRestore} onOpenIntegration={toIntegration} />
+            onMonthSessions={openMonth} ledgerRestore={ledgerRestore} onOpenIntegration={(key, invoker) => toIntegration(key, invoker)} />
           : <Workspace list={list} changes={changes} browse={browseApi} agents={agents ?? []} live={{ rows: liveSet.rows, loaded: liveSet.loaded, failed: liveFailed, more: liveSet.more }} lastKnown={lastKnown !== null} api={workspaceApi} request={request} onRequestDone={clearRequest}
             returnFor={returnFor} onReturn={returnTo === 'Agent Map' ? returnToMap : returnToDashboard} returnTo={returnTo} onListOpen={clearReturn}
             preset={preset} onReturnList={preset ? returnToLedger : null} />}
