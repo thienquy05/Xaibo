@@ -6,8 +6,6 @@
 // misses), emoji are separators (an emoji-only query finds nothing), diacritics fold.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
 import { applyOverlay } from '../../../src/service/history/overlay.ts';
@@ -15,13 +13,14 @@ import { openStore } from '../../../src/service/store/db.ts';
 import { ftsPrefix } from '../../../src/service/store/writer.ts';
 import { ftsQuery, searchSessions } from '../../../src/service/search/query.ts';
 import { SNIPPET_MAX } from '../../../src/shared/ipc.ts';
+import { tempDir } from '../../helpers/tmp.ts';
 import type { HistoryFilter } from '../../../src/shared/ipc.ts';
 
 const T = 1_700_000_000_000;
 const sid = (i: number) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`;
 
 async function store() {
-  const tmp = mkdtempSync(join(tmpdir(), 'xsearch-'));
+  const tmp = tempDir('xsearch-');
   const { db } = await openStore({ file: join(tmp, 'xaibo.db'), backupDir: join(tmp, 'backups') });
   db.prepare("INSERT INTO profiles (id, agent, root, origin) VALUES ('p1', 'claude', '/tmp/xaibo-fixture/root', 'default')").run();
   db.prepare("INSERT INTO profiles (id, agent, root, origin) VALUES ('p2', 'codex', '/tmp/xaibo-fixture/codex', 'default')").run();
