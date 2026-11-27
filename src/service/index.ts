@@ -7,7 +7,7 @@ import { homedir, userInfo } from 'node:os';
 import path from 'node:path';
 import { errorCode, installCrashPolicy } from '../shared/crash.ts';
 import { accept, IPC_VERSION, parsePortRequest, parseServiceCommand } from '../shared/ipc.ts';
-import type { Banner, PortMessage, ServiceEvent, StorageReport, IntegrationDetailResult, IntegrationPageResult, GrantConfirmResult, GrantOfferResult, ApplyConfirmResult, ApplyOfferResult, RevokeResult } from '../shared/ipc.ts';
+import type { Banner, PortMessage, ServiceEvent, StorageReport, IntegrationDetailResult, IntegrationPageResult, GrantConfirmResult, GrantOfferResult, ApplyConfirmResult, ApplyOfferResult, LaunchAgentInfo, RevokeResult } from '../shared/ipc.ts';
 import { appendQuiet, createLogger, loadInstallSecret, type Logger } from '../shared/log.ts';
 import { answer, answerCost, answerFiles, answerLiveSet, answerMarkers, answerSession, answerSlice, answerSubagents, answerTools, answerTranscript, answerUsage, answerUsageHistory, coalesce, createHub, sessionsByKey, type LiveOf } from './api.ts';
 import { allowedRootsFromEnv, boot, retentionDelayFromEnv, type Service } from './boot.ts';
@@ -24,6 +24,7 @@ import { afterDispatch, answerApply, answerIntegrations, connectContext, type Co
 import { answerIntegrationDetail, answerIntegrationPage, pageEvidence } from './integrations/state.ts';
 import { createConnect } from './integrations/connect.ts';
 import { compatibility } from './catalog/capabilities.ts';
+import { launchInfo } from './launch/info.ts';
 
 // P3-T10: 50 ms keeps one push per window while leaving most of M1's 250 ms hook-to-paint budget; the tick re-reads
 // sessions whose status changes with time alone (settle within interval + 250 ms, M1), coverage is re-read slowly.
@@ -251,6 +252,11 @@ const command = accept(parseServiceCommand, (m, transferred: MessagePortMain[]) 
     const reply = (result: GrantOfferResult | GrantConfirmResult) => parent.postMessage({ v: IPC_VERSION, type: 'grant', id: m.id, result } satisfies ServiceEvent);
     const run = m.type === 'grantOffer' ? booted.then((s) => s.grantOffer(m.request)) : booted.then((s) => s.grantConfirm(m.request, m.binding));
     void run.catch((): GrantConfirmResult => ({ status: 'refused', code: 'failed' })).then(reply);
+  }
+  // XAIBO-PROD-621 (P7-T04): main's launch flow reads the launch info; the reply goes to main only, never a port, always one
+  else if (m.type === 'launchInfo') {
+    const reply = (agents: LaunchAgentInfo[]) => parent.postMessage({ v: IPC_VERSION, type: 'launchInfo', id: m.id, agents } satisfies ServiceEvent);
+    void booted.then((s) => launchInfo(s.catalog(), s.detections, s.profiles(), homedir())).catch((): LaunchAgentInfo[] => []).then(reply);
   }
   // XAIBO-PROD-600 (P6-T12 slice 2): main's apply offer and confirm; the reply goes to main only, never a port, always one
   else if (m.type === 'applyOffer' || m.type === 'applyConfirm') {

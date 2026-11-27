@@ -23,7 +23,9 @@ export type ServiceCommand = { v: 1; type: 'quit' | 'wake' | 'port' | 'reloadPri
   | { v: 1; type: 'grantConfirm'; id: number; request: GrantRequest; binding: string }
   /** XAIBO-PROD-600 (P6-T12 slice 2): main's offer request and confirmation of a real-class apply (main only; correlated by id). */
   | { v: 1; type: 'applyOffer'; id: number; ask: ApplyAsk }
-  | { v: 1; type: 'applyConfirm'; id: number; ask: ApplyAsk; binding: string };
+  | { v: 1; type: 'applyConfirm'; id: number; ask: ApplyAsk; binding: string }
+  /** XAIBO-PROD-621 (P7-T04): main's launch flow asks for the launch info (main only; correlated by id). */
+  | { v: 1; type: 'launchInfo'; id: number };
 /** service -> main; notify (P3-T11, EC-59) carries only the agent display name, the approved project label (null until
  *  one exists, FR-10) and the wait state. */
 export type NotifyState = 'waiting-for-permission' | 'needs-input';
@@ -38,7 +40,29 @@ export type ServiceEvent =
   /** XAIBO-PROD-597: the reply to main's grantOffer or grantConfirm (never sent to a renderer port). */
   | { v: 1; type: 'grant'; id: number; result: GrantOfferResult | GrantConfirmResult }
   /** XAIBO-PROD-600: the reply to main's applyOffer or applyConfirm (never sent to a renderer port). */
-  | { v: 1; type: 'apply'; id: number; result: ApplyOfferResult | ApplyConfirmResult };
+  | { v: 1; type: 'apply'; id: number; result: ApplyOfferResult | ApplyConfirmResult }
+  /** XAIBO-PROD-621: the reply to main's launchInfo (never sent to a renderer port). */
+  | { v: 1; type: 'launchInfo'; id: number; agents: LaunchAgentInfo[] };
+/** XAIBO-PROD-621 (P7-T04, design §6.7): one catalog agent for main's launch flow. executable: as found (absolute), null when
+ *  not detected; names: the catalog's executable names; launch: the bundled template or the disabled reason. */
+export interface LaunchAgentInfo {
+  agent: string; name: string; version: string | null; executable: string | null; names: string[];
+  launch: { args: string[]; preallocatedId: boolean } | { disabled: string };
+  profiles: { id: string; label: string }[];
+}
+const LAUNCH_AGENTS_MAX = 64;
+function parseLaunchAgent(x: unknown): LaunchAgentInfo | null {
+  if (!isObj(x) || !exactKeys(x, ['agent', 'name', 'version', 'executable', 'names', 'launch', 'profiles'])) return null;
+  const strs = (v: unknown, max: number, len = 256): v is string[] => Array.isArray(v) && v.length <= max && v.every((s) => text(s, len) && s !== '');
+  const l = x.launch;
+  const launch = isObj(l) && exactKeys(l, ['args', 'preallocatedId']) && Array.isArray(l.args) && l.args.length <= 8 && l.args.every((s) => text(s, 256)) && typeof l.preallocatedId === 'boolean'
+    ? { args: [...(l.args as string[])], preallocatedId: l.preallocatedId }
+    : isObj(l) && exactKeys(l, ['disabled']) && text(l.disabled, 256) && l.disabled !== '' ? { disabled: l.disabled } : null;
+  const profiles = Array.isArray(x.profiles) && x.profiles.length <= 64 ? x.profiles.map((p) => (isObj(p) && exactKeys(p, ['id', 'label']) && text(p.id, 64) && p.id !== '' && text(p.label, 4096) ? { id: p.id, label: p.label } : null)) : null;
+  const exeOk = x.executable === null || (text(x.executable, 4096) && x.executable.startsWith('/') && !x.executable.includes('\0'));
+  return text(x.agent, 32) && AGENT_ID.test(x.agent) && text(x.name, 128) && (x.version === null || text(x.version, 64)) && exeOk && strs(x.names, 8, 128) && launch && profiles && profiles.every((p) => p !== null)
+    ? { agent: x.agent, name: x.name, version: x.version as string | null, executable: x.executable as string | null, names: [...x.names], launch, profiles: profiles as LaunchAgentInfo['profiles'] } : null;
+}
 export type HealthState = 'starting' | 'running' | 'restarting' | 'stopped';
 /** main -> renderer; attempt counts consecutive restarts (0 unless restarting). */
 export interface Health { v: 1; type: 'health'; state: HealthState; attempt: number; readOnly: ReadOnlyReason | null }
@@ -80,6 +104,7 @@ export function parseServiceCommand(x: unknown): ServiceCommand | null {
     if (m.type === 'applyOffer') return exactKeys(m, ['v', 'type', 'id', 'ask']) ? { v: 1, type: 'applyOffer', id: m.id, ask } : null;
     return exactKeys(m, ['v', 'type', 'id', 'ask', 'binding']) && typeof m.binding === 'string' && BINDING.test(m.binding) ? { v: 1, type: 'applyConfirm', id: m.id, ask, binding: m.binding } : null;
   }
+  if (m.type === 'launchInfo') return exactKeys(m, ['v', 'type', 'id']) && count(m.id) ? { v: 1, type: 'launchInfo', id: m.id } : null;
   if (m.type === 'importCatalog') return text(m.path, 4096) && m.path.startsWith('/') && !m.path.includes('\0') ? { v: 1, type: 'importCatalog', path: m.path } : null;
   if (m.type !== 'setPath' || !text(m.agent) || !AGENT_ID.test(m.agent)) return null;
   if (!text(m.path, 4096) || !m.path.startsWith('/') || m.path.includes('\0')) return null;
@@ -99,6 +124,10 @@ export function parseServiceEvent(x: unknown): ServiceEvent | null {
   if (m?.type === 'apply') {
     const result = parseApplyResult(m.result);
     return exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) && result ? { v: 1, type: 'apply', id: m.id, result } : null;
+  }
+  if (m?.type === 'launchInfo') {
+    const agents = Array.isArray(m.agents) && m.agents.length <= LAUNCH_AGENTS_MAX ? m.agents.map(parseLaunchAgent) : null;
+    return exactKeys(m, ['v', 'type', 'id', 'agents']) && count(m.id) && agents && agents.every((a) => a !== null) ? { v: 1, type: 'launchInfo', id: m.id, agents: agents as LaunchAgentInfo[] } : null;
   }
   if (m?.type === 'metrics') { // every known key, a safe non-negative integer; anything else is dropped (never content)
     const raw = m.metrics;
