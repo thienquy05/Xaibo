@@ -43,3 +43,14 @@ export function initDataDir(input: DataDirInput, writeErr: (s: string) => void):
 export function serviceEnv(env: Record<string, string | undefined>, o: { dataDir: string; packaged: boolean; resourcesPath: string }): Record<string, string | undefined> {
   return { ...env, XAIBO_DATA_DIR: o.dataDir, XAIBO_BIN: o.packaged ? path.join(o.resourcesPath, 'bin') : '' };
 }
+
+
+/** XAIBO-PROD-611 (Gate 6 second review item 5; design security review): main's only view of its environment. A packaged build
+ *  without XAIBO_E2E=1 ignores every inherited XAIBO_* variable (data dir, stubs, traces, test roots) and NODE_OPTIONS /
+ *  ELECTRON_RUN_AS_NODE, so a stale or leaked test variable in a shell or launchctl profile never steers it or its service.
+ *  Hygiene, not a boundary: whoever controls the launch environment can set the marker too. app.isPackaged is the only
+ *  packaged signal. NODE_OPTIONS and ELECTRON_RUN_AS_NODE are dropped for the service only: main has already started with them. ponytail: the Electron fuses (RunAsNode, NODE_OPTIONS) stay enabled; closing them is a P7-T12 item. */
+export function trustedEnv(env: Record<string, string | undefined>, packaged: boolean): Record<string, string | undefined> {
+  if (!packaged || env.XAIBO_E2E === '1') return env;
+  return Object.fromEntries(Object.entries(env).filter(([k]) => !k.startsWith('XAIBO_') && k !== 'NODE_OPTIONS' && k !== 'ELECTRON_RUN_AS_NODE'));
+}

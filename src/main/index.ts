@@ -11,7 +11,7 @@ import { AGENT_ID, IPC_VERSION, parseApplyAsk, parseGrantAsk, type ApplyOutcome,
 import { grantFlow } from './grants.ts';
 import { applyFlow } from './apply-confirm.ts';
 import { appendQuiet, createLogger, loadInstallSecret } from '../shared/log.ts';
-import { initDataDir, serviceEnv } from './app-paths.ts';
+import { initDataDir, serviceEnv, trustedEnv } from './app-paths.ts';
 import { buildBundle, foldMetrics, readLogTail, writeBundle } from './diagnostics.ts';
 import { notificationText, showNotification } from './notifications.ts';
 import { forwardPower } from './power.ts';
@@ -26,7 +26,8 @@ import { hideWindow, showWindow } from './window.ts';
 const SERVICE_QUIT_MS = 2_000;
 const here = import.meta.dirname;
 
-const dataDir = initDataDir({ env: process.env, packaged: app.isPackaged, appData: app.getPath('appData') }, (s) => process.stderr.write(s));
+const trusted = trustedEnv(process.env, app.isPackaged); // XAIBO-PROD-611: every env read below goes through it
+const dataDir = initDataDir({ env: trusted, packaged: app.isPackaged, appData: app.getPath('appData') }, (s) => process.stderr.write(s));
 if (dataDir === null) app.exit(1);
 else {
   app.setPath('userData', dataDir);
@@ -40,7 +41,7 @@ else {
 function start(dataDir: string) {
   const log = createLogger({ dir: app.getPath('logs'), secret: loadInstallSecret(dataDir) });
   installCrashPolicy(process, log); // P1-T13: error codes only; main keeps running
-  const dev = devOrigin(process.env, app.isPackaged);
+  const dev = devOrigin(trusted, app.isPackaged);
   let win: BrowserWindow | null = null;
   let tray: Tray | null = null; // held so it is not garbage-collected
   let quitting = false;
@@ -79,10 +80,10 @@ function start(dataDir: string) {
     clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
     now: () => performance.now(),
   });
-  const notifyStub = process.env.XAIBO_NOTIFY_STUB === '1' ? path.join(app.getPath('logs'), 'notify-stub.jsonl') : null;
+  const notifyStub = trusted.XAIBO_NOTIFY_STUB === '1' ? path.join(app.getPath('logs'), 'notify-stub.jsonl') : null;
   const supervisor = new Supervisor<MessagePortMain>({
     fork: () => utilityProcess.fork(path.join(here, '..', 'service', 'index.js'), [], {
-      serviceName: 'xaibo-service', env: serviceEnv(process.env, { dataDir, packaged: app.isPackaged, resourcesPath: process.resourcesPath }),
+      serviceName: 'xaibo-service', env: serviceEnv(trusted, { dataDir, packaged: app.isPackaged, resourcesPath: process.resourcesPath }),
     }),
     channel: () => new MessageChannelMain(),
     onHealth: (h) => win?.webContents.send('health', h),
@@ -131,7 +132,7 @@ function start(dataDir: string) {
   };
   // Perf trace (P3-T10, XAIBO_PERF_TRACE=1 only): the renderer acks a painted delta id; stamped first, so the time is an
   // upper bound that includes this one IPC hop. Only from our window, only a positive integer, IDs only.
-  const trace = process.env.XAIBO_PERF_TRACE === '1' ? path.join(app.getPath('logs'), 'perf-trace-main.jsonl') : null;
+  const trace = trusted.XAIBO_PERF_TRACE === '1' ? path.join(app.getPath('logs'), 'perf-trace-main.jsonl') : null;
   ipcMain.on('paint-ack', (e, delta: unknown) => {
     const t = process.hrtime.bigint();
     if (!trace || !win || e.sender !== win.webContents || !Number.isSafeInteger(delta) || (delta as number) <= 0) return;
@@ -175,7 +176,7 @@ function start(dataDir: string) {
 
   // XAIBO-PROD-568 (P6-T11, SEC1; review R1-R3): Reveal override file. Our window's main frame only, no argument read; the
   // path is fixed in reveal.ts; Finder only selects. XAIBO_REVEAL_STUB=1 (E2E) records the kind only, never calls Finder.
-  const revealStub = process.env.XAIBO_REVEAL_STUB === '1' ? path.join(app.getPath('logs'), 'reveal-stub.jsonl') : null;
+  const revealStub = trusted.XAIBO_REVEAL_STUB === '1' ? path.join(app.getPath('logs'), 'reveal-stub.jsonl') : null;
   ipcMain.handle('reveal-price-override', (e): RevealResult => {
     if (!fromOurWindow(e, win)) return 'failed';
     const kind = revealOverride(dataDir, revealStub ? () => {} : (p) => shell.showItemInFolder(p));
@@ -185,7 +186,7 @@ function start(dataDir: string) {
 
   // XAIBO-PROD-569 (P6-T10 unit 1, design §6.6 Startup): read or save Start at login for our main frame only; the request is
   // parsed in startup.ts. XAIBO_LOGIN_ITEM_STUB=1 (every E2E run) keeps it in a file, never the machine's login items.
-  const loginItems: LoginItems = process.env.XAIBO_LOGIN_ITEM_STUB === '1' ? stubLoginItems(path.join(app.getPath('logs'), 'login-item-stub.json'))
+  const loginItems: LoginItems = trusted.XAIBO_LOGIN_ITEM_STUB === '1' ? stubLoginItems(path.join(app.getPath('logs'), 'login-item-stub.json'))
     : { get: () => app.getLoginItemSettings().openAtLogin, set: (on) => app.setLoginItemSettings({ openAtLogin: on }) };
   ipcMain.handle('startup', (e, request: unknown): StartupReply => (fromOurWindow(e, win) ? answerStartup(request, loginItems) : { status: 'failed', code: 'invalid', enabled: null }));
 

@@ -208,7 +208,7 @@ function reconcileOnStart(s: Service) {
 const integrationsFor = (s: Service): Connect | null | 'unavailable' => {
   if (!integrations && s.profiles() !== null && dataDir) {
     integrations = createConnect(connectContext({
-      dataDir, login: s.loginEnv(), bin: process.env.XAIBO_BIN ?? '', catalog: s.catalog(),
+      dataDir, login: s.loginEnv(), bin: process.env.XAIBO_BIN ?? '', catalog: s.catalog(), e2e: process.env.XAIBO_E2E === '1',
       detection: (agent) => s.detections.find((d) => d.agent === agent), // the live list: "Set path…" re-detects in place
       setupAccess: (agent) => s.setupAccess(agent), // XAIBO-PROD-589: fresh per call, never cached
     }));
@@ -266,6 +266,7 @@ async function main(dataDir: string, log: Logger) {
   ledger = new MonthlyCache({ file: path.join(dataDir, 'xaibo.db'), secret, home: homedir(), log: (e, f) => log.log(e, f) });
   meter = new StorageMeter(dataDir);
   // code review nit: userInfo() only when the variable is set (it throws for a uid with no user-database entry)
+  // XAIBO-PROD-611: this process's XAIBO_* values come only through main's trustedEnv + serviceEnv (no other launch path)
   const testRoots = process.env.XAIBO_TEST_ALLOWED_ROOT ? allowedRootsFromEnv(process.env, { home: homedir(), accountHome: userInfo().homedir, dataDir }) : [];
   if (testRoots.length) log.log('test_allowed_root');
   svc = await boot({

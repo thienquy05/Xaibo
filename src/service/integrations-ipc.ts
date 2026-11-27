@@ -31,12 +31,13 @@ export interface IntegrationsDeps {
 const REPO = path.resolve(import.meta.dirname, '..', '..'); // src/service or out/service; never the cwd
 /** The service's Connect context. `bin` is main's XAIBO_BIN: the packaged resources/bin, or '' for the repo's helpers. */
 export function connectContext(o: { dataDir: string; login: LoginEnv | null; bin: string; catalog: Catalog | null; detection: (agent: string) => Detection | undefined;
-  setupAccess?: ConnectContext['setupAccess'] }): ConnectContext {
+  setupAccess?: ConnectContext['setupAccess']; e2e?: boolean }): ConnectContext {
   const helpers = o.bin
     ? { hook: path.join(o.bin, 'xaibo-hook'), forwarder: path.join(o.bin, 'xaibo-forwarder'), statusline: path.join(o.bin, 'xaibo-statusline') }
     : { hook: path.join(REPO, 'src', 'forwarder', 'xaibo-hook'), forwarder: path.join(REPO, '.cache', 'sea', 'xaibo-forwarder'), statusline: path.join(REPO, '.cache', 'sea', 'xaibo-statusline') };
-  // the packaged build keeps the temp dir only for the isolated E2E profiles (review L6); resolved once
-  const allowed = [real(os.tmpdir()), ...(o.bin ? [] : [path.join(REPO, '.cache', 'profiles')])];
+  // the temp dir for the dev CLI and tests, and in the packaged build only for its marked E2E/perf/audit runs (review L6,
+  // XAIBO-PROD-611: e2e is the service's XAIBO_E2E=1, which reaches it only when main's trustedEnv kept it); resolved once
+  const allowed = [...(!o.bin || o.e2e ? [real(os.tmpdir())] : []), ...(o.bin ? [] : [path.join(REPO, '.cache', 'profiles')])];
   return {
     dataDir: o.dataDir, denied: o.login ? deniedRootsFrom(o.login) : null, realRoots: o.login ? agentRootsFrom(o.login) : null, allowed, claudeManagedDir: CLAUDE_MANAGED_DIR, helpers,
     catalog: o.catalog, detection: o.detection, cliPath: o.login?.PATH ?? null, // part 2b: Claude route selection and the plugin CLI
