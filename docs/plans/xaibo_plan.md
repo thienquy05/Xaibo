@@ -1058,14 +1058,14 @@ Run GS (§2.4) steps 0–6 in order, with these Gate 1 additions:
 - **M9:** canary hits in logs, diagnostics bundle, crash/error records, test artifacts (`canary.spec.ts`); target 0 per path.
 
 ### Gate 1 checklist
-- [ ] All 20 assigned EC rows pass (any waiver approved in writing by the owner).
-- [ ] lint, typecheck, unit, integration, E2E and perf green on a clean worktree; SQLite I-tests green under the Electron runtime.
-- [ ] M3 first-list, M6, M9 measured and reported with environment details, aggregates only.
-- [ ] `privacy:scan --all/--history` and `fixtures:lint` green; pre-commit active (`core.hooksPath`).
-- [ ] App data only in the temp or OS app-data dir with 0700/0600; repo unchanged after runs; fixture-store checksums unchanged.
-- [ ] Playwright MCP visual check of the list (render, empty console, keyboard); no visual baselines yet.
-- [ ] Dependency versions and licenses in the progress file.
-- [ ] GS: Codex review (`.handoff/gate1-review.md`), Claude second review, owner stop; PR only on request.
+- [x] All 20 assigned EC rows pass (any waiver approved in writing by the owner).
+- [x] lint, typecheck, unit, integration, E2E and perf green on a clean worktree; SQLite I-tests green under the Electron runtime.
+- [x] M3 first-list, M6, M9 measured and reported with environment details, aggregates only.
+- [x] `privacy:scan --all/--history` and `fixtures:lint` green; pre-commit active (`core.hooksPath`).
+- [x] App data only in the temp or OS app-data dir with 0700/0600; repo unchanged after runs; fixture-store checksums unchanged.
+- [x] Playwright MCP visual check of the list (render, empty console, keyboard); no visual baselines yet.
+- [x] Dependency versions and licenses in the progress file.
+- [x] GS: Codex review (`.handoff/gate1-review.md`), Claude second review, owner stop; PR only on request. *Gate 1 approved 2026-11-11 on `5defefa` (`gates/gate1.md`), merged by PR #3; covers every item above.*
 
 ### Risks (Phases 1–2)
 
@@ -1503,7 +1503,7 @@ Status 2026-11-14 (gate SHA `cd0a289`): 13 of 14 met, evidence per item in `docs
 - [x] Playwright MCP visual check for T10/T11 UI; console clean; status as text plus icon.
 - [x] `/ponytail-review` clean or resolved; no dependency added without approval.
 - [x] `docs/integrations/report-v1.md` and the progress file updated.
-- [ ] GS: Codex review (all chunks), Claude second review, `.handoff/` deleted, owner stop, PR. — **Open:** reviews done; waits for the `.handoff/` deletion (owner), the owner's Gate 3 approval and the PR #15 merge.
+- [x] GS: Codex review (all chunks), Claude second review, `.handoff/` deleted, owner stop, PR. *Gate 3 approved 2026-11-14 on `cd0a289` (`gates/gate3.md`), merged by PR #15.*
 
 ### 3.7 Risks (Phase 3)
 
@@ -1566,13 +1566,13 @@ Resolved by the owner with the §6 defaults (D-P3-02): Q3-2, Q3-3, Q3-5..Q3-9, Q
 **PD-T05 — Owner approval and close** — owner reads the doc (and mockups); `record_decision` "Gate D approved, design rev <sha>"; gate-record commit on top of the approved SHA adds `docs/plans/gates/gateD.md` with the checklist run, verdicts and approval (§2.4 step 6); `.handoff/design-*` deleted with no backups; PR to `master` when the owner asks. Done: decision ID, approved SHA, merged PR. Owner: **approves Gate D**.
 
 ### Gate D checklist
-- [ ] `docs/design/xaibo-design.md` covers every screen, state, label and delegated decision in PD-T01 (coverage matrix attached).
-- [ ] Light and dark themes; every inventoried token pair passes its OQ-X15 threshold (per-pair ratio and pass/fail attached).
-- [ ] A11Y rules per screen: keyboard, focus, labels, text + icon, focus restoration, narrow layouts.
-- [ ] No unapproved dependency implied; charts and icons hand-written SVG; no web fonts.
-- [ ] Originality (D-23) passed; the owner checks the dashboard-screenshot item (Q-D4).
-- [ ] Privacy scan clean; `.handoff` design files deleted.
-- [ ] Claude review 0 blocking, then owner approval recorded (no Codex review: Codex is the author).
+- [x] `docs/design/xaibo-design.md` covers every screen, state, label and delegated decision in PD-T01 (coverage matrix attached).
+- [x] Light and dark themes; every inventoried token pair passes its OQ-X15 threshold (per-pair ratio and pass/fail attached).
+- [x] A11Y rules per screen: keyboard, focus, labels, text + icon, focus restoration, narrow layouts.
+- [x] No unapproved dependency implied; charts and icons hand-written SVG; no web fonts.
+- [x] Originality (D-23) passed; the owner checks the dashboard-screenshot item (Q-D4).
+- [x] Privacy scan clean; `.handoff` design files deleted.
+- [x] Claude review 0 blocking, then owner approval recorded (no Codex review: Codex is the author). *Gate D approved 2026-11-14 on `3b41fc6` (`gates/gateD.md`), merged by PR #16; covers every item above.*
 
 ### Risks (Phase D)
 - **Critical path:** Phase 4 blocked until Gate D → run Phase D in parallel (Q-D1).
@@ -2003,6 +2003,7 @@ See §6: Q-5.1..Q-5.11.
   7. Helper copies per Connect (~145 MB per helper on a volume without clones) are unmeasured (ponytail).
   8. Imported profile roots stay unapprovable in production (D-P6-21 C).
   9. The owner live check (OQ-P6-1) stays P7-T01's first step on the Phase 7 branch.
+  **Status (2026-11-27): done.** Item 1 in `e76c862` (XAIBO-PROD-607, security-change run 243; the packaged `app.asar` carries the literal true; Codex and Claude approve); items 2-9 acknowledged by the owner at the Gate 6 stop ("flip, items 2-9 confirmed"); the open follow-ups in 2 and 3 are Phase 7 items.
 
 **P6-T13 — Gate 6** — GS plus the checklist. At this gate the owner decides whether to retire the temp profiles early or keep them for the later SG spikes (§3.2; OQ-B10).
 
@@ -2021,15 +2022,15 @@ See §6: Q-5.1..Q-5.11.
 | EC-110 | Canary credential/auth/config files and keychain entries | Access trace: detector opens/stats none, reads no process environment; no canary persisted/logged/shown | U + I | P6-T01a |
 
 ### Gate 6 checklist
-- [ ] EC-26 (I), EC-27 (I), EC-72 (I), EC-73 (U), EC-78 (U + I), EC-79 (I + E), EC-90 (U), EC-109 (U + I), EC-110 (U + I, access trace and canary absence) pass, each with RED output recorded.
-- [ ] Config round trip byte-identical where Xaibo-owned values are unchanged, across the full matrix incl. the tee; changed values conflict, never overwrite.
-- [ ] M15 measured: fourth agent passes detection, setup, full-content storage and status with a `test/`-only diff.
-- [ ] Agent Map Agents list/integration panel/Add agent, Settings price and sign-in declaration/usage E2E green; visual baselines from the approved design; A11Y keyboard/focus/narrow checks pass.
-- [ ] S14 disposition and validated per-agent/version catalog mappings recorded; negative/unavailable signals remain Unknown/owner declaration; no credential inspection or usage request.
-- [ ] M6 clean in every E2E run; M7 config lint: no prompt/agent hook types in any generated config.
-- [ ] Native fixture files unmodified (checksums).
-- [ ] Temp profiles: owner decision recorded (retire now with logout, deletion and temp keychain items removed after confirmation, or keep for the later SG spikes, §3.2).
-- [ ] GS steps 0–6.
+- [x] EC-26 (I), EC-27 (I), EC-72 (I), EC-73 (U), EC-78 (U + I), EC-79 (I + E), EC-90 (U), EC-109 (U + I), EC-110 (U + I, access trace and canary absence) pass, each with RED output recorded. *`gates/gate6.md`: npm test, test:electron and E2E on `7ad7479`; RED in each unit's harness run (runs 185-242).*
+- [x] Config round trip byte-identical where Xaibo-owned values are unchanged, across the full matrix incl. the tee; changed values conflict, never overwrite. *`roundtrip` (incl. the tee) on `7ad7479`.*
+- [x] M15 measured: fourth agent passes detection, setup, full-content storage and status with a `test/`-only diff. *`m15-fourth-agent` (P6-T09, `8223a3c`, test-only).*
+- [x] Agent Map Agents list/integration panel/Add agent, Settings price and sign-in declaration/usage E2E green; visual baselines from the approved design; A11Y keyboard/focus/narrow checks pass. *E2E 90/90 on `7ad7479` (`agent-map`, `integrations`, `add-agent`, `settings-prices`, `sign-in-usage`, `visual`, `a11y-agent-map`).*
+- [x] S14 disposition and validated per-agent/version catalog mappings recorded; negative/unavailable signals remain Unknown/owner declaration; no credential inspection or usage request. *D-P6-15 (Pass-narrowed): no verified mapping, every method Unknown unless declared; no shipped rules.*
+- [x] M6 clean in every E2E run; M7 config lint: no prompt/agent hook types in any generated config. *E2E connection audit in every launch and the packaged audit (0 non-loopback); `hook-config-lint` passes.*
+- [x] Native fixture files unmodified (checksums). *Packaged audit `fixtureStoresUnchanged` on `7ad7479`.*
+- [x] Temp profiles: owner decision recorded (retire now with logout, deletion and temp keychain items removed after confirmation, or keep for the later SG spikes, §3.2). *Kept (D-P6-22).*
+- [x] GS steps 0–6. *Gate 6 approved 2026-11-26 on `7ad7479` (`gates/gate6.md`, record `8c476ca`).*
 
 **Metrics at Gate 6.** M15 (pass/fail per sub-check); M6 from the E2E audit; M7 config lint on generated plugin and hooks; if forwarder or service code changed, re-run T0 (M1, M16).
 
