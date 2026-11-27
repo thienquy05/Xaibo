@@ -6,25 +6,25 @@ Live status file for `docs/plans/xaibo_plan.md` (HARNESS_PROCESS §2, PRD §1.6 
 
 | Item | Value |
 |---|---|
-| Current phase | **Phase 6 (integrations): done; Gate 6 approved 2026-11-26 on `7ad7479`** (`docs/plans/gates/gate6.md`, record `8c476ca`); real-profile Connect on in the merge result (`e76c862`, XAIBO-PROD-607). Done: P6-T01..T13, P6-T09a, P6-T08a, P6-S14-T1 (Pass-narrowed), D-P5-17 filters. Phase 5 done: Gate 5 approved 2026-11-22 on `6991582`, merged by PR #22 (`06e7d36`) |
+| Current phase | **Phase 6 (integrations): done; Gate 6 approved 2026-11-26 on `7ad7479`** (`docs/plans/gates/gate6.md`, record `8c476ca`); real-profile Connect on in the merge result (`e76c862`, XAIBO-PROD-607); **merged to `master` by PR #23 (`1e64bd2`, 2026-11-27)**. Done: P6-T01..T13, P6-T09a, P6-T08a, P6-S14-T1 (Pass-narrowed), D-P5-17 filters. Phase 5 done: Gate 5 approved 2026-11-22 on `6991582`, merged by PR #22 (`06e7d36`) |
 | Branch | `feat/phase6-integrations` (cut from the Phase 5 head `6d45e6c`, D-P6-01; `master` merged in at `06e7d36`) |
 | Plan version | Approved v1.0 (2026-11-09); aligned 2026-11-13 with the approved PRD v1.1 baseline and later owner decisions (plan §1a, audit "after P3" items). PRD v1.2/v1.3 approved by the owner 2026-11-13 (D-P3-15); Phase 5/6 delta for S-37, Agent Map tree, S14 and S-38 approved by the owner 2026-11-18 (D-P5-02) |
 | Gate state | Gate 0 approved 2026-11-10 (`docs/plans/gates/gate0.md`), merged by PR #2. Gate 1 approved 2026-11-11 on gate SHA `5defefa` (`docs/plans/gates/gate1.md`, record_decision 231), merged by PR #3. Gate 2 approved 2026-11-12 on gate SHA `9028f9b` (`docs/plans/gates/gate2.md`, record_decision 351), merged by PR #4. Gate 3 approved 2026-11-14 on gate SHA `cd0a289` (`docs/plans/gates/gate3.md`), merged by PR #15. Gate D approved 2026-11-14 on `3b41fc6` (`docs/plans/gates/gateD.md`, record_decision 1157), merged by PR #16. Gate 4 approved 2026-11-17 on gate SHA `e1cd15c` (`docs/plans/gates/gate4.md`), merged by PR #20. Gate 5 approved 2026-11-22 on gate SHA `6991582` (`docs/plans/gates/gate5.md`), merged by PR #22 after a test-only CI fix (D-P6-02). Gate 6 approved 2026-11-26 on gate SHA `7ad7479` (`docs/plans/gates/gate6.md`); the merge result adds the gate record and the flag flip (`e76c862`) |
-| Next step | Merge the Phase 6 PR to `master` (owner: merge when CI is green), then Phase 7: P7-T01 (setup, then the optional owner real-profile Connect check), a first cleanup unit with the Gate 6 deferrals (D-P6-24, `gates/gate6.md` "Deferred to Phase 7") |
+| Next step | Phase 7: P7-T01 (setup, then the optional owner real-profile Connect check), a first cleanup unit with the Gate 6 deferrals (D-P6-24, `gates/gate6.md` "Deferred to Phase 7") |
 | Blockers | None. Codex titles: the owner's 2026-11-11 "Untitled" default (OQ-P2-04) was reversed by D-P5-03 (thread names since P5-T02b); raw agy captures deleted by the owner. Unsandboxed Electron/Playwright runs approved by the owner 2026-11-11 (R-P1-01) |
 | Phase 6 base SHA | Branched from `6d45e6c` (D-P6-01); review baseline `master` at `06e7d36` (PR #22 merge, also `.handoff/phase6-baseline`) |
 
 ### 1a. Ready tasks (pick up here)
 
-The short list an agent starts from. Before starting, check the task's row in §3 (it may have moved on) and claim it by adding an "in progress" row there. Whoever finishes a task updates this table and "Next step" in the same commit. Read only the linked plan section and the PRD sections it cites. Order follows the plan's **Deps** field (plan §1a D26). Last refreshed 2026-11-25 against the Phase 6 head (P6-T07 part 2 done).
+The short list an agent starts from. Before starting, check the task's row in §3 (it may have moved on) and claim it by adding an "in progress" row there. Whoever finishes a task updates this table and "Next step" in the same commit. Read only the linked plan section and the PRD sections it cites. Order follows the plan's **Deps** field (plan §1a D26). Last refreshed 2026-11-27 after the Phase 6 merge (PR #23, `1e64bd2`).
 
 | Task | What | Deps | Plan | Who starts it | Branch |
 |---|---|---|---|---|---|
-| P6-T07 rest | Close out catalog validation and private import (parts 1 and 2 done); EC-78 | P6-T01 | [Phase 6](xaibo_plan.md#phase-6--integrations-gate-6) | agent | `feat/phase6-integrations` |
-| P6-T10 | Agent Map Agents list and integration panel UI | P6-T03 ✓, P5-T18a ✓ | [Phase 6](xaibo_plan.md#phase-6--integrations-gate-6) | agent | `feat/phase6-integrations` |
-| P6-T11 | Price-override access in Settings | P6-T01 ✓ | [Phase 6](xaibo_plan.md#phase-6--integrations-gate-6) | agent | `feat/phase6-integrations` |
-| P6-S14-T1 | Sign-in signal spike (S14); unblocks P6-T01a, then P6-T08, P6-T09, P6-T10a | Gate 3 ✓ | [Phase 6](xaibo_plan.md#phase-6--integrations-gate-6) | **owner-started: ask first** | `feat/phase6-integrations` |
-| P6-T12 | Real-profile enablement and owner live check | P6-T03 ✓, P6-T10 | [Phase 6](xaibo_plan.md#phase-6--integrations-gate-6) | agent, then owner live check | `feat/phase6-integrations` |
+| P7-T01 | Phase 7 setup: branch from `master` at `1e64bd2`, `/graphify`, baseline, progress section | Gate 6 ✓ (PR #23) | [Phase 7](xaibo_plan.md#phase-7--control-mvp-gate) | agent | `feat/phase7-control` |
+| P7-T01 owner check | Optional owner real-profile Connect/Disconnect check (OQ-P6-1) | P7-T01 | [Phase 7](xaibo_plan.md#phase-7--control-mvp-gate) | **owner-started: ask first** | `feat/phase7-control` |
+| Phase 7 cleanup | Gate 6 deferrals: D1-3 Return to Dashboard, D2-3, F-1, ponytail pre-freeze items, Claude second-review items 1-6 (D-P6-24) | P7-T01 | [Gate 6 record](gates/gate6.md) "Deferred to Phase 7" | agent | `feat/phase7-control` |
+| P7-T02 | Launch argument safety (EC-76), `security-change` | P7-T01 | [Phase 7](xaibo_plan.md#phase-7--control-mvp-gate) | agent | `feat/phase7-control` |
+| P7-T03 | Launch grants and revalidation (EC-84), `security-change` | P7-T02 | [Phase 7](xaibo_plan.md#phase-7--control-mvp-gate) | agent | `feat/phase7-control` |
 | v1-M setup | After the MVP Gate: owner approves the S18 spike plan, then v1-M setup drafts tasks from PRD v1.4 (S-45) and design §6.14 (D-M-01) | MVP Gate | [v1-M](xaibo_plan.md#v1-m--missions-prd-v14-approved-2026-11-25) | **owner-started (S18)** | `feat/v1m-missions` |
 
 ## 2. Per-phase status
@@ -38,7 +38,7 @@ The short list an agent starts from. Before starting, check the task's row in §
 | D Design system | `docs/design-system` | done | Gate D approved | 2026-11-14 | #16 (merged) |
 | 4 Session workspace UI | `feat/phase4-session-workspace` | done | Gate 4 approved | 2026-11-17 | #20 (merged) |
 | 5 History and retention | `feat/phase5-history-retention` | done (filters carried to Phase 6, D-P5-17; P5-T19 deferred to scale-up) | Gate 5 approved | 2026-11-22 | #22 (merged) |
-| 6 Integrations | `feat/phase6-integrations` | done (P6-T01..T13) | Gate 6 approved | 2026-11-26 | PR to `master` (merge when green) |
+| 6 Integrations | `feat/phase6-integrations` | done (P6-T01..T13) | Gate 6 approved | 2026-11-26 | #23 (merged) |
 | 7 Control | `feat/phase7-control` | not started | MVP Gate | — | — |
 | v1-M Missions | `feat/v1m-missions` | not started; PRD v1.4 and design §6.14 approved 2026-11-25 (D-M-01) | Gate M | — | — |
 | v1-A | `feat/v1a-embedded-terminal` | not started | v1-A gate | — | — |
