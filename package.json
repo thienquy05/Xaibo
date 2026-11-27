@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "tsc -p tsconfig.build.json && node scripts/dev.ts",
     "build": "tsc -p tsconfig.build.json && node -e \"require('fs').cpSync('src/service/store/migrations', 'out/service/store/migrations', { recursive: true })\" && vite build",
-    "test:electron": "ELECTRON_RUN_AS_NODE=1 electron --test \"test/integration/**/*.test.ts\"",
+    "test:electron": "ELECTRON_RUN_AS_NODE=1 electron --import ./test/helpers/tmp-root.ts --test \"test/integration/**/*.test.ts\"",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p src/renderer && tsc --noEmit -p spikes",
     "dist:mac": "npm run build && sh scripts/build-forwarder.sh && electron_config_cache=\"${electron_config_cache:-$INIT_CWD/.cache/electron}\" ELECTRON_CACHE=\"${ELECTRON_CACHE:-$INIT_CWD/.cache/electron}\" ELECTRON_BUILDER_CACHE=\"${ELECTRON_BUILDER_CACHE:-$INIT_CWD/.cache/electron-builder}\" electron-builder --mac --config electron-builder.json",
@@ -15,7 +15,7 @@
     "spike:test": "node --test \"spikes/**/*.test.ts\"",
     "spike:dist:mac": "npm run spike:build && sh spikes/s3/build-sea.sh && electron_config_cache=\"${electron_config_cache:-$INIT_CWD/.cache/electron}\" ELECTRON_CACHE=\"${ELECTRON_CACHE:-$INIT_CWD/.cache/electron}\" ELECTRON_BUILDER_CACHE=\"${ELECTRON_BUILDER_CACHE:-$INIT_CWD/.cache/electron-builder}\" electron-builder --mac dir --config spikes/app/electron-builder.json && codesign --force --deep --sign - dist/spike/mac-arm64/XaiboSpike.app",
     "spike:test:unsandboxed": "node --test --test-concurrency=1 spikes/shared/runner.unsandboxed-test.ts spikes/s3/receiver.unsandboxed-test.ts spikes/s13/tee.unsandboxed-test.ts",
-    "test": "node --test \"test/unit/**/*.test.ts\" \"test/integration/**/*.test.ts\"",
+    "test": "node --import ./test/helpers/tmp-root.ts --test \"test/unit/**/*.test.ts\" \"test/integration/**/*.test.ts\"",
     "test:e2e": "playwright test -c test/e2e/playwright.config.ts",
     "perf": "node test/perf/run.ts",
     "privacy:scan": "node scripts/privacy-scan.ts",
