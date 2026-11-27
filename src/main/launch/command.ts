@@ -23,13 +23,18 @@ export interface LaunchCommand {
   cwd: string;
   /** The catalog's executable names for this agent; the given path's basename must be one of them. */
   names: readonly string[];
+  /** XAIBO-PROD-615: the granted environment key names (beside BASE_ENV); the script passes nothing else. */
+  envKeys: readonly string[];
   /** A catalog-declared native-id pattern (matched against the whole id), for agents other than claude, codex and agy. */
   idPattern?: RegExp;
 }
-export type Refusal = 'executable' | 'interpreter' | 'name' | 'cwd' | 'id' | 'placeholder' | 'text';
+export type Refusal = 'executable' | 'interpreter' | 'name' | 'cwd' | 'id' | 'placeholder' | 'text' | 'env';
 /** argv: the resolved executable and its arguments (for a no-shell spawn); script: the .command text. */
 export type Built = { ok: true; argv: string[]; script: string } | { ok: false; reason: Refusal };
 
+/** XAIBO-PROD-615: what every launched agent gets; anything else only by a granted key name. */
+export const BASE_ENV = ['PATH', 'HOME', 'LANG', 'TERM', 'USER', 'SHELL', 'TMPDIR'] as const;
+export const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const UUID_AGENTS = new Set(['claude', 'codex', 'agy']);
 /** Shells, interpreters, package runners and command wrappers (deno and bun outright: neither is an agent CLI). */
@@ -66,6 +71,7 @@ export function buildCommand(c: LaunchCommand): Built {
   const cwd = resolved(c.cwd, true);
   if (!cwd) return no('cwd');
   if (c.nativeId !== undefined && !idOk(c.agent, c.nativeId, c.idPattern)) return no('id');
+  if (!c.envKeys.every((k) => ENV_KEY.test(k))) return no('env');
   const argv = [exe];
   for (const t of c.args) {
     if (badText(t)) return no('text');
@@ -74,5 +80,9 @@ export function buildCommand(c: LaunchCommand): Built {
     if (PLACEHOLDER.test(t)) return no('placeholder');
     argv.push(t);
   }
-  return { ok: true, argv, script: `#!/bin/sh\ncd -- ${quote(cwd)} || exit 1\nexec ${argv.map(quote).join(' ')}\n` };
+  // XAIBO-PROD-615 reviews (MEDIUM): Terminal runs the file with its own environment (launchd's, the login shell's exports), so
+  // the agent starts under env -i with the fixed set plus the granted names only; ${K+"K=$K"} passes a set variable's value as
+  // one word, read in the terminal at launch, never written here. /usr/bin/env is Xaibo's wrapper, not the agent's executable.
+  const env = [...new Set([...BASE_ENV, ...c.envKeys])].map((k) => `\${${k}+"${k}=$${k}"}`).join(' ');
+  return { ok: true, argv, script: `#!/bin/sh\ncd -- ${quote(cwd)} || exit 1\nexec /usr/bin/env -i ${env} ${argv.map(quote).join(' ')}\n` };
 }
