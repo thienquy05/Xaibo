@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ConnectPreview, IntegrationDetail, RemovalPreview } from '../../../src/shared/ipc.ts';
 import { RESULT_UNAVAILABLE } from '../../../src/renderer/model.ts';
-import { actionTitle, applyLabel, canApply, conflictTexts, dialogStep, effectTexts, nativeClose, openDialog, panelActions, previewItems, refusalText, teeHint, teeToggle, type DialogState } from '../../../src/renderer/agent-map/integration-dialog.ts';
+import { actionTitle, applyLabel, canApply, conflictTexts, dialogStep, effectTexts, lockClearText, nativeClose, openDialog, panelActions, previewItems, refusalText, teeHint, teeToggle, type DialogState } from '../../../src/renderer/agent-map/integration-dialog.ts';
 
 const P = '00000000-0000-4000-8000-0000000c7901', Q = '00000000-0000-4000-8000-0000000c7902';
 const V1 = '00000000-0000-4000-8000-0000000c79a1', V2 = '00000000-0000-4000-8000-0000000c79a2', V3 = '00000000-0000-4000-8000-0000000c79a3';
@@ -251,4 +251,23 @@ test('lock refusals: busy, stale-lock and lock-unknown say what to do; none says
   assert.equal(refusalText('stale-lock'), "An earlier integration change stopped. Quit Xaibo, then remove the integration lock file from Xaibo's data folder.");
   assert.equal(refusalText('lock-unknown'), "Xaibo can't verify that integration changes have stopped. Quit Xaibo and stop any integration command before manually removing the lock.");
   for (const c of ['busy', 'stale-lock', 'lock-unknown']) assert.doesNotMatch(refusalText(c), /restart Xaibo/i);
+});
+
+// XAIBO-PROD-613: a preview refused for a stale lock keeps its code (the dialog then checks whether Xaibo can clear it); the
+// clear's outcome texts
+test('lock-clear: the refusal code is kept; outcomes say cleared, changed, cancelled or unknown', async () => {
+  const o = openDialog({ kind: 'connect', profileId: 'p' });
+  const r = dialogStep(o.s, { type: 'reply', seq: o.s.seq, reply: { status: 'refused', code: 'stale-lock' } });
+  assert.equal(r.s.phase, 'failed');
+  assert.equal(r.s.code, 'stale-lock');
+  assert.equal(r.s.text, 'Checking the lock…', 'review NIT: never the manual steps before the check');
+  assert.equal(dialogStep(o.s, { type: 'reply', seq: o.s.seq, reply: { status: 'refused', code: 'busy' } }).s.code, 'busy');
+  assert.deepEqual(lockClearText({ status: 'done', kind: 'lock-clear', reply: { status: 'cleared' } }), { cleared: true, again: false, text: 'Lock cleared. Integration evidence refreshed.' });
+  assert.deepEqual(lockClearText({ status: 'done', kind: 'lock-clear', reply: { status: 'refused', code: 'lock-changed' } }), { cleared: false, again: false, text: 'The lock changed. Nothing was cleared. Check again.' });
+  // review LOW: a Cancel (or a click inside the guard) keeps the offer: the held preview is still valid
+  assert.deepEqual(lockClearText({ status: 'cancelled' }), { cleared: false, again: true, text: refusalText('cancelled') });
+  assert.deepEqual(lockClearText(null), { cleared: false, again: false, text: refusalText('unknown') });
+  assert.deepEqual(lockClearText({ status: 'refused', code: 'preview-expired' }), { cleared: false, again: false, text: refusalText('preview-expired') });
+  assert.equal(refusalText('lock-manual'), "Xaibo can't clear this lock itself. Quit Xaibo, then remove the integration lock file from Xaibo's data folder.");
+  assert.equal(refusalText('lock-free'), 'The lock is already gone. Check again.');
 });

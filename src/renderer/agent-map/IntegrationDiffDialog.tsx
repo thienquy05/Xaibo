@@ -9,10 +9,10 @@
 import { useEffect, useRef, useState } from 'react';
 import type { CleanupReply, ConnectReply, IntegrationDetail, RemovalReply } from '../../shared/ipc.ts';
 import { visible } from '../text.ts';
-import { actionTitle, applyLabel, canApply, conflictTexts, dialogStep, effectTexts, nativeClose, openDialog, previewItems, type DialogAction, type DialogEvent, type DialogState, type Send } from './integration-dialog.ts';
+import { actionTitle, applyLabel, canApply, conflictTexts, dialogStep, effectTexts, lockClearText, nativeClose, openDialog, previewItems, refusalText, type DialogAction, type DialogEvent, type DialogState, type LockClearApi, type Send } from './integration-dialog.ts';
 
 /** The previewed writes; a refusal is a result. Connect never asks for the tee; the tee has its own previews. */
-export interface WriteApi {
+export interface WriteApi extends LockClearApi {
   connectPreview(profileId: string, retention: boolean): Promise<ConnectReply>;
   connectApply(previewId: string): Promise<ConnectReply>;
   removalPreview(profileId: string | null): Promise<RemovalReply>;
@@ -40,7 +40,12 @@ export function IntegrationDiffDialog({ open, detail, api, lastKnown, onDone }: 
   const [s, setS] = useState<DialogState | null>(null);
   const sRef = useRef<DialogState | null>(null); // null: closed (so a native close event after our own close is ignored)
   const sent = useRef(false), last = useRef(0); // last: the highest seq sent by any open (code review H1)
+  // XAIBO-PROD-613: a preview refused for a stale lock asks at once whether Xaibo can clear it; offered only with a held preview
+  const [clear, setClear] = useState<{ previewId: string; busy: boolean } | null>(null);
+  const clearing = useRef(false), closeBtn = useRef<HTMLButtonElement>(null);
   const close = (focus: 'heading' | 'trigger', note: string | null) => {
+    if (clearing.current) return; // main's confirmation is open: its outcome must land here
+    setClear(null);
     sRef.current = null;
     setS(null);
     dialog.current?.close();
@@ -64,6 +69,7 @@ export function IntegrationDiffDialog({ open, detail, api, lastKnown, onDone }: 
   useEffect(() => {
     if (!open) return;
     const o = openDialog(open.action, last.current + 1);
+    setClear(null);
     sRef.current = o.s;
     sent.current = false;
     setS(o.s);
@@ -80,6 +86,35 @@ export function IntegrationDiffDialog({ open, detail, api, lastKnown, onDone }: 
     const cur = sRef.current;
     if (lastKnown !== null && cur) step({ type: 'lost', seq: cur.seq });
   }, [lastKnown]);
+  const staleLock = s?.phase === 'failed' && s.code === 'stale-lock' ? s.seq : null;
+  useEffect(() => {
+    if (staleLock === null) return;
+    let live = true;
+    const say = (text: string) => { const cur = sRef.current; if (!cur) return; const next = { ...cur, text }; sRef.current = next; setS(next); };
+    api.lockClearPreview().then((r) => {
+      if (!live || !sRef.current) return;
+      if (r.status !== 'preview') { say(refusalText(r.code === 'lock-manual' ? 'lock-manual' : 'stale-lock')); return; } // no offer: the manual steps
+      setClear({ previewId: r.previewId, busy: false });
+      say('An earlier integration change stopped. Xaibo can clear its stale lock.');
+    }, () => { if (live) say(refusalText('stale-lock')); });
+    return () => { live = false; };
+  }, [staleLock]);
+  const clearLock = async () => {
+    if (!clear || clearing.current) return;
+    clearing.current = true;
+    sent.current = true; // evidence may change
+    setClear({ ...clear, busy: true });
+    const r = lockClearText(await api.lockClear(clear.previewId).catch(() => null));
+    clearing.current = false;
+    setClear(r.again ? { ...clear, busy: false } : null); // a Cancel keeps the offer (the held preview is still valid)
+    const cur = sRef.current;
+    if (!cur) return;
+    if (r.cleared) { close('heading', r.text); return; }
+    const next = { ...cur, text: r.text };
+    sRef.current = next;
+    setS(next);
+    if (!r.again) closeBtn.current?.focus(); // the pressed button is gone
+  };
   const closed = () => { // the native close event (queued: a stale one after a quick reopen is ignored)
     const what = nativeClose(sRef.current, dialog.current?.open === true);
     if (what === 'ignore') return;
@@ -96,7 +131,7 @@ export function IntegrationDiffDialog({ open, detail, api, lastKnown, onDone }: 
     : `Profile: ${detail.row.profileLabel === null ? 'No profile' : visible(detail.row.profileLabel)}. Nothing is written until you apply.`;
   return (
     <dialog ref={dialog} className="x-dialog x-diff-dialog" aria-labelledby="diff-title" aria-describedby="diff-scope"
-      onCancel={(e) => { e.preventDefault(); if (sRef.current && sRef.current.phase !== 'applying') close('trigger', null); }} onClose={closed}>
+      onCancel={(e) => { e.preventDefault(); if (sRef.current && sRef.current.phase !== 'applying' && !clearing.current) close('trigger', null); }} onClose={closed}>
       {s ? (
         <>
           <h2 id="diff-title">{actionTitle(s.action, visible(detail.row.name))}</h2>
@@ -130,7 +165,10 @@ export function IntegrationDiffDialog({ open, detail, api, lastKnown, onDone }: 
               <button type="button" className="x-btn x-btn-secondary" autoFocus aria-disabled={applying || undefined} onClick={() => { if (!applying) close('trigger', null); }}>Cancel</button>
               <button type="button" className={`x-btn ${s.action.kind === 'connect' || s.action.kind === 'cleanup' || (s.action.kind === 'tee' && s.action.enabled) ? 'x-btn-primary' : 'x-btn-danger'}`} aria-disabled={!canApply(s) || undefined} aria-busy={applying || undefined}
                 onClick={() => step({ type: 'apply' })}>{applyLabel(s.action)}</button>
-            </> : <button key="close" type="button" className="x-btn x-btn-secondary" autoFocus onClick={() => close('trigger', null)}>Close</button>}
+            </> : <>
+              <button key="close" ref={closeBtn} type="button" className="x-btn x-btn-secondary" autoFocus aria-disabled={clear?.busy || undefined} onClick={() => close('trigger', null)}>Close</button>
+              {clear ? <button key="clear" type="button" className="x-btn x-btn-danger" aria-busy={clear.busy || undefined} aria-disabled={clear.busy || undefined} onClick={() => { void clearLock(); }}>Clear stale lock</button> : null}
+            </>}
           </div>
         </>
       ) : null}

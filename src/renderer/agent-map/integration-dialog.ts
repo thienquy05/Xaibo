@@ -6,7 +6,7 @@
 // fresh preview and waits for another Apply; a reply to an older request is dropped (seq). Rendering: IntegrationDiffDialog.tsx.
 // Decision (R8): diffs show Xaibo's own values and a replaced value's type and hash; no unchanged lines (the service never
 // sends whole config documents); removal and cleanup show each entry's outcome (their previews carry no lines).
-import { parseApplyOutcome, type ApplyKind, type ApplyOutcome, type CleanupReply, type ConnectOutcome, type ConnectPreview, type ConnectReply, type IntegrationDetail, type RemovalItem, type RemovalPreview, type RemovalReply } from '../../shared/ipc.ts';
+import { parseApplyOutcome, type ApplyKind, type ApplyOutcome, type LockClearPreviewReply, type CleanupReply, type ConnectOutcome, type ConnectPreview, type ConnectReply, type IntegrationDetail, type RemovalItem, type RemovalPreview, type RemovalReply } from '../../shared/ipc.ts';
 import { APPLYING, RESULT_UNAVAILABLE } from '../model.ts';
 import { entryText, ROUTE } from './integration-panel.ts';
 
@@ -21,7 +21,8 @@ export type Preview = ConnectPreview | RemovalPreview | CleanupPreview;
 export type Reply = ConnectReply | RemovalReply | CleanupReply;
 export type Phase = 'loading' | 'review' | 'recalculating' | 'applying' | 'success' | 'failed' | 'unavailable';
 /** seq: the latest request; only its reply counts. retention: what the shown (or awaited) Connect preview selected. */
-export interface DialogState { action: DialogAction; phase: Phase; seq: number; preview: Preview | null; retention: boolean; expired: boolean; text: string }
+/** code (XAIBO-PROD-613): why a preview was refused (stale-lock: the dialog then asks whether Xaibo can clear the lock). */
+export interface DialogState { action: DialogAction; phase: Phase; seq: number; preview: Preview | null; retention: boolean; expired: boolean; text: string; code?: string }
 export type Send = { seq: number; kind: 'preview'; retention: boolean } | { seq: number; kind: 'apply'; previewId: string };
 export type DialogEvent = { type: 'reply'; seq: number; reply: Reply } | { type: 'lost'; seq: number } | { type: 'retention'; on: boolean } | { type: 'apply' } | { type: 'expired'; previewId: string };
 
@@ -66,7 +67,8 @@ export function dialogStep(s: DialogState, e: DialogEvent): { s: DialogState; se
       const r = e.reply;
       if (s.phase === 'loading' || s.phase === 'recalculating') {
         if (r.status === 'preview') return { s: { ...s, phase: 'review', preview: r, expired: false, text: s.phase === 'recalculating' ? 'Preview updated.' : '' } };
-        return { s: { ...s, phase: 'failed', text: r.status === 'refused' ? refusalText(r.code) : "Couldn't prepare the preview. Nothing was changed." } };
+        // XAIBO-PROD-613 review NIT: a stale lock is checked first (the offer or the manual steps follow)
+        return { s: { ...s, phase: 'failed', ...(r.status === 'refused' ? { code: r.code } : {}), text: r.status === 'refused' ? (r.code === 'stale-lock' ? 'Checking the lock…' : refusalText(r.code)) : "Couldn't prepare the preview. Nothing was changed." } };
       }
       if (s.phase !== 'applying') return { s };
       if (r.status === 'needs-preview') {
@@ -112,6 +114,22 @@ export async function confirmedApply<T extends Reply>(kind: ApplyKind, previewId
   return (out.status === 'done' ? out.reply : { status: 'refused', code: out.status === 'cancelled' ? 'cancelled' : out.code }) as T;
 }
 
+/** XAIBO-PROD-613: the Clear stale lock goes to main's native confirmation with its preview id only (never over the port). */
+export type LockClearApi = { lockClearPreview(): Promise<LockClearPreviewReply>; lockClear(previewId: string): Promise<ApplyOutcome | null> };
+export async function askLockClear(bridge: ((request: unknown) => Promise<unknown>) | undefined, previewId: string): Promise<ApplyOutcome | null> {
+  if (!bridge) return { status: 'refused', code: 'unavailable' }; // nothing was sent
+  try { return parseApplyOutcome(await bridge({ kind: 'lock-clear', previewId })); } catch { return null; }
+}
+export const LOCK_CLEARED = 'Lock cleared. Integration evidence refreshed.';
+/** null: no valid answer (the clear may have run). again: the held preview is still valid (a Cancel), so the offer stays. */
+export function lockClearText(o: ApplyOutcome | null): { cleared: boolean; again: boolean; text: string } {
+  const no = (text: string, again = false) => ({ cleared: false, again, text });
+  if (!o || (o.status === 'done' && o.kind !== 'lock-clear')) return no(refusalText('unknown'));
+  if (o.status === 'cancelled') return no(refusalText('cancelled'), true);
+  if (o.status === 'refused') return no(refusalText(o.code));
+  return o.reply.status === 'cleared' ? { cleared: true, again: false, text: LOCK_CLEARED } : no(o.reply.status === 'refused' ? refusalText(o.reply.code) : refusalText('unknown'));
+}
+
 const REFUSALS: Record<string, string> = {
   // XAIBO-PROD-601: real-profile confirmation outcomes (main's native dialog)
   'unsafe-profile': "Xaibo can't change this profile safely (another agent's folder, a shared or linked folder, or a folder chosen by hand). Nothing was changed.",
@@ -127,6 +145,9 @@ const REFUSALS: Record<string, string> = {
   busy: 'Another integration change is running. Wait, then check again.',
   'stale-lock': "An earlier integration change stopped. Quit Xaibo, then remove the integration lock file from Xaibo's data folder.",
   'lock-unknown': "Xaibo can't verify that integration changes have stopped. Quit Xaibo and stop any integration command before manually removing the lock.",
+  // XAIBO-PROD-613: the Clear stale lock
+  'lock-changed': 'The lock changed. Nothing was cleared. Check again.', 'lock-free': 'The lock is already gone. Check again.',
+  'lock-manual': "Xaibo can't clear this lock itself. Quit Xaibo, then remove the integration lock file from Xaibo's data folder.",
   'preview-expired': 'This preview expired. Close and open it again.', 'preview-invalid': 'This preview is no longer valid. Close and open it again.',
   unverified: "This agent's version isn't verified for Connect.", 'helpers-unavailable': "Xaibo's hook helpers are missing; reinstall Xaibo.",
   'bounds-unavailable': "Xaibo couldn't confirm which folders are safe to change.", duplicate: 'Xaibo is already set up in this configuration.',

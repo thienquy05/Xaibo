@@ -5,7 +5,7 @@
 // the retention offer goes out without its ops.
 import os from 'node:os';
 import path from 'node:path';
-import { applyRefusal, IPC_VERSION, parseCleanupReply, parseConnectReply, parseRemovalReply, type CleanupReply, type ConnectReply, type PortMessage, type PortRequest, type RemovalReply, type ApplyAsk, type ApplyConfirmResult, type ApplyOfferResult } from '../shared/ipc.ts';
+import { applyRefusal, IPC_VERSION, parseCleanupReply, parseConnectReply, parseRemovalReply, type CleanupReply, type ConnectReply, type PortMessage, type PortRequest, type RemovalReply, type LockClearPreviewReply, type LockClearReply, type ApplyAsk, type ApplyConfirmResult, type ApplyOfferResult } from '../shared/ipc.ts';
 import { CLAUDE_MANAGED_DIR } from './adapters/claude/hooks.ts';
 import type { LoginEnv } from './catalog/env.ts';
 import type { Detection, Profile } from './catalog/detect.ts';
@@ -15,7 +15,7 @@ import { agentRootsFrom, deniedRootsFrom, real } from './config/bounds.ts';
 import type { ConnectContext, createConnect } from './integrations/connect.ts';
 
 export type Connect = ReturnType<typeof createConnect>;
-export type IntegrationsRequest = Extract<PortRequest, { type: 'connectPreview' | 'connectApply' | 'removalPreview' | 'removalApply' | 'cleanupPreview' | 'cleanupApply' | 'teePreview' | 'teeRemovalPreview' }>;
+export type IntegrationsRequest = Extract<PortRequest, { type: 'connectPreview' | 'connectApply' | 'removalPreview' | 'removalApply' | 'cleanupPreview' | 'cleanupApply' | 'teePreview' | 'teeRemovalPreview' | 'lockClearPreview' }>;
 export interface IntegrationsDeps {
   /** The store refused writes (a newer schema may own the manifest): every request is refused. */
   readOnly: boolean;
@@ -85,11 +85,11 @@ export async function answerApply(d: IntegrationsDeps, cmd: { type: 'applyOffer'
   let r;
   try { r = await c.applyConfirmed(kind, previewId, cmd.binding, d.profiles()); } catch { return applyRefusal('unknown'); } // may follow a write
   if (r.status !== 'done') return applyRefusal(r.code);
-  const reply = kind === 'connect' ? wire(r.reply, true) : wireOther(kind === 'removal' ? 'removalApply' : 'cleanupApply', r.reply, true);
+  const reply = kind === 'connect' ? wire(r.reply, true) : kind === 'lock-clear' ? r.reply as LockClearReply : wireOther(kind === 'removal' ? 'removalApply' : 'cleanupApply', r.reply, true);
   return { status: 'done', kind, reply };
 }
 export async function answerIntegrations(d: IntegrationsDeps, req: IntegrationsRequest, owner: object): Promise<PortMessage> {
-  const send = (result: ConnectReply | RemovalReply | CleanupReply) => ({ v: IPC_VERSION, type: req.type, id: req.id, result }) as PortMessage;
+  const send = (result: ConnectReply | RemovalReply | CleanupReply | LockClearPreviewReply) => ({ v: IPC_VERSION, type: req.type, id: req.id, result }) as PortMessage;
   if (d.readOnly) return send(refused('read-only'));
   let c: Connect, p: Profile | null = null;
   try { // before dispatch nothing is written: a throw is a refusal (review M2: never an unanswered request, never the error text)
@@ -106,6 +106,7 @@ export async function answerIntegrations(d: IntegrationsDeps, req: IntegrationsR
     if (req.type === 'teePreview') return send(wire(c.previewConnect(p!, { retention: false, tee: true, teeOnly: true }, owner), false));
     if (req.type === 'teeRemovalPreview') return send(wireOther(req.type, c.previewRemoval(d.profiles(), p, owner, false, 'claude-tee'), false));
     if (req.type === 'connectPreview') return send(wire(c.previewConnect(p!, req.selections, owner), false));
+    if (req.type === 'lockClearPreview') return send(c.previewLockClear(owner)); // XAIBO-PROD-613: an opaque id, or why not
     // XAIBO-PROD-576 (review R1/R4): read-only previews; Full Uninstall when no profile is named
     if (req.type === 'removalPreview') return send(wireOther(req.type, c.previewRemoval(d.profiles(), p, owner), false));
     if (req.type === 'cleanupPreview') {

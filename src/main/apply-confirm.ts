@@ -10,6 +10,7 @@ import { q, type GrantDialog } from './grants.ts';
 
 const EDITS = "Xaibo will change this agent's own configuration files.";
 const CLEANUP = "Xaibo removes only its own records and backups; the agent's files are not changed.";
+const LOCK = 'This affects all integrations in this Xaibo data folder. Xaibo will check for unfinished changes afterward. Agent configuration, records and backups are kept.'; // XAIBO-PROD-613
 const OFFER_MS = 10_000;
 const CONFIRM_MS = 60_000; // under the operation lock; the settings routes run no CLI
 const DETAIL_MAX = 6_000;
@@ -23,11 +24,12 @@ const TEXT: Record<ApplyKind, { title: string; question: string; button: string 
   connect: { title: 'Connect a real profile', question: 'Apply these configuration changes to a real agent profile?', button: 'Apply' },
   removal: { title: 'Disconnect a real profile', question: "Revert Xaibo's changes in a real agent profile?", button: 'Disconnect' },
   cleanup: { title: 'Clean up records', question: "Remove Xaibo's records of changes that were already removed outside Xaibo?", button: 'Clean up' },
+  'lock-clear': { title: 'Clear a stale lock', question: 'Clear this stale integration lock?', button: 'Clear lock' },
 };
 
 /** The native confirmation for an offer; null when its escaped detail is over the budget (refused, never cut). */
 export function applyDialog(o: ApplyOffer): GrantDialog | null {
-  const t = TEXT[o.kind], last = o.kind === 'cleanup' ? CLEANUP : EDITS;
+  const t = TEXT[o.kind], last = o.kind === 'cleanup' ? CLEANUP : o.kind === 'lock-clear' ? LOCK : EDITS;
   const detail = [...o.items.map(([l, v]) => `${LABEL[l]}: ${q(v)}`), '', last].join('\n');
   if (detail.length > DETAIL_MAX) return null;
   return { type: 'warning', title: t.title, message: `${t.question}\n\n${last}`, detail, buttons: ['Cancel', t.button], defaultId: 0, cancelId: 0, noLink: true };

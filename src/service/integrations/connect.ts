@@ -26,7 +26,7 @@ import type { Detection, Profile } from '../catalog/detect.ts';
 import type { Catalog } from '../catalog/validate.ts';
 import { claudeConnectRoute, claudeRetentionOffer, reportOps, retentionOps, type RetentionOffer, type SetupAccess } from '../catalog/setup-plans.ts';
 import { privateDir, real, REAL_PROFILE_ENABLED, writable } from '../config/bounds.ts';
-import { acquireLock, lockState, type Writer } from '../config/lock.ts';
+import { acquireLock, judge, lockState, type Writer } from '../config/lock.ts';
 import {
   apply, BACKUP_NAME, ConfigError, dropEntry, plan, privateDirs, readFile, readManifest, revert, within, type Bounds, type DiffLine, type ManifestEntry, type Op, type Plan, type Route,
 } from '../config/transaction.ts';
@@ -453,6 +453,7 @@ export function createConnect(ctx: ConnectContext) {
     for (const [id, h] of previews) if (h.owner === owner) previews.delete(id);
     for (const [id, c] of cleanups) if (c.owner === owner) cleanups.delete(id); // part 2 review C7
     for (const [id, r] of removals) if (r.owner === owner) removals.delete(id); // XAIBO-PROD-576 plan review L5
+    for (const [id, l] of lockClears) if (l.owner === owner) lockClears.delete(id); // XAIBO-PROD-613
   };
 
   /** XAIBO-PROD-562 (P6-T04 part 1, EC-26): the read-only reconcile over the current profiles; the IPC reads (P6-T10) run their
@@ -648,9 +649,60 @@ export function createConnect(ctx: ConnectContext) {
   // under a per-start key over the kind, the preview id, the items and a digest of the held preview (everything apply would
   // use); applyConfirmed re-derives both from the held preview (never from main's text) and applies through the existing
   // locked path with the held owner (review M5: the only caller that may), so every recheck stays (needs-preview never applies).
+  // XAIBO-PROD-613 (Phase 7 cleanup item 1, run 2; Codex design, D-P7-03, Claude simplification: no recovery-guard file): the
+  // owner-confirmed Clear stale lock. A preview needs fresh evidence (the holder provably gone, a v2 record the service wrote)
+  // and binds the canonical data dir, the lock file's identity and mode, a digest of its bytes and the record; it is held here
+  // (the renderer sees only its id), single use, and applied only through main's confirmation (kind lock-clear). Immediately
+  // before the unlink every bound value and the staleness are checked again; any change is lock-changed, never a retry.
+  type LockEvidence = { dir: string; dev: number; ino: number; mode: number; digest: string; rec: unknown };
+  const lockClears = new Map<string, LockEvidence & { owner: unknown; expiresAt: number }>();
+  const lockPath = () => path.join(ctx.dataDir, 'integrations', 'operation.lock');
+  function lockEvidence(): LockEvidence | Refused {
+    let dir: string, f;
+    try { privateDirs(ctx.dataDir); dir = realpathSync.native(ctx.dataDir); f = readFile(lockPath()); } catch { return refused('lock-unknown'); } // linked, not ours, unreadable
+    if (!f) return refused('lock-free');
+    let rec: unknown;
+    try { rec = JSON.parse(f.bytes.toString('utf8')); } catch { return refused('lock-unknown'); }
+    const state = judge(rec);
+    if (state !== 'stale-lock') return refused(state);
+    const r = rec as Record<string, unknown>;
+    if (r['v'] !== 2 || r['writer'] !== 'service') return refused('lock-manual'); // an external CLI may still run: never in-app
+    return { dir, dev: f.dev, ino: f.ino, mode: f.mode, digest: sha256(f.bytes), rec };
+  }
+  function previewLockClear(owner?: unknown): { status: 'preview'; previewId: string; ttlMs: number } | Refused {
+    const ev = lockEvidence();
+    if ('status' in ev) return ev;
+    lockClears.clear(); // one lock, one held preview
+    const previewId = randomUUID();
+    lockClears.set(previewId, { ...ev, owner, expiresAt: now() + TTL_MS });
+    return { status: 'preview', previewId, ttlMs: TTL_MS };
+  }
+  function clearLock(previewId: string): { status: 'cleared' } | Refused {
+    const h = lockClears.get(previewId);
+    lockClears.delete(previewId); // single use
+    if (!h) return refused('preview-invalid');
+    if (now() > h.expiresAt) return refused('preview-expired');
+    const ev = lockEvidence();
+    if ('status' in ev || ev.dir !== h.dir || ev.dev !== h.dev || ev.ino !== h.ino || ev.mode !== h.mode || ev.digest !== h.digest) return refused('lock-changed');
+    // ponytail: the lstat-checked path is then unlinked by name; a replacement in that microsecond window needs the stale file
+    // removed by hand first (acquire is O_EXCL), so only a concurrent manual removal could race it
+    try { unlinkSync(lockPath()); } catch { return refused('lock-changed'); }
+    previews.clear(); removals.clear(); cleanups.clear(); // every held integration preview: made under the old lock state
+    return { status: 'cleared' };
+  }
+
   const applyKey = randomBytes(32);
   type Offered = { items: [ApplyLabel, string][]; digest: string; owner: unknown; run: () => Promise<unknown> };
   function offered(kind: ApplyKind, previewId: string, profiles: readonly Profile[]): Offered | Refused {
+    if (kind === 'lock-clear') { // XAIBO-PROD-613: touches no agent configuration, so no bounds; reconcile afterwards (read-only)
+      const l = lockClears.get(previewId);
+      if (!l) return refused('preview-invalid');
+      if (now() > l.expiresAt) return refused('preview-expired');
+      const bound: LockEvidence = { dir: l.dir, dev: l.dev, ino: l.ino, mode: l.mode, digest: l.digest, rec: l.rec };
+      return { items: [['scope', 'Every integration in this Xaibo data folder'], ['file', lockPath()]], digest: JSON.stringify(bound), owner: l.owner,
+        // review LOW: the clear already happened; a failing read-only reconcile must not turn it into unknown
+        run: async () => { const r = clearLock(previewId); if (r.status === 'cleared' && denied) { try { reconcile(profiles); } catch { /* the panel's next read reconciles */ } } return r; } };
+    }
     if (!denied) return refused('bounds-unavailable');
     const d = denied, at = now();
     if (kind === 'connect') {
@@ -712,5 +764,5 @@ export function createConnect(ctx: ConnectContext) {
     return { status: 'done', reply: await x.run() };
   }
 
-  return { previewConnect, applyConnect, disconnect, uninstall, dropOwner, reconcile, reconciled, previewCleanup, applyCleanup, previewRemoval, applyRemoval, applyOffer, applyConfirmed };
+  return { previewConnect, applyConnect, disconnect, uninstall, dropOwner, reconcile, reconciled, previewCleanup, applyCleanup, previewRemoval, applyRemoval, applyOffer, applyConfirmed, previewLockClear };
 }

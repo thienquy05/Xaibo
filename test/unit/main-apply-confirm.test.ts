@@ -142,3 +142,16 @@ test('parsers: exact keys, a UUID preview id, a 64-hex binding; the renderer por
   assert.equal(parseServiceEvent({ v: 1, type: 'apply', id: 3, result: { status: 'offer', offer: { ...OFFER, items: [['secret', 'x']] } } }), null, 'labels from a closed set');
   assert.ok(parseServiceEvent({ v: 1, type: 'apply', id: 3, result: { status: 'done', kind: 'connect', reply: { status: 'refused', code: 'needs-preview' } } }));
 });
+
+// XAIBO-PROD-613: the Clear stale lock confirmation (design texts); the kind round-trips the parsers
+test('lock-clear: its own question, button and closing sentence; the ask and the outcome parse', () => {
+  const d = applyDialog({ kind: 'lock-clear', previewId: PID, items: [['scope', 'Every integration in this Xaibo data folder'], ['file', '/tmp/xaibo-fixture/data/integrations/operation.lock']], binding: 'c'.repeat(64) })!;
+  assert.deepEqual([d.type, d.title, d.buttons, d.defaultId, d.cancelId], ['warning', 'Clear a stale lock', ['Cancel', 'Clear lock'], 0, 0]);
+  const last = 'This affects all integrations in this Xaibo data folder. Xaibo will check for unfinished changes afterward. Agent configuration, records and backups are kept.';
+  assert.equal(d.message, `Clear this stale integration lock?\n\n${last}`);
+  assert.equal(d.detail.split('\n').at(-1), last);
+  assert.deepEqual(parseApplyAsk({ kind: 'lock-clear', previewId: PID }), { kind: 'lock-clear', previewId: PID });
+  assert.deepEqual(parseServiceEvent({ v: 1, type: 'apply', id: 1, result: { status: 'done', kind: 'lock-clear', reply: { status: 'cleared' } } }), { v: 1, type: 'apply', id: 1, result: { status: 'done', kind: 'lock-clear', reply: { status: 'cleared' } } });
+  assert.deepEqual(parseServiceEvent({ v: 1, type: 'apply', id: 1, result: { status: 'done', kind: 'lock-clear', reply: { status: 'refused', code: 'lock-changed' } } }), { v: 1, type: 'apply', id: 1, result: { status: 'done', kind: 'lock-clear', reply: { status: 'refused', code: 'lock-changed' } } });
+  assert.equal(parseServiceEvent({ v: 1, type: 'apply', id: 1, result: { status: 'done', kind: 'lock-clear', reply: { status: 'applied' } } }), null);
+});

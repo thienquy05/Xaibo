@@ -489,3 +489,14 @@ test('applyRefusal keeps the lock codes', () => {
   for (const c of ['busy', 'stale-lock', 'lock-unknown'] as const) assert.deepEqual(applyRefusal(c), { status: 'refused', code: c });
   assert.deepEqual(applyRefusal('nonsense'), { status: 'refused', code: 'failed' });
 });
+
+// XAIBO-PROD-613: the renderer asks for a lock-clear preview with nothing but an id; main alone confirms kind lock-clear
+test('lockClearPreview and the lock-clear apply kind parse strictly', () => {
+  assert.deepEqual(parsePortRequest({ v: 1, type: 'lockClearPreview', id: 3 }), { v: 1, type: 'lockClearPreview', id: 3 });
+  assert.equal(parsePortRequest({ v: 1, type: 'lockClearPreview', id: 3, path: '/x' }), null);
+  const pid = '00000000-0000-4000-8000-0000000c1e01';
+  assert.deepEqual(parsePortMessage({ v: 1, type: 'lockClearPreview', id: 3, result: { status: 'preview', previewId: pid, ttlMs: 1000 } }), { v: 1, type: 'lockClearPreview', id: 3, result: { status: 'preview', previewId: pid, ttlMs: 1000 } });
+  assert.deepEqual(parsePortMessage({ v: 1, type: 'lockClearPreview', id: 3, result: { status: 'refused', code: 'lock-manual' } }), { v: 1, type: 'lockClearPreview', id: 3, result: { status: 'refused', code: 'lock-manual' } });
+  assert.equal(parsePortMessage({ v: 1, type: 'lockClearPreview', id: 3, result: { status: 'cleared' } }), null, 'a preview request never answers an outcome');
+  assert.deepEqual(applyRefusal('lock-changed'), { status: 'refused', code: 'lock-changed' });
+});

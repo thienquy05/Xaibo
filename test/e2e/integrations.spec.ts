@@ -5,6 +5,7 @@
 // agy executable. 31 rows: every FR-06 state (Partial coverage after a restart with a recorded hook gap), 10 a page with
 // at most three resident and Load previous after eviction, the mode buttons (roving, manual activation, focus stays),
 // each mode keeping its own anchor, and the narrow layout. Nothing is installed and no agent runs.
+import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -450,5 +451,79 @@ test('Integration diff dialog: Connect with retention, changed file, Disconnect,
   await dialog.getByRole('button', { name: 'Cancel' }).click();
   await expect(codex.getByRole('button', { name: 'Connect', exact: true })).toBeFocused();
   expect(errors).toEqual([]);
+  await xaibo.quit(run);
+});
+
+// XAIBO-PROD-613 (Phase 7 cleanup item 1, run 2; Codex design, D-P7-03): a crashed service operation left its lock. Connect is
+// refused as a stale lock; the dialog offers Clear stale lock (a v2 record the service wrote, its holder gone); main's native
+// confirmation (stubbed: a Cancel-first warning answering Clear lock after the click guard) clears it once; the panel announces
+// it and takes focus; nothing else in the data folder changes.
+test('Clear stale lock: offered for a crashed service lock, cleared through the native confirmation', async ({ xaibo }) => {
+  test.setTimeout(180_000);
+  const root = path.dirname(xaibo.home), tmp = path.join(root, 'tmp');
+  chmodSync(tmp, 0o700);
+  const dataDir = path.join(root, 'data-lock');
+  mkdirSync(dataDir, { mode: 0o700 });
+  const bin = path.join(root, 'bin-lock');
+  mkdirSync(bin);
+  writeFileSync(path.join(bin, 'codex'), '#!/bin/sh\necho "codex-cli 0.160.0"\n');
+  chmodSync(path.join(bin, 'codex'), 0o755);
+  const env = { PATH: `${bin}:/usr/bin:/bin` };
+  const first = await xaibo.launch({ dataDir, env });
+  await xaibo.window(first);
+  await expect.poll(() => { try { const db = new DatabaseSync(path.join(dataDir, 'xaibo.db'), { readOnly: true }); try { return Number(Object.values(db.prepare('SELECT count(*) FROM profiles').get() ?? {})[0]); } finally { db.close(); } } catch { return -1; } }, { timeout: 30_000 }).toBeGreaterThan(0);
+  await xaibo.quit(first);
+  mkdirSync(path.join(tmp, 'profiles'), { mode: 0o700, recursive: true });
+  const codexL = path.join(tmp, 'profiles', 'codex-lock');
+  mkdirSync(codexL, { mode: 0o700 });
+  const db = new DatabaseSync(path.join(dataDir, 'xaibo.db'));
+  try {
+    db.prepare("INSERT INTO profiles (id, agent, root, origin) VALUES (?, 'codex', ?, 'manual')").run(D(9), realpathSync(codexL));
+    db.prepare("INSERT INTO kv (key, value) VALUES ('agent.codex.roots', ?)").run(JSON.stringify([realpathSync(codexL)]));
+  } finally { db.close(); }
+  // a holder pid that has exited (a short child), stamped by a service write
+  const dead = Number(execFileSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' }));
+  mkdirSync(path.join(dataDir, 'integrations'), { mode: 0o700, recursive: true });
+  const lock = path.join(dataDir, 'integrations', 'operation.lock');
+  writeFileSync(lock, JSON.stringify({ v: 2, pid: dead, token: 'crashed', at: 1, start: 'Thu Jan 1 00:00:00 2026', writer: 'service' }), { mode: 0o600 });
+
+  const run = await xaibo.launch({ dataDir, env });
+  const page = await xaibo.window(run);
+  await run.app!.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(1280, 800));
+  await run.app!.evaluate(({ dialog: d }) => {
+    const g = globalThis as unknown as { xaiboBoxes: unknown[] };
+    g.xaiboBoxes = [];
+    d.showMessageBox = (async (...args: unknown[]) => {
+      g.xaiboBoxes.push(args.at(-1));
+      await new Promise((r) => setTimeout(r, 900));
+      return { response: 1, checkboxChecked: false };
+    }) as typeof d.showMessageBox;
+  });
+  await page.getByRole('navigation', { name: 'Areas' }).getByRole('link', { name: 'Agent Map' }).click();
+  await modes(page).getByRole('button', { name: 'Agents' }).click();
+  await page.getByRole('button', { name: /^Open integration: Codex · .*codex-lock/ }).click();
+  const pane = page.getByRole('region', { name: 'Integration: Codex' });
+  await expect(pane.getByRole('heading', { level: 2 })).toBeFocused();
+  await pane.getByRole('button', { name: 'Connect', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toContainText('An earlier integration change stopped. Xaibo can clear its stale lock.', { timeout: 20_000 });
+  await expect(dialog).not.toContainText('Quit Xaibo'); // review NIT: the manual steps are never announced before the offer
+  await expect(dialog.getByRole('button', { name: 'Close' })).toBeFocused();
+  const clear = dialog.getByRole('button', { name: 'Clear stale lock' });
+  await expect(clear).toBeVisible();
+  await shot(page, 'dialog-lock-clear');
+  await clear.click();
+  await expect(dialog).toBeHidden({ timeout: 20_000 });
+  await expect(pane.getByRole('heading', { level: 2 })).toBeFocused();
+  await expect(pane).toContainText('Lock cleared. Integration evidence refreshed.');
+  expect(existsSync(lock)).toBe(false);
+  const boxes = await run.app!.evaluate(() => (globalThis as unknown as { xaiboBoxes: { type: string; message: string; buttons: string[]; defaultId: number; cancelId: number }[] }).xaiboBoxes);
+  expect(boxes.map((x) => [x.type, x.buttons, x.defaultId, x.cancelId, x.message.split('\n')[0]])).toEqual([['warning', ['Cancel', 'Clear lock'], 0, 0, 'Clear this stale integration lock?']]);
+  await shot(page, 'lock-cleared');
+  // the lock is gone, so Connect previews again
+  await pane.getByRole('button', { name: 'Connect', exact: true }).click();
+  await expect(dialog.getByRole('region', { name: 'Changes to apply' })).toContainText('/hooks/Stop/0', { timeout: 20_000 });
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
   await xaibo.quit(run);
 });

@@ -6,7 +6,7 @@ import { createRoot } from 'react-dom/client';
 import { type CatalogImportResult, parseHealth, parseStartupReply } from '../shared/ipc.ts';
 import type { AgentStatus, Banner, GrantAsk, Health, IntegrationKey, LedgerFilter, RevokeTarget, SessionRow, StartupRequest } from '../shared/ipc.ts';
 import { askGrant } from './agent-map/grants-view.ts';
-import { confirmedApply } from './agent-map/integration-dialog.ts';
+import { askLockClear, confirmedApply } from './agent-map/integration-dialog.ts';
 import { focusInvoker } from './agent-map/integration-panel.ts';
 import type { SignInCommand } from './usage/sign-in-view.ts';
 import { createClient, parseVisible, type Client, type PortLike } from './client.ts';
@@ -176,6 +176,9 @@ function App() {
       cleanupPreview: (profileId: string) => client.current?.cleanupPreview(profileId) ?? gone(),
       cleanupApply: (previewId: string) => (client.current ? confirmedApply('cleanup', previewId, () => client.current!.cleanupApply(previewId), window.xaibo?.confirmApply) : Promise.resolve(notSent)),
       teePreview: (profileId: string) => client.current?.teePreview(profileId) ?? gone(),
+      // XAIBO-PROD-613: the Clear stale lock: a preview over the port, the clear only through main's confirmation
+      lockClearPreview: () => client.current?.lockClearPreview() ?? gone(),
+      lockClear: (previewId: string) => askLockClear(window.xaibo?.confirmApply, previewId),
       rescan: () => client.current?.rescan() ?? Promise.resolve({ status: 'refused', code: 'unavailable' } as const), // XAIBO-PROD-593
       // XAIBO-PROD-598: a grant goes to main (ids only; its native confirmation); a revoke over the port; no connection sends nothing
       grant: (a: GrantAsk) => askGrant(window.xaibo?.grant, a),

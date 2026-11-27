@@ -395,6 +395,9 @@ export type RemovalPreview = { status: 'preview'; previewId: string; profileId: 
 export type RemovalReply = RemovalPreview | ConnectRefused | { status: 'needs-preview'; preview: RemovalPreview | ConnectRefused } | ConnectOutcome;
 export type CleanupReply = { status: 'preview'; previewId: string; ttlMs: number; items: { entry: string; cleanup: (typeof LEFTOVERS)[number][] }[] }
   | { status: 'cleaned'; removed: string[]; left: string[] } | { status: 'needs-preview' } | { status: 'partial'; removed: string[]; left: string[]; code: string } | ConnectRefused;
+/** XAIBO-PROD-613: the lock-clear preview (an opaque id) and the confirmed clear's own reply. */
+export type LockClearPreviewReply = { status: 'preview'; previewId: string; ttlMs: number } | ConnectRefused;
+export type LockClearReply = { status: 'cleared' } | ConnectRefused;
 export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Cursor | null; limit: number }
   /** P5-T17a: the ledger page of at most `limit` (1..12) observed months ending at `end` (null = the latest). */
   | { v: 1; type: 'monthly'; id: number; filter: LedgerFilter; end: string | null; limit: number }
@@ -449,11 +452,14 @@ export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Curs
   /** XAIBO-PROD-580 (P6-T10 unit 6a, R6): the separate tee, by profile id: on is a tee-only Connect preview (connectApply), off the
    *  removal preview of the profile's tee entry alone (removalApply). */
   | { v: 1; type: 'teePreview'; id: number; profileId: string }
-  | { v: 1; type: 'teeRemovalPreview'; id: number; profileId: string };
+  | { v: 1; type: 'teeRemovalPreview'; id: number; profileId: string }
+  /** XAIBO-PROD-613: a preview of clearing the stale operation lock (nothing else is sent; main alone confirms kind lock-clear). */
+  | { v: 1; type: 'lockClearPreview'; id: number };
 export type PortMessage =
   | { v: 1; type: (typeof CONNECT_TYPES)[number]; id: number; result: ConnectReply }
   | { v: 1; type: 'removalPreview' | 'removalApply' | 'teeRemovalPreview'; id: number; result: RemovalReply }
   | { v: 1; type: 'cleanupPreview' | 'cleanupApply'; id: number; result: CleanupReply }
+  | { v: 1; type: 'lockClearPreview'; id: number; result: LockClearPreviewReply }
   // P5-T17a: failed = the store could not answer (the renderer offers Retry), never an empty ledger
   | ({ v: 1; type: 'monthly'; id: number; failed?: true } & LedgerPage)
   | { v: 1; type: 'clearUsage'; id: number; result: ClearUsageResult }
@@ -974,6 +980,7 @@ export function parsePortRequest(x: unknown): PortRequest | null {
   if (m?.type === 'removalPreview') return exactKeys(m, ['v', 'type', 'id', 'profileId']) && count(m.id) && (m.profileId === null || uuid(m.profileId)) ? { v: 1, type: 'removalPreview', id: m.id, profileId: m.profileId } : null;
   if (m?.type === 'cleanupPreview') return exactKeys(m, ['v', 'type', 'id', 'profileId']) && count(m.id) && uuid(m.profileId) ? { v: 1, type: 'cleanupPreview', id: m.id, profileId: m.profileId } : null;
   if (m?.type === 'teePreview' || m?.type === 'teeRemovalPreview') return exactKeys(m, ['v', 'type', 'id', 'profileId']) && count(m.id) && uuid(m.profileId) ? { v: 1, type: m.type, id: m.id, profileId: m.profileId } : null;
+  if (m?.type === 'lockClearPreview') return exactKeys(m, ['v', 'type', 'id']) && count(m.id) ? { v: 1, type: 'lockClearPreview', id: m.id } : null;
   if (m?.type === 'removalApply' || m?.type === 'cleanupApply') return exactKeys(m, ['v', 'type', 'id', 'previewId']) && count(m.id) && uuid(m.previewId) ? { v: 1, type: m.type, id: m.id, previewId: m.previewId } : null;
   if (m?.type === 'history') {
     const filter = parseFilter(m.filter), cursor = parseHistoryKey(m.cursor);
@@ -1079,6 +1086,10 @@ export function parsePortMessage(x: unknown): PortMessage | null {
   if (m.type === 'removalPreview' || m.type === 'removalApply' || m.type === 'teeRemovalPreview') {
     const result = parseRemovalReply(m.type, m.result);
     return exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) && result ? { v: 1, type: m.type, id: m.id, result } : null;
+  }
+  if (m.type === 'lockClearPreview') {
+    const r = m.result, result = refusal(r) ? r as ConnectRefused : exactKeys(r, ['status', 'previewId', 'ttlMs']) && r.status === 'preview' && uuid(r.previewId) && count(r.ttlMs) ? { status: 'preview' as const, previewId: r.previewId, ttlMs: r.ttlMs } : null;
+    return exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) && result ? { v: 1, type: 'lockClearPreview', id: m.id, result } : null;
   }
   if (m.type === 'cleanupPreview' || m.type === 'cleanupApply') {
     const result = parseCleanupReply(m.type, m.result);
@@ -1543,7 +1554,7 @@ function parseGrantResult(r: unknown): GrantOfferResult | GrantConfirmResult | n
 // of a real-class apply. The renderer asks main with a kind and a preview id only (ApplyAsk, invoke 'confirm-apply'); main alone
 // sends applyOffer/applyConfirm (the renderer port has neither); the offer's items are labelled from a closed set and carry
 // values main quotes; a confirmed apply answers with the request's own reply shape, through its own bound check.
-const APPLY_KINDS = ['connect', 'removal', 'cleanup'] as const;
+const APPLY_KINDS = ['connect', 'removal', 'cleanup', 'lock-clear'] as const; // XAIBO-PROD-613: lock-clear
 export type ApplyKind = (typeof APPLY_KINDS)[number];
 export interface ApplyAsk { kind: ApplyKind; previewId: string }
 const APPLY_LABELS = ['agent', 'profile', 'folder', 'scope', 'file', 'change', 'value', 'retention', 'tee', 'helper', 'entries', 'real-entries', 'records', 'backups', 'manual'] as const;
@@ -1551,9 +1562,9 @@ export type ApplyLabel = (typeof APPLY_LABELS)[number];
 export const APPLY_ITEMS = 64;
 export interface ApplyOffer { kind: ApplyKind; previewId: string; items: [ApplyLabel, string][]; binding: string }
 /** unknown: the confirm was sent but no reply came (the apply may have run: reread, never retry). */
-const APPLY_REFUSALS = ['not-real', 'preview-invalid', 'preview-expired', 'stale', 'oversize', 'bounds-unavailable', 'unavailable', 'starting', 'read-only', 'busy', 'stale-lock', 'lock-unknown', 'failed', 'unknown', 'invalid'] as const;
+const APPLY_REFUSALS = ['not-real', 'preview-invalid', 'preview-expired', 'stale', 'oversize', 'bounds-unavailable', 'unavailable', 'starting', 'read-only', 'busy', 'stale-lock', 'lock-unknown', 'lock-changed', 'lock-free', 'lock-manual', 'failed', 'unknown', 'invalid'] as const;
 export type ApplyRefusal = { status: 'refused'; code: (typeof APPLY_REFUSALS)[number] };
-export type ApplyReply = ConnectReply | RemovalReply | CleanupReply;
+export type ApplyReply = ConnectReply | RemovalReply | CleanupReply | LockClearReply;
 export type ApplyOfferResult = { status: 'offer'; offer: ApplyOffer } | ApplyRefusal;
 export type ApplyConfirmResult = { status: 'done'; kind: ApplyKind; reply: ApplyReply } | ApplyRefusal;
 export type ApplyOutcome = { status: 'cancelled' } | ApplyConfirmResult;
@@ -1563,7 +1574,8 @@ export function parseApplyAsk(x: unknown): ApplyAsk | null {
   return exactKeys(x, ['kind', 'previewId']) && oneOf(APPLY_KINDS, x.kind) && uuid(x.previewId) ? { kind: x.kind, previewId: x.previewId } : null;
 }
 const applyReply = (kind: ApplyKind, r: unknown): ApplyReply | null =>
-  (kind === 'connect' ? parseConnectReply(r) : kind === 'removal' ? parseRemovalReply('removalApply', r) : parseCleanupReply('cleanupApply', r));
+  (kind === 'connect' ? parseConnectReply(r) : kind === 'removal' ? parseRemovalReply('removalApply', r) : kind === 'cleanup' ? parseCleanupReply('cleanupApply', r)
+    : refusal(r) ? r as ConnectRefused : exactKeys(r, ['status']) && r.status === 'cleared' ? { status: 'cleared' } : null);
 function parseApplyResult(x: unknown): ApplyOfferResult | ApplyConfirmResult | null {
   if (exactKeys(x, ['status', 'code']) && x.status === 'refused') return oneOf(APPLY_REFUSALS, x.code) ? { status: 'refused', code: x.code } : null;
   if (exactKeys(x, ['status', 'kind', 'reply']) && x.status === 'done' && oneOf(APPLY_KINDS, x.kind)) {

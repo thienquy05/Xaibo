@@ -4,7 +4,7 @@
 // and a new client; replies owed on the old one never arrive.
 import { type CatalogImportResult, accept, IPC_VERSION, isObj, parsePortMessage } from '../shared/ipc.ts';
 import type { SignInCommand } from './usage/sign-in-view.ts';
-import type { CleanupReply, ConnectReply, IntegrationDetailResult, IntegrationKey, IntegrationPageResult, PriceOp, RemovalReply, RetentionSetting, RevokeResult, RevokeTarget, SearchKey, SuppressedCursor } from '../shared/ipc.ts';
+import type { CleanupReply, ConnectReply, LockClearPreviewReply, IntegrationDetailResult, IntegrationKey, IntegrationPageResult, PriceOp, RemovalReply, RetentionSetting, RevokeResult, RevokeTarget, SearchKey, SuppressedCursor } from '../shared/ipc.ts';
 import type { AgentStatus, Banner, CostDetail, Cursor, FileItem, HistoryCursor, HistoryFilter, HistoryKey, HistoryRow, LedgerFilter, MapGroup, MapNode, MCursor, ModelMarker, Named, OverlayOp, OverlayResult, Page, PortMessage, PortRequest, SessionDetail, SessionRow, SubagentItem, TCursor, ToolItem, TranscriptAt, TranscriptItem, UsageRecord } from '../shared/ipc.ts';
 
 export interface LiveSet { rows: SessionRow[]; more: boolean }
@@ -172,6 +172,8 @@ export function createClient(port: PortLike, push: Pushes) {
     async removalApply(previewId: string): Promise<RemovalReply> { return (await ask({ type: 'removalApply', previewId }, 'removalApply')).result; },
     async cleanupPreview(profileId: string): Promise<CleanupReply> { return (await ask({ type: 'cleanupPreview', profileId }, 'cleanupPreview')).result; },
     async cleanupApply(previewId: string): Promise<CleanupReply> { return (await ask({ type: 'cleanupApply', previewId }, 'cleanupApply')).result; },
+    /** XAIBO-PROD-613: a preview of clearing the stale operation lock (applied only through main's confirmation). */
+    async lockClearPreview(): Promise<LockClearPreviewReply> { return (await ask({ type: 'lockClearPreview' }, 'lockClearPreview')).result; },
     /** XAIBO-PROD-585 (P6-T10a unit 4a): the sign-in read or one mutation, by profile id and loaded revision; the code is a result. */
     async signIn(profileId: string, command: SignInCommand) { const m = await ask({ type: 'signIn', profileId, ...command }, 'signIn'); return { code: m.code, view: m.view }; },
     /** XAIBO-PROD-581: the separate tee's previews (unit 6a). */
