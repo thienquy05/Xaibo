@@ -13,6 +13,8 @@ import { resumeLiveness } from '../status/resume-liveness.ts';
 export interface StoredForResume {
   agent: string; profileId: string; nativeSessionId: string; cwd: string | null; entrypoint: string | null; originator: string | null; nativeAvailable: boolean;
   live: Parameters<typeof resumeLiveness>[0]['status'];
+  /** G7-1 (OQ-P7-3): a Xaibo resume of this session is still starting (its provisional row has not bound, failed or been removed). */
+  pending?: boolean;
 }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const HEADLESS = /^(?:-p|--print|exec|--headless)$/;
@@ -25,7 +27,8 @@ export function resumeTarget(catalog: Catalog, s: StoredForResume, version: stri
   if (!s.nativeAvailable) resume = fork = off('Native session deleted; resume unavailable');
   else if (!UUID.test(s.nativeSessionId)) resume = fork = off('Session id is not a UUID; resume disabled');
   else {
-    resume = !kind ? off('Entry point not verified; resume disabled')
+    resume = s.pending ? off('A resume from Xaibo is still starting; wait for it or remove its Starting… row')
+      : !kind ? off('Entry point not verified; resume disabled')
       : !kind.resume ? off(kind.resumeDisabled ?? 'Resume not verified')
       : kind.resume.promptRequired || kind.resume.args.some((t) => HEADLESS.test(t)) ? off('Print mode (-p) needs a prompt; not offered as an interactive resume')
       : !whole(kind.resume.args) ? off('Resume template not supported')

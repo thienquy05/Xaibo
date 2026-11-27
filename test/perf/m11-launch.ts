@@ -31,12 +31,16 @@ export async function m11Launch(runs: number) {
         const t0 = performance.now();
         button.click();
         const tick = () => {
-          if (document.querySelector('.x-provisional li')) requestAnimationFrame(() => requestAnimationFrame(() => resolve(performance.now() - t0)));
+          const li = document.querySelector('.x-provisional li');
+          if (li && !li.textContent?.includes('Starting…')) reject(new Error('the launch row is not starting')); // Gate 7 (e3): a failed launch never counts
+          else if (li) requestAnimationFrame(() => requestAnimationFrame(() => resolve(performance.now() - t0)));
           else if (performance.now() - t0 > 30_000) reject(new Error('no provisional row'));
           else requestAnimationFrame(tick);
         };
         requestAnimationFrame(tick);
       }));
+      await page.waitForTimeout(300); // Gate 7 (e3): the open succeeded (a failed open turns the row failed)
+      if (!(await page.locator('.x-provisional li').first().textContent())?.includes('Starting…')) throw new Error('the launch failed');
       if (i > 0) ms.push(t); // run 0 includes the native grant dialog
       await page.getByRole('button', { name: 'Remove provisional row' }).click();
       await page.waitForFunction(() => !document.querySelector('.x-provisional li'), null, { timeout: 10_000 });

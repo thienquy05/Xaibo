@@ -33,6 +33,9 @@ async function openLaunch(page: Page, cwd: string) {
 test('Launch: preview from main, native grant, Starting… row, bound by the pre-allocated id into one session', async ({ xaibo }) => {
   const run = await xaibo.launch({ env: { XAIBO_LAUNCH_STUB: '1' } });
   const page = await xaibo.window(run);
+  const errors: string[] = []; // Gate 7 (e4): the flow logs no console or page error
+  page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+  page.on('pageerror', (e) => errors.push(String(e)));
   const cwd = path.join(xaibo.home, 'launch project');
   mkdirSync(cwd);
   const real = realpathSync(cwd);
@@ -75,6 +78,9 @@ test('Launch: preview from main, native grant, Starting… row, bound by the pre
   await expect(page.locator('#open-session-title')).toBeFocused({ timeout: 30_000 });
   await expect(page.locator('.x-provisional')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Starting…' })).toHaveCount(0);
+  await expect(page.locator('#open-session-title')).toContainText('launch fixture prompt'); // Gate 7 (e2): the launched session, once
+  await expect(page.locator('.x-srow', { hasText: 'launch fixture prompt' })).toHaveCount(1);
+  expect(errors).toEqual([]);
 });
 
 test('Launch: Cancel restores the trigger; Remove provisional row drops an unbound row', async ({ xaibo }) => {

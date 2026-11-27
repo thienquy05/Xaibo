@@ -125,7 +125,7 @@ export function Workspace({ list, changes, browse, agents, live, lastKnown, api,
     while (boundSeen.current.size > 32) boundSeen.current.delete(boundSeen.current.keys().next().value!);
   }, [bound?.n]);
   useEffect(() => { // the bound session's row arrives with its delta: open it in place of the provisional detail
-    if (binding === null) return;
+    if (binding === null) return; // the row may already be gone from the list (it bound): navigation clears binding instead (Gate 7 c4)
     const r = list.rows.find((x) => x.id === binding) ?? live.rows.find((x) => x.id === binding);
     if (!r) return;
     const here = document.activeElement === document.body || !!document.querySelector('.x-provisional-pane')?.contains(document.activeElement);
@@ -137,13 +137,14 @@ export function Workspace({ list, changes, browse, agents, live, lastKnown, api,
   }, [prov, provRow, binding]);
   const removeProv = (key: string) => {
     removeProvisional(key);
-    setProv(null); setShowList(true);
+    setProv(null); setBinding(null); setShowList(true);
     const others = provisional.some((r) => r.key !== key);
     requestAnimationFrame(() => document.getElementById(others ? 'starting-heading' : 'sessions-heading')?.focus());
   };
   const agentName = (a: string) => agents.find((x) => x.agent === a)?.name ?? a;
   const back = () => {
     setProv(null);
+    setBinding(null); // Gate 7 (c4): a late binding never opens a session over the list
     setSupp(null);
     setOpened(null);
     setShowList(true); // review L6: never an empty pane at narrow widths
@@ -162,7 +163,7 @@ export function Workspace({ list, changes, browse, agents, live, lastKnown, api,
             <section className="x-provisional" aria-labelledby="starting-heading">
               <h2 id="starting-heading" className="x-label" tabIndex={-1}>Launched from Xaibo</h2>
               <ul>{provisional.map((r) => (
-                <li key={r.key}><button type="button" className="x-srow" aria-current={prov === r.key || undefined} onClick={() => { setSupp(null); setOpened(null); setProv(r.key); onListOpen(); }}>
+                <li key={r.key}><button type="button" className="x-srow" aria-current={prov === r.key || undefined} onClick={() => { setSupp(null); setOpened(null); setBinding(null); setProv(r.key); onListOpen(); }}>
                   <strong>{r.state === 'failed' ? 'Launch failed' : 'Starting…'}</strong>
                   <small>{visible(agentName(r.agent))} · {visible(r.cwd.split('/').pop() || r.cwd)}{r.state === 'starting' ? <> · <Clock since={r.startedAt} every={15_000} show={minutes} /></> : null}</small>
                 </button></li>
@@ -170,8 +171,8 @@ export function Workspace({ list, changes, browse, agents, live, lastKnown, api,
             </section>
           ) : null}
           <SessionBrowser api={browse} agents={agents} live={live} changes={changes} lastKnown={lastKnown} openId={row?.id ?? null}
-            onOpen={(r) => { setSupp(null); setProv(null); setOpened(r); onListOpen(); }} hide={row ? () => setShowList(false) : null} history={history} onHistory={shareHistory} headerTrash={headerTrash}
-            onOpenSuppressed={(r) => { if (r) { setOpened(null); onListOpen(); } setSupp(r); }} suppressedOpen={supp?.key ?? null} suppressedGone={suppGone}
+            onOpen={(r) => { setSupp(null); setProv(null); setBinding(null); setOpened(r); onListOpen(); }} hide={row ? () => setShowList(false) : null} history={history} onHistory={shareHistory} headerTrash={headerTrash}
+            onOpenSuppressed={(r) => { if (r) { setOpened(null); setProv(null); setBinding(null); onListOpen(); } setSupp(r); }} suppressedOpen={supp?.key ?? null} suppressedGone={suppGone}
             preset={preset} onReturnList={onReturnList} />
         </div>
         {prov ? <ProvisionalPane key={prov} row={provRow} name={provRow ? agentName(provRow.agent) : ''} binding={binding !== null} onBack={back}

@@ -13,7 +13,7 @@ import { parseLaunchAsk, parseLaunchReply, type LaunchAgentInfo, type Provisiona
 const SID = '00000000-0000-4000-8000-0000000d0abc';
 
 const UUID = '00000000-0000-4000-8000-0000000d0001';
-function world(over: Partial<{ open: boolean; confirm: boolean; clickMs: number }> = {}) {
+function world(over: Partial<{ open: boolean; confirm: boolean; clickMs: number; ack: boolean; ackFailed: boolean; onConfirm: () => void }> = {}) {
   const opened2: string[] = [];
   const root = realpathSync(tempDir('xlflow-'));
   const bin = path.join(root, 'bin'); mkdirSync(bin);
@@ -28,18 +28,21 @@ function world(over: Partial<{ open: boolean; confirm: boolean; clickMs: number 
     { agent: 'codex', name: 'Codex', version: null, executable: null, names: ['codex'], launch: { args: [], preallocatedId: false }, profiles: [] },
     { agent: 'agy', name: 'Antigravity', version: '1.0.0', executable: exe, names: ['agy'], launch: { disabled: 'agy interactive launch not verified' }, profiles: [] },
   ];
-  const dialogs: LaunchDialog[] = [], opened: string[] = [], rows: ProvisionalRow[] = [];
+  const dialogs: LaunchDialog[] = [], opened: string[] = [], rows: ProvisionalRow[] = [], log: string[] = [];
+  const reg = new Map<string, ProvisionalRow>(); // the service's rows: a starting resume row locks its session (G7-1, OQ-P7-3)
   let mono = 0, ids = 0;
   let target: ResumeTarget | null = { agent: 'claude', profileId: 'p1', nativeId: SID, cwd, resume: { args: ['--resume', '{id}'] }, fork: { args: ['--resume', '{id}', '--fork-session'] }, vscode: null, liveness: 'uncertain' };
   const flow = launchFlow({
     dataDir, info: async () => info, uuid: () => (ids++ === 0 ? UUID : `00000000-0000-4000-8000-${(0xd0001 + ids).toString(16).padStart(12, '0')}`), now: () => 5_000, mono: () => mono,
-    confirm: async (d) => { dialogs.push(d); mono += over.clickMs ?? 1_000; return over.confirm ?? true; },
-    spawner: { open: async (f) => { opened.push(f); return over.open ?? true; } },
-    register: (r) => rows.push(r),
-    target: async (session) => (session === 7 ? target : null),
+    confirm: async (d) => { dialogs.push(d); mono += over.clickMs ?? 1_000; over.onConfirm?.(); return over.confirm ?? true; },
+    spawner: { open: async (f) => { opened.push(f); log.push('open'); return over.open ?? true; } },
+    register: async (r) => { rows.push(r); log.push(`register ${r.state}`); if (over.ack === false || (r.state === 'failed' && over.ackFailed === false)) return false; reg.set(r.key, r); return true; },
+    remove: (key) => { log.push('remove'); reg.delete(key); },
+    target: async (session) => (session !== 7 || !target ? null
+      : [...reg.values()].some((r) => r.state === 'starting' && r.agent === target!.agent && r.nativeId === target!.nativeId) ? { ...target, resume: { disabled: 'A resume from Xaibo is still starting' } } : target),
     openExternal: async (url) => { opened2.push(url); },
   });
-  return { flow, exe, cwd, dataDir, dialogs, opened, rows, opened2, setTarget: (f: (t: ResumeTarget) => ResumeTarget) => { target = f(target!); }, tick: (ms: number) => { mono += ms; }, setInfo: (f: (i: LaunchAgentInfo[]) => LaunchAgentInfo[]) => { info = f(info); } };
+  return { flow, exe, cwd, dataDir, dialogs, opened, rows, opened2, log, reg, setTarget: (f: (t: ResumeTarget) => ResumeTarget) => { target = f(target!); }, tick: (ms: number) => { mono += ms; }, setInfo: (f: (i: LaunchAgentInfo[]) => LaunchAgentInfo[]) => { info = f(info); } };
 }
 
 test('options: enabled agents, disabled with reasons, only the default profile launches', async () => {
@@ -121,7 +124,8 @@ test('renewal names what changed; a too-quick click cancels; a changed launch in
   const pf = await f.flow.preview({ agent: 'claude', profileId: 'p1', cwd: f.cwd });
   const rf = await f.flow.launch(pf.status === 'ok' ? pf.previewId : '');
   assert.equal(rf.status, 'failed');
-  assert.deepEqual(f.rows.map((x) => [x.state, x.reason]), [['failed', 'open']]);
+  assert.deepEqual(f.rows.map((x) => [x.state, x.reason]), [['starting', null], ['failed', 'open']], 'G7-3: registered before the open, then marked failed');
+  assert.equal(new Set(f.rows.map((x) => x.key)).size, 1, 'the same row');
 });
 
 test('launch asks and replies parse with exact keys', () => {
@@ -188,9 +192,11 @@ test('626: resume and fork options, previews and launches through their own gran
   assert.equal(w.rows.at(-1)!.nativeId, null, 'a fork binds by its first start');
   assert.equal(w.dialogs.length, 2, 'resume and fork each have their own grant');
   w.tick(2_000);
+  w.reg.clear(); // the earlier rows bound (G7-1: a pending resume locks its session)
   const again = await w.flow.resumePreview(7, 'resume', true);
   assert.equal((await w.flow.launch(again.status === 'ok' ? again.previewId : '')).status, 'started', 'the grant is kept: no dialog');
   assert.equal(w.dialogs.length, 2);
+  w.reg.clear();
   w.setTarget((t) => ({ ...t, fork: { disabled: 'Fork not verified for this agent' }, vscode: 'VS Code history visibility: unverified for 2.1.332' }));
   assert.deepEqual(await w.flow.resumeOptions(7), { status: 'ok', resume: null, fork: 'Fork not verified for this agent', vscode: 'VS Code history visibility: unverified for 2.1.332', liveness: 'uncertain' });
   assert.deepEqual(await w.flow.resumePreview(7, 'fork'), { status: 'refused', code: 'disabled' });
@@ -227,4 +233,63 @@ test('626: Open in VS Code only when the target allows it, only the allowlisted 
   assert.deepEqual(parseLaunchAsk({ op: 'resumePreview', session: 7, mode: 'fork', confirmed: false }), { op: 'resumePreview', session: 7, mode: 'fork', confirmed: false });
   assert.deepEqual(parseLaunchAsk({ op: 'vscode', session: 7 }), { op: 'vscode', session: 7 });
   assert.equal(parseLaunchAsk({ op: 'resumePreview', session: 7, mode: 'print', confirmed: false }), null);
+});
+
+test('G7-1 (OQ-P7-3): a second resume of a session is refused while its first Starting… row is pending; a removed row releases it', async () => {
+  const w = world();
+  const p1 = await w.flow.resumePreview(7, 'resume', true), p2 = await w.flow.resumePreview(7, 'resume', true);
+  const r1 = await w.flow.launch(p1.status === 'ok' ? p1.previewId : '');
+  assert.equal(r1.status, 'started');
+  w.tick(2_000);
+  assert.deepEqual(await w.flow.resumePreview(7, 'resume', true), { status: 'refused', code: 'disabled' }, 'after the 2 s gap, still pending');
+  const o = await w.flow.resumeOptions(7);
+  assert.equal(o.status === 'ok' && o.resume, 'A resume from Xaibo is still starting');
+  assert.deepEqual(await w.flow.launch(p2.status === 'ok' ? p2.previewId : ''), { status: 'refused', code: 'changed' }, 'a preview taken before is refused at execution');
+  assert.equal(w.opened.length, 1);
+  assert.equal((await w.flow.resumePreview(7, 'fork')).status, 'ok', 'a fork writes a new session: not locked');
+  w.reg.delete(r1.status === 'started' ? r1.key : '');
+  assert.equal((await w.flow.resumePreview(7, 'resume', true)).status, 'ok', 'Remove provisional row (or binding) releases it');
+});
+
+test('G7-2: a liveness change after the preview, or during the grant dialog, needs the warning again: refused concurrent, nothing opened', async () => {
+  const w = world();
+  w.setTarget((t) => ({ ...t, liveness: 'not-live' }));
+  const p = await w.flow.resumePreview(7, 'resume');
+  assert.equal(p.status, 'ok');
+  w.setTarget((t) => ({ ...t, liveness: 'live' }));
+  assert.deepEqual(await w.flow.launch(p.status === 'ok' ? p.previewId : ''), { status: 'refused', code: 'concurrent' });
+  assert.deepEqual([w.opened, w.rows], [[], []]);
+
+  let flip = () => {};
+  const d = world({ onConfirm: () => flip() });
+  d.setTarget((t) => ({ ...t, liveness: 'not-live' }));
+  flip = () => d.setTarget((t) => ({ ...t, liveness: 'uncertain' }));
+  const pd = await d.flow.resumePreview(7, 'resume');
+  assert.deepEqual(await d.flow.launch(pd.status === 'ok' ? pd.previewId : ''), { status: 'refused', code: 'concurrent' }, 'rechecked after the grant dialog');
+  assert.deepEqual([d.dialogs.length, d.opened, d.rows], [1, [], []]);
+
+  const c = world();
+  const pc = await c.flow.resumePreview(7, 'resume', true);
+  assert.equal((await c.flow.launch(pc.status === 'ok' ? pc.previewId : '')).status, 'started', 'a confirmed warning stays confirmed while liveness holds');
+  const e = world();
+  const pe = await e.flow.resumePreview(7, 'resume', true); // confirmed while uncertain
+  e.setTarget((t) => ({ ...t, liveness: 'live' }));
+  assert.deepEqual(await e.flow.launch(pe.status === 'ok' ? pe.previewId : ''), { status: 'refused', code: 'concurrent' }, 'review M2: uncertain -> live needs the warning again');
+  assert.deepEqual(e.opened, []);
+});
+
+test('G7-3 (EC-85): the provisional row is registered, acknowledged, before Terminal opens; no acknowledgement opens nothing', async () => {
+  const w = world();
+  const p = await w.flow.preview({ agent: 'claude', profileId: 'p1', cwd: w.cwd });
+  assert.equal((await w.flow.launch(p.status === 'ok' ? p.previewId : '')).status, 'started');
+  assert.deepEqual(w.log, ['register starting', 'open']);
+  const n = world({ ack: false });
+  const pn = await n.flow.preview({ agent: 'claude', profileId: 'p1', cwd: n.cwd });
+  assert.deepEqual(await n.flow.launch(pn.status === 'ok' ? pn.previewId : ''), { status: 'refused', code: 'unavailable' });
+  assert.deepEqual(n.opened, []);
+  assert.deepEqual(n.log, ['register starting', 'remove'], 'reviews M1: a late registration leaves no orphan Starting… row (no lock)');
+  const f = world({ open: false, ackFailed: false });
+  const pf = await f.flow.preview({ agent: 'claude', profileId: 'p1', cwd: f.cwd });
+  assert.equal((await f.flow.launch(pf.status === 'ok' ? pf.previewId : '')).status, 'failed');
+  assert.deepEqual(f.log, ['register starting', 'open', 'register failed', 'remove'], 'an unacknowledged failed update removes the row');
 });

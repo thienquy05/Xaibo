@@ -36,6 +36,8 @@ export interface SupervisorDeps<P> {
   onLaunchInfo?(l: Extract<ServiceEvent, { type: 'launchInfo' }>): void;
   /** XAIBO-PROD-626: a validated reply to main's resumeTarget. */
   onResumeTarget?(r: Extract<ServiceEvent, { type: 'resumeTarget' }>): void;
+  /** G7-3: the service registered main's provisional row. */
+  onProvisionalAck?(a: Extract<ServiceEvent, { type: 'provisionalAck' }>): void;
 }
 
 export class Supervisor<P> {
@@ -47,6 +49,7 @@ export class Supervisor<P> {
     else if (m.type === 'apply') this.#d.onApply?.(m);
     else if (m.type === 'launchInfo') this.#d.onLaunchInfo?.(m);
     else if (m.type === 'resumeTarget') this.#d.onResumeTarget?.(m);
+    else if (m.type === 'provisionalAck') this.#d.onProvisionalAck?.(m);
     else if (m.type === 'notify') this.#d.onNotify?.(m);
   });
   #child: Child<P> | null = null;

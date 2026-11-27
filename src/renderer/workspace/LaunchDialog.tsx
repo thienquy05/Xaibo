@@ -28,8 +28,10 @@ export function LaunchDialog({ open, api, rows, refresh, onDone }: {
   const [preview, setPreview] = useState<LaunchPreviewReply | null>(null);
   const [note, setNote] = useState(''), [busy, setBusy] = useState(false), [touched, setTouched] = useState(false), [again, setAgain] = useState(0);
   const seq = useRef(0), live = useRef(false), edited = useRef(false), busyRef = useRef(false);
+  const optSeq = useRef(0), sel = useRef({ agent: '', profile: '' }); // Gate 7 (c3): only the latest options reply; reconcile the current choice
   const choices = useMemo(() => (open ? cwdChoices(rows, agent || null) : []), [open, rows, agent]);
   const opt = agents?.find((a) => a.agent === agent && a.disabled === null) ?? null;
+  sel.current = { agent, profile };
 
   const pick = (a: LaunchOption | undefined, pre: Prefill | null) => {
     setAgent(a?.agent ?? '');
@@ -46,8 +48,9 @@ export function LaunchDialog({ open, api, rows, refresh, onDone }: {
     setAgents(null); setAgent(''); setProfile(''); setProject(''); setCwd(''); setPreview(null); setNote(''); setBusy(false); setTouched(false);
     if (!dialog.current?.open) dialog.current?.showModal();
     agentRef.current?.focus();
+    const n = ++optSeq.current;
     void api.options().then((r) => {
-      if (!live.current) return;
+      if (!live.current || n !== optSeq.current) return;
       if (r.status !== 'ok') { setAgents([]); setNote(REFUSAL_TEXT[r.code]); return; }
       setAgents(r.agents);
       const pre = open.prefill;
@@ -56,9 +59,11 @@ export function LaunchDialog({ open, api, rows, refresh, onDone }: {
   }, [open?.n]);
   useEffect(() => { // detection finished or changed while open: read the options again, keeping a still-enabled choice
     if (!open || agents === null) return;
+    const n = ++optSeq.current;
     void api.options().then((r) => {
-      if (!live.current || r.status !== 'ok') return;
+      if (!live.current || n !== optSeq.current || r.status !== 'ok') return;
       setAgents(r.agents);
+      const { agent, profile } = sel.current;
       const cur = r.agents.find((a) => a.agent === agent && a.disabled === null);
       if (!cur) pick(r.agents.find((a) => a.disabled === null), open.prefill);
       else if (!cur.profiles.some((p) => p.id === profile && p.disabled === null)) setProfile(cur.profiles.find((p) => p.disabled === null)?.id ?? '');

@@ -28,6 +28,8 @@ export type ServiceCommand = { v: 1; type: 'quit' | 'wake' | 'port' | 'reloadPri
   | { v: 1; type: 'launchInfo'; id: number }
   /** XAIBO-PROD-622 (P7-T04, EC-85): main registers a provisional launch row (started, or failed with its reason). */
   | { v: 1; type: 'provisional'; row: ProvisionalRow }
+  /** G7-3: main removes a row it registered for a launch that was then refused before Terminal opened. */
+  | { v: 1; type: 'removeProvisional'; key: string }
   /** XAIBO-PROD-626 (P7-T05): main asks for one stored session's resume target (main only; correlated by id). */
   | { v: 1; type: 'resumeTarget'; id: number; session: number };
 /** service -> main; notify (P3-T11, EC-59) carries only the agent display name, the approved project label (null until
@@ -48,7 +50,9 @@ export type ServiceEvent =
   /** XAIBO-PROD-621: the reply to main's launchInfo (never sent to a renderer port). */
   | { v: 1; type: 'launchInfo'; id: number; agents: LaunchAgentInfo[] }
   /** XAIBO-PROD-626: the reply to main's resumeTarget; null when the session is not stored (never sent to a renderer port). */
-  | { v: 1; type: 'resumeTarget'; id: number; target: ResumeTarget | null };
+  | { v: 1; type: 'resumeTarget'; id: number; target: ResumeTarget | null }
+  /** G7-3: the service registered (or updated) main's provisional row; main opens Terminal only after this. */
+  | { v: 1; type: 'provisionalAck'; key: string };
 /** XAIBO-PROD-621 (P7-T04, design §6.7): one catalog agent for main's launch flow. executable: as found (absolute), null when
  *  not detected; names: the catalog's executable names; launch: the bundled template or the disabled reason. */
 export interface LaunchAgentInfo {
@@ -222,6 +226,7 @@ export function parseServiceCommand(x: unknown): ServiceCommand | null {
   if (m.type === 'launchInfo') return exactKeys(m, ['v', 'type', 'id']) && count(m.id) ? { v: 1, type: 'launchInfo', id: m.id } : null;
   if (m.type === 'resumeTarget') return exactKeys(m, ['v', 'type', 'id', 'session']) && count(m.id) && count(m.session) && (m.session as number) > 0 ? { v: 1, type: 'resumeTarget', id: m.id, session: m.session as number } : null;
   if (m.type === 'provisional') { const row = parseProvisionalRow(m.row); return exactKeys(m, ['v', 'type', 'row']) && row ? { v: 1, type: 'provisional', row } : null; }
+  if (m.type === 'removeProvisional') return exactKeys(m, ['v', 'type', 'key']) && typeof m.key === 'string' && KEY_UUID.test(m.key) ? { v: 1, type: 'removeProvisional', key: m.key } : null;
   if (m.type === 'importCatalog') return text(m.path, 4096) && m.path.startsWith('/') && !m.path.includes('\0') ? { v: 1, type: 'importCatalog', path: m.path } : null;
   if (m.type !== 'setPath' || !text(m.agent) || !AGENT_ID.test(m.agent)) return null;
   if (!text(m.path, 4096) || !m.path.startsWith('/') || m.path.includes('\0')) return null;
@@ -242,6 +247,7 @@ export function parseServiceEvent(x: unknown): ServiceEvent | null {
     const result = parseApplyResult(m.result);
     return exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) && result ? { v: 1, type: 'apply', id: m.id, result } : null;
   }
+  if (m?.type === 'provisionalAck') return exactKeys(m, ['v', 'type', 'key']) && typeof m.key === 'string' && KEY_UUID.test(m.key) ? { v: 1, type: 'provisionalAck', key: m.key } : null;
   if (m?.type === 'resumeTarget') {
     const target = m.target === null ? null : parseResumeTarget(m.target);
     return exactKeys(m, ['v', 'type', 'id', 'target']) && count(m.id) && (m.target === null || target) ? { v: 1, type: 'resumeTarget', id: m.id, target } : null;

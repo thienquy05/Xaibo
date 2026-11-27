@@ -24,6 +24,9 @@ async function openTitled(page: Page, title: RegExp) {
 test('Resume and Fork from the header: warning, grant, recorded scripts, binding; print mode and VS Code say why not', async ({ xaibo }) => {
   const run = await xaibo.launch({ env: { XAIBO_LAUNCH_STUB: '1', XAIBO_EXTERNAL_STUB: '1' } });
   const page = await xaibo.window(run);
+  const errors: string[] = []; // Gate 7 (e4): the flow logs no console or page error
+  page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+  page.on('pageerror', (e) => errors.push(String(e)));
   await stubGrant(run.app!);
   const cwd = path.join(xaibo.home, 'resume project');
   mkdirSync(cwd);
@@ -66,6 +69,8 @@ test('Resume and Fork from the header: warning, grant, recorded scripts, binding
   xaibo.touchStore(() => appendFileSync(file, line(real, '00000000-0000-4000-8000-0000000c7102', 'resumed prompt')));
   await expect(page.locator('#open-session-title')).toBeFocused({ timeout: 30_000 });
   await expect(page.locator('.x-provisional')).toHaveCount(0);
+  await expect(page.locator('#open-session-title')).toContainText('resume fixture prompt'); // Gate 7 (e2): the resumed session, once
+  await expect(page.locator('.x-srow', { hasText: 'resume fixture prompt' })).toHaveCount(1);
 
   // Fork: no warning (a new session); the fork template
   await page.waitForTimeout(2_100); // launches are 2 s apart
@@ -74,4 +79,35 @@ test('Resume and Fork from the header: warning, grant, recorded scripts, binding
   await expect.poll(() => scripts(run.dataDir).length, { timeout: 10_000 }).toBe(2);
   expect(scripts(run.dataDir)[1]).toContain(`'--resume' '${ID}' '--fork-session'`);
   await page.getByRole('button', { name: 'Remove provisional row' }).click();
+  expect(errors).toEqual([]);
+});
+
+test('Gate 7: a resume still Starting… locks the session (G7-1): Resume not offered, Details says why', async ({ xaibo }) => {
+  const run = await xaibo.launch({ env: { XAIBO_LAUNCH_STUB: '1' } });
+  const page = await xaibo.window(run);
+  const errors: string[] = []; // Gate 7 (e4): the flow logs no console or page error
+  page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+  page.on('pageerror', (e) => errors.push(String(e)));
+  await stubGrant(run.app!);
+  const cwd = path.join(xaibo.home, 'lock project');
+  mkdirSync(cwd);
+  const real = realpathSync(cwd);
+  const dir = path.join(xaibo.home, '.claude', 'projects', real.replace(/[^A-Za-z0-9]/g, '-'));
+  const file = path.join(dir, `${ID}.jsonl`);
+  xaibo.touchStore(() => { mkdirSync(dir, { recursive: true }); writeFileSync(file, line(real, '00000000-0000-4000-8000-0000000c7201', 'lock fixture prompt')); });
+  const head = page.locator('.x-open-head');
+  await openTitled(page, /lock fixture prompt/);
+  await head.getByRole('button', { name: 'Resume' }).click();
+  await page.getByRole('dialog', { name: 'Resume may create concurrent work' }).getByRole('button', { name: 'Resume anyway' }).click();
+  await expect(page.getByRole('heading', { name: 'Starting…', level: 2 })).toBeFocused({ timeout: 20_000 });
+
+  // G7-1: back on the session, Resume is not offered while its first resume is still starting, and Details says why
+  await page.locator('.x-srow', { hasText: 'lock fixture prompt' }).first().click();
+  await expect(page.locator('#open-session-title')).toContainText('lock fixture prompt');
+  await page.getByRole('button', { name: 'Details' }).click();
+  await expect(page.locator('[data-field="resume"]')).toContainText('Resume: A resume from Xaibo is still starting; wait for it or remove its Starting… row', { timeout: 20_000 });
+  await page.getByRole('button', { name: 'Close details' }).click();
+  await expect(head.getByRole('button', { name: 'Resume' })).toHaveCount(0);
+  // c4 (a binding arriving after navigation) has no deterministic E2E: the session row must arrive after the bind; code review only
+  expect(errors).toEqual([]);
 });

@@ -5,14 +5,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { provisionalRows, BIND_MS, type StoredSession } from '../../../src/service/launch/provisional.ts';
-import { parsePortMessage, parsePortRequest, parseServiceCommand } from '../../../src/shared/ipc.ts';
+import { parsePortMessage, parsePortRequest, parseServiceCommand, parseServiceEvent } from '../../../src/shared/ipc.ts';
 import { launchInfo } from '../../../src/service/launch/info.ts';
 import { loadCatalog } from '../../../src/service/catalog/validate.ts';
 
 const ID = '00000000-0000-4000-8000-0000000c0001';
 const base = { agent: 'claude', profileId: 'p1', cwd: '/synthetic/proj', startedAt: 1_000, state: 'starting' as const, reason: null };
 
-function setup(existing: string[] | null = [], over: Record<string, Partial<StoredSession> | null> = {}) {
+function setup(existing: string[] | null = [], over: Record<string, Partial<StoredSession> | null> = {}, freshFails = false) {
   let now = 1_000;
   const pushes: unknown[] = [];
   const stored: Record<string, StoredSession | null> = {
@@ -29,6 +29,8 @@ function setup(existing: string[] | null = [], over: Record<string, Partial<Stor
     now: () => now,
     existing: () => (existing === null ? null : new Set(existing)),
     stored: (agent, profileId, sid) => stored[`${agent}\0${profileId}\0${sid}`] ?? null,
+    fresh: (agent, profileId, cwdKey, from, to) => (freshFails ? null : Object.entries(stored).filter(([k, v]) => k.startsWith(`${agent}\0${profileId}\0`) && v
+      && v.cwdKey === cwdKey && v.startedAt !== null && v.startedAt >= from && v.startedAt < to).map(([k]) => k.split('\0')[2]!)),
     changed: (m) => pushes.push(m),
   });
   return { reg, pushes, at: (t: number) => { now = t; } };
@@ -88,6 +90,9 @@ test('without an id: one new same-cwd start within 60 s binds; old, early, elsew
 
 test('failed rows never bind; remove drops a row; register replaces nothing and is bounded', () => {
   const { reg, pushes } = setup();
+  reg.register({ ...base, key: 'f0', nativeId: ID, state: 'failed', reason: 'open' });
+  assert.deepEqual(reg.list(), [], 'security review L4: a failed update for a row already gone adds nothing');
+  reg.register({ ...base, key: 'f1', nativeId: ID });
   reg.register({ ...base, key: 'f1', nativeId: ID, state: 'failed', reason: 'open' });
   reg.offer('claude', 'p1', ID);
   assert.equal(reg.list().length, 1, 'a failed launch is not bound');
@@ -137,4 +142,40 @@ test('627: a row bound by id needs session activity from the launch on (a resume
   later.reg.offer('claude', 'p1', ID);
   assert.deepEqual(later.pushes.at(-1), { rows: [], bound: [{ key: 'r2', session: 41 }] });
   void pushes; void at;
+});
+
+test('G7-4 (OQ-P7-2): two eligible new sessions for one waiting launch: neither binds, in either arrival order; an unreadable store binds nothing', () => {
+  const codex = { ...base, agent: 'codex', profileId: 'p2', nativeId: null };
+  const second = { 'codex\0p2\0n-new2': { id: 47, startedAt: 1_600, cwdKey: '/synthetic/proj', lastActivity: 1_600 } };
+  for (const order of [['n-new', 'n-new2'], ['n-new2', 'n-new']]) {
+    const a = setup(['n-old'], second);
+    a.reg.register({ ...codex, key: 'c1' });
+    a.at(1_700);
+    for (const sid of order) a.reg.offer('codex', 'p2', sid);
+    assert.equal(a.reg.list().length, 1, order.join(' then '));
+  }
+  const f = setup(['n-old'], {}, true);
+  f.reg.register({ ...codex, key: 'c1' });
+  f.reg.offer('codex', 'p2', 'n-new');
+  assert.equal(f.reg.list().length, 1, 'no candidate list: fail closed');
+});
+
+test('G7-1/G7-3: a starting row locks its session (pending); re-registering its key updates it (failed unlocks); removal unlocks', () => {
+  const { reg, pushes } = setup();
+  reg.register({ ...base, key: 'k1', nativeId: ID });
+  assert.deepEqual([reg.pending('claude', 'p1', ID), reg.pending('claude', 'p2', ID), reg.pending('codex', 'p1', ID)], [true, false, false]);
+  reg.register({ ...base, key: 'k1', nativeId: ID, state: 'failed', reason: 'open' });
+  assert.deepEqual(reg.list(), [{ ...base, key: 'k1', nativeId: ID, state: 'failed', reason: 'open' }]);
+  assert.deepEqual(pushes.at(-1), { rows: [{ ...base, key: 'k1', nativeId: ID, state: 'failed', reason: 'open' }], bound: [] });
+  assert.equal(reg.pending('claude', 'p1', ID), false, 'a failed row does not lock');
+  reg.register({ ...base, key: 'k2', nativeId: ID });
+  reg.remove('k2');
+  assert.equal(reg.pending('claude', 'p1', ID), false);
+});
+
+test('G7-3: main removes a row and the service acknowledges a registration (strict parse)', () => {
+  assert.deepEqual(parseServiceCommand({ v: 1, type: 'removeProvisional', key: ID }), { v: 1, type: 'removeProvisional', key: ID });
+  assert.deepEqual(parseServiceEvent({ v: 1, type: 'provisionalAck', key: ID }), { v: 1, type: 'provisionalAck', key: ID });
+  for (const bad of [{ v: 1, type: 'removeProvisional', key: 'x' }, { v: 1, type: 'removeProvisional', key: ID, extra: 1 }]) assert.equal(parseServiceCommand(bad), null);
+  assert.equal(parseServiceEvent({ v: 1, type: 'provisionalAck', key: 'x' }), null);
 });

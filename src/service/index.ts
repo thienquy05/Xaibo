@@ -90,6 +90,17 @@ const provisional = provisionalRows({
       return r ? { id: r.id, startedAt: r.startedAt, cwdKey: r.cwdKey, lastActivity: r.lastActivity } : null;
     } catch { return null; }
   },
+  // G7-4: every eligible session stored now, so a launch never binds the first of two. ponytail: a second session that is stored
+  // only after the first bound, or known only from hooks (no stored start), is not counted; upgrade: hold binding until BIND_MS ends
+  fresh: (agent, profileId, key, from, to) => {
+    try {
+      const db = svc?.store.db;
+      if (!db?.isOpen) return null;
+      const rows = db.prepare('SELECT native_session_id AS n FROM sessions WHERE agent = ? AND profile_id = ? AND cwd_key = ? AND started_at >= ? AND started_at < ? LIMIT 64')
+        .all(agent, profileId, key, from, to) as { n: string }[];
+      return rows.length >= 64 ? null : rows.map((r) => r.n); // reviews L3/L4: at the cap the set is unknown: fail closed
+    } catch { return null; }
+  },
   changed: (m) => broadcast({ v: IPC_VERSION, type: 'provisional', ...m }),
 });
 
@@ -280,7 +291,11 @@ const command = accept(parseServiceCommand, (m, transferred: MessagePortMain[]) 
     void run.catch((): GrantConfirmResult => ({ status: 'refused', code: 'failed' })).then(reply);
   }
   // XAIBO-PROD-621 (P7-T04): main's launch flow reads the launch info; the reply goes to main only, never a port, always one
-  else if (m.type === 'provisional') provisional.register(m.row); // XAIBO-PROD-622: main's launch outcome
+  else if (m.type === 'provisional') { // XAIBO-PROD-622, G7-3: main's row, registered before Terminal opens (acknowledged), or its failed open
+    provisional.register(m.row);
+    parent.postMessage({ v: IPC_VERSION, type: 'provisionalAck', key: m.row.key } satisfies ServiceEvent);
+  }
+  else if (m.type === 'removeProvisional') provisional.remove(m.key); // G7-3: a launch refused before Terminal opened
   // XAIBO-PROD-626 (P7-T05): one stored session's resume target; the reply goes to main only, always one (null: not stored)
   else if (m.type === 'resumeTarget') {
     const reply = (target: ResumeTarget | null) => parent.postMessage({ v: IPC_VERSION, type: 'resumeTarget', id: m.id, target } satisfies ServiceEvent);
@@ -292,7 +307,7 @@ const command = accept(parseServiceCommand, (m, transferred: MessagePortMain[]) 
       if (!r) return null;
       const d = s.detections.find((x) => x.agent === r.agent), st = s.status(r.agent, r.sid, r.profileId);
       return resumeTarget(cat, { agent: r.agent, profileId: r.profileId, nativeSessionId: r.sid, cwd: r.cwd, entrypoint: r.entrypoint, originator: r.originator, nativeAvailable: r.na !== 0,
-        live: st ? { lifecycle: st.lifecycle, health: st.health } : null }, d?.state === 'detected' ? d.version : null);
+        live: st ? { lifecycle: st.lifecycle, health: st.health } : null, pending: provisional.pending(r.agent, r.profileId, r.sid) }, d?.state === 'detected' ? d.version : null);
     }).catch((): null => null).then(reply);
   }
   else if (m.type === 'launchInfo') {

@@ -6,8 +6,10 @@
 // takes the preview once (it expires), re-reads the launch info (any change is refused), asks for a launch grant or its renewal
 // in a native warning dialog (Cancel first and default; a click within CLICK_MS of opening counts as Cancel; the executable
 // path, a short hash, the bound interpreter, the template, the fixed environment and the not-a-sandbox sentence), then opens
-// Terminal (terminal.ts revalidates the grant immediately before) and registers the provisional row with the service, started
-// or failed. One launch at a time. No Electron import (index.ts wires it).
+// Terminal (terminal.ts revalidates the grant immediately before). The provisional row is registered with the service, and
+// acknowledged, before Terminal opens (G7-3: evidence can never precede it); a failed open marks it failed, a refusal removes it.
+// A resume re-reads its target before execution and again after a grant dialog: a pending Xaibo resume of the session (G7-1, the
+// service reports it disabled) or a liveness change that needs the unconfirmed concurrency warning (G7-2) refuses. One launch at a time. No Electron import (index.ts wires it).
 import { realpathSync } from 'node:fs';
 import { SANDBOX, q } from '../grants.ts';
 import type { LaunchAgentInfo, LaunchOptionsReply, LaunchPreviewReply, LaunchReply, ProvisionalRow, ResumeOptionsReply, ResumeTarget, VsCodeReply } from '../../shared/ipc.ts';
@@ -29,7 +31,10 @@ export interface LaunchFlowDeps {
   /** The native message box; true only for the grant button. */
   confirm(d: LaunchDialog): Promise<boolean>;
   spawner: Spawner;
-  register(row: ProvisionalRow): void;
+  /** Registers (or updates, same key) the provisional row; true once the service acknowledged it. */
+  register(row: ProvisionalRow): Promise<boolean>;
+  /** Removes a row registered for a launch that was refused before Terminal opened. */
+  remove(key: string): void;
   /** XAIBO-PROD-626: the service's resume target for a stored session; null when it did not answer or the session is gone. */
   target(session: number): Promise<ResumeTarget | null>;
   /** shell.openExternal (SEC1: called only with an allowlisted URL). */
@@ -51,6 +56,7 @@ const CLICK_MS = 750;
 // in-app dialog (design §6.7); a native one per launch is recorded as a residual (D-P7-08).
 const GAP_MS = 2_000, COOLDOWN_MS = 5_000;
 const HEADLESS = /^(?:-p|--print|exec|--headless)$/;
+const WORSE = { 'not-live': 0, uncertain: 1, live: 2 } as const; // G7-2, review M2: a warning confirmed at one liveness covers no worse one
 const CHANGED: Record<Field, string> = { exe: 'the executable path', 'exe-hash': "the executable's contents", entry: 'its interpreter', template: 'the argument template', env: 'the environment keys' };
 
 /** The native grant (or renewal) confirmation; the executable as fingerprinted before the dialog opens. */
@@ -77,7 +83,7 @@ interface Preview {
   /** XAIBO-PROD-626: the grant this kind binds (the agent for Launch, <agent>-resume / <agent>-fork), the provisional row's id
    *  (Launch: the pre-allocated one; Resume: the session's; Fork: none) and the re-read before execution (the agent's entry when
    *  nothing changed). */
-  grantKey: string; rowNativeId: string | null; recheck: () => Promise<LaunchAgentInfo | null>;
+  grantKey: string; rowNativeId: string | null; recheck: () => Promise<LaunchAgentInfo | null | 'concurrent'>;
 }
 const sameAgent = (a: LaunchAgentInfo | undefined, p: Pick<Preview, 'exe' | 'names' | 'profileId' | 'envKeys'>) => !!a && a.executable === p.exe && a.names.join('\0') === p.names.join('\0')
   && a.profiles.some((x) => x.id === p.profileId && launchable(x) && (x.envKey === null ? [] : [x.envKey]).join('\0') === p.envKeys.join('\0'));
@@ -164,9 +170,12 @@ export function launchFlow(d: LaunchFlowDeps) {
       let cwd: string;
       try { cwd = realpathSync.native(t.cwd); } catch { return refused('cwd'); }
       const names = [...a.names], profileId = t.profileId;
+      // ponytail: confirmed comes from the renderer, so the warning is a UX guard, not a main-process control (like D-P7-08)
+      const warnedAt = mode === 'resume' && confirmed ? t.liveness : 'not-live';
       return hold({ agent: a.agent, profileId, cwd, nativeId, exe, args, names, envKeys, grantKey: `${a.agent}-${mode}`, rowNativeId: mode === 'resume' ? nativeId : null,
         recheck: async () => {
           const [t2, i2] = await Promise.all([d.target(session), d.info()]);
+          if (mode === 'resume' && t2 && WORSE[t2.liveness] > WORSE[warnedAt]) return 'concurrent'; // G7-2: the warning is needed (again) now
           const x = i2?.find((y) => y.agent === a.agent), tpl2 = t2?.[mode];
           return x && t2 && tpl2 && 'args' in tpl2 && sameArgs(tpl2.args, args) && t2.nativeId === nativeId && sameAgent(x, { exe, names, profileId, envKeys }) ? x : null;
         } }, b.argv);
@@ -190,6 +199,7 @@ export function launchFlow(d: LaunchFlowDeps) {
       busy = true;
       try {
         const a = await p.recheck();
+        if (a === 'concurrent') return refused('concurrent');
         if (!a) return refused('changed');
         const spec = { exe: p.exe, template: p.args, envKeys: p.envKeys };
         const check = await revalidate(d.dataDir, p.grantKey, spec);
@@ -200,16 +210,22 @@ export function launchFlow(d: LaunchFlowDeps) {
           const yes = await d.confirm(launchDialog(a.name, p.agent, fp, p.args, check, p.cwd, p.envKeys));
           if (!yes || d.mono() - opened < CLICK_MS) { cooldownUntil = d.mono() + COOLDOWN_MS; return { status: 'cancelled' }; }
           try { await grantLaunch(d.dataDir, p.grantKey, spec, 'bundled', fp, d.now()); } catch { return refused('changed'); }
+          const b = await p.recheck(); // G7-2: the dialog took time; liveness or the target may have changed
+          if (b === 'concurrent') return refused('concurrent');
+          if (!b) return refused('changed');
         }
-        const r = await launchInTerminal({ agent: p.agent, grantKey: p.grantKey, executable: p.exe, args: p.args, ...(p.nativeId ? { nativeId: p.nativeId } : {}), cwd: p.cwd, names: p.names, envKeys: p.envKeys, dataDir: d.dataDir }, d.spawner, d.now());
-        if (r.status === 'blocked') return refused('grant');
-        if (r.status === 'refused') return refused(r.reason);
-        lastLaunch = d.mono();
         const key = d.uuid();
-        const row: ProvisionalRow = { key, agent: p.agent, profileId: p.profileId, cwd: p.cwd, nativeId: p.rowNativeId, startedAt: d.now(),
-          state: r.status === 'started' ? 'starting' : 'failed', reason: r.status === 'failed' ? r.reason : null };
-        d.register(row);
-        return r.status === 'started' ? { status: 'started', key } : { status: 'failed', key, reason: r.reason };
+        const row: ProvisionalRow = { key, agent: p.agent, profileId: p.profileId, cwd: p.cwd, nativeId: p.rowNativeId, startedAt: d.now(), state: 'starting', reason: null };
+        if (!(await d.register(row))) { d.remove(key); return refused('unavailable'); } // G7-3: no acknowledged row, no Terminal (reviews M1: nor an orphan)
+        let r: Awaited<ReturnType<typeof launchInTerminal>>;
+        try { r = await launchInTerminal({ agent: p.agent, grantKey: p.grantKey, executable: p.exe, args: p.args, ...(p.nativeId ? { nativeId: p.nativeId } : {}), cwd: p.cwd, names: p.names, envKeys: p.envKeys, dataDir: d.dataDir }, d.spawner, d.now()); }
+        catch (e) { d.remove(key); throw e; }
+        if (r.status === 'blocked') { d.remove(key); return refused('grant'); }
+        if (r.status === 'refused') { d.remove(key); return refused(r.reason); }
+        lastLaunch = d.mono();
+        if (r.status === 'started') return { status: 'started', key };
+        if (!(await d.register({ ...row, state: 'failed', reason: r.reason }))) d.remove(key); // never a Starting… row that keeps a lock
+        return { status: 'failed', key, reason: r.reason };
       } finally { busy = false; }
     },
   };

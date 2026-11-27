@@ -92,6 +92,7 @@ function start(dataDir: string) {
   // XAIBO-PROD-626: resume targets (same correlation as the launch info); Open in VS Code through shell.openExternal, or (E2E,
   // XAIBO_EXTERNAL_STUB=1 behind the marker) a record of the allowlisted URL
   const targetWaits = new Map<number, (t: ResumeTarget | null) => void>();
+  const ackWaits = new Map<string, (ok: boolean) => void>(); // G7-3: a provisional row is registered (acknowledged) before Terminal opens
   const externalStub = trusted.XAIBO_EXTERNAL_STUB === '1' ? path.join(app.getPath('logs'), 'external-stub.jsonl') : null;
   const launchStub = trusted.XAIBO_LAUNCH_STUB === '1' ? path.join(app.getPath('logs'), 'launch-stub.jsonl') : null;
   const launches = launchFlow({
@@ -105,7 +106,12 @@ function start(dataDir: string) {
     uuid: randomUUID, now: Date.now, mono: () => performance.now(),
     confirm: async (d) => (win && !win.isDestroyed() ? (await dialog.showMessageBox(win, d)).response === 1 : false),
     spawner: launchStub ? { open: async (file) => { appendQuiet(launchStub, `${JSON.stringify({ script: readFileSync(file, 'utf8') })}\n`); unlinkSync(file); return true; } } : terminalSpawner,
-    register: (row) => supervisor.send({ v: IPC_VERSION, type: 'provisional', row }),
+    register: (row) => new Promise((resolve) => {
+      const timer = setTimeout(() => { ackWaits.delete(row.key); resolve(false); }, 5_000);
+      ackWaits.set(row.key, (ok) => { clearTimeout(timer); ackWaits.delete(row.key); resolve(ok); });
+      supervisor.send({ v: IPC_VERSION, type: 'provisional', row });
+    }),
+    remove: (key) => supervisor.send({ v: IPC_VERSION, type: 'removeProvisional', key }),
     target: (session) => new Promise((resolve) => {
       const id = ++infoId;
       const timer = setTimeout(() => { targetWaits.delete(id); resolve(null); }, 10_000);
@@ -121,11 +127,12 @@ function start(dataDir: string) {
     }),
     channel: () => new MessageChannelMain(),
     onHealth: (h) => win?.webContents.send('health', h),
-    onSpawn: () => { serviceMetrics = null; grants.reset(); applies.reset(); for (const w of [...infoWaits.values()]) w(null); for (const w of [...targetWaits.values()]) w(null); sendPort(); }, // a new service process: no stale metrics (review L1), grant or apply flow
+    onSpawn: () => { serviceMetrics = null; grants.reset(); applies.reset(); for (const w of [...infoWaits.values()]) w(null); for (const w of [...targetWaits.values()]) w(null); for (const w of [...ackWaits.values()]) w(false); sendPort(); }, // a new service process: no stale metrics (review L1), grant or apply flow
     onGrant: (g) => grants.receive(g),
     onApply: (a) => applies.receive(a),
     onLaunchInfo: (l) => infoWaits.get(l.id)?.(l.agents),
     onResumeTarget: (r) => targetWaits.get(r.id)?.(r.target),
+    onProvisionalAck: (a) => ackWaits.get(a.key)?.(true),
     setTimer: (fn, ms) => setTimeout(fn, ms),
     clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
     now: Date.now,
