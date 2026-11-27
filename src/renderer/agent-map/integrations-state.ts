@@ -40,6 +40,19 @@ export async function refreshWindow(l: AgentLevel, fetch: (cursor: IntegrationKe
 }
 
 
+/** Gate 6 second review item 3 (XAIBO-PROD-609): the list drops any reply whose token is no longer the latest, so a page
+ *  request (Load more/previous) started while a refresh is in flight would lose that refresh. `preempts(current)`: the
+ *  request about to replace token `current` replaces an unanswered refresh (asked once; the caller queues it again). */
+export function refreshTracker() {
+  let refreshing = 0;
+  return {
+    start(token: number) { refreshing = token; },
+    // cleared either way: a mismatch means a later request already replaced that refresh
+    preempts(current: number) { const r = refreshing !== 0 && refreshing === current; refreshing = 0; return r; },
+    settled(token: number) { if (refreshing === token) refreshing = 0; },
+  };
+}
+
 export const REFUSAL_TEXT: Record<Refusal, string> = {
   starting: 'Agents are still being detected', unavailable: 'Agent evidence is unavailable', 'stale-cursor': 'The agent list changed; reloading',
   'too-large': 'Too many agent profiles to list', failed: "Couldn't load agents",
