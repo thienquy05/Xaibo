@@ -1551,7 +1551,7 @@ export type ApplyLabel = (typeof APPLY_LABELS)[number];
 export const APPLY_ITEMS = 64;
 export interface ApplyOffer { kind: ApplyKind; previewId: string; items: [ApplyLabel, string][]; binding: string }
 /** unknown: the confirm was sent but no reply came (the apply may have run: reread, never retry). */
-const APPLY_REFUSALS = ['not-real', 'preview-invalid', 'preview-expired', 'stale', 'oversize', 'bounds-unavailable', 'unavailable', 'starting', 'read-only', 'busy', 'failed', 'unknown', 'invalid'] as const;
+const APPLY_REFUSALS = ['not-real', 'preview-invalid', 'preview-expired', 'stale', 'oversize', 'bounds-unavailable', 'unavailable', 'starting', 'read-only', 'busy', 'stale-lock', 'lock-unknown', 'failed', 'unknown', 'invalid'] as const;
 export type ApplyRefusal = { status: 'refused'; code: (typeof APPLY_REFUSALS)[number] };
 export type ApplyReply = ConnectReply | RemovalReply | CleanupReply;
 export type ApplyOfferResult = { status: 'offer'; offer: ApplyOffer } | ApplyRefusal;

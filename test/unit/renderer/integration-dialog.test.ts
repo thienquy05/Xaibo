@@ -244,3 +244,11 @@ test('the panel offers each write only where it applies (and none for a profile-
   assert.deepEqual(panelActions(detail({ entries: [e('claude-retention')] })), ['connect', 'disconnect', 'uninstall'], 'retention alone is no lifecycle hook');
   assert.deepEqual(panelActions(detail({ agent: 'codex', state: 'setup-required', entries: [e('codex-hooks', 'disconnected-externally')] })), ['disconnect', 'uninstall', 'cleanup']);
 });
+
+// XAIBO-PROD-612 (Phase 7 cleanup item 1, run 1): the lock texts are honest; restarting Xaibo never cleared a lock
+test('lock refusals: busy, stale-lock and lock-unknown say what to do; none says restart Xaibo', () => {
+  assert.equal(refusalText('busy'), 'Another integration change is running. Wait, then check again.');
+  assert.equal(refusalText('stale-lock'), "An earlier integration change stopped. Quit Xaibo, then remove the integration lock file from Xaibo's data folder.");
+  assert.equal(refusalText('lock-unknown'), "Xaibo can't verify that integration changes have stopped. Quit Xaibo and stop any integration command before manually removing the lock.");
+  for (const c of ['busy', 'stale-lock', 'lock-unknown']) assert.doesNotMatch(refusalText(c), /restart Xaibo/i);
+});

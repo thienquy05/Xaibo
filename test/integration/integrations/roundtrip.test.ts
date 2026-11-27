@@ -292,6 +292,40 @@ test('busy keeps the preview: apply while another writer holds the lock, then ag
   assert.equal((await w.c.applyConnect(pv.status === 'preview' ? pv.previewId : '')).status, 'applied', 'the same preview, kept');
 });
 
+// XAIBO-PROD-612 review (MEDIUM, LOW 1): Disconnect always holds the lock as external (the plugin uninstall may run, and the
+// manifest it reverts is read only under the lock); a Removal of a plugin entry too
+test('a plugin Disconnect and a plugin Removal hold the lock as the external writer', async () => {
+  const w = await world({ route: 'plugin' });
+  const lockWriter = () => json(join(w.dataDir, 'integrations', 'operation.lock'))['writer'];
+  const pv = w.c.previewConnect(w.profiles.claude, { retention: false, tee: false });
+  assert.equal((await w.c.applyConnect(pv.status === 'preview' ? pv.previewId : '')).status, 'applied');
+  w.setMode('slow');
+  const pending = w.c.disconnect(w.profiles.claude);
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(lockWriter(), 'external', 'Disconnect');
+  await pending;
+  w.setMode('');
+  const pv2 = w.c.previewConnect(w.profiles.claude, { retention: false, tee: false });
+  assert.equal((await w.c.applyConnect(pv2.status === 'preview' ? pv2.previewId : '')).status, 'applied');
+  const rp = w.c.previewRemoval(Object.values(w.profiles), w.profiles.claude);
+  assert.equal(rp.status, 'preview', JSON.stringify(rp));
+  w.setMode('slow');
+  const removing = w.c.applyRemoval(rp.status === 'preview' ? rp.previewId : '', undefined, Object.values(w.profiles));
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(lockWriter(), 'external', 'Removal');
+  await removing;
+});
+
+// XAIBO-PROD-612: an in-process settings write holds the lock as the service writer
+test('a settings-route Connect holds the lock as the service writer', async () => {
+  const w = await world();
+  const seen: unknown[] = [];
+  const c = createConnect({ ...w.ctx, afterRename: () => { seen.push(json(join(w.dataDir, 'integrations', 'operation.lock'))['writer']); } });
+  const pv = c.previewConnect(w.profiles.claude, { retention: false, tee: false });
+  assert.equal((await c.applyConnect(pv.status === 'preview' ? pv.previewId : '')).status, 'applied');
+  assert.ok(seen.length > 0 && seen.every((x) => x === 'service'), JSON.stringify(seen));
+});
+
 test('a step that throws after its rename: its pending entry is undone first, then step 1; the file comes back byte for byte', async () => {
   const w = await world();
   const before = sha(w.files.claude);
@@ -440,6 +474,8 @@ test('2b the operation lock is held across the awaited CLI steps', async () => {
   const pending = w.c.applyConnect(pv.status === 'preview' ? pv.previewId : '');
   await new Promise((r) => setTimeout(r, 100)); // the install is running
   assert.throws(() => acquireLock(w.dataDir), (e) => e instanceof ConfigError && e.code === 'busy');
+  // XAIBO-PROD-612: an operation that runs `claude plugin` holds the lock as an external writer (never clearable in-app)
+  assert.equal(json(join(w.dataDir, 'integrations', 'operation.lock'))['writer'], 'external');
   assert.equal((await pending).status, 'applied');
   acquireLock(w.dataDir).release(); // released after the operation
 });

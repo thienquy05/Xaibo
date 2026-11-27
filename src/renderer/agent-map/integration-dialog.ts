@@ -123,7 +123,10 @@ const REFUSALS: Record<string, string> = {
   oversize: 'This change is too large to show in the confirmation dialog. Nothing was changed.',
   invalid: "Xaibo's confirmation couldn't be opened. Nothing was changed.",
   'real-profile': "This profile isn't one of Xaibo's disposable test profiles; real-profile changes stay off until Gate 6.",
-  busy: 'Another integration change is in progress. Close and try again shortly.', 'stale-lock': 'An earlier change stopped without finishing; restart Xaibo, then try again.',
+  // XAIBO-PROD-612: honest lock texts (a restart never cleared a lock)
+  busy: 'Another integration change is running. Wait, then check again.',
+  'stale-lock': "An earlier integration change stopped. Quit Xaibo, then remove the integration lock file from Xaibo's data folder.",
+  'lock-unknown': "Xaibo can't verify that integration changes have stopped. Quit Xaibo and stop any integration command before manually removing the lock.",
   'preview-expired': 'This preview expired. Close and open it again.', 'preview-invalid': 'This preview is no longer valid. Close and open it again.',
   unverified: "This agent's version isn't verified for Connect.", 'helpers-unavailable': "Xaibo's hook helpers are missing; reinstall Xaibo.",
   'bounds-unavailable': "Xaibo couldn't confirm which folders are safe to change.", duplicate: 'Xaibo is already set up in this configuration.',

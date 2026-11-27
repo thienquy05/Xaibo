@@ -120,7 +120,7 @@ const show = (v: unknown) => JSON.stringify(v);
  *  blocks the service); Ctrl-C or SIGTERM while held releases it (review M1). */
 let held: Lock | null = null;
 async function locked<T>(dataDir: string, fn: () => Promise<T> | T): Promise<T> {
-  held = acquireLock(dataDir);
+  held = acquireLock(dataDir, 'external'); // XAIBO-PROD-612: the dev CLI's lock is never cleared in-app
   try { return await fn(); } finally { held.release(); held = null; }
 }
 
@@ -285,8 +285,10 @@ const MESSAGES: Partial<Record<ConfigError['code'], string>> = {
   'parent-missing': 'refused: the config directory does not exist in this profile',
   changed: 'aborted: the file changed since it was read; nothing written',
   duplicate: 'refused: Xaibo hooks are already installed in this profile (or its selected project)',
-  busy: 'refused: another Xaibo operation is changing agent configuration; try again when it finishes',
-  'stale-lock': 'refused: a Xaibo operation stopped without releasing its lock (integrations/operation.lock); nothing was changed',
+  // XAIBO-PROD-612: the app's lock texts; no bypass
+  busy: 'refused: another integration change is running; wait, then check again',
+  'stale-lock': "refused: an earlier integration change stopped; quit Xaibo, then remove integrations/operation.lock from Xaibo's data folder; nothing was changed",
+  'lock-unknown': "refused: Xaibo can't verify that integration changes have stopped; quit Xaibo and stop any integration command before manually removing integrations/operation.lock; nothing was changed",
   exclusive: 'refused: this profile already has the other Claude hook route (plugin and settings fallback are exclusive)',
   'not-installed': 'nothing to uninstall: no Xaibo plugin recorded for this profile',
   cli: 'failed: a `claude plugin` step did not succeed; rolled back',

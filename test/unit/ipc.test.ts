@@ -1,7 +1,7 @@
 // XAIBO-PROD-104 (P1-T06): versioned IPC messages with hand-written validation; invalid messages dropped and counted.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { accept, healthText, parseHealth, parsePortMessage, parsePortRequest, parseServiceCommand, parseServiceEvent, READ_ONLY_BANNER } from '../../src/shared/ipc.ts';
+import { accept, applyRefusal, healthText, parseHealth, parsePortMessage, parsePortRequest, parseServiceCommand, parseServiceEvent, READ_ONLY_BANNER } from '../../src/shared/ipc.ts';
 
 test('service commands: known types pass, extra fields are stripped', () => {
   for (const type of ['quit', 'wake', 'port', 'reloadPrices'] as const) assert.deepEqual(parseServiceCommand({ v: 1, type, extra: 'x' }), { v: 1, type });
@@ -482,4 +482,10 @@ test('P5-T17a review L10: monthly replies need unique ascending months, quota in
   assert.equal(parsePortMessage({ ...msg, failed: true }), null, 'failed with content');
   const observed = { ...month('2026-03'), observed: true, sessions: 1, turns: 0, tokens: null, cost: null };
   assert.ok(parsePortMessage({ ...msg, months: [month('2026-02'), observed] }), 'sessions without usage: tokens and cost unavailable');
+});
+
+// XAIBO-PROD-612 review (LOW 2): a stale or unknown lock reaches main's confirmation as itself, never as busy
+test('applyRefusal keeps the lock codes', () => {
+  for (const c of ['busy', 'stale-lock', 'lock-unknown'] as const) assert.deepEqual(applyRefusal(c), { status: 'refused', code: c });
+  assert.deepEqual(applyRefusal('nonsense'), { status: 'refused', code: 'failed' });
 });

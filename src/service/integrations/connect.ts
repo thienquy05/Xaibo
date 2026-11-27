@@ -26,7 +26,7 @@ import type { Detection, Profile } from '../catalog/detect.ts';
 import type { Catalog } from '../catalog/validate.ts';
 import { claudeConnectRoute, claudeRetentionOffer, reportOps, retentionOps, type RetentionOffer, type SetupAccess } from '../catalog/setup-plans.ts';
 import { privateDir, real, REAL_PROFILE_ENABLED, writable } from '../config/bounds.ts';
-import { acquireLock, lockState } from '../config/lock.ts';
+import { acquireLock, lockState, type Writer } from '../config/lock.ts';
 import {
   apply, BACKUP_NAME, ConfigError, dropEntry, plan, privateDirs, readFile, readManifest, revert, within, type Bounds, type DiffLine, type ManifestEntry, type Op, type Plan, type Route,
 } from '../config/transaction.ts';
@@ -318,6 +318,10 @@ export function createConnect(ctx: ConnectContext) {
   /** Design review M3: stricter than the redacted diff: route, target, owned values with the full value they replace, created. */
   const same = (a: Plan, b: Plan) => a.route === b.route && a.target === b.target && isDeepStrictEqual(a.owned, b.owned) && isDeepStrictEqual(a.created, b.created);
 
+  /** XAIBO-PROD-612: the lock's writer class: 'external' when the operation may run `claude plugin`, or when that can't be told.
+   *  Only from entries fixed before the lock (a removal's preview, rechecked under it); Disconnect and Uninstall read their
+   *  manifest only under the lock, so they are always external (review LOW 1). */
+  const writerOf = (entries: () => readonly ManifestEntry[]): Writer => { try { return entries().some((e) => e.route === 'claude-plugin') ? 'external' : 'service'; } catch { return 'external'; } };
   /** Part 2a: under the operation lock, taken before the preview is looked up, so `busy` keeps the preview for a retry. */
   async function applyConnect(previewId: string, owner?: unknown): Promise<ConnectResult> {
     if (!denied) return refused('bounds-unavailable');
@@ -325,13 +329,13 @@ export function createConnect(ctx: ConnectContext) {
     // before the lock is taken or the lookup consumes it, so main's confirm can still use it
     const held = previews.get(previewId);
     if (held && held.owner === owner && (held.real || nowReal(held.profile))) return refused('needs-confirmation');
-    return locked(() => applyLocked(previewId, owner, false));
+    return locked(held?.plugin ? 'external' : 'service', () => applyLocked(previewId, owner, false));
   }
   /** The operation lock around one whole operation, held until its promise settles (part 2b: the CLI awaits); a held or stale
    *  lock is the refusal, nothing else is touched. */
-  async function locked<T>(fn: () => T | Promise<T>): Promise<T | Refused> {
+  async function locked<T>(writer: Writer, fn: () => T | Promise<T>): Promise<T | Refused> {
     let lock;
-    try { lock = acquireLock(ctx.dataDir); } catch (e) { return refused(e instanceof ConfigError ? e.code : 'failed'); } // nothing written yet (code review L-b)
+    try { lock = acquireLock(ctx.dataDir, writer); } catch (e) { return refused(e instanceof ConfigError ? e.code : 'failed'); } // nothing written yet (code review L-b)
     try { return await fn(); } finally { lock.release(); }
   }
   async function applyLocked(previewId: string, owner: unknown, confirmed: boolean): Promise<ConnectResult> {
@@ -437,12 +441,12 @@ export function createConnect(ctx: ConnectContext) {
     if (!denied) return refused('bounds-unavailable');
     const t = targetFor(p);
     if (!t) return refused('unverified');
-    return locked(() => revertAll(readManifest(ctx.dataDir).filter((e) => e.target === t.file && t.routes.includes(e.route)), denied, [p]));
+    return locked('external', () => revertAll(readManifest(ctx.dataDir).filter((e) => e.target === t.file && t.routes.includes(e.route)), denied, [p]));
   }
 
   /** Every recorded entry, including profiles no longer detected; history and the shim stay (FR-34; orphan shim: P6-T05).
    *  XAIBO-PROD-599 H3: an entry on a real root only for one of `profiles` (the live ones). */
-  const uninstall = async (profiles: readonly Profile[]): Promise<Outcome | Refused> => (denied ? locked(() => revertAll(readManifest(ctx.dataDir), denied, profiles)) : refused('bounds-unavailable'));
+  const uninstall = async (profiles: readonly Profile[]): Promise<Outcome | Refused> => (denied ? locked('external', () => revertAll(readManifest(ctx.dataDir), denied, profiles)) : refused('bounds-unavailable'));
 
   /** A closed port's previews can never be applied: drop them (part 1b review L5). */
   const dropOwner = (owner: unknown) => {
@@ -498,7 +502,7 @@ export function createConnect(ctx: ConnectContext) {
   }
   async function cleanupLocked(previewId: string, owner: unknown, confirmed: boolean): Promise<CleanupResult> {
     if (!denied) return refused('bounds-unavailable');
-    return locked((): CleanupResult => {
+    return locked('service', (): CleanupResult => { // forgets records only, no CLI
       const h = cleanups.get(previewId);
       cleanups.delete(previewId);
       if (!h || h.owner !== owner) return refused('preview-invalid');
@@ -617,7 +621,7 @@ export function createConnect(ctx: ConnectContext) {
   async function removalLocked(previewId: string, owner: unknown, profiles: readonly Profile[], confirmed: boolean): Promise<RemovalResult> {
     if (!denied) return refused('bounds-unavailable');
     const d = denied;
-    return locked(async (): Promise<RemovalResult> => {
+    return locked(writerOf(() => removals.get(previewId)?.entries ?? []), async (): Promise<RemovalResult> => {
       const h = removals.get(previewId);
       removals.delete(previewId); // consumed on first lookup, a wrong owner included
       if (!h || h.owner !== owner) return refused('preview-invalid');
@@ -665,7 +669,7 @@ export function createConnect(ctx: ConnectContext) {
       // code review 4: the plugin preview too (never built for a real profile today, decision A; bound if that ever changes)
       const digest = JSON.stringify({ p, sel: h.sel, report: h.report, trust: h.trust, retention: h.retention, plugin: h.plugin?.pp ?? null,
         steps: h.steps.map((s) => ({ route: s.route, target: s.plan.target, owned: s.plan.owned, created: s.plan.created, preHash: s.plan.preHash, dev: s.plan.dev, ino: s.plan.ino, mode: s.plan.mode })) });
-      return { items, digest, owner: h.owner, run: () => locked(() => applyLocked(previewId, h.owner, true)) };
+      return { items, digest, owner: h.owner, run: () => locked(h.plugin ? 'external' : 'service', () => applyLocked(previewId, h.owner, true)) };
     }
     if (kind === 'removal') {
       const r = removals.get(previewId);
@@ -684,7 +688,7 @@ export function createConnect(ctx: ConnectContext) {
     if (at > c.expiresAt) return refused('preview-expired');
     if (!c.real && !c.entries.some((e) => realEntry(e, d, c.profiles))) return refused('not-real');
     const scan = current(c.profiles, false);
-    if (scan.status === 'blocked') return refused(scan.code === 'busy' || scan.code === 'stale-lock' ? 'busy' : 'failed');
+    if (scan.status === 'blocked') return refused(scan.code === 'bounds-unavailable' || scan.code === 'manifest' ? 'failed' : scan.code); // review LOW 2: lock codes as they are
     const items: [ApplyLabel, string][] = [...(c.scope ? [['profile', c.scope] as [ApplyLabel, string]] : []), ['records', String(c.entries.length)], ['backups', String(c.entries.filter((e) => e.backup).length)]];
     for (const e of c.entries) {
       items.push(['file', e.target], ['change', `${e.route}: forget the record`]);

@@ -2,7 +2,7 @@
 // and output. The child gets its own process group, so a timeout or overflow kills its descendants too (a login
 // shell's children would otherwise hold the pipe open). Callers get a result, never a throw. A child killed by a signal
 // we did not send (e.g. the audit profile killing a network attempt, EC-60/M6) is logged as `child_killed`.
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import type { Logger } from '../shared/log.ts';
 
@@ -12,6 +12,14 @@ export interface RunResult { code: number | null; signal: NodeJS.Signals | null;
 export const succeeded = (r: RunResult) => r.code === 0 && !r.timedOut && !r.overflow && !r.error;
 /** Ended by a signal that our own timeout or overflow kill did not send. */
 export const externallyKilled = (r: RunResult) => r.signal !== null && !r.timedOut && !r.overflow;
+
+/** XAIBO-PROD-612: a bounded synchronous run for a short probe a synchronous caller needs (the operation lock's ps start
+ *  stamp): fixed argv, no shell, stdin closed, killed at the timeout; its stdout, or null on any failure (non-zero exit, signal,
+ *  timeout, overflow, spawn error). ponytail: no process group, so only for commands that start no children (ps). */
+export function runSync(file: string, args: readonly string[], o: { timeoutMs: number; maxBytes: number; env: NodeJS.ProcessEnv }): Buffer | null {
+  const r = spawnSync(file, args, { shell: false, stdio: ['ignore', 'pipe', 'ignore'], env: o.env, timeout: o.timeoutMs, maxBuffer: o.maxBytes, killSignal: 'SIGKILL' });
+  return r.error || r.status !== 0 || r.signal ? null : r.stdout;
+}
 
 export function run(file: string, args: readonly string[], o: RunOptions): Promise<RunResult> {
   return new Promise((resolve) => {
