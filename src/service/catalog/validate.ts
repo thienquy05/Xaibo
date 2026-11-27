@@ -23,6 +23,9 @@ export interface AgentEntry {
   reportSetup?: ReportSetup;
   /** XAIBO-PROD-591 (P6-T08 slice B): per exact release and surface (Gate 0 S6/S7); bundled only. */
   compatibility?: CompatibilityRow[];
+  /** XAIBO-PROD-620 (P7-T08, FR-20): the tested interactive launch template, or why launch is disabled; bundled only. */
+  launch?: { args: string[]; preallocatedId?: boolean; evidence: string };
+  launchDisabled?: string;
 }
 export type Assurance = 'verified' | 'unverified' | 'unsupported';
 export interface CompatibilityRow {
@@ -122,6 +125,14 @@ export function catalogIssues(value: unknown, bundled?: Catalog): CatalogIssue[]
         const problem = SOURCE_AGENT[r.source] !== a.id ? 'source' : ruleProblem(r);
         if (problem) add('unsafe-value', `${p}/signInRules/${j}/${problem}`);
       });
+    }
+    // XAIBO-PROD-620: launch data is Xaibo's own tested template (bundled only); one of the two; interactive only (FR-20: never a
+    // headless fallback); pre-allocation needs the {id} token and the {id} token needs pre-allocation
+    for (const k of ['launch', 'launchDisabled'] as const) if (a[k] !== undefined && bundled) add('unsafe-value', `${p}/${k}`);
+    if (a.launch && a.launchDisabled !== undefined && !bundled) add('unsafe-value', `${p}/launchDisabled`);
+    if (a.launch && !bundled) {
+      a.launch.args.forEach((t, j) => { if (/^(?:-p|--print|exec|--headless)$/.test(t)) add('unsafe-value', `${p}/launch/args/${j}`); });
+      if ((a.launch.preallocatedId === true) !== a.launch.args.includes('{id}')) add('unsafe-value', `${p}/launch/preallocatedId`);
     }
     if (!bundled) return;
     if (bundled.agents.some((b) => b.id === a.id.toLowerCase())) add('shadow', `${p}/id`);

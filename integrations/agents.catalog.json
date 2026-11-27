@@ -4,6 +4,7 @@
     {
       "id": "claude",
       "displayName": "Claude Code",
+      "launch": { "args": ["--session-id", "{id}"], "preallocatedId": true, "evidence": "S7, Claude Code 2.1.322: --session-id pre-allocates the id in the interactive TUI" },
       "compatibility": [
         {"version":"2.1.322","surface":"cli","visible":"verified","resumable":"verified","attach":"unverified","ownership":"unverified","note":"approvals go to the TUI; attach not tested","evidence":"Gate 0 S7 compatibility matrix (phase0_spikes.md)"},
         {"version":"2.1.322","surface":"sdk-cli","visible":"unsupported","resumable":"verified","attach":"unsupported","ownership":"unverified","note":"not in the resume picker; resumable by id","evidence":"Gate 0 S7 compatibility matrix (phase0_spikes.md)"},
@@ -25,6 +26,7 @@
     {
       "id": "codex",
       "displayName": "Codex",
+      "launch": { "args": [], "evidence": "S6, Codex 0.160.0: interactive TUI (cli, codex-tui)" },
       "compatibility": [
         {"version":"0.160.0","surface":"cli","visible":"verified","resumable":"verified","attach":"unverified","ownership":"unverified","note":"no-daemon mode: attach failed, the TUI owns it; shared daemon untested","evidence":"Gate 0 S6 compatibility matrix (phase0_spikes.md)"},
         {"version":"0.160.0","surface":"exec","visible":"verified","resumable":"verified","attach":"unverified","ownership":"unverified","note":"listed only with --include-non-interactive","evidence":"Gate 0 S6 compatibility matrix (phase0_spikes.md)"},
@@ -48,6 +50,7 @@
     {
       "id": "agy",
       "displayName": "Antigravity CLI",
+      "launchDisabled": "agy interactive launch not verified",
       "detection": {
         "binaries": [{ "id": "main", "names": ["agy"], "versionArgs": ["--version"] }],
         "locations": ["~/.local/bin"]

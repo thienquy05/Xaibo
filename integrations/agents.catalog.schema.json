@@ -126,6 +126,18 @@
             }
           }
         },
+        "launch": {
+          "description": "P7-T08 (FR-20): the tested interactive launch template: whole argument tokens after the agent's own executable, placeholders only {id} (the pre-allocated session id) and {cwd}; never a headless mode. Bundled catalog only; validated again by the launch layer (P7-T02) and gated by a launch grant (P7-T03).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["args", "evidence"],
+          "properties": {
+            "args": { "type": "array", "maxItems": 8, "items": { "type": "string", "pattern": "^(?:[A-Za-z0-9@%+=:,./_-]+|\\{id\\}|\\{cwd\\})$" } },
+            "preallocatedId": { "type": "boolean" },
+            "evidence": { "type": "string", "minLength": 1, "maxLength": 256 }
+          }
+        },
+        "launchDisabled": { "description": "P7-T08: why interactive launch is not offered (shown beside the disabled option). Bundled only.", "type": "string", "minLength": 1, "maxLength": 128 },
         "compatibility": {
           "description": "P6-T08 (EC-79, US-8; D-P6-19): per exact tested release and surface, whether that surface lists the history, resumes it, attaches live, and records ownership (Gate 0 S6/S7). Bundled catalog only; an untested version or surface is unverified. Display data only, never a launch or control permission.",
           "type": "array",
