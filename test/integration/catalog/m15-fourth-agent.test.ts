@@ -50,7 +50,10 @@ function run(cmd: string, args: string[], input: string): Promise<{ status: numb
   });
 }
 
-test('M15: a fourth agent from data only: import, detect, setup preview/apply, report delivery, full content, status, receipt', async () => {
+// ponytail (D-P6-25): macOS only. connectContext allows os.tmpdir() as the disposable root; on Linux that is the shared
+// /tmp, which writable() refuses by design, so this production-wired test cannot preview there. Revisit with S-23 (Linux).
+const m15Skip = process.platform !== 'darwin' && 'the disposable root is the shared /tmp off macOS (S-23)';
+test('M15: a fourth agent from data only: import, detect, setup preview/apply, report delivery, full content, status, receipt', { skip: m15Skip }, async () => {
   const tmp = realpathSync.native(mkdtempSync(join(tmpdir(), 'xm15-')));
   dirs.push(tmp);
   const home = join(tmp, 'home'), dataDir = join(tmp, 'data'), helpers = join(tmp, 'helpers');

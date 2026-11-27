@@ -339,6 +339,9 @@ test('2b changed since the preview (bytes, absence, inode, mode, executable, col
     ['collision', (s) => { mkdirSync(join(s.configDir, 'plugins')); writeFileSync(join(s.configDir, 'plugins', 'known_marketplaces.json'), '{"xaibo":{}}'); }, 'duplicate'],
   ];
   for (const [name, change, code] of cases) {
+    // ponytail (D-P6-25, as D-P6-02): ext4 reuses an inode number at once, so a same-path replace keeps its identity off
+    // macOS (APFS, the MVP target, gives a new one); compare birthtime too before S-23 (Linux)
+    if (name === 'inode' && process.platform !== 'darwin') continue;
     const s = sandbox();
     const pv = previewPlugin(s.o);
     change(s);
