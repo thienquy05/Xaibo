@@ -25,6 +25,7 @@ import { answerIntegrationDetail, answerIntegrationPage, pageEvidence } from './
 import { createConnect } from './integrations/connect.ts';
 import { compatibility } from './catalog/capabilities.ts';
 import { launchInfo } from './launch/info.ts';
+import { provisionalRows } from './launch/provisional.ts';
 
 // P3-T10: 50 ms keeps one push per window while leaving most of M1's 250 ms hook-to-paint budget; the tick re-reads
 // sessions whose status changes with time alone (settle within interval + 250 ms, M1), coverage is re-read slowly.
@@ -70,6 +71,27 @@ const changed = coalesce((keys) => {
   hub.sessions({ v: IPC_VERSION, type: 'sessions', rows, delta });
 }, DELTA_MS, setTimeout, DELTA_KEYS_MAX);
 
+// XAIBO-PROD-622 (P7-T04, EC-85): provisional launch rows (main registers them; committed evidence binds them; every port gets
+// the list). Store reads fail closed: an unreadable store gives no snapshot (that row binds only by its id) and no session id.
+const provisional = provisionalRows({
+  now: Date.now,
+  existing: (agent, profileId) => {
+    try {
+      const db = svc?.store.db;
+      if (!db?.isOpen) return null;
+      return new Set((db.prepare('SELECT native_session_id AS n FROM sessions WHERE agent = ? AND profile_id = ?').all(agent, profileId) as { n: string }[]).map((r) => r.n));
+    } catch { return null; }
+  },
+  stored: (agent, profileId, sid) => {
+    try {
+      const db = svc?.store.db;
+      const r = db?.isOpen ? db.prepare('SELECT id, started_at AS startedAt, cwd_key AS cwdKey FROM sessions WHERE agent = ? AND profile_id = ? AND native_session_id = ?').get(agent, profileId, sid) as { id: number; startedAt: number | null; cwdKey: string | null } | undefined : undefined;
+      return r ? { id: r.id, startedAt: r.startedAt, cwdKey: r.cwdKey } : null;
+    } catch { return null; }
+  },
+  changed: (m) => broadcast({ v: IPC_VERSION, type: 'provisional', ...m }),
+});
+
 /** Sessions left or came back (purge, retention, Trash/restore): the ledger recomputes and open windows resync. */
 const removed = () => { ledger?.invalidate(); if (hub.anyLive()) hub.sessions({ v: IPC_VERSION, type: 'resync' }); };
 
@@ -83,6 +105,7 @@ const coverage = () => {
 
 const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
   if (req.type === 'live') { hub.setLive(port, req.on); return; }
+  if (req.type === 'removeProvisional') { provisional.remove(req.key); return; } // XAIBO-PROD-622
   void booted.then((s) => {
     // A closed store still answers (empty: each answer catches its store errors), so no renderer request waits forever.
     const db = s.store.db;
@@ -224,10 +247,12 @@ function connect(port: MessagePortMain) {
   port.start();
   port.postMessage({ v: IPC_VERSION, type: 'agents', agents: svc?.agents() ?? null } satisfies PortMessage);
   port.postMessage({ v: IPC_VERSION, type: 'coverage', banners } satisfies PortMessage);
+  port.postMessage({ v: IPC_VERSION, type: 'provisional', rows: provisional.list(), bound: [] } satisfies PortMessage); // XAIBO-PROD-622
 }
 
 function committed(b: Batch) {
   ledger?.invalidate();
+  for (const s of b.sessions) provisional.offer(b.agent, b.profileId, s.nativeSessionId); // XAIBO-PROD-622: evidence binds a launch
   const keys = new Set(b.sessions.map((s) => `${b.agent}\0${b.profileId}\0${s.nativeSessionId}`));
   for (const k of keys) changed(k);
   if (!trace) return;
@@ -254,6 +279,7 @@ const command = accept(parseServiceCommand, (m, transferred: MessagePortMain[]) 
     void run.catch((): GrantConfirmResult => ({ status: 'refused', code: 'failed' })).then(reply);
   }
   // XAIBO-PROD-621 (P7-T04): main's launch flow reads the launch info; the reply goes to main only, never a port, always one
+  else if (m.type === 'provisional') provisional.register(m.row); // XAIBO-PROD-622: main's launch outcome
   else if (m.type === 'launchInfo') {
     const reply = (agents: LaunchAgentInfo[]) => parent.postMessage({ v: IPC_VERSION, type: 'launchInfo', id: m.id, agents } satisfies ServiceEvent);
     void booted.then((s) => launchInfo(s.catalog(), s.detections, s.profiles(), homedir())).catch((): LaunchAgentInfo[] => []).then(reply);

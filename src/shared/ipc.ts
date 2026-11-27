@@ -25,7 +25,9 @@ export type ServiceCommand = { v: 1; type: 'quit' | 'wake' | 'port' | 'reloadPri
   | { v: 1; type: 'applyOffer'; id: number; ask: ApplyAsk }
   | { v: 1; type: 'applyConfirm'; id: number; ask: ApplyAsk; binding: string }
   /** XAIBO-PROD-621 (P7-T04): main's launch flow asks for the launch info (main only; correlated by id). */
-  | { v: 1; type: 'launchInfo'; id: number };
+  | { v: 1; type: 'launchInfo'; id: number }
+  /** XAIBO-PROD-622 (P7-T04, EC-85): main registers a provisional launch row (started, or failed with its reason). */
+  | { v: 1; type: 'provisional'; row: ProvisionalRow };
 /** service -> main; notify (P3-T11, EC-59) carries only the agent display name, the approved project label (null until
  *  one exists, FR-10) and the wait state. */
 export type NotifyState = 'waiting-for-permission' | 'needs-input';
@@ -62,6 +64,22 @@ function parseLaunchAgent(x: unknown): LaunchAgentInfo | null {
   const exeOk = x.executable === null || (text(x.executable, 4096) && x.executable.startsWith('/') && !x.executable.includes('\0'));
   return text(x.agent, 32) && AGENT_ID.test(x.agent) && text(x.name, 128) && (x.version === null || text(x.version, 64)) && exeOk && strs(x.names, 8, 128) && launch && profiles && profiles.every((p) => p !== null)
     ? { agent: x.agent, name: x.name, version: x.version as string | null, executable: x.executable as string | null, names: [...x.names], launch, profiles: profiles as LaunchAgentInfo['profiles'] } : null;
+}
+/** XAIBO-PROD-622 (P7-T04, EC-85; design §6.7): a provisional launch row until evidence binds it. key: main's UUID; cwd: the
+ *  launch directory (realpath); nativeId: the pre-allocated session id, null when the agent has none; startedAt: main's clock. */
+export interface ProvisionalRow {
+  key: string; agent: string; profileId: string; cwd: string; nativeId: string | null; startedAt: number;
+  state: 'starting' | 'failed'; reason: string | null;
+}
+const KEY_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const PROVISIONAL_MAX = 32;
+function parseProvisionalRow(x: unknown): ProvisionalRow | null {
+  if (!isObj(x) || !exactKeys(x, ['key', 'agent', 'profileId', 'cwd', 'nativeId', 'startedAt', 'state', 'reason'])) return null;
+  const ok = typeof x.key === 'string' && KEY_UUID.test(x.key) && text(x.agent, 32) && AGENT_ID.test(x.agent) && text(x.profileId, 64) && x.profileId !== ''
+    && text(x.cwd, 4096) && x.cwd.startsWith('/') && !x.cwd.includes('\0') && (x.nativeId === null || (typeof x.nativeId === 'string' && KEY_UUID.test(x.nativeId))) // 622 review: a pre-allocated id is a UUID
+    && Number.isFinite(x.startedAt) && (x.startedAt as number) > 0 && (x.state === 'starting' || x.state === 'failed') && (x.reason === null || (text(x.reason, 64) && x.reason !== ''));
+  return ok ? { key: x.key as string, agent: x.agent as string, profileId: x.profileId as string, cwd: x.cwd as string, nativeId: x.nativeId as string | null,
+    startedAt: x.startedAt as number, state: x.state as ProvisionalRow['state'], reason: x.reason as string | null } : null;
 }
 export type HealthState = 'starting' | 'running' | 'restarting' | 'stopped';
 /** main -> renderer; attempt counts consecutive restarts (0 unless restarting). */
@@ -105,6 +123,7 @@ export function parseServiceCommand(x: unknown): ServiceCommand | null {
     return exactKeys(m, ['v', 'type', 'id', 'ask', 'binding']) && typeof m.binding === 'string' && BINDING.test(m.binding) ? { v: 1, type: 'applyConfirm', id: m.id, ask, binding: m.binding } : null;
   }
   if (m.type === 'launchInfo') return exactKeys(m, ['v', 'type', 'id']) && count(m.id) ? { v: 1, type: 'launchInfo', id: m.id } : null;
+  if (m.type === 'provisional') { const row = parseProvisionalRow(m.row); return exactKeys(m, ['v', 'type', 'row']) && row ? { v: 1, type: 'provisional', row } : null; }
   if (m.type === 'importCatalog') return text(m.path, 4096) && m.path.startsWith('/') && !m.path.includes('\0') ? { v: 1, type: 'importCatalog', path: m.path } : null;
   if (m.type !== 'setPath' || !text(m.agent) || !AGENT_ID.test(m.agent)) return null;
   if (!text(m.path, 4096) || !m.path.startsWith('/') || m.path.includes('\0')) return null;
@@ -483,7 +502,9 @@ export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Curs
   | { v: 1; type: 'teePreview'; id: number; profileId: string }
   | { v: 1; type: 'teeRemovalPreview'; id: number; profileId: string }
   /** XAIBO-PROD-613: a preview of clearing the stale operation lock (nothing else is sent; main alone confirms kind lock-clear). */
-  | { v: 1; type: 'lockClearPreview'; id: number };
+  | { v: 1; type: 'lockClearPreview'; id: number }
+  /** XAIBO-PROD-622: Remove provisional row (no reply: the provisional push follows). */
+  | { v: 1; type: 'removeProvisional'; key: string };
 export type PortMessage =
   | { v: 1; type: (typeof CONNECT_TYPES)[number]; id: number; result: ConnectReply }
   | { v: 1; type: 'removalPreview' | 'removalApply' | 'teeRemovalPreview'; id: number; result: RemovalReply }
@@ -535,7 +556,9 @@ export type PortMessage =
   // P4-T10c1: too many sessions changed in one window for a delta; reload the list and live set by cursor
   | { v: 1; type: 'resync' }
   | { v: 1; type: 'agents'; agents: AgentStatus[] | null } // null while detection runs
-  | { v: 1; type: 'coverage'; banners: Banner[] };
+  | { v: 1; type: 'coverage'; banners: Banner[] }
+  /** XAIBO-PROD-622: the provisional launch rows (on connect and each change); bound: rows evidence just replaced, once. */
+  | { v: 1; type: 'provisional'; rows: ProvisionalRow[]; bound: { key: string; session: number }[] };
 
 function parseCursor(x: unknown): Cursor | null | undefined { // undefined = invalid
   if (x === null) return null;
@@ -1057,6 +1080,7 @@ export function parsePortRequest(x: unknown): PortRequest | null {
   }
   if (m?.type === 'clearUsage') return count(m.id) ? { v: 1, type: 'clearUsage', id: m.id } : null;
   if (m?.type === 'agentRescan') return exactKeys(m, ['v', 'type', 'id']) && count(m.id) ? { v: 1, type: 'agentRescan', id: m.id } : null;
+  if (m?.type === 'removeProvisional') return exactKeys(m, ['v', 'type', 'key']) && typeof m.key === 'string' && KEY_UUID.test(m.key) ? { v: 1, type: 'removeProvisional', key: m.key } : null;
   if (m?.type === 'grantRevoke') {
     const target = parseRevokeTarget(m.target);
     return exactKeys(m, ['v', 'type', 'id', 'agent', 'target']) && count(m.id) && refId(m.agent) && target ? { v: 1, type: 'grantRevoke', id: m.id, agent: m.agent, target } : null;
@@ -1281,6 +1305,12 @@ export function parsePortMessage(x: unknown): PortMessage | null {
     if (!Array.isArray(m.banners) || m.banners.length > MAX_BANNERS) return null;
     const banners = m.banners.map(parseBanner);
     return banners.every((b) => b !== null) ? { v: 1, type: 'coverage', banners: banners as Banner[] } : null;
+  }
+  if (m.type === 'provisional') {
+    const rows = Array.isArray(m.rows) && m.rows.length <= PROVISIONAL_MAX ? m.rows.map(parseProvisionalRow) : null;
+    const bound = Array.isArray(m.bound) && m.bound.length <= PROVISIONAL_MAX ? m.bound.map((b) => (isObj(b) && exactKeys(b, ['key', 'session']) && typeof b.key === 'string' && KEY_UUID.test(b.key) && count(b.session) && (b.session as number) > 0 ? { key: b.key, session: b.session as number } : null)) : null;
+    return exactKeys(m, ['v', 'type', 'rows', 'bound']) && rows && rows.every((r) => r !== null) && bound && bound.every((b) => b !== null)
+      ? { v: 1, type: 'provisional', rows: rows as ProvisionalRow[], bound: bound as { key: string; session: number }[] } : null;
   }
   if (m.type === 'agents') {
     if (m.agents === null) return { v: 1, type: 'agents', agents: null };

@@ -9,6 +9,9 @@ import type { Detection, Profile } from '../catalog/detect.ts';
 import { launchTemplate } from '../catalog/launch-templates.ts';
 import type { Catalog } from '../catalog/validate.ts';
 
+// 621 review MEDIUM: clamped to the parser's bounds, so one odd agent never fails the whole reply
+const PATH_MAX = 4096, PROFILES_MAX = 64;
+const clamp = (s: string) => (s.length <= PATH_MAX ? s : `${s.slice(0, PATH_MAX - 1)}…`);
 const label = (p: Profile, home: string) => (p.origin === 'default' ? 'Default profile'
   : p.root === home || p.root.startsWith(`${home}${path.sep}`) ? `~${p.root.slice(home.length)}` : p.root);
 
@@ -18,10 +21,11 @@ export function launchInfo(catalog: Catalog | null, detections: readonly Detecti
     return {
       agent: a.id, name: a.displayName,
       version: d?.state === 'detected' ? d.version : null,
-      executable: d?.state === 'detected' ? d.found ?? d.path : null,
+      executable: d?.state === 'detected' && (d.found ?? d.path).length <= PATH_MAX ? d.found ?? d.path : null, // 621 review MEDIUM: never over the reply's bound
       names: a.detection.binaries.flatMap((b) => b.names),
       launch: launchTemplate(catalog!, a.id),
-      profiles: (profiles ?? []).filter((p) => p.agent === a.id).map((p) => ({ id: p.id, label: label(p, home) })),
+      profiles: (profiles ?? []).filter((p) => p.agent === a.id && p.id.length <= 64).slice(0, PROFILES_MAX) // 622 review: never an id the parser refuses
+        .map((p) => ({ id: p.id, label: clamp(label(p, home)) })),
     };
   });
 }
