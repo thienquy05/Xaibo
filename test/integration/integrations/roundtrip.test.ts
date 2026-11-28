@@ -7,7 +7,7 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createConnect, type ConnectContext } from '../../../src/service/integrations/connect.ts';
@@ -15,7 +15,8 @@ import { apply, ConfigError, plan, readManifest, recordEntry, type ManifestEntry
 import { acquireLock } from '../../../src/service/config/lock.ts';
 import { connectContext } from '../../../src/service/integrations-ipc.ts';
 import { claudeContext, writeFakeClaude } from '../../helpers/fake-claude.ts';
-import { readdirSync, unlinkSync } from 'node:fs';
+import { readdirSync, renameSync, unlinkSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import type { Profile } from '../../../src/service/catalog/detect.ts';
 
 const dirs: string[] = [];
@@ -292,6 +293,42 @@ test('busy keeps the preview: apply while another writer holds the lock, then ag
   assert.equal((await w.c.applyConnect(pv.status === 'preview' ? pv.previewId : '')).status, 'applied', 'the same preview, kept');
 });
 
+// XAIBO-PROD-612 review (MEDIUM, LOW 1): Disconnect always holds the lock as external (the plugin uninstall may run, and the
+// manifest it reverts is read only under the lock); a Removal of a plugin entry too
+test('a plugin Disconnect and a plugin Removal hold the lock as the external writer', async () => {
+  const w = await world({ route: 'plugin' });
+  const lockWriter = () => json(join(w.dataDir, 'integrations', 'operation.lock'))['writer'];
+  // CI (Linux runner): the slow CLI step starts later than on the dev Mac; wait for the lock instead of a fixed 100 ms
+  const held = async () => { for (let t = 0; t < 250 && !existsSync(join(w.dataDir, 'integrations', 'operation.lock')); t++) await new Promise((r) => setTimeout(r, 20)); };
+  const pv = w.c.previewConnect(w.profiles.claude, { retention: false, tee: false });
+  assert.equal((await w.c.applyConnect(pv.status === 'preview' ? pv.previewId : '')).status, 'applied');
+  w.setMode('slow');
+  const pending = w.c.disconnect(w.profiles.claude);
+  await held();
+  assert.equal(lockWriter(), 'external', 'Disconnect');
+  await pending;
+  w.setMode('');
+  const pv2 = w.c.previewConnect(w.profiles.claude, { retention: false, tee: false });
+  assert.equal((await w.c.applyConnect(pv2.status === 'preview' ? pv2.previewId : '')).status, 'applied');
+  const rp = w.c.previewRemoval(Object.values(w.profiles), w.profiles.claude);
+  assert.equal(rp.status, 'preview', JSON.stringify(rp));
+  w.setMode('slow');
+  const removing = w.c.applyRemoval(rp.status === 'preview' ? rp.previewId : '', undefined, Object.values(w.profiles));
+  await held();
+  assert.equal(lockWriter(), 'external', 'Removal');
+  await removing;
+});
+
+// XAIBO-PROD-612: an in-process settings write holds the lock as the service writer
+test('a settings-route Connect holds the lock as the service writer', async () => {
+  const w = await world();
+  const seen: unknown[] = [];
+  const c = createConnect({ ...w.ctx, afterRename: () => { seen.push(json(join(w.dataDir, 'integrations', 'operation.lock'))['writer']); } });
+  const pv = c.previewConnect(w.profiles.claude, { retention: false, tee: false });
+  assert.equal((await c.applyConnect(pv.status === 'preview' ? pv.previewId : '')).status, 'applied');
+  assert.ok(seen.length > 0 && seen.every((x) => x === 'service'), JSON.stringify(seen));
+});
+
 test('a step that throws after its rename: its pending entry is undone first, then step 1; the file comes back byte for byte', async () => {
   const w = await world();
   const before = sha(w.files.claude);
@@ -440,6 +477,8 @@ test('2b the operation lock is held across the awaited CLI steps', async () => {
   const pending = w.c.applyConnect(pv.status === 'preview' ? pv.previewId : '');
   await new Promise((r) => setTimeout(r, 100)); // the install is running
   assert.throws(() => acquireLock(w.dataDir), (e) => e instanceof ConfigError && e.code === 'busy');
+  // XAIBO-PROD-612: an operation that runs `claude plugin` holds the lock as an external writer (never clearable in-app)
+  assert.equal(json(join(w.dataDir, 'integrations', 'operation.lock'))['writer'], 'external');
   assert.equal((await pending).status, 'applied');
   acquireLock(w.dataDir).release(); // released after the operation
 });
@@ -509,4 +548,131 @@ test('2c review M2: a kept partial plugin entry is remaining `partial` with its 
   const again = await w.c.disconnect(w.profiles.claude);
   assert.deepEqual(again.status === 'partial' && again.reverted.map((x) => [x.route, x.result]), [['claude-plugin', 'structural']]);
   assert.deepEqual(readManifest(w.dataDir), []);
+});
+
+// XAIBO-PROD-613 (Phase 7 cleanup item 1, run 2; Codex design, D-P7-03): the owner-confirmed Clear stale lock. Offered only for
+// fresh stale-lock evidence on a v2 record the service wrote; applied only through main's confirmation (applyOffer and
+// applyConfirmed, kind lock-clear), single use, after the file identity, its bytes and the staleness are checked again.
+const deadPid = () => { const alive = (p: number) => { try { process.kill(p, 0); return true; } catch { return false; } }; let p = 0; for (let i = 0; i < 5 && (!p || alive(p)); i++) p = Number(spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' }).stdout); return p; };
+const lockAt = (w: { dataDir: string }) => join(w.dataDir, 'integrations', 'operation.lock');
+const staleLock = (w: { dataDir: string }, extra: Record<string, unknown> = {}) => {
+  mkdirSync(join(w.dataDir, 'integrations'), { recursive: true, mode: 0o700 });
+  writeFileSync(lockAt(w), JSON.stringify({ v: 2, pid: deadPid(), token: 'crashed', at: 1, start: 'Thu Jan 1 00:00:00 2026', writer: 'service', ...extra }), { mode: 0o600 });
+};
+const clearIt = async (w: Awaited<ReturnType<typeof world>>, id: string) => {
+  const o = w.c.applyOffer('lock-clear', id, Object.values(w.profiles));
+  if (o.status !== 'offer') return o;
+  return w.c.applyConfirmed('lock-clear', id, o.offer.binding, Object.values(w.profiles));
+};
+
+test('lock-clear: a stale service lock is cleared once through the confirmation; held previews are dropped; reconcile then shows the pending entry', async () => {
+  const w = await world();
+  const pv = w.c.previewConnect(w.profiles.claude, { retention: false, tee: false });
+  assert.equal((await w.c.applyConnect(pv.status === 'preview' ? pv.previewId : '')).status, 'applied');
+  // an interrupted transaction: its entry still pending, then the process died holding the lock
+  const mf = join(w.dataDir, 'integrations', 'manifest.json');
+  const m = json(mf) as { entries: { state: string }[] };
+  m.entries[0]!.state = 'pending';
+  writeFileSync(mf, JSON.stringify(m), { mode: 0o600 });
+  const held = w.c.previewConnect(w.profiles.codex, { retention: false, tee: false });
+  assert.equal(held.status, 'preview');
+  staleLock(w);
+  const before = [sha(w.files.claude), sha(mf), readdirSync(join(w.dataDir, 'integrations', 'backups')).join()];
+  assert.deepEqual(w.c.reconcile(Object.values(w.profiles)), { status: 'blocked', code: 'stale-lock' });
+  const p = w.c.previewLockClear();
+  assert.equal(p.status, 'preview', JSON.stringify(p));
+  const id = p.status === 'preview' ? p.previewId : '';
+  const o = w.c.applyOffer('lock-clear', id, Object.values(w.profiles));
+  assert.equal(o.status, 'offer');
+  assert.deepEqual(o.status === 'offer' ? o.offer.items : null, [['scope', 'Every integration in this Xaibo data folder'], ['file', lockAt(w)]]);
+  assert.deepEqual(await clearIt(w, id), { status: 'done', reply: { status: 'cleared' } });
+  assert.equal(existsSync(lockAt(w)), false);
+  assert.deepEqual(await clearIt(w, id), { status: 'refused', code: 'preview-invalid' }, 'single use');
+  assert.deepEqual(await w.c.applyConnect(held.status === 'preview' ? held.previewId : ''), { status: 'refused', code: 'preview-invalid' }, 'previews dropped');
+  const r = w.c.reconcile(Object.values(w.profiles));
+  assert.equal(r.status, 'ready');
+  assert.deepEqual(r.status === 'ready' ? r.entries.map((e) => e.state) : null, ['pending-recovery'], 'nothing repaired or rolled back');
+  assert.deepEqual([sha(w.files.claude), sha(mf), readdirSync(join(w.dataDir, 'integrations', 'backups')).join()], before, 'config, manifest and backups untouched');
+});
+
+test('lock-clear: offered only for a stale lock the service wrote; never for a live, external, legacy, linked or missing one', async () => {
+  const w = await world();
+  assert.deepEqual(w.c.previewLockClear(), { status: 'refused', code: 'lock-free' });
+  const live = acquireLock(w.dataDir, 'service');
+  assert.deepEqual(w.c.previewLockClear(), { status: 'refused', code: 'busy' });
+  live.release();
+  staleLock(w, { writer: 'external' });
+  assert.deepEqual(w.c.previewLockClear(), { status: 'refused', code: 'lock-manual' });
+  writeFileSync(lockAt(w), JSON.stringify({ pid: deadPid(), token: 'old', at: 1 }));
+  assert.deepEqual(w.c.previewLockClear(), { status: 'refused', code: 'lock-manual' }, 'a legacy record');
+  rmSync(lockAt(w));
+  symlinkSync(join(w.dataDir, 'elsewhere'), lockAt(w));
+  assert.deepEqual(w.c.previewLockClear(), { status: 'refused', code: 'lock-unknown' });
+  rmSync(lockAt(w));
+  writeFileSync(lockAt(w), '', { mode: 0o600 });
+  assert.deepEqual(w.c.previewLockClear(), { status: 'refused', code: 'lock-unknown' });
+});
+
+// XAIBO-PROD-613 review: a wrong binding is stale (nothing removed, the preview kept); a closed port's preview goes; a data folder
+// swapped for a link to it (another canonical path) or no longer private at apply is lock-changed
+test('lock-clear: wrong binding, dropped owner, swapped or unsafe data folder', async () => {
+  const w = await world();
+  staleLock(w);
+  const owner = {};
+  let p = w.c.previewLockClear(owner);
+  const id = p.status === 'preview' ? p.previewId : '';
+  assert.deepEqual(await w.c.applyConfirmed('lock-clear', id, 'f'.repeat(64), Object.values(w.profiles)), { status: 'refused', code: 'stale' });
+  assert.equal(existsSync(lockAt(w)), true);
+  assert.deepEqual((await clearIt(w, id)).status, 'done', 'the preview was kept for a fresh offer');
+  staleLock(w);
+  p = w.c.previewLockClear(owner);
+  w.c.dropOwner(owner);
+  assert.deepEqual(await clearIt(w, p.status === 'preview' ? p.previewId : ''), { status: 'refused', code: 'preview-invalid' });
+  p = w.c.previewLockClear();
+  renameSync(join(w.dataDir, 'integrations'), join(w.dataDir, 'integrations-real'));
+  symlinkSync(join(w.dataDir, 'integrations-real'), join(w.dataDir, 'integrations')); // the folder swapped for a link
+  assert.deepEqual(await clearIt(w, p.status === 'preview' ? p.previewId : ''), { status: 'done', reply: { status: 'refused', code: 'lock-changed' } }, 'integrations is a link now');
+  assert.equal(existsSync(join(w.dataDir, 'integrations-real', 'operation.lock')), true);
+  unlinkSync(join(w.dataDir, 'integrations'));
+  renameSync(join(w.dataDir, 'integrations-real'), join(w.dataDir, 'integrations'));
+  p = w.c.previewLockClear();
+  const moved = `${w.dataDir}-moved`;
+  renameSync(w.dataDir, moved);
+  symlinkSync(moved, w.dataDir);
+  assert.deepEqual(await clearIt(w, p.status === 'preview' ? p.previewId : ''), { status: 'done', reply: { status: 'refused', code: 'lock-changed' } }, 'another canonical folder');
+  assert.equal(existsSync(join(moved, 'integrations', 'operation.lock')), true);
+});
+
+test('lock-clear: a lock that changed, was replaced or came alive after the preview is never removed; an expired preview is refused', async () => {
+  const w = await world();
+  staleLock(w);
+  let p = w.c.previewLockClear();
+  writeFileSync(lockAt(w), JSON.stringify({ v: 2, pid: deadPid(), token: 'other', at: 2, start: 'Thu Jan 1 00:00:00 2026', writer: 'service' }));
+  assert.deepEqual(await clearIt(w, p.status === 'preview' ? p.previewId : ''), { status: 'done', reply: { status: 'refused', code: 'lock-changed' } }, 'other bytes');
+  assert.equal(existsSync(lockAt(w)), true);
+  rmSync(lockAt(w));
+  staleLock(w);
+  p = w.c.previewLockClear();
+  const bytes = readFileSync(lockAt(w)), ino = statSync(lockAt(w)).ino;
+  // the same bytes in a new file (a replacement), made before the old one goes: Linux reuses a freed inode at once (CI)
+  writeFileSync(`${lockAt(w)}.new`, bytes, { mode: 0o600 });
+  renameSync(`${lockAt(w)}.new`, lockAt(w));
+  assert.notEqual(statSync(lockAt(w)).ino, ino, 'a new inode');
+  assert.deepEqual(await clearIt(w, p.status === 'preview' ? p.previewId : ''), { status: 'done', reply: { status: 'refused', code: 'lock-changed' } }, 'another inode');
+  assert.equal(existsSync(lockAt(w)), true);
+  rmSync(lockAt(w));
+  const live = acquireLock(w.dataDir, 'service');
+  const rec = readFileSync(lockAt(w), 'utf8');
+  live.release();
+  writeFileSync(lockAt(w), JSON.stringify({ ...JSON.parse(rec), start: 'Thu Jan 1 00:00:00 1970' }), { mode: 0o600 }); // our pid, an older holder: stale
+  p = w.c.previewLockClear();
+  assert.equal(p.status, 'preview');
+  writeFileSync(lockAt(w), rec); // now the record matches us again: busy
+  assert.deepEqual(await clearIt(w, p.status === 'preview' ? p.previewId : ''), { status: 'done', reply: { status: 'refused', code: 'lock-changed' } }, 'alive again');
+  rmSync(lockAt(w));
+  staleLock(w);
+  p = w.c.previewLockClear();
+  w.clock.t += 10 * 60_000;
+  assert.deepEqual(await clearIt(w, p.status === 'preview' ? p.previewId : ''), { status: 'refused', code: 'preview-expired' });
+  assert.equal(existsSync(lockAt(w)), true);
 });

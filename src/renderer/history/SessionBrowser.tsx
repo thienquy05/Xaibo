@@ -16,6 +16,8 @@ import { VirtualList } from '../components/VirtualList.tsx';
 import { Title } from '../SessionList.tsx';
 import { day, findingBadges, formatTime, PAGE, recordLabel } from '../model.ts';
 import { Icon } from '../status/StatusBadge.tsx';
+import { OwnershipBadge } from '../status/Ownership.tsx';
+import { ownershipOf } from '../status/ownership-view.ts';
 import { show, visible } from '../text.ts';
 import { compactStatus, type SessionChanges } from '../workspace/view.ts';
 import { canLoadMore, capped, COVERAGE, emptyShown, focusLost, incompleteAfter, incompleteNote, emphasis, failureNote, dayRange, filterOf, filterSummary, freshList, groupLabel, initialQuery, STATE_LABEL, isPlain, listTexts, mergeLive, mergeRows, MODES,
@@ -67,6 +69,7 @@ function Row({ row, open, lastKnown, search, snippet, onOpen, onMore, trash }: {
         <span data-field="status">{lastKnown ? 'Last known: ' : null}{status.text}
           {findingBadges(row.live).map((t) => <span key={t} className="x-tone-warning"> · {t}</span>)}</span>
         <span data-field="activity">{formatTime(row.lastActivity)}</span>
+        <OwnershipBadge kind={ownershipOf(row)} />
       </span>
       <span className="x-s-path" data-field="folder">{show(row.cwd, 'Unknown')}</span>
       {snippet !== undefined ? (

@@ -7,7 +7,7 @@ import { homedir, userInfo } from 'node:os';
 import path from 'node:path';
 import { errorCode, installCrashPolicy } from '../shared/crash.ts';
 import { accept, IPC_VERSION, parsePortRequest, parseServiceCommand } from '../shared/ipc.ts';
-import type { Banner, PortMessage, ServiceEvent, StorageReport, IntegrationDetailResult, IntegrationPageResult, GrantConfirmResult, GrantOfferResult, ApplyConfirmResult, ApplyOfferResult, RevokeResult } from '../shared/ipc.ts';
+import type { Banner, PortMessage, ServiceEvent, StorageReport, IntegrationDetailResult, IntegrationPageResult, GrantConfirmResult, GrantOfferResult, ApplyConfirmResult, ApplyOfferResult, LaunchAgentInfo, ResumeTarget, RevokeResult } from '../shared/ipc.ts';
 import { appendQuiet, createLogger, loadInstallSecret, type Logger } from '../shared/log.ts';
 import { answer, answerCost, answerFiles, answerLiveSet, answerMarkers, answerSession, answerSlice, answerSubagents, answerTools, answerTranscript, answerUsage, answerUsageHistory, coalesce, createHub, sessionsByKey, type LiveOf } from './api.ts';
 import { allowedRootsFromEnv, boot, retentionDelayFromEnv, type Service } from './boot.ts';
@@ -24,6 +24,9 @@ import { afterDispatch, answerApply, answerIntegrations, connectContext, type Co
 import { answerIntegrationDetail, answerIntegrationPage, pageEvidence } from './integrations/state.ts';
 import { createConnect } from './integrations/connect.ts';
 import { compatibility } from './catalog/capabilities.ts';
+import { launchInfo } from './launch/info.ts';
+import { provisionalRows } from './launch/provisional.ts';
+import { resumeTarget } from './launch/resume-target.ts';
 
 // P3-T10: 50 ms keeps one push per window while leaving most of M1's 250 ms hook-to-paint budget; the tick re-reads
 // sessions whose status changes with time alone (settle within interval + 250 ms, M1), coverage is re-read slowly.
@@ -69,6 +72,38 @@ const changed = coalesce((keys) => {
   hub.sessions({ v: IPC_VERSION, type: 'sessions', rows, delta });
 }, DELTA_MS, setTimeout, DELTA_KEYS_MAX);
 
+// XAIBO-PROD-622 (P7-T04, EC-85): provisional launch rows (main registers them; committed evidence binds them; every port gets
+// the list). Store reads fail closed: an unreadable store gives no snapshot (that row binds only by its id) and no session id.
+const provisional = provisionalRows({
+  now: Date.now,
+  existing: (agent, profileId) => {
+    try {
+      const db = svc?.store.db;
+      if (!db?.isOpen) return null;
+      return new Set((db.prepare('SELECT native_session_id AS n FROM sessions WHERE agent = ? AND profile_id = ?').all(agent, profileId) as { n: string }[]).map((r) => r.n));
+    } catch { return null; }
+  },
+  stored: (agent, profileId, sid) => {
+    try {
+      const db = svc?.store.db;
+      const r = db?.isOpen ? db.prepare('SELECT id, started_at AS startedAt, cwd_key AS cwdKey, last_activity AS lastActivity FROM sessions WHERE agent = ? AND profile_id = ? AND native_session_id = ?').get(agent, profileId, sid) as { id: number; startedAt: number | null; cwdKey: string | null; lastActivity: number | null } | undefined : undefined;
+      return r ? { id: r.id, startedAt: r.startedAt, cwdKey: r.cwdKey, lastActivity: r.lastActivity } : null;
+    } catch { return null; }
+  },
+  // G7-4: every eligible session stored now, so a launch never binds the first of two. ponytail: a second session that is stored
+  // only after the first bound, or known only from hooks (no stored start), is not counted; upgrade: hold binding until BIND_MS ends
+  fresh: (agent, profileId, key, from, to) => {
+    try {
+      const db = svc?.store.db;
+      if (!db?.isOpen) return null;
+      const rows = db.prepare('SELECT native_session_id AS n FROM sessions WHERE agent = ? AND profile_id = ? AND cwd_key = ? AND started_at >= ? AND started_at < ? LIMIT 64')
+        .all(agent, profileId, key, from, to) as { n: string }[];
+      return rows.length >= 64 ? null : rows.map((r) => r.n); // reviews L3/L4: at the cap the set is unknown: fail closed
+    } catch { return null; }
+  },
+  changed: (m) => broadcast({ v: IPC_VERSION, type: 'provisional', ...m }),
+});
+
 /** Sessions left or came back (purge, retention, Trash/restore): the ledger recomputes and open windows resync. */
 const removed = () => { ledger?.invalidate(); if (hub.anyLive()) hub.sessions({ v: IPC_VERSION, type: 'resync' }); };
 
@@ -82,6 +117,7 @@ const coverage = () => {
 
 const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
   if (req.type === 'live') { hub.setLive(port, req.on); return; }
+  if (req.type === 'removeProvisional') { provisional.remove(req.key); return; } // XAIBO-PROD-622
   void booted.then((s) => {
     // A closed store still answers (empty: each answer catches its store errors), so no renderer request waits forever.
     const db = s.store.db;
@@ -183,7 +219,7 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
         break;
       }
       // XAIBO-PROD-558 (P6-T03 part 1b): Connect, Disconnect, Uninstall; a preview belongs to this port
-      case 'connectPreview': case 'connectApply': case 'removalPreview': case 'removalApply': case 'cleanupPreview': case 'cleanupApply': // XAIBO-PROD-576: no bare removal (R1)
+      case 'connectPreview': case 'connectApply': case 'removalPreview': case 'removalApply': case 'cleanupPreview': case 'cleanupApply': case 'lockClearPreview': // XAIBO-PROD-576; 613: no bare removal (R1)
       case 'teePreview': case 'teeRemovalPreview': // XAIBO-PROD-580: the separate tee (R6)
         // part 2a: awaited (the lock is released before the reply); a closed port drops the reply
         void answerIntegrations({ readOnly: s.store.readOnly, connect: () => integrationsFor(s), profile: (id) => s.profiles()?.find((p) => p.id === id), profiles: () => s.profiles() ?? [] }, req, port)
@@ -200,15 +236,15 @@ const request = accept(parsePortRequest, (req, port: MessagePortMain) => {
 let integrations: Connect | null = null;
 let startupDone = false; // review L-2: startup settled; still no profile sync = `unavailable`, never `starting` forever
 void booted.then((s) => s.done.then(() => { startupDone = true; reconcileOnStart(s); }, () => { startupDone = true; reconcileOnStart(s); }));
-/** XAIBO-PROD-562 (P6-T04 part 1, EC-26): one read-only reconcile once startup settled; kept for the IPC read (P6-T10).
- *  ponytail: once per start; a refresh after each Connect/Disconnect and on request comes with the IPC read. */
+/** XAIBO-PROD-562 (P6-T04 part 1, EC-26): one read-only reconcile once startup settled; the IPC reads (P6-T10) run their
+ *  own fresh reconcile per request. */
 function reconcileOnStart(s: Service) {
   try { const c = integrationsFor(s); if (c && c !== 'unavailable') c.reconcile(s.profiles() ?? []); } catch { /* read-only: nothing to undo; the next start retries */ }
 }
 const integrationsFor = (s: Service): Connect | null | 'unavailable' => {
   if (!integrations && s.profiles() !== null && dataDir) {
     integrations = createConnect(connectContext({
-      dataDir, login: s.loginEnv(), bin: process.env.XAIBO_BIN ?? '', catalog: s.catalog(),
+      dataDir, login: s.loginEnv(), bin: process.env.XAIBO_BIN ?? '', catalog: s.catalog(), e2e: process.env.XAIBO_E2E === '1',
       detection: (agent) => s.detections.find((d) => d.agent === agent), // the live list: "Set path…" re-detects in place
       setupAccess: (agent) => s.setupAccess(agent), // XAIBO-PROD-589: fresh per call, never cached
     }));
@@ -223,10 +259,12 @@ function connect(port: MessagePortMain) {
   port.start();
   port.postMessage({ v: IPC_VERSION, type: 'agents', agents: svc?.agents() ?? null } satisfies PortMessage);
   port.postMessage({ v: IPC_VERSION, type: 'coverage', banners } satisfies PortMessage);
+  port.postMessage({ v: IPC_VERSION, type: 'provisional', rows: provisional.list(), bound: [] } satisfies PortMessage); // XAIBO-PROD-622
 }
 
 function committed(b: Batch) {
   ledger?.invalidate();
+  for (const s of b.sessions) provisional.offer(b.agent, b.profileId, s.nativeSessionId); // XAIBO-PROD-622: evidence binds a launch
   const keys = new Set(b.sessions.map((s) => `${b.agent}\0${b.profileId}\0${s.nativeSessionId}`));
   for (const k of keys) changed(k);
   if (!trace) return;
@@ -252,6 +290,30 @@ const command = accept(parseServiceCommand, (m, transferred: MessagePortMain[]) 
     const run = m.type === 'grantOffer' ? booted.then((s) => s.grantOffer(m.request)) : booted.then((s) => s.grantConfirm(m.request, m.binding));
     void run.catch((): GrantConfirmResult => ({ status: 'refused', code: 'failed' })).then(reply);
   }
+  // XAIBO-PROD-621 (P7-T04): main's launch flow reads the launch info; the reply goes to main only, never a port, always one
+  else if (m.type === 'provisional') { // XAIBO-PROD-622, G7-3: main's row, registered before Terminal opens (acknowledged), or its failed open
+    provisional.register(m.row);
+    parent.postMessage({ v: IPC_VERSION, type: 'provisionalAck', key: m.row.key } satisfies ServiceEvent);
+  }
+  else if (m.type === 'removeProvisional') provisional.remove(m.key); // G7-3: a launch refused before Terminal opened
+  // XAIBO-PROD-626 (P7-T05): one stored session's resume target; the reply goes to main only, always one (null: not stored)
+  else if (m.type === 'resumeTarget') {
+    const reply = (target: ResumeTarget | null) => parent.postMessage({ v: IPC_VERSION, type: 'resumeTarget', id: m.id, target } satisfies ServiceEvent);
+    void booted.then((s): ResumeTarget | null => {
+      const cat = s.catalog(), db = s.store.db;
+      if (!cat || !db.isOpen) return null;
+      const r = db.prepare('SELECT agent, profile_id AS profileId, native_session_id AS sid, cwd, entrypoint, originator, native_available AS na FROM sessions WHERE id = ?')
+        .get(m.session) as { agent: string; profileId: string; sid: string; cwd: string | null; entrypoint: string | null; originator: string | null; na: number } | undefined;
+      if (!r) return null;
+      const d = s.detections.find((x) => x.agent === r.agent), st = s.status(r.agent, r.sid, r.profileId);
+      return resumeTarget(cat, { agent: r.agent, profileId: r.profileId, nativeSessionId: r.sid, cwd: r.cwd, entrypoint: r.entrypoint, originator: r.originator, nativeAvailable: r.na !== 0,
+        live: st ? { lifecycle: st.lifecycle, health: st.health } : null, pending: provisional.pending(r.agent, r.profileId, r.sid) }, d?.state === 'detected' ? d.version : null);
+    }).catch((): null => null).then(reply);
+  }
+  else if (m.type === 'launchInfo') {
+    const reply = (agents: LaunchAgentInfo[]) => parent.postMessage({ v: IPC_VERSION, type: 'launchInfo', id: m.id, agents } satisfies ServiceEvent);
+    void booted.then((s) => launchInfo(s.catalog(), s.detections, s.profiles(), homedir())).catch((): LaunchAgentInfo[] => []).then(reply);
+  }
   // XAIBO-PROD-600 (P6-T12 slice 2): main's apply offer and confirm; the reply goes to main only, never a port, always one
   else if (m.type === 'applyOffer' || m.type === 'applyConfirm') {
     const reply = (result: ApplyOfferResult | ApplyConfirmResult) => parent.postMessage({ v: IPC_VERSION, type: 'apply', id: m.id, result } satisfies ServiceEvent);
@@ -266,6 +328,7 @@ async function main(dataDir: string, log: Logger) {
   ledger = new MonthlyCache({ file: path.join(dataDir, 'xaibo.db'), secret, home: homedir(), log: (e, f) => log.log(e, f) });
   meter = new StorageMeter(dataDir);
   // code review nit: userInfo() only when the variable is set (it throws for a uid with no user-database entry)
+  // XAIBO-PROD-611: this process's XAIBO_* values come only through main's trustedEnv + serviceEnv (no other launch path)
   const testRoots = process.env.XAIBO_TEST_ALLOWED_ROOT ? allowedRootsFromEnv(process.env, { home: homedir(), accountHome: userInfo().homedir, dataDir }) : [];
   if (testRoots.length) log.log('test_allowed_root');
   svc = await boot({

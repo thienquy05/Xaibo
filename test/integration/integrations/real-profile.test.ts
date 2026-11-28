@@ -225,3 +225,14 @@ test('flag on (code review): Full Uninstall with the live profiles reverts every
   assert.notEqual(f.status, 'disconnected', JSON.stringify(f));
   assert.equal(sha(w.files.claude), connected, 'a plugin entry on a real root is never reverted (decision A)');
 });
+
+
+// XAIBO-PROD-611 (Gate 6 second review item 5): the packaged build allows the OS temp dir as a Connect root only for its
+// marked E2E/perf/audit runs; an unpackaged build (dev CLI, tests) keeps it
+test('XAIBO-PROD-611: the OS temp dir is a Connect root only unpackaged or with the E2E marker', () => {
+  const tmp = realpathSync.native(tmpdir());
+  const allowed = (bin: string, e2e: boolean) => connectContext({ dataDir: iso, login: { PATH: '/usr/bin:/bin' }, bin, catalog: null, detection: () => undefined, e2e }).allowed;
+  assert.ok(allowed('', false).includes(tmp), 'unpackaged');
+  assert.ok(!allowed(join(iso, 'bin'), false).includes(tmp), 'packaged, no marker');
+  assert.ok(allowed(join(iso, 'bin'), true).includes(tmp), 'packaged E2E');
+});

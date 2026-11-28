@@ -38,7 +38,8 @@ export type Code =
   // P6-T02 (EC-73): the claude-retention route only raises cleanupPeriodDays to 45 over an absent or lower readable value.
   | 'retention'
   // P6-T03 part 2a (config/lock.ts): another writer holds the operation lock; its holder is gone (never taken over).
-  | 'busy' | 'stale-lock'
+  // XAIBO-PROD-612: lock-unknown, Xaibo can't verify the holder (never taken over, never clearable).
+  | 'busy' | 'stale-lock' | 'lock-unknown'
   // P6-T03 part 2b: the claude executable or its interpreter is not the detected one, or cannot be resolved.
   | 'unverified';
 export class ConfigError extends Error {

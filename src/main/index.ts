@@ -3,15 +3,18 @@
 // (P1-T06): restarted with backoff, a fresh port brokered to the renderer after every start and every page load.
 import { app, BrowserWindow, dialog, ipcMain, Menu, MessageChannelMain, Notification, powerMonitor, shell, utilityProcess } from 'electron';
 import type { MessagePortMain, Tray } from 'electron';
-import { appendFileSync, realpathSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { appendFileSync, readFileSync, realpathSync, unlinkSync } from 'node:fs';
 import { release } from 'node:os';
 import path from 'node:path';
 import { installCrashPolicy } from '../shared/crash.ts';
-import { AGENT_ID, IPC_VERSION, parseApplyAsk, parseGrantAsk, type ApplyOutcome, type GrantOutcome, type RevealResult, type ServiceMetrics, type StartupReply } from '../shared/ipc.ts';
+import { AGENT_ID, IPC_VERSION, parseApplyAsk, parseGrantAsk, parseLaunchAsk, type ApplyOutcome, type GrantOutcome, type LaunchAgentInfo, type LaunchOptionsReply, type LaunchPreviewReply, type LaunchReply, type ResumeOptionsReply, type ResumeTarget, type VsCodeReply, type RevealResult, type ServiceMetrics, type StartupReply } from '../shared/ipc.ts';
+import { launchFlow } from './launch/flow.ts';
+import { sweepLaunchScripts, terminalSpawner } from './launch/terminal.ts';
 import { grantFlow } from './grants.ts';
 import { applyFlow } from './apply-confirm.ts';
 import { appendQuiet, createLogger, loadInstallSecret } from '../shared/log.ts';
-import { initDataDir, serviceEnv } from './app-paths.ts';
+import { initDataDir, serviceEnv, trustedEnv } from './app-paths.ts';
 import { buildBundle, foldMetrics, readLogTail, writeBundle } from './diagnostics.ts';
 import { notificationText, showNotification } from './notifications.ts';
 import { forwardPower } from './power.ts';
@@ -26,7 +29,8 @@ import { hideWindow, showWindow } from './window.ts';
 const SERVICE_QUIT_MS = 2_000;
 const here = import.meta.dirname;
 
-const dataDir = initDataDir({ env: process.env, packaged: app.isPackaged, appData: app.getPath('appData') }, (s) => process.stderr.write(s));
+const trusted = trustedEnv(process.env, app.isPackaged); // XAIBO-PROD-611: every env read below goes through it
+const dataDir = initDataDir({ env: trusted, packaged: app.isPackaged, appData: app.getPath('appData') }, (s) => process.stderr.write(s));
 if (dataDir === null) app.exit(1);
 else {
   app.setPath('userData', dataDir);
@@ -40,7 +44,7 @@ else {
 function start(dataDir: string) {
   const log = createLogger({ dir: app.getPath('logs'), secret: loadInstallSecret(dataDir) });
   installCrashPolicy(process, log); // P1-T13: error codes only; main keeps running
-  const dev = devOrigin(process.env, app.isPackaged);
+  const dev = devOrigin(trusted, app.isPackaged);
   let win: BrowserWindow | null = null;
   let tray: Tray | null = null; // held so it is not garbage-collected
   let quitting = false;
@@ -79,16 +83,56 @@ function start(dataDir: string) {
     clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
     now: () => performance.now(),
   });
-  const notifyStub = process.env.XAIBO_NOTIFY_STUB === '1' ? path.join(app.getPath('logs'), 'notify-stub.jsonl') : null;
+  // XAIBO-PROD-623 (P7-T04, design §6.7): main owns the launch (launch/flow.ts): the service supplies the launch info (one reply per
+  // request id, 10 s, none after a service restart); the grant dialog is a sheet on our window and refused while it does not exist;
+  // the provisional row goes to the service. XAIBO_LAUNCH_STUB=1 (E2E, behind the XAIBO_E2E marker) records the script instead of
+  // opening Terminal, then removes it as Terminal's run would.
+  const infoWaits = new Map<number, (agents: LaunchAgentInfo[] | null) => void>();
+  let infoId = 0;
+  // XAIBO-PROD-626: resume targets (same correlation as the launch info); Open in VS Code through shell.openExternal, or (E2E,
+  // XAIBO_EXTERNAL_STUB=1 behind the marker) a record of the allowlisted URL
+  const targetWaits = new Map<number, (t: ResumeTarget | null) => void>();
+  const ackWaits = new Map<string, (ok: boolean) => void>(); // G7-3: a provisional row is registered (acknowledged) before Terminal opens
+  const externalStub = trusted.XAIBO_EXTERNAL_STUB === '1' ? path.join(app.getPath('logs'), 'external-stub.jsonl') : null;
+  const launchStub = trusted.XAIBO_LAUNCH_STUB === '1' ? path.join(app.getPath('logs'), 'launch-stub.jsonl') : null;
+  const launches = launchFlow({
+    dataDir: dataDir!,
+    info: () => new Promise((resolve) => {
+      const id = ++infoId;
+      const timer = setTimeout(() => { infoWaits.delete(id); resolve(null); }, 10_000);
+      infoWaits.set(id, (agents) => { clearTimeout(timer); infoWaits.delete(id); resolve(agents); });
+      supervisor.send({ v: IPC_VERSION, type: 'launchInfo', id });
+    }),
+    uuid: randomUUID, now: Date.now, mono: () => performance.now(),
+    confirm: async (d) => (win && !win.isDestroyed() ? (await dialog.showMessageBox(win, d)).response === 1 : false),
+    spawner: launchStub ? { open: async (file) => { appendQuiet(launchStub, `${JSON.stringify({ script: readFileSync(file, 'utf8') })}\n`); unlinkSync(file); return true; } } : terminalSpawner,
+    register: (row) => new Promise((resolve) => {
+      const timer = setTimeout(() => { ackWaits.delete(row.key); resolve(false); }, 5_000);
+      ackWaits.set(row.key, (ok) => { clearTimeout(timer); ackWaits.delete(row.key); resolve(ok); });
+      supervisor.send({ v: IPC_VERSION, type: 'provisional', row });
+    }),
+    remove: (key) => supervisor.send({ v: IPC_VERSION, type: 'removeProvisional', key }),
+    target: (session) => new Promise((resolve) => {
+      const id = ++infoId;
+      const timer = setTimeout(() => { targetWaits.delete(id); resolve(null); }, 10_000);
+      targetWaits.set(id, (t) => { clearTimeout(timer); targetWaits.delete(id); resolve(t); });
+      supervisor.send({ v: IPC_VERSION, type: 'resumeTarget', id, session });
+    }),
+    openExternal: async (url) => { if (externalStub) appendQuiet(externalStub, `${JSON.stringify({ url })}\n`); else await shell.openExternal(url); },
+  });
+  const notifyStub = trusted.XAIBO_NOTIFY_STUB === '1' ? path.join(app.getPath('logs'), 'notify-stub.jsonl') : null;
   const supervisor = new Supervisor<MessagePortMain>({
     fork: () => utilityProcess.fork(path.join(here, '..', 'service', 'index.js'), [], {
-      serviceName: 'xaibo-service', env: serviceEnv(process.env, { dataDir, packaged: app.isPackaged, resourcesPath: process.resourcesPath }),
+      serviceName: 'xaibo-service', env: serviceEnv(trusted, { dataDir, packaged: app.isPackaged, resourcesPath: process.resourcesPath }),
     }),
     channel: () => new MessageChannelMain(),
     onHealth: (h) => win?.webContents.send('health', h),
-    onSpawn: () => { serviceMetrics = null; grants.reset(); applies.reset(); sendPort(); }, // a new service process: no stale metrics (review L1), grant or apply flow
+    onSpawn: () => { serviceMetrics = null; grants.reset(); applies.reset(); for (const w of [...infoWaits.values()]) w(null); for (const w of [...targetWaits.values()]) w(null); for (const w of [...ackWaits.values()]) w(false); sendPort(); }, // a new service process: no stale metrics (review L1), grant or apply flow
     onGrant: (g) => grants.receive(g),
     onApply: (a) => applies.receive(a),
+    onLaunchInfo: (l) => infoWaits.get(l.id)?.(l.agents),
+    onResumeTarget: (r) => targetWaits.get(r.id)?.(r.target),
+    onProvisionalAck: (a) => ackWaits.get(a.key)?.(true),
     setTimer: (fn, ms) => setTimeout(fn, ms),
     clearTimer: (t) => clearTimeout(t as NodeJS.Timeout),
     now: Date.now,
@@ -131,7 +175,7 @@ function start(dataDir: string) {
   };
   // Perf trace (P3-T10, XAIBO_PERF_TRACE=1 only): the renderer acks a painted delta id; stamped first, so the time is an
   // upper bound that includes this one IPC hop. Only from our window, only a positive integer, IDs only.
-  const trace = process.env.XAIBO_PERF_TRACE === '1' ? path.join(app.getPath('logs'), 'perf-trace-main.jsonl') : null;
+  const trace = trusted.XAIBO_PERF_TRACE === '1' ? path.join(app.getPath('logs'), 'perf-trace-main.jsonl') : null;
   ipcMain.on('paint-ack', (e, delta: unknown) => {
     const t = process.hrtime.bigint();
     if (!trace || !win || e.sender !== win.webContents || !Number.isSafeInteger(delta) || (delta as number) <= 0) return;
@@ -165,6 +209,19 @@ function start(dataDir: string) {
     log.log(`apply_${ask.kind}_${out.status === 'refused' ? out.code : out.status}`);
     return out;
   });
+  // XAIBO-PROD-623: Launch (options, preview, launch). Our window's main frame only, parsed here; the log names only the outcome.
+  ipcMain.handle('launch', async (e, request: unknown): Promise<LaunchOptionsReply | LaunchPreviewReply | LaunchReply | ResumeOptionsReply | VsCodeReply> => {
+    const ask = parseLaunchAsk(request);
+    if (!win || win.isDestroyed() || !fromOurWindow(e, win) || !ask) return { status: 'refused', code: 'invalid' };
+    if (ask.op === 'options') return launches.options();
+    if (ask.op === 'preview') return launches.preview(ask);
+    if (ask.op === 'resumeOptions') return launches.resumeOptions(ask.session);
+    if (ask.op === 'resumePreview') return launches.resumePreview(ask.session, ask.mode, ask.confirmed);
+    if (ask.op === 'vscode') { const v = await launches.openVsCode(ask.session); log.log(`vscode_${v.status === 'refused' ? v.code : v.status}`); return v; }
+    const out = await launches.launch(ask.previewId);
+    log.log(`launch_${out.status === 'refused' ? out.code : out.status}`);
+    return out;
+  });
   ipcMain.on('set-agent-path', (e, agent: unknown) => {
     if (!win || e.sender !== win.webContents || typeof agent !== 'string' || !AGENT_ID.test(agent)) return;
     void dialog.showOpenDialog(win, { title: 'Choose the agent executable', properties: ['openFile'] }).then((r) => {
@@ -175,7 +232,7 @@ function start(dataDir: string) {
 
   // XAIBO-PROD-568 (P6-T11, SEC1; review R1-R3): Reveal override file. Our window's main frame only, no argument read; the
   // path is fixed in reveal.ts; Finder only selects. XAIBO_REVEAL_STUB=1 (E2E) records the kind only, never calls Finder.
-  const revealStub = process.env.XAIBO_REVEAL_STUB === '1' ? path.join(app.getPath('logs'), 'reveal-stub.jsonl') : null;
+  const revealStub = trusted.XAIBO_REVEAL_STUB === '1' ? path.join(app.getPath('logs'), 'reveal-stub.jsonl') : null;
   ipcMain.handle('reveal-price-override', (e): RevealResult => {
     if (!fromOurWindow(e, win)) return 'failed';
     const kind = revealOverride(dataDir, revealStub ? () => {} : (p) => shell.showItemInFolder(p));
@@ -185,11 +242,12 @@ function start(dataDir: string) {
 
   // XAIBO-PROD-569 (P6-T10 unit 1, design §6.6 Startup): read or save Start at login for our main frame only; the request is
   // parsed in startup.ts. XAIBO_LOGIN_ITEM_STUB=1 (every E2E run) keeps it in a file, never the machine's login items.
-  const loginItems: LoginItems = process.env.XAIBO_LOGIN_ITEM_STUB === '1' ? stubLoginItems(path.join(app.getPath('logs'), 'login-item-stub.json'))
+  const loginItems: LoginItems = trusted.XAIBO_LOGIN_ITEM_STUB === '1' ? stubLoginItems(path.join(app.getPath('logs'), 'login-item-stub.json'))
     : { get: () => app.getLoginItemSettings().openAtLogin, set: (on) => app.setLoginItemSettings({ openAtLogin: on }) };
   ipcMain.handle('startup', (e, request: unknown): StartupReply => (fromOurWindow(e, win) ? answerStartup(request, loginItems) : { status: 'failed', code: 'invalid', enabled: null }));
 
   void app.whenReady().then(() => {
+    sweepLaunchScripts(dataDir!); // XAIBO-PROD-623: scripts Terminal never ran
     lockDown(path.join(here, '..', '..', 'dist', 'renderer'), dev, (count) => { blocked = count; log.log('request_blocked', { count }); });
     const save = () => void saveDiagnostics().catch(() => log.log('diagnostics_failed'));
     tray = createTray({ show, saveDiagnostics: save, quit: () => app.quit() });

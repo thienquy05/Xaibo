@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { consumptionByProfile } from '../../src/service/usage/consumption.ts';
+import { consumptionByProfile, CONSUMPTION_ROWS } from '../../src/service/usage/consumption.ts';
 import { scopeKey } from '../../src/service/usage/snapshots.ts';
 import { answerUsage } from '../../src/service/api.ts';
 import { openStore } from '../../src/service/store/db.ts';
@@ -148,4 +148,21 @@ test('G6E-1: the cap bounds the rows scanned, not only those returned: newer non
   const r = consumptionByProfile(db, 2);
   assert.equal(r.limited, true);
   assert.equal(r.groups.get(C), undefined, 'G6R-3: the older message row lies past the scanned candidates');
+});
+
+
+// Gate 6 second review item 2 (XAIBO-PROD-608): the consumption read runs on the service thread for every Dashboard usage
+// request (at most one per 5 s per window); measured at its 10,000-row cap. The bound is generous (a regression guard, not
+// a benchmark): the measured median is reported as a diagnostic.
+test('XAIBO-PROD-608: consumptionByProfile at the 10,000-row cap stays far below the 5 s usage cadence', async (t) => {
+  const { db, session, request } = await store();
+  db.exec('BEGIN');
+  const sids = Array.from({ length: 20 }, (_, i) => session(i % 2 ? X : C, i % 2 ? 'codex' : 'claude'));
+  for (let i = 0; i < CONSUMPTION_ROWS; i++) request(sids[i % sids.length]!, { usd: 0.01, received: T + i });
+  db.exec('COMMIT');
+  const ms: number[] = [];
+  for (let i = 0; i < 5; i++) { const s = performance.now(); consumptionByProfile(db); ms.push(performance.now() - s); }
+  ms.sort((a, b) => a - b);
+  t.diagnostic(`consumptionByProfile median ${ms[2]!.toFixed(1)} ms over ${CONSUMPTION_ROWS} rows`);
+  assert.ok(ms[2]! < 1_000, `median ${ms[2]!.toFixed(1)} ms`);
 });

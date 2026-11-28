@@ -63,7 +63,7 @@ test('a valid manual path is used first and resolved to its realpath', async () 
   symlinkSync(real, link);
   bin(join(home, 'pathbin2'), 'mtool', 'echo "4.5.6"');
   const d = await detectAgent(entry('mtool', []), { env: { PATH: join(home, 'pathbin2') }, home, manualPath: link, access: BUNDLED });
-  assert.deepEqual(noId(d), { agent: 'mtool', state: 'detected', path: real, version: '1.2.3' });
+  assert.deepEqual(noId(d), { agent: 'mtool', state: 'detected', path: real, found: link, version: '1.2.3' }); // XAIBO-PROD-621: as found, for launch
 });
 
 test('checkExecutable accepts only regular executable files', async () => {

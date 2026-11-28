@@ -85,6 +85,7 @@ test('M15: a fourth agent from data only: import, detect, setup preview/apply, r
   const connectFor = (svc: Awaited<ReturnType<typeof start>>) => createConnect(connectContext({
     dataDir, login: svc.loginEnv(), bin: helpers, catalog: svc.catalog(),
     detection: (a) => svc.detections.find((d) => d.agent === a), setupAccess: (a) => svc.setupAccess(a),
+    e2e: true, // XAIBO-PROD-611: helpers set (a packaged-style context) under the temp dir, as a marked packaged run
   }));
 
   // 2. detection and profile, 3. setup preview and apply (service wiring: boot's setupAccess into connectContext)

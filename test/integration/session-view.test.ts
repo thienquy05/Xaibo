@@ -3,18 +3,17 @@
 // current, non-injected main-transcript records appear; subagent, hook and other sessions' records never do.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { answerFiles, answerMarkers, answerSession, answerSlice, answerSubagents, answerTools, answerTranscript, EVIDENCE_MAX, RAW_BUDGET, SCAN_MAX, TRANSCRIPT_MAX, transcriptStats } from '../../src/service/api.ts';
 import { openStore } from '../../src/service/store/db.ts';
+import { tempDir } from '../helpers/tmp.ts';
 import type { LiveStatus, PortRequest } from '../../src/shared/ipc.ts';
 
 const T = Date.parse('2026-01-02T00:00:00.000Z');
 const cl = (type: string, content: unknown) => JSON.stringify({ type, message: { role: type, content } });
 
 async function store() {
-  const dir = mkdtempSync(join(tmpdir(), 'xsv-'));
+  const dir = tempDir('xsv-');
   const { db } = await openStore({ file: join(dir, 'xaibo.db'), backupDir: join(dir, 'b') });
   db.exec(`INSERT INTO profiles (id, agent, root, origin) VALUES ('p1', 'claude', '/tmp/xaibo-fixture/home/.claude', 'default');
     INSERT INTO sessions (id, agent, profile_id, native_session_id, last_activity) VALUES (1, 'claude', 'p1', 'sess-1', ${T}), (2, 'claude', 'p1', 'sess-2', ${T});`);

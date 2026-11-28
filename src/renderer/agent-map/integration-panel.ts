@@ -68,6 +68,18 @@ export async function allRows(fetch: (cursor: IntegrationKey | null, limit: numb
   }
   return out;
 }
+/** Gate 6 D1-3 (XAIBO-PROD-610, design §6.5.2): Return to Dashboard focuses the button that opened the panel once the usage
+ *  blocks have drawn it (their data loads after the area switch), else the fallback (the view heading) after `tries` waits. */
+export async function focusInvoker(find: () => { focus(): void } | null, fallback: () => { focus(): void } | null, wait: () => Promise<void>, tries = 30): Promise<'invoker' | 'heading' | null> {
+  for (let i = 0; i < tries; i++) {
+    const el = find();
+    if (el) { el.focus(); return 'invoker'; }
+    await wait();
+  }
+  const h = fallback();
+  h?.focus();
+  return h ? 'heading' : null;
+}
 /** XAIBO-PROD-598 (E2E finding): a folder approval can list an imported agent's first profile (its profile-less key is then
  *  gone) and a folder revoke can remove it again; the panel moves to the agent's first listed row. */
 export const agentRow = (rows: readonly IntegrationRow[], agent: string): IntegrationKey | null => rows.find((r) => r.key.agent === agent)?.key ?? null;

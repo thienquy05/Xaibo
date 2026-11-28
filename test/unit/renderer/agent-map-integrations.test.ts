@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { INTEGRATION_FACTS, INTEGRATION_REFUSALS, INTEGRATION_STATES, type IntegrationRow } from '../../../src/shared/ipc.ts';
 import { emptyLevel, RESIDENT } from '../../../src/renderer/agent-map/tree.ts';
 import { AGENTS_PAGE, agentItems, agentKey, agentLabel, contentText, FACT, MODES, pageReply, pageRequest, reasonsText, receiptText, REFUSAL_TEXT, STATE, stateText,
-  type AgentLevel } from '../../../src/renderer/agent-map/integrations-state.ts';
+  refreshTracker, type AgentLevel } from '../../../src/renderer/agent-map/integrations-state.ts';
 import { formatTime } from '../../../src/renderer/model.ts';
 
 const P = (n: number) => `00000000-0000-4000-8000-0000000c75${String(n).padStart(2, '0')}`;
@@ -114,4 +114,21 @@ test('a row name is short and names agent, profile and state', () => {
 
 test('D-P6-19 (2): a known hooks block reads as files-only coverage', () => {
   assert.equal(FACT['hooks-blocked'], 'Hooks blocked by policy (files only)');
+});
+
+
+// Gate 6 second review item 3 (XAIBO-PROD-609): Load more started while a refresh is in flight bumps the request token, so the
+// refresh reply is dropped; the tracker says so, and the list queues the refresh again once the page settles
+test('XAIBO-PROD-609: a page request that replaces an in-flight refresh asks for it again; a settled or stale one never', () => {
+  const t = refreshTracker();
+  assert.equal(t.preempts(0), false, 'nothing in flight');
+  t.start(1);
+  assert.equal(t.preempts(1), true, 'Load more replaces refresh 1 while it is in flight');
+  assert.equal(t.preempts(2), false, 'asked once');
+  t.start(3);
+  t.settled(3);
+  assert.equal(t.preempts(3), false, 'refresh 3 already answered');
+  t.start(4);
+  assert.equal(t.preempts(5), false, 'token 5 is not the refresh (a later request already replaced it)');
+  t.settled(4);
 });

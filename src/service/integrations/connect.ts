@@ -26,7 +26,7 @@ import type { Detection, Profile } from '../catalog/detect.ts';
 import type { Catalog } from '../catalog/validate.ts';
 import { claudeConnectRoute, claudeRetentionOffer, reportOps, retentionOps, type RetentionOffer, type SetupAccess } from '../catalog/setup-plans.ts';
 import { privateDir, real, REAL_PROFILE_ENABLED, writable } from '../config/bounds.ts';
-import { acquireLock, lockState } from '../config/lock.ts';
+import { acquireLock, judge, lockState, type Writer } from '../config/lock.ts';
 import {
   apply, BACKUP_NAME, ConfigError, dropEntry, plan, privateDirs, readFile, readManifest, revert, within, type Bounds, type DiffLine, type ManifestEntry, type Op, type Plan, type Route,
 } from '../config/transaction.ts';
@@ -188,10 +188,10 @@ export function createConnect(ctx: ConnectContext) {
    *  through a linked folder (code review M2: the manifest records the resolved path, so Disconnect would miss the entry).
    *  ponytail (code review L2): once the root approval lapses, per-profile Disconnect answers unverified and only Full
    *  Uninstall reverts the entry; resolve report targets from the manifest if that ever strands an owner. */
-  const targetFor = (p: Profile): Target | null => {
+  const targetFor = (p: Profile, access = onceEach()): Target | null => {
     const native = targetOf(p);
     if (native) return native;
-    const a = ctx.setupAccess?.(p.agent);
+    const a = access(p.agent);
     if (!a?.root) return null;
     let root: string;
     try { root = realpathSync.native(p.root); } catch { return null; }
@@ -200,6 +200,12 @@ export function createConnect(ctx: ConnectContext) {
     try { if (realpathSync.native(path.dirname(file)) !== path.dirname(file)) return null; } catch { /* no parent folder: plan() refuses it */ }
     return { dir: root, file, routes: ['report-setup'] };
   };
+  /** XAIBO-PROD-608 (Gate 6 second review 4): each setupAccess call reads the private import store, so a scan, a preview and
+   *  an apply each read it at most once per agent. */
+  function onceEach(): (agent: string) => SetupAccess | null {
+    const m = new Map<string, SetupAccess | null>();
+    return (a) => { if (!m.has(a)) m.set(a, ctx.setupAccess?.(a) ?? null); return m.get(a)!; };
+  }
   /** Xaibo's own data dir is never a report-setup target (review: deniedRootsFrom lists agent roots only). */
   const reportDenied = (d: string[]) => [...d, real(ctx.dataDir)];
   const previews = new Map<string, Held>();
@@ -272,14 +278,15 @@ export function createConnect(ctx: ConnectContext) {
     if (!denied) return refused('bounds-unavailable');
     if (sel.teeOnly && p.agent !== 'claude') return refused('unsupported'); // XAIBO-PROD-580: only Claude has the statusLine tee
     // XAIBO-PROD-589 (design §3): a report agent's root approval and setup grant, before any target is read
-    const report = targetOf(p) ? null : ctx.setupAccess?.(p.agent) ?? null;
+    const access = onceEach();
+    const report = targetOf(p) ? null : access(p.agent);
     if (report) {
       let root: string | null = null;
       try { root = realpathSync.native(p.root); } catch { /* no profile folder: not the approved root */ }
       if (!report.root || root !== report.root) return refused('root-not-approved');
       if (!report.granted) return refused('setup-not-granted');
     }
-    const t = targetFor(p);
+    const t = targetFor(p, access);
     if (!t) return refused('unverified');
     const bounds = boundsFor(p, t);
     if (!bounds) return refusal(); // before any offer read (review H3, M4)
@@ -311,6 +318,10 @@ export function createConnect(ctx: ConnectContext) {
   /** Design review M3: stricter than the redacted diff: route, target, owned values with the full value they replace, created. */
   const same = (a: Plan, b: Plan) => a.route === b.route && a.target === b.target && isDeepStrictEqual(a.owned, b.owned) && isDeepStrictEqual(a.created, b.created);
 
+  /** XAIBO-PROD-612: the lock's writer class: 'external' when the operation may run `claude plugin`, or when that can't be told.
+   *  Only from entries fixed before the lock (a removal's preview, rechecked under it); Disconnect and Uninstall read their
+   *  manifest only under the lock, so they are always external (review LOW 1). */
+  const writerOf = (entries: () => readonly ManifestEntry[]): Writer => { try { return entries().some((e) => e.route === 'claude-plugin') ? 'external' : 'service'; } catch { return 'external'; } };
   /** Part 2a: under the operation lock, taken before the preview is looked up, so `busy` keeps the preview for a retry. */
   async function applyConnect(previewId: string, owner?: unknown): Promise<ConnectResult> {
     if (!denied) return refused('bounds-unavailable');
@@ -318,13 +329,13 @@ export function createConnect(ctx: ConnectContext) {
     // before the lock is taken or the lookup consumes it, so main's confirm can still use it
     const held = previews.get(previewId);
     if (held && held.owner === owner && (held.real || nowReal(held.profile))) return refused('needs-confirmation');
-    return locked(() => applyLocked(previewId, owner, false));
+    return locked(held?.plugin ? 'external' : 'service', () => applyLocked(previewId, owner, false));
   }
   /** The operation lock around one whole operation, held until its promise settles (part 2b: the CLI awaits); a held or stale
    *  lock is the refusal, nothing else is touched. */
-  async function locked<T>(fn: () => T | Promise<T>): Promise<T | Refused> {
+  async function locked<T>(writer: Writer, fn: () => T | Promise<T>): Promise<T | Refused> {
     let lock;
-    try { lock = acquireLock(ctx.dataDir); } catch (e) { return refused(e instanceof ConfigError ? e.code : 'failed'); } // nothing written yet (code review L-b)
+    try { lock = acquireLock(ctx.dataDir, writer); } catch (e) { return refused(e instanceof ConfigError ? e.code : 'failed'); } // nothing written yet (code review L-b)
     try { return await fn(); } finally { lock.release(); }
   }
   async function applyLocked(previewId: string, owner: unknown, confirmed: boolean): Promise<ConnectResult> {
@@ -333,12 +344,13 @@ export function createConnect(ctx: ConnectContext) {
     if (!h || h.owner !== owner) return refused('preview-invalid');
     if (now() > h.expiresAt) return refused('preview-expired');
     if (!denied) return refused('bounds-unavailable');
+    const access = onceEach();
     const again = (): ConnectResult => ({ status: 'needs-preview', preview: preview(h.profile, h.sel, h.owner) }); // 1b review M1; we hold the lock
     if (h.report) { // XAIBO-PROD-589: the grant, root and declared setup still as previewed, before any helper is deployed
-      const a = ctx.setupAccess?.(h.profile.agent);
+      const a = access(h.profile.agent);
       if (!a?.granted || a.root !== h.report.root || !isDeepStrictEqual(a.setup, h.report.setup)) return again();
     }
-    const t = targetFor(h.profile);
+    const t = targetFor(h.profile, access);
     const bounds = t && boundsFor(h.profile, t);
     if (!t || !bounds) return refusal();
     if (!confirmed && !permitted(t)) return refused('needs-confirmation'); // review H1: decided again under the lock
@@ -429,26 +441,26 @@ export function createConnect(ctx: ConnectContext) {
     if (!denied) return refused('bounds-unavailable');
     const t = targetFor(p);
     if (!t) return refused('unverified');
-    return locked(() => revertAll(readManifest(ctx.dataDir).filter((e) => e.target === t.file && t.routes.includes(e.route)), denied, [p]));
+    return locked('external', () => revertAll(readManifest(ctx.dataDir).filter((e) => e.target === t.file && t.routes.includes(e.route)), denied, [p]));
   }
 
   /** Every recorded entry, including profiles no longer detected; history and the shim stay (FR-34; orphan shim: P6-T05).
    *  XAIBO-PROD-599 H3: an entry on a real root only for one of `profiles` (the live ones). */
-  const uninstall = async (profiles: readonly Profile[]): Promise<Outcome | Refused> => (denied ? locked(() => revertAll(readManifest(ctx.dataDir), denied, profiles)) : refused('bounds-unavailable'));
+  const uninstall = async (profiles: readonly Profile[]): Promise<Outcome | Refused> => (denied ? locked('external', () => revertAll(readManifest(ctx.dataDir), denied, profiles)) : refused('bounds-unavailable'));
 
   /** A closed port's previews can never be applied: drop them (part 1b review L5). */
   const dropOwner = (owner: unknown) => {
     for (const [id, h] of previews) if (h.owner === owner) previews.delete(id);
     for (const [id, c] of cleanups) if (c.owner === owner) cleanups.delete(id); // part 2 review C7
     for (const [id, r] of removals) if (r.owner === owner) removals.delete(id); // XAIBO-PROD-576 plan review L5
+    for (const [id, l] of lockClears) if (l.owner === owner) lockClears.delete(id); // XAIBO-PROD-613
   };
 
-  /** XAIBO-PROD-562 (P6-T04 part 1, EC-26): the read-only reconcile over the current profiles; the latest report is kept for
-   *  the IPC read (P6-T10). Same denylist and writable roots as every write. */
-  // ponytail (code review 6): kept for its first reader, the P6-T10 IPC read; only tests read it until then
+  /** XAIBO-PROD-562 (P6-T04 part 1, EC-26): the read-only reconcile over the current profiles; the IPC reads (P6-T10) run their
+   *  own fresh reconcile, the latest report is kept for tests and cleanup's refresh. Same denylist and writable roots as every write. */
   let latest: ReconcileReport | null = null;
   const allowedTarget = (t: Target, p: Profile) => !!boundsFor(p, t);
-  const reconcile = (profiles: readonly Profile[]) => (latest = scan({ dataDir: ctx.dataDir, denied, profiles, target: targetFor, permitted: allowedTarget }));
+  const reconcile = (profiles: readonly Profile[]) => { const a = onceEach(); return (latest = scan({ dataDir: ctx.dataDir, denied, profiles, target: (p) => targetFor(p, a), permitted: allowedTarget })); };
   const reconciled = () => latest;
 
   // XAIBO-PROD-563 (P6-T04 part 2; slice and review C1-C8 in .handoff/p6-t04-design.md): one preview and one confirmation
@@ -456,7 +468,7 @@ export function createConnect(ctx: ConnectContext) {
   // values are already gone, so no agent profile file is written and no CLI runs; the plugin copy and a still-registered
   // marketplace stay manual (P6-T12). Previews as Connect's (TTL, single use, owner-bound, max 32) in their own map (C7).
   const cleanups = new Map<string, { profiles: readonly Profile[]; entries: ManifestEntry[]; owner: unknown; expiresAt: number; scope?: string; real: boolean }>();
-  const current = (profiles: readonly Profile[], held: boolean) => scan({ dataDir: ctx.dataDir, denied, profiles, target: targetFor, permitted: allowedTarget, held });
+  const current = (profiles: readonly Profile[], held: boolean) => { const a = onceEach(); return scan({ dataDir: ctx.dataDir, denied, profiles, target: (p) => targetFor(p, a), permitted: allowedTarget, held }); };
 
   /** `scope` (XAIBO-PROD-576 plan review M2): the profile the IPC asked for; one held preview per scope, busy checked first. */
   function previewCleanup(profiles: readonly Profile[], ids: readonly string[], owner?: unknown, scope?: string): CleanupPreview | Refused {
@@ -491,7 +503,7 @@ export function createConnect(ctx: ConnectContext) {
   }
   async function cleanupLocked(previewId: string, owner: unknown, confirmed: boolean): Promise<CleanupResult> {
     if (!denied) return refused('bounds-unavailable');
-    return locked((): CleanupResult => {
+    return locked('service', (): CleanupResult => { // forgets records only, no CLI
       const h = cleanups.get(previewId);
       cleanups.delete(previewId);
       if (!h || h.owner !== owner) return refused('preview-invalid');
@@ -610,7 +622,7 @@ export function createConnect(ctx: ConnectContext) {
   async function removalLocked(previewId: string, owner: unknown, profiles: readonly Profile[], confirmed: boolean): Promise<RemovalResult> {
     if (!denied) return refused('bounds-unavailable');
     const d = denied;
-    return locked(async (): Promise<RemovalResult> => {
+    return locked(writerOf(() => removals.get(previewId)?.entries ?? []), async (): Promise<RemovalResult> => {
       const h = removals.get(previewId);
       removals.delete(previewId); // consumed on first lookup, a wrong owner included
       if (!h || h.owner !== owner) return refused('preview-invalid');
@@ -637,9 +649,60 @@ export function createConnect(ctx: ConnectContext) {
   // under a per-start key over the kind, the preview id, the items and a digest of the held preview (everything apply would
   // use); applyConfirmed re-derives both from the held preview (never from main's text) and applies through the existing
   // locked path with the held owner (review M5: the only caller that may), so every recheck stays (needs-preview never applies).
+  // XAIBO-PROD-613 (Phase 7 cleanup item 1, run 2; Codex design, D-P7-03, Claude simplification: no recovery-guard file): the
+  // owner-confirmed Clear stale lock. A preview needs fresh evidence (the holder provably gone, a v2 record the service wrote)
+  // and binds the canonical data dir, the lock file's identity and mode, a digest of its bytes and the record; it is held here
+  // (the renderer sees only its id), single use, and applied only through main's confirmation (kind lock-clear). Immediately
+  // before the unlink every bound value and the staleness are checked again; any change is lock-changed, never a retry.
+  type LockEvidence = { dir: string; dev: number; ino: number; mode: number; digest: string; rec: unknown };
+  const lockClears = new Map<string, LockEvidence & { owner: unknown; expiresAt: number }>();
+  const lockPath = () => path.join(ctx.dataDir, 'integrations', 'operation.lock');
+  function lockEvidence(): LockEvidence | Refused {
+    let dir: string, f;
+    try { privateDirs(ctx.dataDir); dir = realpathSync.native(ctx.dataDir); f = readFile(lockPath()); } catch { return refused('lock-unknown'); } // linked, not ours, unreadable
+    if (!f) return refused('lock-free');
+    let rec: unknown;
+    try { rec = JSON.parse(f.bytes.toString('utf8')); } catch { return refused('lock-unknown'); }
+    const state = judge(rec);
+    if (state !== 'stale-lock') return refused(state);
+    const r = rec as Record<string, unknown>;
+    if (r['v'] !== 2 || r['writer'] !== 'service') return refused('lock-manual'); // an external CLI may still run: never in-app
+    return { dir, dev: f.dev, ino: f.ino, mode: f.mode, digest: sha256(f.bytes), rec };
+  }
+  function previewLockClear(owner?: unknown): { status: 'preview'; previewId: string; ttlMs: number } | Refused {
+    const ev = lockEvidence();
+    if ('status' in ev) return ev;
+    lockClears.clear(); // one lock, one held preview
+    const previewId = randomUUID();
+    lockClears.set(previewId, { ...ev, owner, expiresAt: now() + TTL_MS });
+    return { status: 'preview', previewId, ttlMs: TTL_MS };
+  }
+  function clearLock(previewId: string): { status: 'cleared' } | Refused {
+    const h = lockClears.get(previewId);
+    lockClears.delete(previewId); // single use
+    if (!h) return refused('preview-invalid');
+    if (now() > h.expiresAt) return refused('preview-expired');
+    const ev = lockEvidence();
+    if ('status' in ev || ev.dir !== h.dir || ev.dev !== h.dev || ev.ino !== h.ino || ev.mode !== h.mode || ev.digest !== h.digest) return refused('lock-changed');
+    // ponytail: the lstat-checked path is then unlinked by name; a replacement in that microsecond window needs the stale file
+    // removed by hand first (acquire is O_EXCL), so only a concurrent manual removal could race it
+    try { unlinkSync(lockPath()); } catch { return refused('lock-changed'); }
+    previews.clear(); removals.clear(); cleanups.clear(); // every held integration preview: made under the old lock state
+    return { status: 'cleared' };
+  }
+
   const applyKey = randomBytes(32);
   type Offered = { items: [ApplyLabel, string][]; digest: string; owner: unknown; run: () => Promise<unknown> };
   function offered(kind: ApplyKind, previewId: string, profiles: readonly Profile[]): Offered | Refused {
+    if (kind === 'lock-clear') { // XAIBO-PROD-613: touches no agent configuration, so no bounds; reconcile afterwards (read-only)
+      const l = lockClears.get(previewId);
+      if (!l) return refused('preview-invalid');
+      if (now() > l.expiresAt) return refused('preview-expired');
+      const bound: LockEvidence = { dir: l.dir, dev: l.dev, ino: l.ino, mode: l.mode, digest: l.digest, rec: l.rec };
+      return { items: [['scope', 'Every integration in this Xaibo data folder'], ['file', lockPath()]], digest: JSON.stringify(bound), owner: l.owner,
+        // review LOW: the clear already happened; a failing read-only reconcile must not turn it into unknown
+        run: async () => { const r = clearLock(previewId); if (r.status === 'cleared' && denied) { try { reconcile(profiles); } catch { /* the panel's next read reconciles */ } } return r; } };
+    }
     if (!denied) return refused('bounds-unavailable');
     const d = denied, at = now();
     if (kind === 'connect') {
@@ -658,7 +721,7 @@ export function createConnect(ctx: ConnectContext) {
       // code review 4: the plugin preview too (never built for a real profile today, decision A; bound if that ever changes)
       const digest = JSON.stringify({ p, sel: h.sel, report: h.report, trust: h.trust, retention: h.retention, plugin: h.plugin?.pp ?? null,
         steps: h.steps.map((s) => ({ route: s.route, target: s.plan.target, owned: s.plan.owned, created: s.plan.created, preHash: s.plan.preHash, dev: s.plan.dev, ino: s.plan.ino, mode: s.plan.mode })) });
-      return { items, digest, owner: h.owner, run: () => locked(() => applyLocked(previewId, h.owner, true)) };
+      return { items, digest, owner: h.owner, run: () => locked(h.plugin ? 'external' : 'service', () => applyLocked(previewId, h.owner, true)) };
     }
     if (kind === 'removal') {
       const r = removals.get(previewId);
@@ -677,7 +740,7 @@ export function createConnect(ctx: ConnectContext) {
     if (at > c.expiresAt) return refused('preview-expired');
     if (!c.real && !c.entries.some((e) => realEntry(e, d, c.profiles))) return refused('not-real');
     const scan = current(c.profiles, false);
-    if (scan.status === 'blocked') return refused(scan.code === 'busy' || scan.code === 'stale-lock' ? 'busy' : 'failed');
+    if (scan.status === 'blocked') return refused(scan.code === 'bounds-unavailable' || scan.code === 'manifest' ? 'failed' : scan.code); // review LOW 2: lock codes as they are
     const items: [ApplyLabel, string][] = [...(c.scope ? [['profile', c.scope] as [ApplyLabel, string]] : []), ['records', String(c.entries.length)], ['backups', String(c.entries.filter((e) => e.backup).length)]];
     for (const e of c.entries) {
       items.push(['file', e.target], ['change', `${e.route}: forget the record`]);
@@ -701,5 +764,5 @@ export function createConnect(ctx: ConnectContext) {
     return { status: 'done', reply: await x.run() };
   }
 
-  return { previewConnect, applyConnect, disconnect, uninstall, dropOwner, reconcile, reconciled, previewCleanup, applyCleanup, previewRemoval, applyRemoval, applyOffer, applyConfirmed };
+  return { previewConnect, applyConnect, disconnect, uninstall, dropOwner, reconcile, reconciled, previewCleanup, applyCleanup, previewRemoval, applyRemoval, applyOffer, applyConfirmed, previewLockClear };
 }

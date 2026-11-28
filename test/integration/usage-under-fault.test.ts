@@ -6,13 +6,13 @@
 // a price reload run; negative controls prove each recorder catches what it must.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { boot } from '../../src/service/boot.ts';
 import { loadCatalog, type Catalog } from '../../src/service/catalog/validate.ts';
 import { run } from '../../src/service/spawn.ts';
+import { tempDir } from '../helpers/tmp.ts';
 
 const catalog: Catalog = { ...loadCatalog(), agents: loadCatalog().agents.map((a) => ({ ...a, detection: { ...a.detection, locations: ['~/.local/bin'] } })) };
 const FIXTURES = join(import.meta.dirname, '..', 'fixtures', 'synthetic');
@@ -29,7 +29,7 @@ const fallback = JSON.stringify({
 });
 
 function home(prefix: string) {
-  const tmp = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+  const tmp = realpathSync(tempDir(prefix));
   const h = join(tmp, 'home');
   const project = join(h, '.claude', 'projects', '-tmp-xaibo-fixture-project');
   mkdirSync(project, { recursive: true });

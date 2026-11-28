@@ -1,15 +1,15 @@
 // Temp Claude profile built from the synthetic 2.1.319 fixtures, plus a fresh store, for adapter tests.
-import { cpSync, mkdirSync, mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { cpSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { openStore } from '../../src/service/store/db.ts';
 import { Writer } from '../../src/service/store/writer.ts';
+import { tempDir } from './tmp.ts';
 
 export const FIXTURES = join(import.meta.dirname, '..', 'fixtures', 'synthetic', 'claude', '2.1.319');
 
 /** Copies fixture cases into `<tmp>/claude/projects/-tmp-xaibo-fixture-<case>/`. */
 export async function claudeProfile(cases: string[]) {
-  const tmp = mkdtempSync(join(tmpdir(), 'xclaude-'));
+  const tmp = tempDir('xclaude-');
   const root = join(tmp, 'claude');
   for (const c of cases) {
     const dir = join(root, 'projects', `-tmp-xaibo-fixture-${c}`);

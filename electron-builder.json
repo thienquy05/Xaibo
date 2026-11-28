@@ -12,5 +12,6 @@
     { "from": "src/forwarder/xaibo-report", "to": "bin/xaibo-report" }
   ],
   "npmRebuild": false,
+  "electronFuses": { "runAsNode": false, "enableNodeOptionsEnvironmentVariable": false },
   "mac": { "target": "dir", "identity": "-", "hardenedRuntime": false }
 }

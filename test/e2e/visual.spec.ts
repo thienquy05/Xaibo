@@ -336,6 +336,10 @@ test('Agent Map: wide fan-out with connectors and stacked rows, light and dark',
       await expect(pane.getByText('Lifecycle receipt')).toBeVisible({ timeout: 20_000 });
       await page.mouse.move(0, 0);
       await shoot(page, `agents-panel-${size[0]}x${size[1]}`, [page.getByText(/^Evidence checked/), pane.locator('dd').filter({ hasText: /\d{4}-\d{2}-\d{2}/ })]);
+      // Gate 6 D2-3: the panel's lower part (the fieldsets below the first screen) at the same size, times masked
+      await pane.locator('button, input, select').last().scrollIntoViewIfNeeded();
+      await page.mouse.move(0, 0);
+      await shoot(page, `agents-panel-lower-${size[0]}x${size[1]}`, [page.getByText(/^Evidence checked/), pane.locator('dd').filter({ hasText: /\d{4}-\d{2}-\d{2}/ })]);
       await pane.getByRole('button', { name: 'Back to map' }).click();
       await modes.getByRole('button', { name: 'Repositories' }).click();
       await openSessions(page); // the nav link returns to the kept map at the next size (G5d-2)

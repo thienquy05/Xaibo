@@ -133,6 +133,7 @@ test('Sign-in declaration in the panel: declare, change, account change, clear, 
   await expect(paneB.getByRole('heading', { level: 2 })).toBeFocused();
   await expect(paneB.getByRole('group', { name: 'Sign-in method' })).toContainText(/Owner declaration: Gateway · declared/, { timeout: 20_000 });
   await expect(page2.getByRole('group', { name: 'Agent Map view' }).getByRole('button', { name: 'Agents' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(paneB.getByRole('button', { name: 'Return to Dashboard' })).toHaveCount(0); // XAIBO-PROD-610: opened from Settings
   await shot(page2, 'sign-in-settings-open');
   // XAIBO-PROD-587 (unit 5): B's current block says Gateway (with its provenance); its request, made before the declaration, stays in an
   // earlier-epoch block under that epoch's method (never relabelled Gateway); Review integration opens B's panel
@@ -152,6 +153,12 @@ test('Sign-in declaration in the panel: declare, change, account change, clear, 
   await block.getByRole('button', { name: `Review integration: Codex · ${b}` }).click();
   await expect(page2.getByRole('region', { name: 'Integration: Codex' }).getByRole('heading', { level: 2 })).toBeFocused();
   await expect(page2.getByRole('region', { name: 'Integration: Codex' }).getByRole('group', { name: 'Sign-in method' })).toContainText(/Owner declaration: Gateway/, { timeout: 20_000 });
+  // XAIBO-PROD-610 (Gate 6 D1-3, design §6.5.2): a panel opened from the Dashboard offers Return to Dashboard, which shows Usage
+  // and history again and focuses the button that opened it
+  await shot(page2, 'sign-in-dashboard-panel');
+  await page2.getByRole('region', { name: 'Integration: Codex' }).getByRole('button', { name: 'Return to Dashboard' }).click();
+  await expect(page2.getByRole('button', { name: `Review integration: Codex · ${b}` })).toBeFocused({ timeout: 10_000 });
+  await expect(page2.getByRole('region', { name: `Codex · ${b}`, exact: true })).toContainText('Sign-in method: Gateway');
   await xaibo.quit(again);
 });
 

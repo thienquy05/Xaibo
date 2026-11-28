@@ -1,13 +1,13 @@
 // Fresh store with one Claude profile (`p1`) plus hook envelopes, for the P3-T04 intake and replay tests.
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, copyFileSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Envelope } from '../../src/shared/hook-protocol.ts';
 import { createIntake, type IntakeOptions } from '../../src/service/receivers/intake.ts';
 import { openStore } from '../../src/service/store/db.ts';
 import { Writer, type WriterOptions } from '../../src/service/store/writer.ts';
+import { tempDir } from './tmp.ts';
 
 export const SESSION = '00000000-0000-4000-8000-0000000f0401';
 export const T0 = Date.parse('2026-01-01T00:00:00.000Z');
@@ -21,7 +21,7 @@ export function envelope(o: Partial<Envelope> = {}): Envelope {
 
 /** Short real path (the socket path limit), store in <dir>/xaibo.db, profile p1 (claude). */
 export async function hookStore(o: { writer?: WriterOptions; intake?: Omit<IntakeOptions, 'db' | 'writer'> } = {}) {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'xh-')));
+  const dir = realpathSync(tempDir('xh-'));
   const store = await openStore({ file: join(dir, 'xaibo.db'), backupDir: join(dir, 'backups') });
   store.db.prepare("INSERT INTO profiles (id, agent, root, origin) VALUES ('p1', 'claude', ?, 'default')").run(join(dir, 'claude'));
   const writer = new Writer(store.db, o.writer);

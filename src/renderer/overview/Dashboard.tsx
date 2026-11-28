@@ -46,7 +46,7 @@ export function Dashboard(p: {
   liveRetry?: Retry; lastKnown: string | null; agents: AgentStatus[] | null; banners: Banner[];
   api: UsageApi; tick: number; onSetPath: (agent: string) => void;
   /** XAIBO-PROD-587 (design line 351, review R11): Change sign-in declaration and Review integration open that profile's panel. */
-  onOpenIntegration?: (key: IntegrationKey) => void;
+  onOpenIntegration?: (key: IntegrationKey, invoker: string) => void; // XAIBO-PROD-610: the button's name, for Return to Dashboard
   /** P4-T05d: a live record's Open session button opens it in the Session area. */
   onOpen?: (row: SessionRow) => void;
   /** XAIBO-PROD-555: the monthly ledger's retained-sessions link and the ledger state Return to Dashboard restores. */
@@ -233,7 +233,7 @@ function AttentionView({ queue, loaded, failed, lastKnown, name, onShowLive, onO
   );
 }
 
-function UsageView({ api, tick, name, lastKnown, onOpenIntegration }: { api: UsageApi; tick: number; name: (id: string) => string; lastKnown: string | null; onOpenIntegration?: (key: IntegrationKey) => void }) {
+function UsageView({ api, tick, name, lastKnown, onOpenIntegration }: { api: UsageApi; tick: number; name: (id: string) => string; lastKnown: string | null; onOpenIntegration?: (key: IntegrationKey, invoker: string) => void }) {
   const now = useNow(1000);
   const [scopes, setScopes] = useState<UsageScope[] | null>(null);
   const [profiles, setProfiles] = useState<UsageProfile[]>([]);
@@ -304,8 +304,8 @@ function UsageView({ api, tick, name, lastKnown, onOpenIntegration }: { api: Usa
                 {b.rows.map((s, i) => <ScopeRow key={`${s.stream ?? 'none'}-${i}`} s={s} now={now} api={api} lastKnown={lastKnown} selected={choice !== undefined && scopeKey(choice) === scopeKey(s)} onSelect={() => setSelected(scopeKey(s))} />)}
                 {b.lead !== 'consumption' ? cons : null}
                 {link ? <div className="x-integration-actions">
-                  <button type="button" className="x-btn x-btn-quiet" aria-label={`Change sign-in declaration: ${label}`} onClick={() => onOpenIntegration!({ agent: b.agent, profileId: link })}>Change sign-in declaration</button>
-                  <button type="button" className="x-btn x-btn-quiet" aria-label={`Review integration: ${label}`} onClick={() => onOpenIntegration!({ agent: b.agent, profileId: link })}>Review integration</button>
+                  <button type="button" className="x-btn x-btn-quiet" aria-label={`Change sign-in declaration: ${label}`} onClick={() => onOpenIntegration!({ agent: b.agent, profileId: link }, `Change sign-in declaration: ${label}`)}>Change sign-in declaration</button>
+                  <button type="button" className="x-btn x-btn-quiet" aria-label={`Review integration: ${label}`} onClick={() => onOpenIntegration!({ agent: b.agent, profileId: link }, `Review integration: ${label}`)}>Review integration</button>
                 </div> : null}
               </section>
             );

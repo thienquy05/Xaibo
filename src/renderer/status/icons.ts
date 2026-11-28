@@ -34,6 +34,9 @@ const GEOMETRY = {
   information: [{ kind: 'circle', cx: 12, cy: 12, r: 9 }, line([12, 11], [12, 17]), { kind: 'circle', cx: 12, cy: 7, r: 0.5 }],
   file: [line([6, 3], [14, 3], [19, 8], [19, 21], [6, 21], [6, 3]), line([14, 3], [14, 8], [19, 8])],
   external: [{ kind: 'rect', x: 4, y: 9, w: 11, h: 11 }, line([10, 14], [20, 4]), line([13, 4], [20, 4], [20, 11])],
+  // XAIBO-PROD-625 (design §3.2): ownership Controlled here and Detached
+  control: [{ kind: 'rect', x: 4, y: 4, w: 16, h: 16 }, { kind: 'circle', cx: 12, cy: 12, r: 3 }, line([12, 4], [12, 8])],
+  unlink: [line([3, 8], [9, 8], [9, 16], [3, 16]), line([21, 8], [15, 8], [15, 16], [21, 16]), line([9, 12], [10, 12]), line([14, 12], [15, 12]), line([10, 18], [14, 6])],
   // P4-T06b: Stale (design §4)
   'clock-gap': [line([12, 3], [5, 3], [3, 10], [5, 18], [12, 21], [20, 17], [21, 10]), line([12, 7], [12, 12], [16, 12])],
   // XAIBO-PROD-438 (D-P4-10): in progress; turns per design §2.3 (tokens.css .x-loading)

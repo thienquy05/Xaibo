@@ -296,19 +296,20 @@ export async function liveLoad(tier: 'TP' | 'T2', corpus: string, seed: number, 
     const footprints: (number | null)[] = [];
     // with the volume: its free space every 10 s (does the store itself fill it outside the fault?)
     const volumeFree: { atS: number; freeMiB: number }[] = [];
-    // D-P5-22 (Codex plan): each sample also split by Electron process type (one process each; `rest` = the service and
-    // other children counted in the tree total), so the peak's owner is read at the same instant, never summed peaks
+    // D-P5-22 (Codex plan): each sample also split by Electron process, so the peak's owner is read at the same instant, never
+    // summed peaks. Gate 6 F-1: a named process (the xaibo-service utility, Chromium's network and storage services) is its own
+    // `type:name` key, never folded into one `Utility`; `rest` = children outside Electron's list (forwarders, tee, agent CLIs)
     const m5Samples: { atS: number; totalMiB: number | null; byType: Record<string, number>; restMiB: number | null }[] = [];
     const memLoop = async () => {
       while (!stopped && Date.now() < loadEndAt) {
         await sleep(10_000);
         const atS = Math.round((Date.now() - start) / 1000);
         if (vol) { const f = statfsSync(vol.mount); volumeFree.push({ atS, freeMiB: Math.round((f.bavail * f.bsize) / 2 ** 20) }); }
-        const procs = await launched.app.evaluate(({ app: a }) => a.getAppMetrics().map((m) => ({ pid: m.pid, type: m.type })));
+        const procs = await launched.app.evaluate(({ app: a }) => a.getAppMetrics().map((m) => ({ pid: m.pid, type: m.type, name: m.name ?? null })));
         const total = footprintMiB(psTree(procs.map((m) => m.pid)).map((x) => x.pid));
         footprints.push(total);
         const byType: Record<string, number> = {};
-        for (const m of procs) { const f = footprintMiB([m.pid]); if (f !== null) byType[m.type] = Math.round((byType[m.type] ?? 0) + f); }
+        for (const m of procs) { const f = footprintMiB([m.pid]); if (f === null) continue; const k = m.name ? `${m.type}:${m.name}` : m.type; byType[k] = Math.round((byType[k] ?? 0) + f); }
         m5Samples.push({ atS, totalMiB: total === null ? null : Math.round(total), byType, restMiB: total === null ? null : Math.round(total - Object.values(byType).reduce((n, x) => n + x, 0)) });
       }
     };

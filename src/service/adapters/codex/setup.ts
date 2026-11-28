@@ -106,7 +106,7 @@ export function codexHookStatus(o: CodexHookOptions & { db: DatabaseSync }): Cod
     // P6-T03 part 2a review H1: only under the operation lock, so another writer's manifest update is never lost; when held,
     // the write waits for a later call (which only delays `connected`)
     // code review (run 193) M-1: under the lock the entry is read again and written only if no one changed or removed it
-    const lock = tryLock(o.dataDir);
+    const lock = tryLock(o.dataDir, 'service'); // XAIBO-PROD-612: an in-process write
     if (lock) {
       try {
         const cur = recorded(o, file);

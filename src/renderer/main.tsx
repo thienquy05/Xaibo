@@ -4,9 +4,10 @@ import { StrictMode, useCallback, useEffect, useLayoutEffect, useMemo, useReduce
 import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { type CatalogImportResult, parseHealth, parseStartupReply } from '../shared/ipc.ts';
-import type { AgentStatus, Banner, GrantAsk, Health, IntegrationKey, LedgerFilter, RevokeTarget, SessionRow, StartupRequest } from '../shared/ipc.ts';
+import type { AgentStatus, Banner, GrantAsk, Health, IntegrationKey, LedgerFilter, ProvisionalRow, RevokeTarget, SessionRow, StartupRequest } from '../shared/ipc.ts';
 import { askGrant } from './agent-map/grants-view.ts';
-import { confirmedApply } from './agent-map/integration-dialog.ts';
+import { askLockClear, confirmedApply } from './agent-map/integration-dialog.ts';
+import { focusInvoker } from './agent-map/integration-panel.ts';
 import type { SignInCommand } from './usage/sign-in-view.ts';
 import { createClient, parseVisible, type Client, type PortLike } from './client.ts';
 import { HealthStatus } from './Health.tsx';
@@ -24,6 +25,7 @@ import { Settings, type SettingsApi } from './settings/Settings.tsx';
 import type { BrowseApi } from './history/SessionBrowser.tsx';
 import { AgentMap, type MapSnapshot } from './agent-map/AgentMap.tsx';
 import { Workspace } from './workspace/Workspace.tsx';
+import { launchApi } from './workspace/launch.ts';
 import { monthRange, type Query } from './history/browse.ts';
 import type { LedgerSnap } from './history/MonthlyChart.tsx';
 import type { SessionChanges } from './workspace/view.ts';
@@ -31,7 +33,7 @@ import type { WorkspaceApi } from './workspace/OpenSession.tsx';
 import { workspaceApiOf } from './workspace/workspace-api.ts';
 import './styles/tokens.css';
 
-declare global { interface Window { xaibo?: { setAgentPath(agent: string): void; importCatalog?(): void; paintAck(delta: number): void; revealPriceOverride?(): Promise<unknown>; startup?(request: StartupRequest): Promise<unknown>; grant?(request: unknown): Promise<unknown>; confirmApply?(request: unknown): Promise<unknown> } } }
+declare global { interface Window { xaibo?: { setAgentPath(agent: string): void; importCatalog?(): void; paintAck(delta: number): void; revealPriceOverride?(): Promise<unknown>; startup?(request: StartupRequest): Promise<unknown>; grant?(request: unknown): Promise<unknown>; confirmApply?(request: unknown): Promise<unknown>; launch?(request: unknown): Promise<unknown> } } }
 
 // M3 marks (P1-T14): read through the Performance API by test/perf.
 // ponytail: distinct sessions changed within one frame before the batch is dropped for a cursor resync; raise if a
@@ -49,6 +51,10 @@ function App() {
   const [list, setList] = useState<ListState>(emptyList);
   const [banners, setBanners] = useState<Banner[]>([]);
   const [catalogImport, setCatalogImport] = useState<CatalogImportResult | null>(null); // XAIBO-PROD-595
+  // XAIBO-PROD-624 (P7-T04): provisional launch rows from the service and the latest binding; launch asks go to main
+  const [provisional, setProvisional] = useState<ProvisionalRow[]>([]);
+  const [bound, setBound] = useState<{ items: { key: string; session: number }[]; n: number } | null>(null);
+  const launch = useMemo(() => launchApi(window.xaibo?.launch), []);
   const [liveSet, setLiveSet] = useState<LiveSetState>(emptyLiveSet);
   const [area, setArea] = useState<Area>('dashboard');
   const [tick, setTick] = useState(0); // session activity: the usage view refreshes on it (throttled there)
@@ -112,7 +118,8 @@ function App() {
       if (e.source !== window) return;
       if (e.data === 'xaibo-port' && e.ports[0]) { // a (re)started service: new client, reload the first page
         client.current?.close();
-        const c = createClient(e.ports[0] as unknown as PortLike, { sessions, agents: setAgents, coverage: setBanners, resync, catalogImport: setCatalogImport });
+        const c = createClient(e.ports[0] as unknown as PortLike, { sessions, agents: setAgents, coverage: setBanners, resync, catalogImport: setCatalogImport,
+          provisional: (rows, b) => { setProvisional(rows); if (b.length) setBound((x) => ({ items: b, n: (x?.n ?? 0) + 1 })); } });
         client.current = c;
         if (!visible()) c.setLive(false);
         // An invalid first page leaves the list empty; deltas and the next restart still fill it.
@@ -175,6 +182,9 @@ function App() {
       cleanupPreview: (profileId: string) => client.current?.cleanupPreview(profileId) ?? gone(),
       cleanupApply: (previewId: string) => (client.current ? confirmedApply('cleanup', previewId, () => client.current!.cleanupApply(previewId), window.xaibo?.confirmApply) : Promise.resolve(notSent)),
       teePreview: (profileId: string) => client.current?.teePreview(profileId) ?? gone(),
+      // XAIBO-PROD-613: the Clear stale lock: a preview over the port, the clear only through main's confirmation
+      lockClearPreview: () => client.current?.lockClearPreview() ?? gone(),
+      lockClear: (previewId: string) => askLockClear(window.xaibo?.confirmApply, previewId),
       rescan: () => client.current?.rescan() ?? Promise.resolve({ status: 'refused', code: 'unavailable' } as const), // XAIBO-PROD-593
       // XAIBO-PROD-598: a grant goes to main (ids only; its native confirmation); a revoke over the port; no connection sends nothing
       grant: (a: GrantAsk) => askGrant(window.xaibo?.grant, a),
@@ -217,8 +227,19 @@ function App() {
   const mapSaved = useRef<MapSnapshot | null>(null);
   // XAIBO-PROD-586 (D-P6-17): one route to a profile's integration panel (Settings now; the Dashboard usage blocks next)
   const [openIntegration, setOpenIntegration] = useState<IntegrationKey | null>(null);
-  useEffect(() => { if (area !== 'map') setOpenIntegration(null); }, [area]); // the map reads it on arrival only
-  const toIntegration = (key: IntegrationKey) => { clearReturn(); setPreset(null); setLedgerRestore(null); setMapReturn(null); setOpenIntegration(key); setArea('map'); };
+  // XAIBO-PROD-610 (Gate 6 D1-3, design §6.5.2): the Dashboard button that opened the panel, for its Return to Dashboard
+  const [integrationReturn, setIntegrationReturn] = useState<string | null>(null);
+  useEffect(() => { if (area !== 'map') { setOpenIntegration(null); setIntegrationReturn(null); } }, [area]); // the map reads it on arrival only
+  const toIntegration = (key: IntegrationKey, invoker: string | null = null) => { clearReturn(); setPreset(null); setLedgerRestore(null); setMapReturn(null); setOpenIntegration(key); setIntegrationReturn(invoker); setArea('map'); };
+  const returnFromIntegration = () => {
+    const label = integrationReturn;
+    setDashView('usage');
+    setArea('dashboard');
+    // review M: only while nothing else took focus (the user may move on before the usage blocks draw)
+    const idle = () => document.activeElement === null || document.activeElement === document.body;
+    void focusInvoker(() => (idle() ? [...document.querySelectorAll<HTMLElement>('#view-usage button[aria-label]')].find((b) => b.getAttribute('aria-label') === label) ?? null : null),
+      () => (idle() ? document.getElementById('view-usage-heading') : null), () => new Promise((r) => setTimeout(r, 100)));
+  };
   const [mapReturn, setMapReturn] = useState<number | null>(null);
   const [focusId, setFocusId] = useState<number | null>(null);
   const liveRows = useRef(liveSet.rows);
@@ -336,14 +357,15 @@ function App() {
             profiles: () => client.current?.usageAll().then((r) => r.profiles) ?? Promise.reject(new Error('no service connection')), api: mapApi.signIn,
             name: (a) => agents?.find((x) => x.agent === a)?.name ?? a, open: toIntegration, live: lastKnown === null }} />
           : area === 'map' ? <AgentMap api={mapApi} importResult={catalogImport} onImport={() => window.xaibo?.importCatalog?.()} agents={agents ?? []} lastKnown={lastKnown} tick={tick} onOpen={openFromMap}
-            saved={mapSaved.current} restoreId={mapReturn} onSave={(m) => { mapSaved.current = m; }} open={openIntegration} />
+            saved={mapSaved.current} restoreId={mapReturn} onSave={(m) => { mapSaved.current = m; }} open={openIntegration} onReturnDashboard={integrationReturn ? returnFromIntegration : undefined} />
           : area === 'dashboard'
           ? <Dashboard live={liveSet} liveFailed={liveFailed} liveRetry={liveRetry} onRetryLive={retryLive} lastKnown={lastKnown} agents={agents} banners={banners} api={api} tick={tick}
             onSetPath={(agent) => window.xaibo?.setAgentPath(agent)} onOpen={openSession} view={dashView} onView={(v) => { setLedgerRestore(null); setDashView(v); }} focusId={focusId}
-            onMonthSessions={openMonth} ledgerRestore={ledgerRestore} onOpenIntegration={toIntegration} />
+            onMonthSessions={openMonth} ledgerRestore={ledgerRestore} onOpenIntegration={(key, invoker) => toIntegration(key, invoker)} />
           : <Workspace list={list} changes={changes} browse={browseApi} agents={agents ?? []} live={{ rows: liveSet.rows, loaded: liveSet.loaded, failed: liveFailed, more: liveSet.more }} lastKnown={lastKnown !== null} api={workspaceApi} request={request} onRequestDone={clearRequest}
             returnFor={returnFor} onReturn={returnTo === 'Agent Map' ? returnToMap : returnToDashboard} returnTo={returnTo} onListOpen={clearReturn}
-            preset={preset} onReturnList={preset ? returnToLedger : null} />}
+            preset={preset} onReturnList={preset ? returnToLedger : null}
+            provisional={provisional} bound={bound} launch={launch} removeProvisional={(key) => client.current?.removeProvisional(key)} />}
       </main>
     </div>
   );

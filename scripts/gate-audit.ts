@@ -44,6 +44,7 @@ const gitBefore = gitStatus(REPO);
 const envFor = (data: string) => ({
   HOME: home, PATH: `${bin}:/usr/bin:/bin`, SHELL: shell, TMPDIR: path.join(root, 'tmp'), LANG: 'en_US.UTF-8',
   CLAUDE_CONFIG_DIR: path.join(home, '.claude'), CODEX_HOME: path.join(home, '.codex'), GEMINI_CLI_HOME: home, XAIBO_DATA_DIR: data,
+  XAIBO_E2E: '1', // XAIBO-PROD-611: the packaged build honours XAIBO_* variables only with this marker
 });
 const launchApp = (data: string, log: string) => spawn('/usr/bin/sandbox-exec', ['-f', PROFILE, BIN, '--no-sandbox', `--log-net-log=${log}`,
   '-ApplePersistenceIgnoreState', 'YES', '-NSQuitAlwaysKeepsWindows', 'NO'], { env: envFor(data), cwd: REPO, stdio: 'ignore' });

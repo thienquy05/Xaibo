@@ -23,7 +23,15 @@ export type ServiceCommand = { v: 1; type: 'quit' | 'wake' | 'port' | 'reloadPri
   | { v: 1; type: 'grantConfirm'; id: number; request: GrantRequest; binding: string }
   /** XAIBO-PROD-600 (P6-T12 slice 2): main's offer request and confirmation of a real-class apply (main only; correlated by id). */
   | { v: 1; type: 'applyOffer'; id: number; ask: ApplyAsk }
-  | { v: 1; type: 'applyConfirm'; id: number; ask: ApplyAsk; binding: string };
+  | { v: 1; type: 'applyConfirm'; id: number; ask: ApplyAsk; binding: string }
+  /** XAIBO-PROD-621 (P7-T04): main's launch flow asks for the launch info (main only; correlated by id). */
+  | { v: 1; type: 'launchInfo'; id: number }
+  /** XAIBO-PROD-622 (P7-T04, EC-85): main registers a provisional launch row (started, or failed with its reason). */
+  | { v: 1; type: 'provisional'; row: ProvisionalRow }
+  /** G7-3: main removes a row it registered for a launch that was then refused before Terminal opened. */
+  | { v: 1; type: 'removeProvisional'; key: string }
+  /** XAIBO-PROD-626 (P7-T05): main asks for one stored session's resume target (main only; correlated by id). */
+  | { v: 1; type: 'resumeTarget'; id: number; session: number };
 /** service -> main; notify (P3-T11, EC-59) carries only the agent display name, the approved project label (null until
  *  one exists, FR-10) and the wait state. */
 export type NotifyState = 'waiting-for-permission' | 'needs-input';
@@ -38,7 +46,142 @@ export type ServiceEvent =
   /** XAIBO-PROD-597: the reply to main's grantOffer or grantConfirm (never sent to a renderer port). */
   | { v: 1; type: 'grant'; id: number; result: GrantOfferResult | GrantConfirmResult }
   /** XAIBO-PROD-600: the reply to main's applyOffer or applyConfirm (never sent to a renderer port). */
-  | { v: 1; type: 'apply'; id: number; result: ApplyOfferResult | ApplyConfirmResult };
+  | { v: 1; type: 'apply'; id: number; result: ApplyOfferResult | ApplyConfirmResult }
+  /** XAIBO-PROD-621: the reply to main's launchInfo (never sent to a renderer port). */
+  | { v: 1; type: 'launchInfo'; id: number; agents: LaunchAgentInfo[] }
+  /** XAIBO-PROD-626: the reply to main's resumeTarget; null when the session is not stored (never sent to a renderer port). */
+  | { v: 1; type: 'resumeTarget'; id: number; target: ResumeTarget | null }
+  /** G7-3: the service registered (or updated) main's provisional row; main opens Terminal only after this. */
+  | { v: 1; type: 'provisionalAck'; key: string };
+/** XAIBO-PROD-621 (P7-T04, design §6.7): one catalog agent for main's launch flow. executable: as found (absolute), null when
+ *  not detected; names: the catalog's executable names; launch: the bundled template or the disabled reason. */
+export interface LaunchAgentInfo {
+  agent: string; name: string; version: string | null; executable: string | null; names: string[];
+  launch: { args: string[]; preallocatedId: boolean } | { disabled: string };
+  /** default (XAIBO-PROD-623): the agent's default profile; envKey (XAIBO-PROD-624): for a profile chosen by a login environment
+   *  variable, its name (the launch passes it through from Terminal's own environment). Other profiles cannot launch. */
+  profiles: { id: string; label: string; default: boolean; envKey: string | null }[];
+}
+const LAUNCH_AGENTS_MAX = 64;
+function parseLaunchAgent(x: unknown): LaunchAgentInfo | null {
+  if (!isObj(x) || !exactKeys(x, ['agent', 'name', 'version', 'executable', 'names', 'launch', 'profiles'])) return null;
+  const strs = (v: unknown, max: number, len = 256): v is string[] => Array.isArray(v) && v.length <= max && v.every((s) => text(s, len) && s !== '');
+  const l = x.launch;
+  const launch = isObj(l) && exactKeys(l, ['args', 'preallocatedId']) && Array.isArray(l.args) && l.args.length <= 8 && l.args.every((s) => text(s, 256)) && typeof l.preallocatedId === 'boolean'
+    ? { args: [...(l.args as string[])], preallocatedId: l.preallocatedId }
+    : isObj(l) && exactKeys(l, ['disabled']) && text(l.disabled, 256) && l.disabled !== '' ? { disabled: l.disabled } : null;
+  const profiles = Array.isArray(x.profiles) && x.profiles.length <= 64 ? x.profiles.map((p) => (isObj(p) && exactKeys(p, ['id', 'label', 'default', 'envKey']) && text(p.id, 64) && p.id !== '' && text(p.label, 4096) && typeof p.default === 'boolean'
+    && (p.envKey === null || (typeof p.envKey === 'string' && /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(p.envKey))) ? { id: p.id, label: p.label, default: p.default, envKey: p.envKey as string | null } : null)) : null;
+  const exeOk = x.executable === null || (text(x.executable, 4096) && x.executable.startsWith('/') && !x.executable.includes('\0'));
+  return text(x.agent, 32) && AGENT_ID.test(x.agent) && text(x.name, 128) && (x.version === null || text(x.version, 64)) && exeOk && strs(x.names, 8, 128) && launch && profiles && profiles.every((p) => p !== null)
+    ? { agent: x.agent, name: x.name, version: x.version as string | null, executable: x.executable as string | null, names: [...x.names], launch, profiles: profiles as LaunchAgentInfo['profiles'] } : null;
+}
+/** XAIBO-PROD-622 (P7-T04, EC-85; design §6.7): a provisional launch row until evidence binds it. key: main's UUID; cwd: the
+ *  launch directory (realpath); nativeId: the pre-allocated session id, null when the agent has none; startedAt: main's clock. */
+export interface ProvisionalRow {
+  key: string; agent: string; profileId: string; cwd: string; nativeId: string | null; startedAt: number;
+  state: 'starting' | 'failed'; reason: string | null;
+}
+const KEY_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const PROVISIONAL_MAX = 32;
+function parseProvisionalRow(x: unknown): ProvisionalRow | null {
+  if (!isObj(x) || !exactKeys(x, ['key', 'agent', 'profileId', 'cwd', 'nativeId', 'startedAt', 'state', 'reason'])) return null;
+  const ok = typeof x.key === 'string' && KEY_UUID.test(x.key) && text(x.agent, 32) && AGENT_ID.test(x.agent) && text(x.profileId, 64) && x.profileId !== ''
+    && text(x.cwd, 4096) && x.cwd.startsWith('/') && !x.cwd.includes('\0') && (x.nativeId === null || (typeof x.nativeId === 'string' && KEY_UUID.test(x.nativeId))) // 622 review: a pre-allocated id is a UUID
+    && Number.isFinite(x.startedAt) && (x.startedAt as number) > 0 && (x.state === 'starting' || x.state === 'failed') && (x.reason === null || (text(x.reason, 64) && x.reason !== ''));
+  return ok ? { key: x.key as string, agent: x.agent as string, profileId: x.profileId as string, cwd: x.cwd as string, nativeId: x.nativeId as string | null,
+    startedAt: x.startedAt as number, state: x.state as ProvisionalRow['state'], reason: x.reason as string | null } : null;
+}
+// XAIBO-PROD-623 (P7-T04, design §6.7): the renderer's launch asks to main (ipcMain.handle('launch'), our window only) and the
+// replies. The renderer never assembles a command: the preview's command text comes from main's launch layer (P7-T02).
+export type LaunchAsk = { op: 'options' } | { op: 'preview'; agent: string; profileId: string; cwd: string } | { op: 'launch'; previewId: string }
+  /** XAIBO-PROD-626 (P7-T05, P7-T09): Resume, Fork and Open in VS Code for one stored session (ids only). */
+  | { op: 'resumeOptions'; session: number } | { op: 'resumePreview'; session: number; mode: 'resume' | 'fork'; confirmed: boolean } | { op: 'vscode'; session: number };
+/** XAIBO-PROD-626: one stored session's resume target (service → main). Templates are whole tokens with {id}; a disabled one
+ *  carries its reason; vscode null = the handoff is verified for the detected version, else why not. */
+export type LiveTemplate = { args: string[] } | { disabled: string };
+export interface ResumeTarget {
+  agent: string; profileId: string; nativeId: string; cwd: string | null;
+  resume: LiveTemplate; fork: LiveTemplate; vscode: string | null; liveness: 'live' | 'uncertain' | 'not-live';
+}
+/** Each null = available; a string is the reason it is not. */
+export type ResumeOptionsReply = { status: 'ok'; resume: string | null; fork: string | null; vscode: string | null; liveness: ResumeTarget['liveness'] } | { status: 'refused'; code: LaunchRefusal };
+export type VsCodeReply = { status: 'opened' } | { status: 'failed' } | { status: 'refused'; code: LaunchRefusal };
+const LIVENESS = ['live', 'uncertain', 'not-live'] as const;
+function parseTemplate(x: unknown): LiveTemplate | null {
+  if (isObj(x) && exactKeys(x, ['args']) && Array.isArray(x.args) && x.args.length >= 1 && x.args.length <= 8 && x.args.every((t) => text(t, 256) && t !== '')) return { args: [...(x.args as string[])] };
+  return isObj(x) && exactKeys(x, ['disabled']) && text(x.disabled, 256) && x.disabled !== '' ? { disabled: x.disabled } : null;
+}
+function parseResumeTarget(x: unknown): ResumeTarget | null {
+  if (!isObj(x) || !exactKeys(x, ['agent', 'profileId', 'nativeId', 'cwd', 'resume', 'fork', 'vscode', 'liveness'])) return null;
+  const resume = parseTemplate(x.resume), fork = parseTemplate(x.fork);
+  return text(x.agent, 32) && AGENT_ID.test(x.agent) && text(x.profileId, 64) && x.profileId !== '' && text(x.nativeId, 128) && x.nativeId !== '' && !x.nativeId.includes('\0')
+    && (x.cwd === null || (text(x.cwd, 4096) && x.cwd.startsWith('/') && !x.cwd.includes('\0'))) && resume && fork && (x.vscode === null || (text(x.vscode, 256) && x.vscode !== ''))
+    && oneOf(LIVENESS, x.liveness)
+    ? { agent: x.agent, profileId: x.profileId, nativeId: x.nativeId, cwd: x.cwd as string | null, resume, fork, vscode: x.vscode as string | null, liveness: x.liveness } : null;
+}
+export function parseResumeOptionsReply(x: unknown): ResumeOptionsReply | null {
+  if (!isObj(x)) return null;
+  if (x.status === 'refused') return launchRefusal(x);
+  const reason = (v: unknown): v is string | null => v === null || (text(v, 256) && v !== '');
+  return x.status === 'ok' && exactKeys(x, ['status', 'resume', 'fork', 'vscode', 'liveness']) && reason(x.resume) && reason(x.fork) && reason(x.vscode) && oneOf(LIVENESS, x.liveness)
+    ? { status: 'ok', resume: x.resume, fork: x.fork, vscode: x.vscode, liveness: x.liveness } : null;
+}
+export function parseVsCodeReply(x: unknown): VsCodeReply | null {
+  if (!isObj(x)) return null;
+  if (x.status === 'opened' || x.status === 'failed') return exactKeys(x, ['status']) ? { status: x.status } : null;
+  return x.status === 'refused' ? launchRefusal(x) : null;
+}
+export const LAUNCH_REFUSALS = ['invalid', 'unavailable', 'busy', 'disabled', 'not-detected', 'profile', 'executable', 'interpreter', 'name', 'cwd', 'id',
+  'placeholder', 'text', 'env', 'expired', 'changed', 'grant', 'concurrent'] as const;
+export type LaunchRefusal = (typeof LAUNCH_REFUSALS)[number];
+export interface LaunchOption {
+  agent: string; name: string; version: string | null; disabled: string | null; preallocatedId: boolean;
+  profiles: { id: string; label: string; disabled: string | null }[];
+}
+export type LaunchOptionsReply = { status: 'ok'; agents: LaunchOption[] } | { status: 'refused'; code: LaunchRefusal };
+export type LaunchPreviewReply = { status: 'ok'; previewId: string; command: string; cwd: string; env: string[] } | { status: 'refused'; code: LaunchRefusal };
+export type LaunchReply = { status: 'started'; key: string } | { status: 'failed'; key: string; reason: 'write' | 'open' } | { status: 'cancelled' } | { status: 'refused'; code: LaunchRefusal };
+export function parseLaunchAsk(x: unknown): LaunchAsk | null {
+  if (!isObj(x)) return null;
+  if (x.op === 'options') return exactKeys(x, ['op']) ? { op: 'options' } : null;
+  if (x.op === 'preview') return exactKeys(x, ['op', 'agent', 'profileId', 'cwd']) && text(x.agent, 32) && AGENT_ID.test(x.agent) && text(x.profileId, 64) && x.profileId !== '' && absPath(x.cwd)
+    ? { op: 'preview', agent: x.agent, profileId: x.profileId, cwd: x.cwd } : null;
+  if (x.op === 'launch') return exactKeys(x, ['op', 'previewId']) && typeof x.previewId === 'string' && KEY_UUID.test(x.previewId) ? { op: 'launch', previewId: x.previewId } : null;
+  const session = count(x.session) && (x.session as number) > 0 ? x.session as number : null;
+  if (x.op === 'resumeOptions' || x.op === 'vscode') return exactKeys(x, ['op', 'session']) && session !== null ? { op: x.op, session } : null;
+  if (x.op === 'resumePreview') return exactKeys(x, ['op', 'session', 'mode', 'confirmed']) && session !== null && (x.mode === 'resume' || x.mode === 'fork') && typeof x.confirmed === 'boolean'
+    ? { op: 'resumePreview', session, mode: x.mode, confirmed: x.confirmed } : null;
+  return null;
+}
+const launchRefusal = (x: Msg): { status: 'refused'; code: LaunchRefusal } | null => (exactKeys(x, ['status', 'code']) && oneOf(LAUNCH_REFUSALS, x.code) ? { status: 'refused', code: x.code } : null);
+export function parseLaunchReply(x: unknown): LaunchReply | null {
+  if (!isObj(x)) return null;
+  if (x.status === 'started') return exactKeys(x, ['status', 'key']) && typeof x.key === 'string' && KEY_UUID.test(x.key) ? { status: 'started', key: x.key } : null;
+  if (x.status === 'failed') return exactKeys(x, ['status', 'key', 'reason']) && typeof x.key === 'string' && KEY_UUID.test(x.key) && (x.reason === 'write' || x.reason === 'open') ? { status: 'failed', key: x.key, reason: x.reason } : null;
+  if (x.status === 'cancelled') return exactKeys(x, ['status']) ? { status: 'cancelled' } : null;
+  return x.status === 'refused' ? launchRefusal(x) : null;
+}
+export function parseLaunchPreviewReply(x: unknown): LaunchPreviewReply | null {
+  if (!isObj(x)) return null;
+  if (x.status === 'refused') return launchRefusal(x);
+  return x.status === 'ok' && exactKeys(x, ['status', 'previewId', 'command', 'cwd', 'env']) && typeof x.previewId === 'string' && KEY_UUID.test(x.previewId) && text(x.command, 64 * 1024)
+    && absPath(x.cwd) && Array.isArray(x.env) && x.env.length <= 64 && x.env.every((k) => typeof k === 'string' && /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(k))
+    ? { status: 'ok', previewId: x.previewId, command: x.command, cwd: x.cwd, env: [...(x.env as string[])] } : null;
+}
+export function parseLaunchOptionsReply(x: unknown): LaunchOptionsReply | null {
+  if (!isObj(x)) return null;
+  if (x.status === 'refused') return launchRefusal(x);
+  if (x.status !== 'ok' || !exactKeys(x, ['status', 'agents']) || !Array.isArray(x.agents) || x.agents.length > LAUNCH_AGENTS_MAX) return null;
+  const reason = (v: unknown): v is string | null => v === null || (text(v, 256) && v !== '');
+  const agents = x.agents.map((a): LaunchOption | null => {
+    if (!isObj(a) || !exactKeys(a, ['agent', 'name', 'version', 'disabled', 'preallocatedId', 'profiles']) || !Array.isArray(a.profiles) || a.profiles.length > 64) return null;
+    const profiles = a.profiles.map((p) => (isObj(p) && exactKeys(p, ['id', 'label', 'disabled']) && text(p.id, 64) && p.id !== '' && text(p.label, 4096) && reason(p.disabled) ? { id: p.id, label: p.label, disabled: p.disabled } : null));
+    return text(a.agent, 32) && AGENT_ID.test(a.agent) && text(a.name, 128) && (a.version === null || text(a.version, 64)) && reason(a.disabled) && typeof a.preallocatedId === 'boolean' && profiles.every((p) => p !== null)
+      ? { agent: a.agent, name: a.name, version: a.version as string | null, disabled: a.disabled, preallocatedId: a.preallocatedId, profiles: profiles as LaunchOption['profiles'] } : null;
+  });
+  return agents.every((a) => a !== null) ? { status: 'ok', agents: agents as LaunchOption[] } : null;
+}
 export type HealthState = 'starting' | 'running' | 'restarting' | 'stopped';
 /** main -> renderer; attempt counts consecutive restarts (0 unless restarting). */
 export interface Health { v: 1; type: 'health'; state: HealthState; attempt: number; readOnly: ReadOnlyReason | null }
@@ -80,6 +223,10 @@ export function parseServiceCommand(x: unknown): ServiceCommand | null {
     if (m.type === 'applyOffer') return exactKeys(m, ['v', 'type', 'id', 'ask']) ? { v: 1, type: 'applyOffer', id: m.id, ask } : null;
     return exactKeys(m, ['v', 'type', 'id', 'ask', 'binding']) && typeof m.binding === 'string' && BINDING.test(m.binding) ? { v: 1, type: 'applyConfirm', id: m.id, ask, binding: m.binding } : null;
   }
+  if (m.type === 'launchInfo') return exactKeys(m, ['v', 'type', 'id']) && count(m.id) ? { v: 1, type: 'launchInfo', id: m.id } : null;
+  if (m.type === 'resumeTarget') return exactKeys(m, ['v', 'type', 'id', 'session']) && count(m.id) && count(m.session) && (m.session as number) > 0 ? { v: 1, type: 'resumeTarget', id: m.id, session: m.session as number } : null;
+  if (m.type === 'provisional') { const row = parseProvisionalRow(m.row); return exactKeys(m, ['v', 'type', 'row']) && row ? { v: 1, type: 'provisional', row } : null; }
+  if (m.type === 'removeProvisional') return exactKeys(m, ['v', 'type', 'key']) && typeof m.key === 'string' && KEY_UUID.test(m.key) ? { v: 1, type: 'removeProvisional', key: m.key } : null;
   if (m.type === 'importCatalog') return text(m.path, 4096) && m.path.startsWith('/') && !m.path.includes('\0') ? { v: 1, type: 'importCatalog', path: m.path } : null;
   if (m.type !== 'setPath' || !text(m.agent) || !AGENT_ID.test(m.agent)) return null;
   if (!text(m.path, 4096) || !m.path.startsWith('/') || m.path.includes('\0')) return null;
@@ -99,6 +246,15 @@ export function parseServiceEvent(x: unknown): ServiceEvent | null {
   if (m?.type === 'apply') {
     const result = parseApplyResult(m.result);
     return exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) && result ? { v: 1, type: 'apply', id: m.id, result } : null;
+  }
+  if (m?.type === 'provisionalAck') return exactKeys(m, ['v', 'type', 'key']) && typeof m.key === 'string' && KEY_UUID.test(m.key) ? { v: 1, type: 'provisionalAck', key: m.key } : null;
+  if (m?.type === 'resumeTarget') {
+    const target = m.target === null ? null : parseResumeTarget(m.target);
+    return exactKeys(m, ['v', 'type', 'id', 'target']) && count(m.id) && (m.target === null || target) ? { v: 1, type: 'resumeTarget', id: m.id, target } : null;
+  }
+  if (m?.type === 'launchInfo') {
+    const agents = Array.isArray(m.agents) && m.agents.length <= LAUNCH_AGENTS_MAX ? m.agents.map(parseLaunchAgent) : null;
+    return exactKeys(m, ['v', 'type', 'id', 'agents']) && count(m.id) && agents && agents.every((a) => a !== null) ? { v: 1, type: 'launchInfo', id: m.id, agents: agents as LaunchAgentInfo[] } : null;
   }
   if (m?.type === 'metrics') { // every known key, a safe non-negative integer; anything else is dropped (never content)
     const raw = m.metrics;
@@ -356,13 +512,13 @@ export const CLEAR_USAGE_RESULTS = ['cleared', 'read-only', 'failed'] as const;
 /** XAIBO-PROD-595: a catalog import's outcome, broadcast to the windows: the agent id, or fixed codes and pointers only. */
 export type CatalogImportResult = { status: 'imported'; agent: string } | { status: 'rejected'; issues: { code: string; at: string }[] };
 /** XAIBO-PROD-590 (P6-T08 slice A, EC-79): a rescan's answer; retryAfterMs (rate-limited only) is at most a minute. */
-export const RESCAN_CODES = ['starting', 'read-only', 'rate-limited', 'unavailable', 'failed'] as const;
+const RESCAN_CODES = ['starting', 'read-only', 'rate-limited', 'unavailable', 'failed'] as const;
 export type RescanResult = { status: 'ready' } | { status: 'refused'; code: (typeof RESCAN_CODES)[number]; retryAfterMs?: number };
 export type ClearUsageResult = (typeof CLEAR_USAGE_RESULTS)[number];
 /** XAIBO-PROD-558 (P6-T03 part 1b; design review L1/L2): Connect replies, bounded; never an op, a plan or a foreign value
  *  (diff lines carry Xaibo's values and a replaced value's type + 12-hex hash only). An over-bound reply is refused by the
  *  service (too-large), never truncated. */
-export const CONNECT_TYPES = ['connectPreview', 'connectApply', 'teePreview'] as const; // XAIBO-PROD-580: a tee-on preview is a Connect preview
+const CONNECT_TYPES = ['connectPreview', 'connectApply', 'teePreview'] as const; // XAIBO-PROD-580: a tee-on preview is a Connect preview
 export const CONNECT_ROUTES = ['claude-plugin', 'claude-settings-fallback', 'claude-retention', 'claude-tee', 'codex-hooks', 'agy-hooks', 'report-setup'] as const;
 export type ConnectRoute = (typeof CONNECT_ROUTES)[number];
 export const CONNECT_LIMITS = { steps: 3, diff: 64, value: 16_384, text: 8_192, trust: 8, entries: 8, list: 256 } as const;
@@ -388,13 +544,16 @@ export type ConnectReply = ConnectPreview | ConnectRefused | { status: 'applied'
  *  and its reconcile state (reason: why it is unreadable, e.g. refused for a target outside the writable roots); no path or
  *  value. At most REMOVAL_LIMIT items, the core's own cap. */
 export const RECONCILE_STATES = ['connected', 'disconnected-externally', 'drifted', 'pending-recovery', 'unreadable'] as const;
-export const LEFTOVERS = ['manifest-entry', 'backup', 'plugin-copy', 'marketplace'] as const;
+const LEFTOVERS = ['manifest-entry', 'backup', 'plugin-copy', 'marketplace'] as const;
 export const REMOVAL_LIMIT = 256;
 export interface RemovalItem { entry: string; route: ConnectRoute; profileId: string | null; state: (typeof RECONCILE_STATES)[number]; reason: string | null }
 export type RemovalPreview = { status: 'preview'; previewId: string; profileId: string | null; ttlMs: number; items: RemovalItem[] };
 export type RemovalReply = RemovalPreview | ConnectRefused | { status: 'needs-preview'; preview: RemovalPreview | ConnectRefused } | ConnectOutcome;
 export type CleanupReply = { status: 'preview'; previewId: string; ttlMs: number; items: { entry: string; cleanup: (typeof LEFTOVERS)[number][] }[] }
   | { status: 'cleaned'; removed: string[]; left: string[] } | { status: 'needs-preview' } | { status: 'partial'; removed: string[]; left: string[]; code: string } | ConnectRefused;
+/** XAIBO-PROD-613: the lock-clear preview (an opaque id) and the confirmed clear's own reply. */
+export type LockClearPreviewReply = { status: 'preview'; previewId: string; ttlMs: number } | ConnectRefused;
+export type LockClearReply = { status: 'cleared' } | ConnectRefused;
 export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Cursor | null; limit: number }
   /** P5-T17a: the ledger page of at most `limit` (1..12) observed months ending at `end` (null = the latest). */
   | { v: 1; type: 'monthly'; id: number; filter: LedgerFilter; end: string | null; limit: number }
@@ -449,11 +608,16 @@ export type PortRequest = { v: 1; type: 'listSessions'; id: number; cursor: Curs
   /** XAIBO-PROD-580 (P6-T10 unit 6a, R6): the separate tee, by profile id: on is a tee-only Connect preview (connectApply), off the
    *  removal preview of the profile's tee entry alone (removalApply). */
   | { v: 1; type: 'teePreview'; id: number; profileId: string }
-  | { v: 1; type: 'teeRemovalPreview'; id: number; profileId: string };
+  | { v: 1; type: 'teeRemovalPreview'; id: number; profileId: string }
+  /** XAIBO-PROD-613: a preview of clearing the stale operation lock (nothing else is sent; main alone confirms kind lock-clear). */
+  | { v: 1; type: 'lockClearPreview'; id: number }
+  /** XAIBO-PROD-622: Remove provisional row (no reply: the provisional push follows). */
+  | { v: 1; type: 'removeProvisional'; key: string };
 export type PortMessage =
   | { v: 1; type: (typeof CONNECT_TYPES)[number]; id: number; result: ConnectReply }
   | { v: 1; type: 'removalPreview' | 'removalApply' | 'teeRemovalPreview'; id: number; result: RemovalReply }
   | { v: 1; type: 'cleanupPreview' | 'cleanupApply'; id: number; result: CleanupReply }
+  | { v: 1; type: 'lockClearPreview'; id: number; result: LockClearPreviewReply }
   // P5-T17a: failed = the store could not answer (the renderer offers Retry), never an empty ledger
   | ({ v: 1; type: 'monthly'; id: number; failed?: true } & LedgerPage)
   | { v: 1; type: 'clearUsage'; id: number; result: ClearUsageResult }
@@ -500,7 +664,9 @@ export type PortMessage =
   // P4-T10c1: too many sessions changed in one window for a delta; reload the list and live set by cursor
   | { v: 1; type: 'resync' }
   | { v: 1; type: 'agents'; agents: AgentStatus[] | null } // null while detection runs
-  | { v: 1; type: 'coverage'; banners: Banner[] };
+  | { v: 1; type: 'coverage'; banners: Banner[] }
+  /** XAIBO-PROD-622: the provisional launch rows (on connect and each change); bound: rows evidence just replaced, once. */
+  | { v: 1; type: 'provisional'; rows: ProvisionalRow[]; bound: { key: string; session: number }[] };
 
 function parseCursor(x: unknown): Cursor | null | undefined { // undefined = invalid
   if (x === null) return null;
@@ -974,6 +1140,7 @@ export function parsePortRequest(x: unknown): PortRequest | null {
   if (m?.type === 'removalPreview') return exactKeys(m, ['v', 'type', 'id', 'profileId']) && count(m.id) && (m.profileId === null || uuid(m.profileId)) ? { v: 1, type: 'removalPreview', id: m.id, profileId: m.profileId } : null;
   if (m?.type === 'cleanupPreview') return exactKeys(m, ['v', 'type', 'id', 'profileId']) && count(m.id) && uuid(m.profileId) ? { v: 1, type: 'cleanupPreview', id: m.id, profileId: m.profileId } : null;
   if (m?.type === 'teePreview' || m?.type === 'teeRemovalPreview') return exactKeys(m, ['v', 'type', 'id', 'profileId']) && count(m.id) && uuid(m.profileId) ? { v: 1, type: m.type, id: m.id, profileId: m.profileId } : null;
+  if (m?.type === 'lockClearPreview') return exactKeys(m, ['v', 'type', 'id']) && count(m.id) ? { v: 1, type: 'lockClearPreview', id: m.id } : null;
   if (m?.type === 'removalApply' || m?.type === 'cleanupApply') return exactKeys(m, ['v', 'type', 'id', 'previewId']) && count(m.id) && uuid(m.previewId) ? { v: 1, type: m.type, id: m.id, previewId: m.previewId } : null;
   if (m?.type === 'history') {
     const filter = parseFilter(m.filter), cursor = parseHistoryKey(m.cursor);
@@ -1021,6 +1188,7 @@ export function parsePortRequest(x: unknown): PortRequest | null {
   }
   if (m?.type === 'clearUsage') return count(m.id) ? { v: 1, type: 'clearUsage', id: m.id } : null;
   if (m?.type === 'agentRescan') return exactKeys(m, ['v', 'type', 'id']) && count(m.id) ? { v: 1, type: 'agentRescan', id: m.id } : null;
+  if (m?.type === 'removeProvisional') return exactKeys(m, ['v', 'type', 'key']) && typeof m.key === 'string' && KEY_UUID.test(m.key) ? { v: 1, type: 'removeProvisional', key: m.key } : null;
   if (m?.type === 'grantRevoke') {
     const target = parseRevokeTarget(m.target);
     return exactKeys(m, ['v', 'type', 'id', 'agent', 'target']) && count(m.id) && refId(m.agent) && target ? { v: 1, type: 'grantRevoke', id: m.id, agent: m.agent, target } : null;
@@ -1079,6 +1247,10 @@ export function parsePortMessage(x: unknown): PortMessage | null {
   if (m.type === 'removalPreview' || m.type === 'removalApply' || m.type === 'teeRemovalPreview') {
     const result = parseRemovalReply(m.type, m.result);
     return exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) && result ? { v: 1, type: m.type, id: m.id, result } : null;
+  }
+  if (m.type === 'lockClearPreview') {
+    const r = m.result, result = refusal(r) ? r as ConnectRefused : exactKeys(r, ['status', 'previewId', 'ttlMs']) && r.status === 'preview' && uuid(r.previewId) && count(r.ttlMs) ? { status: 'preview' as const, previewId: r.previewId, ttlMs: r.ttlMs } : null;
+    return exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) && result ? { v: 1, type: 'lockClearPreview', id: m.id, result } : null;
   }
   if (m.type === 'cleanupPreview' || m.type === 'cleanupApply') {
     const result = parseCleanupReply(m.type, m.result);
@@ -1242,6 +1414,12 @@ export function parsePortMessage(x: unknown): PortMessage | null {
     const banners = m.banners.map(parseBanner);
     return banners.every((b) => b !== null) ? { v: 1, type: 'coverage', banners: banners as Banner[] } : null;
   }
+  if (m.type === 'provisional') {
+    const rows = Array.isArray(m.rows) && m.rows.length <= PROVISIONAL_MAX ? m.rows.map(parseProvisionalRow) : null;
+    const bound = Array.isArray(m.bound) && m.bound.length <= PROVISIONAL_MAX ? m.bound.map((b) => (isObj(b) && exactKeys(b, ['key', 'session']) && typeof b.key === 'string' && KEY_UUID.test(b.key) && count(b.session) && (b.session as number) > 0 ? { key: b.key, session: b.session as number } : null)) : null;
+    return exactKeys(m, ['v', 'type', 'rows', 'bound']) && rows && rows.every((r) => r !== null) && bound && bound.every((b) => b !== null)
+      ? { v: 1, type: 'provisional', rows: rows as ProvisionalRow[], bound: bound as { key: string; session: number }[] } : null;
+  }
   if (m.type === 'agents') {
     if (m.agents === null) return { v: 1, type: 'agents', agents: null };
     if (!Array.isArray(m.agents)) return null;
@@ -1340,7 +1518,7 @@ export const SIGN_IN_METHODS = ['subscription', 'api-key', 'cloud-provider', 'ga
 export type SignInMethod = (typeof SIGN_IN_METHODS)[number];
 const SIGN_IN_KNOWN = SIGN_IN_METHODS.filter((m) => m !== 'unknown');
 const SIGN_IN_SOURCES = ['claude-statusline', 'claude-transcript', 'codex-rollout', 'agy-transcript'] as const;
-export const SIGN_IN_CODES = ['ok', 'stale', 'profile-not-found', 'limit', 'read-only', 'unavailable', 'failed'] as const;
+const SIGN_IN_CODES = ['ok', 'stale', 'profile-not-found', 'limit', 'read-only', 'unavailable', 'failed'] as const;
 export type SignInReplyCode = (typeof SIGN_IN_CODES)[number];
 export type SignInRequest = { v: 1; type: 'signIn'; id: number; profileId: string } & (
   | { op: 'read' }
@@ -1399,7 +1577,7 @@ export const INTEGRATION_STATES = ['detected', 'setup-required', 'awaiting-trust
 export const INTEGRATION_FACTS = ['no-executable', 'probe-not-granted', 'probe-grant-stale', 'version-unknown', 'version-unqualified', 'no-profile', 'not-connected',
   'evidence-unavailable', 'drifted', 'disconnected-externally', 'pending-recovery', 'unreadable', 'hooks-blocked', 'no-receipt', 'waiting-for-receipt', 'hook-gap',
   'content-unavailable'] as const;
-export const CONTENT_MODES = ['native-transcript', 'report-full', 'report-state-only', 'unavailable'] as const;
+const CONTENT_MODES = ['native-transcript', 'report-full', 'report-state-only', 'unavailable'] as const;
 export const INTEGRATION_REFUSALS = ['starting', 'unavailable', 'stale-cursor', 'too-large', 'failed'] as const;
 export const INTEGRATION_PAGE_MAX = 10;
 export type IntegrationState = (typeof INTEGRATION_STATES)[number];
@@ -1494,7 +1672,7 @@ export interface GrantOffer {
 export type GrantOfferResult = { status: 'offer'; offer: GrantOffer } | { status: 'refused'; code: GrantRefusal };
 export type GrantConfirmResult = { status: 'granted' } | { status: 'refused'; code: (typeof CONFIRM_REFUSALS)[number] };
 export type RevokeTarget = { kind: 'root' | 'probe'; id: string } | { kind: 'setup' };
-export const REVOKE_RESULTS = ['revoked', 'unchanged', 'not-found', 'unavailable'] as const;
+const REVOKE_RESULTS = ['revoked', 'unchanged', 'not-found', 'unavailable'] as const;
 export type RevokeResult = (typeof REVOKE_RESULTS)[number];
 /** Grant state for the integration detail, one state per declared item; no paths, digests or argv. */
 export interface GrantState {
@@ -1503,7 +1681,7 @@ export interface GrantState {
   setup: { root: string; state: 'granted' | 'stale' | 'none' } | null;
 }
 export type GrantAsk = { action: 'root'; agent: string; root: string } | { action: 'probe'; agent: string; binary: string } | { action: 'setup'; agent: string };
-export const GRANT_CODES = ['not-found', 'root-unavailable', 'root-not-approved', 'executable-invalid', 'stale', 'busy', 'unavailable', 'failed', 'invalid', 'oversize', 'unknown'] as const;
+const GRANT_CODES = ['not-found', 'root-unavailable', 'root-not-approved', 'executable-invalid', 'stale', 'busy', 'unavailable', 'failed', 'invalid', 'oversize', 'unknown'] as const;
 /** unknown: the confirm was sent but no reply came in time (the grant may have been written: reread, never retry). */
 export type GrantOutcome = { status: 'granted' } | { status: 'cancelled' } | { status: 'refused'; code: (typeof GRANT_CODES)[number] };
 const REFUSED_CODES = [...OFFER_REFUSALS, ...CONFIRM_REFUSALS] as const;
@@ -1543,17 +1721,17 @@ function parseGrantResult(r: unknown): GrantOfferResult | GrantConfirmResult | n
 // of a real-class apply. The renderer asks main with a kind and a preview id only (ApplyAsk, invoke 'confirm-apply'); main alone
 // sends applyOffer/applyConfirm (the renderer port has neither); the offer's items are labelled from a closed set and carry
 // values main quotes; a confirmed apply answers with the request's own reply shape, through its own bound check.
-export const APPLY_KINDS = ['connect', 'removal', 'cleanup'] as const;
+const APPLY_KINDS = ['connect', 'removal', 'cleanup', 'lock-clear'] as const; // XAIBO-PROD-613: lock-clear
 export type ApplyKind = (typeof APPLY_KINDS)[number];
 export interface ApplyAsk { kind: ApplyKind; previewId: string }
-export const APPLY_LABELS = ['agent', 'profile', 'folder', 'scope', 'file', 'change', 'value', 'retention', 'tee', 'helper', 'entries', 'real-entries', 'records', 'backups', 'manual'] as const;
+const APPLY_LABELS = ['agent', 'profile', 'folder', 'scope', 'file', 'change', 'value', 'retention', 'tee', 'helper', 'entries', 'real-entries', 'records', 'backups', 'manual'] as const;
 export type ApplyLabel = (typeof APPLY_LABELS)[number];
 export const APPLY_ITEMS = 64;
 export interface ApplyOffer { kind: ApplyKind; previewId: string; items: [ApplyLabel, string][]; binding: string }
 /** unknown: the confirm was sent but no reply came (the apply may have run: reread, never retry). */
-export const APPLY_REFUSALS = ['not-real', 'preview-invalid', 'preview-expired', 'stale', 'oversize', 'bounds-unavailable', 'unavailable', 'starting', 'read-only', 'busy', 'failed', 'unknown', 'invalid'] as const;
+const APPLY_REFUSALS = ['not-real', 'preview-invalid', 'preview-expired', 'stale', 'oversize', 'bounds-unavailable', 'unavailable', 'starting', 'read-only', 'busy', 'stale-lock', 'lock-unknown', 'lock-changed', 'lock-free', 'lock-manual', 'failed', 'unknown', 'invalid'] as const;
 export type ApplyRefusal = { status: 'refused'; code: (typeof APPLY_REFUSALS)[number] };
-export type ApplyReply = ConnectReply | RemovalReply | CleanupReply;
+export type ApplyReply = ConnectReply | RemovalReply | CleanupReply | LockClearReply;
 export type ApplyOfferResult = { status: 'offer'; offer: ApplyOffer } | ApplyRefusal;
 export type ApplyConfirmResult = { status: 'done'; kind: ApplyKind; reply: ApplyReply } | ApplyRefusal;
 export type ApplyOutcome = { status: 'cancelled' } | ApplyConfirmResult;
@@ -1563,8 +1741,9 @@ export function parseApplyAsk(x: unknown): ApplyAsk | null {
   return exactKeys(x, ['kind', 'previewId']) && oneOf(APPLY_KINDS, x.kind) && uuid(x.previewId) ? { kind: x.kind, previewId: x.previewId } : null;
 }
 const applyReply = (kind: ApplyKind, r: unknown): ApplyReply | null =>
-  (kind === 'connect' ? parseConnectReply(r) : kind === 'removal' ? parseRemovalReply('removalApply', r) : parseCleanupReply('cleanupApply', r));
-export function parseApplyResult(x: unknown): ApplyOfferResult | ApplyConfirmResult | null {
+  (kind === 'connect' ? parseConnectReply(r) : kind === 'removal' ? parseRemovalReply('removalApply', r) : kind === 'cleanup' ? parseCleanupReply('cleanupApply', r)
+    : refusal(r) ? r as ConnectRefused : exactKeys(r, ['status']) && r.status === 'cleared' ? { status: 'cleared' } : null);
+function parseApplyResult(x: unknown): ApplyOfferResult | ApplyConfirmResult | null {
   if (exactKeys(x, ['status', 'code']) && x.status === 'refused') return oneOf(APPLY_REFUSALS, x.code) ? { status: 'refused', code: x.code } : null;
   if (exactKeys(x, ['status', 'kind', 'reply']) && x.status === 'done' && oneOf(APPLY_KINDS, x.kind)) {
     const reply = applyReply(x.kind, x.reply);

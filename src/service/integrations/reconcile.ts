@@ -22,7 +22,7 @@ export type Leftover = 'manifest-entry' | 'backup' | 'plugin-copy' | 'marketplac
 export interface Reconciled {
   entry: string; route: Route; profileId: string | null; state: ReconcileState; reason?: string; cleanup: Leftover[]; manual: Leftover[];
 }
-export type ReconcileReport = { status: 'ready'; entries: Reconciled[] } | { status: 'blocked'; code: 'busy' | 'stale-lock' | 'bounds-unavailable' | 'manifest' };
+export type ReconcileReport = { status: 'ready'; entries: Reconciled[] } | { status: 'blocked'; code: 'busy' | 'stale-lock' | 'lock-unknown' | 'bounds-unavailable' | 'manifest' };
 export interface Target { dir: string; file: string; routes: Route[] }
 
 /** Any Xaibo hook shim for `agent`, whatever its quoting (moved from connect.ts). */

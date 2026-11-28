@@ -11,7 +11,7 @@ import { VirtualList } from '../components/VirtualList.tsx';
 import { formatTime } from '../model.ts';
 import { Icon } from '../status/StatusBadge.tsx';
 import { visible } from '../text.ts';
-import { AGENTS_PAGE, agentItems, agentKey, agentLabel, profileName, contentText, pageReply, pageRequest, refreshWindow, reasonsText, receiptText, REFUSAL_TEXT, STATE, stateText, type AgentLevel } from './integrations-state.ts';
+import { AGENTS_PAGE, agentItems, agentKey, agentLabel, profileName, contentText, pageReply, pageRequest, refreshTracker, refreshWindow, reasonsText, receiptText, REFUSAL_TEXT, STATE, stateText, type AgentLevel } from './integrations-state.ts';
 import { emptyLevel, pageFailed, resumeLevel, type Dir } from './tree.ts';
 
 export type PageFetch = (cursor: IntegrationKey | null, limit: number) => Promise<IntegrationPageResult>;
@@ -37,6 +37,7 @@ export function AgentsList({ fetchPage, lastKnown, store, onOpen, focusTo = null
   useEffect(() => () => { if (retry.current) clearTimeout(retry.current); }, []);
   const seq = useRef(0); // the latest request: an older reply is dropped
   const queued = useRef(false); // Gate 6 G6D1-2: a refresh asked for while a page loads
+  const refreshes = useRef(refreshTracker()); // XAIBO-PROD-609: a page request started during a refresh queues it again
   const [announce, setAnnounce] = useState('');
   const say = (t: string) => setAnnounce((a) => (a === t ? `${t} ` : t));
   const prevFocused = useRef(false);
@@ -52,6 +53,7 @@ export function AgentsList({ fetchPage, lastKnown, store, onOpen, focusTo = null
   const load = (dir: Dir) => {
     const l = sRef.current.level;
     if (dir !== 'first' && l.loading) return;
+    if (refreshes.current.preempts(seq.current)) queued.current = true; // before the token moves on: it compares the current one
     const req = pageRequest(l, dir), token = ++seq.current;
     setS((x) => ({ ...x, level: { ...x.level, loading: dir, failed: null } }));
     fetchPage(req.cursor, req.limit).then((r) => {
@@ -76,12 +78,14 @@ export function AgentsList({ fetchPage, lastKnown, store, onOpen, focusTo = null
     if (l.loading) { queued.current = true; return; } // Gate 6 G6D1-2: run once the page settles
     if (!l.pages.length) { load('first'); return; }
     const token = ++seq.current;
+    refreshes.current.start(token);
     // Gate 6 G6D1-1: the window again in sequence from fresh cursors (refreshWindow), never each page from its old cursor
     refreshWindow(l, fetchPage).then((out) => {
       if (seq.current !== token) return;
+      refreshes.current.settled(token);
       if (!out) { load('first'); return; }
       setS((x) => ({ ...x, level: { ...out.level, loading: x.level.loading, failed: x.level.failed }, observedAt: Math.max(x.observedAt ?? 0, out.observedAt) }));
-    }, () => undefined);
+    }, () => { refreshes.current.settled(token); });
   };
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;

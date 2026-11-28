@@ -2131,42 +2131,42 @@ See §6: Q-5.1..Q-5.11.
 ### MVP Gate checklist
 
 *Gate 7 rows*
-- [ ] EC-20 (U + E), EC-67 (S7), EC-76 (U + E), EC-84 (U + I), EC-85 (E + P) pass.
-- [ ] M11 complete: launch portion (p95 ≤300 ms) reported with the Gate 3 ingestion portion (p95 ≤300 ms); external process start → first signal reported separately.
-- [ ] US-8 verified live once by the owner.
+- [x] EC-20 (U + E), EC-67 (S7), EC-76 (U + E), EC-84 (U + I), EC-85 (E + P) pass. *Step 0 (working tree, 2026-11-27): `npm test` 2173/2174, `test:electron` 808/809 (failures are the accepted load-sensitive timing tests), E2E 96/96. EC-20 `resume-liveness`, `resume-target`, E2E `resume`; EC-67 `resume-target` (Desktop-origin Claude stays view-only with its reason: S7 not re-run on 2.1.332, so the EC fallback applies); EC-76 `command`, `flow`, `ownership`, E2E `launch`; EC-84 unit and integration `grants`, `flow`; EC-85 `provisional`, `flow`, E2E `launch`, perf `m11-launch`. RED in runs 249-264. Gate review of `608f440`: the OQ-P7-3 pending-resume lock was not wired, a liveness change after preview skipped the warning, binding could miss or pick the first of two sessions; fixed in `8075cc9` and `d547ec1` (G7-1..G7-4, G7R-1; runs 265-267), E2E `resume` Gate 7 test; the G7-4 limit (a second session stored after the first bound) accepted by the owner (D-P7-11). Final run on the gate SHA in `gates/gate7.md`.*
+- [x] M11 complete: launch portion (p95 ≤300 ms) reported with the Gate 3 ingestion portion (p95 ≤300 ms); external process start → first signal reported separately. *Launch portion p95 62.2 ms (`m11-launch`, 20 runs, spawn stubbed); ingestion portion: SessionStart hook → row passes in T0 `live` (file-only miss accepted, D-P3-19); external process start → first signal: unavailable without a live agent (owner US-8, deferred, D-P7-10).*
+- [ ] US-8 verified live once by the owner. *Open: the owner deferred US-8 to the production stage (2026-11-27, D-P7-10); the MVP Gate owner stop decides.*
 
 *PRD §9.3 acceptance checklist*
-- [ ] All MVP §9.2 rows pass or have owner-approved waivers, re-confirmed by gate — Gate 1: EC-01, 03, 04, 08, 13, 14, 15, 16, 18, 19, 33, 35, 38, 39, 45, 47, 55, 60, 61, 62; Gate 2: EC-05, 06, 07, 10, 50, 51, 53, 54, 74, 80, 81, 93, 94, 95, 96, 101; Gate 3: EC-02, 09, 11, 12, 25, 28, 32, 40, 41, 42, 43, 44, 46, 48, 49, 52, 59, 63, 64, 70, 82, 83, 91, 92; Gate 4: EC-56, 57, 86, 97, 100, 102; Gate 5: EC-21, 22, 23, 24, 58, 66, 71, 87, 99, 103, 104, 105; Gate 6: EC-26, 27, 72, 73, 78, 79, 90; Gate 7: EC-20, 67, 76, 84, 85.
-- [ ] Added MVP rows: EC-106..108 at Gate 5 and EC-109..110 at Gate 6 pass or have owner-approved waivers. EC-57/87 and plan-scale M13/M14 in the preceding checklist remain deferred to owner-started scale-up (§1a), not MVP acceptance.
-- [ ] All shipped §1.5 metrics measured and reported incl. M11–M16 (M10 when MCP ships); misses need explicit owner acceptance; unrun tests are not passes.
-- [ ] Add agent and custom reporter, Gemini folding/content/cleanup, launch grants and all assigned perf tiers pass; content coverage and unverified capabilities visible (P6-T08 capability UI).
-- [ ] Fixture replay meets §6.7 with B1/B2 reported.
-- [ ] Playwright `_electron` E2E covers: first run and detection; Overview live updates; attention queue and notification; session workspace (turns, tools, subagents, files, reasoning); stuck/loop badge; search; move, pin, archive, Trash, Undo, restore, purge; retention settings and storage meter; Integrations connect/disconnect with diff preview; launch/resume in an external terminal (assembled command, spawn stubbed); tray, close, quit; settings persistence.
-- [ ] Accessibility: every MVP flow keyboard-operable with visible focus and labeled controls; status as text + icon; focus restoration and narrow layouts tested.
-- [ ] Screens follow the approved design (FR-50, Gate D) incl. light/dark; baselines from the implemented design; Playwright MCP check on every screen, console free of errors.
-- [ ] Usage status and history, context view, live-set totals and session access pass their tests; all unavailable/estimated/stale labels and aggregate scopes visible.
-- [ ] Price-override validation and pinned provenance pass; no price, quota, context, token-count or model request (FR-44).
-- [ ] Usage/context/cost enabled in T2 and T3; snapshot/index overhead and affected M1–M16 results reported.
-- [ ] Synthetic account identifiers and credentials do not survive in normalized snapshots, logs, diagnostics or fixtures; no real account file used (`usage-account-canary.test.ts`, P3-T15).
-- [ ] Zero attempted non-loopback connections in all E2E runs and the S10-style OS audit.
-- [ ] Forwarder: 0 output bytes, exit 0, spool works, M16 met.
-- [ ] Connect/Disconnect round trip byte-identical when Xaibo-owned values are unchanged (agent-flow hooks, custom statusLine, foreign notify, Gemini `settings.json` with foreign hooks and `general.sessionRetention`); changed values conflict.
-- [ ] Native agent files never modified (checksums before/after the full E2E run).
-- [ ] App data only in the OS app-data dir with private permissions; repo unchanged after runs.
-- [ ] Egress canary tests pass for every shipped path.
-- [ ] Secret scan, privacy scan, fixture lint green on the full history.
-- [ ] Lint, typecheck, unit, integration, E2E, perf green on a clean checkout.
-- [ ] Licenses: agent-flow attribution/NOTICE kept where reused (telemetry removed); no AGPL code copied; dependency licenses listed.
-- [ ] Before going public: tracked under Public release (not required here).
+- [x] All MVP §9.2 rows pass or have owner-approved waivers, re-confirmed by gate — Gate 1: EC-01, 03, 04, 08, 13, 14, 15, 16, 18, 19, 33, 35, 38, 39, 45, 47, 55, 60, 61, 62; Gate 2: EC-05, 06, 07, 10, 50, 51, 53, 54, 74, 80, 81, 93, 94, 95, 96, 101; Gate 3: EC-02, 09, 11, 12, 25, 28, 32, 40, 41, 42, 43, 44, 46, 48, 49, 52, 59, 63, 64, 70, 82, 83, 91, 92; Gate 4: EC-56, 57, 86, 97, 100, 102; Gate 5: EC-21, 22, 23, 24, 58, 66, 71, 87, 99, 103, 104, 105; Gate 6: EC-26, 27, 72, 73, 78, 79, 90; Gate 7: EC-20, 67, 76, 84, 85. *Gate records 1-6 (waivers there); every EC test still passes in step 0; Gate 7 rows above.*
+- [x] Added MVP rows: EC-106..108 at Gate 5 and EC-109..110 at Gate 6 pass or have owner-approved waivers. EC-57/87 and plan-scale M13/M14 in the preceding checklist remain deferred to owner-started scale-up (§1a), not MVP acceptance. *`gates/gate5.md`, `gates/gate6.md`; still passing in step 0.*
+- [ ] All shipped §1.5 metrics measured and reported incl. M11–M16 (M10 when MCP ships); misses need explicit owner acceptance; unrun tests are not passes. *Step 0 re-ran T0 (M1, M2, M11, M16, M11 launch) and the M6 audit; the full metric set re-runs on the gate SHA in step 1 (`gates/gate7.md`). Known accepted miss: M11 file-only (D-P3-19). M10 not shipped.*
+- [x] Add agent and custom reporter, Gemini folding/content/cleanup, launch grants and all assigned perf tiers pass; content coverage and unverified capabilities visible (P6-T08 capability UI). *Add agent and the report v1 producer (Gates 3, 6; E2E `add-agent`); launch grants (P7-T03, EC-84); Gemini folding/content/cleanup ship capability-gated and runtime-UNVERIFIED (PRD S-28-Gemini, D-P0-19), as the PRD requires; perf tiers per the metric row.*
+- [x] Fixture replay meets §6.7 with B1/B2 reported. *`replay.test.ts` (M8, B1/B2) in step 0 `test:electron`; Gate 3 figures.*
+- [x] Playwright `_electron` E2E covers: first run and detection; Overview live updates; attention queue and notification; session workspace (turns, tools, subagents, files, reasoning); stuck/loop badge; search; move, pin, archive, Trash, Undo, restore, purge; retention settings and storage meter; Integrations connect/disconnect with diff preview; launch/resume in an external terminal (assembled command, spawn stubbed); tray, close, quit; settings persistence. *P7-T12 coverage audit: every item has a spec; first run checks detection indirectly; stuck/loop badges: R2 in E2E, the rules unit-tested; launch/resume in `launch`/`resume` (spawn stubbed).*
+- [x] Accessibility: every MVP flow keyboard-operable with visible focus and labeled controls; status as text + icon; focus restoration and narrow layouts tested. *E2E `a11y-agent-map`, `a11y-workspace` (T15b), keyboard paths in `launch`/`resume`/`grants`; known: the T15b text200 footer focus-ring edge (conversation/cost).*
+- [x] Screens follow the approved design (FR-50, Gate D) incl. light/dark; baselines from the implemented design; Playwright MCP check on every screen, console free of errors. *Visual baselines (light/dark) updated in 625/627; Phase 7 screens (launch dialog, Starting… row, header actions, concurrency warning) checked on the packaged app 2026-11-27; the `launch`, `resume` and `grants` specs assert no console error (`8075cc9`).*
+- [x] Usage status and history, context view, live-set totals and session access pass their tests; all unavailable/estimated/stale labels and aggregate scopes visible. *Gates 3-6 tests, still passing in step 0.*
+- [x] Price-override validation and pinned provenance pass; no price, quota, context, token-count or model request (FR-44). *Gate 3/6 tests (`prices`, E2E `settings-prices`); no model or quota request (M6 audit).*
+- [x] Usage/context/cost enabled in T2 and T3; snapshot/index overhead and affected M1–M16 results reported. *At the personal profile TP (A14, D-P0-24/26/36: T2/T3 run only in the owner-started scale-up stage); TP usage run P4-T12b.*
+- [x] Synthetic account identifiers and credentials do not survive in normalized snapshots, logs, diagnostics or fixtures; no real account file used (`usage-account-canary.test.ts`, P3-T15). *`usage-account-canary.test.ts` in step 0.*
+- [x] Zero attempted non-loopback connections in all E2E runs and the S10-style OS audit. *Connection audit in every E2E launch (96/96); `scripts/gate-audit.ts` 0 non-loopback; `helper-audit.ts` 32 cases 0 attempts (P7-T12).*
+- [x] Forwarder: 0 output bytes, exit 0, spool works, M16 met. *Forwarder tests in step 0; M16 200 runs pass on a quiet machine (a run under load ~5 missed the hung mode, as in P3-T16b).*
+- [x] Connect/Disconnect round trip byte-identical when Xaibo-owned values are unchanged (agent-flow hooks, custom statusLine, foreign notify, Gemini `settings.json` with foreign hooks and `general.sessionRetention`); changed values conflict. *`roundtrip` (full matrix incl. the tee) in step 0.*
+- [x] Native agent files never modified (checksums before/after the full E2E run). *Per-test agent-store checksum in the E2E fixture; gate audit `fixtureStoresUnchanged`.*
+- [x] App data only in the OS app-data dir with private permissions; repo unchanged after runs. *E2E `no-system-runtime` (0700/0600); gate audit `repoUnchanged`.*
+- [x] Egress canary tests pass for every shipped path. *E2E `canary` and the unit canaries in step 0.*
+- [x] Secret scan, privacy scan, fixture lint green on the full history. *`privacy:scan -- --all` and `--history`, `fixtures:lint` in step 0; CI gitleaks.*
+- [ ] Lint, typecheck, unit, integration, E2E, perf green on a clean checkout. *Step 1 on the gate SHA (`gates/gate7.md`).*
+- [x] Licenses: agent-flow attribution/NOTICE kept where reused (telemetry removed); no AGPL code copied; dependency licenses listed. *P7-T12: no Phase 7 packages, list unchanged; no agent-flow code in `src/` (no NOTICE needed); no AGPL code.*
+- [x] Before going public: tracked under Public release (not required here). *Tracked under Public release.*
 
 *PRD §1.6 Definition of Done*
-- [ ] 1. Every P0 item in §3.1 implemented (S-01–S-15, S-25, S-27–S-29, S-31, S-32, S-34, S-35, S-36).
-- [ ] 2. Every MVP §9.2 row has a passing automated test or an owner-approved written waiver.
-- [ ] 3. Every §9.3 item checked.
-- [ ] 4. All shipped §1.5 metrics measured and reported in `docs/plans/xaibo_progress.md`; misses owner-accepted.
-- [ ] 5. Every gate passed with Codex review, Claude second review, owner stop (Gate D: Claude review then owner approval).
-- [ ] 6. The macOS MVP artifact runs without system Node or Docker and makes zero non-loopback connections; dev and build dependencies separate.
-- [ ] 7. Privacy checks green.
+- [x] 1. Every P0 item in §3.1 implemented (S-01–S-15, S-25, S-27–S-29, S-31, S-32, S-34, S-35, S-36). *Phases 1-7.*
+- [x] 2. Every MVP §9.2 row has a passing automated test or an owner-approved written waiver. *As the §9.2 row above.*
+- [ ] 3. Every §9.3 item checked. *Open until US-8 and the gate-SHA suite.*
+- [ ] 4. All shipped §1.5 metrics measured and reported in `docs/plans/xaibo_progress.md`; misses owner-accepted. *After step 1 (`gates/gate7.md`).*
+- [ ] 5. Every gate passed with Codex review, Claude second review, owner stop (Gate D: Claude review then owner approval). *Gates 0-6 and D passed; the MVP Gate is in review.*
+- [x] 6. The macOS MVP artifact runs without system Node or Docker and makes zero non-loopback connections; dev and build dependencies separate. *E2E `no-system-runtime`, gate audit; dependencies/devDependencies separate in `package.json`.*
+- [x] 7. Privacy checks green. *Step 0 privacy scans.*
 
 **Metrics at the MVP Gate.** M1–M9 and M11–M16 re-run on a clean checkout on the reference Mac with hardware, macOS, versions, seed, DB/index sizes: M1, M2, M11, M16 on T0; M3 on T1; M12, M14 on T2; M13 on T3; M4, M5 from process sampling; M6 from the E2E audit plus the S10-style audit, including the helper audit (P7-T12); M7 from forwarder tests and config lint; M8 from replay; M9 from the canary suite.
 

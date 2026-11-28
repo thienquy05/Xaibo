@@ -222,7 +222,7 @@ const signInEpochs = (db: DatabaseSync) => {
 /** XAIBO-PROD-582 (P6-T10a unit 1): every profile once (agent, then id; custom agents too) with its label and current sign-in view,
  *  from the database only (no reconcile, config, credential or environment read); a view that cannot be read is null. */
 // ponytail: the first MAX_SCOPES profiles (before the id filter), no "more" flag; page it if a store ever holds that many
-export function usageProfiles(db: DatabaseSync, home: string): UsageProfile[] {
+function usageProfiles(db: DatabaseSync, home: string): UsageProfile[] {
   // XAIBO-PROD-583: consumption per profile; if it cannot be read the profiles still answer, with none
   let cons: ReturnType<typeof consumptionByProfile> = { groups: new Map<string, UsageConsumption[]>(), limited: false, cut: new Set<string>() };
   try { cons = consumptionByProfile(db, CONSUMPTION_ROWS, signInEpochs(db)); } catch { /* unreadable: no consumption */ }

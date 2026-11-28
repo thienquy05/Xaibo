@@ -717,6 +717,7 @@ html, .x-shell.x-fixed { scroll-padding-top: var(--x-frame-pad, 8px); } /* clear
 @media (max-width: 799px) { .x-map-panel-open .x-map-tree { display: none; } }
 .x-agent-open { justify-self: start; margin-top: var(--x-space-1); }
 .x-integration .x-pane-head { flex-wrap: wrap; }
+.x-integration .x-pane-head h2 { margin-right: auto; } /* XAIBO-PROD-610: Back to map and Return to Dashboard stay together */
 .x-integration h3 { margin: 0; font-size: var(--x-text-body); }
 .x-integration-list { margin: 0; padding-left: var(--x-space-4); display: grid; gap: var(--x-space-1); overflow-wrap: anywhere; }
 .x-receipt-test { display: grid; gap: var(--x-space-1); justify-items: start; }
@@ -779,3 +780,39 @@ html, .x-shell.x-fixed { scroll-padding-top: var(--x-frame-pad, 8px); } /* clear
 .x-map-dl { margin: 0; display: grid; gap: var(--x-space-2); }
 .x-map-dl dt { color: var(--x-muted); font-size: var(--x-text-small); }
 .x-map-dl dd { margin: 0; overflow-wrap: anywhere; }
+
+/* XAIBO-PROD-624 (P7-T04, design §6.7; mock approved 2026-11-27): launch dialog form, provisional rows and their detail */
+.x-launch-dialog .x-form { display: grid; gap: var(--x-space-3); margin-top: var(--x-space-3); }
+.x-launch-dialog .x-field { display: grid; gap: var(--x-space-1); min-width: 0; }
+.x-launch-dialog label { font-weight: var(--x-weight-strong); }
+.x-launch-dialog .x-input { width: 100%; box-sizing: border-box; }
+.x-launch-dialog { max-height: calc(100vh - 32px); overflow-y: auto; scroll-padding-bottom: 96px; } /* 624 a11y review: the sticky actions never hide a focused field */
+.x-code-region:focus-visible { outline: 2px solid var(--x-focus); outline-offset: 2px; }
+.x-list-slot { flex-direction: column; }
+.x-provisional { flex: none; margin-bottom: var(--x-space-3); }
+.x-provisional > h2 { margin: 0; font-size: var(--x-text-small); line-height: var(--x-leading-small); color: var(--x-muted); font-weight: var(--x-weight-strong); }
+.x-launch-dialog .x-dialog-actions { position: sticky; bottom: calc(-1 * var(--x-space-5)); padding: var(--x-space-3) 0 var(--x-space-5); margin-bottom: calc(-1 * var(--x-space-5)); background: var(--x-surface); }
+.x-provisional ul { list-style: none; margin: var(--x-space-1) 0 0; padding: 0; }
+.x-provisional .x-srow { display: grid; gap: 2px; width: 100%; text-align: left; }
+.x-provisional .x-srow small { color: var(--x-muted); font-size: var(--x-text-small); }
+.x-provisional-pane { display: grid; gap: var(--x-space-2); align-content: start; padding: var(--x-space-4); overflow-y: auto; }
+.x-provisional-pane h2 { margin: 0; }
+.x-provisional-pane p { margin: 0; overflow-wrap: anywhere; }
+.x-provisional-actions { justify-content: flex-start; }
+
+/* XAIBO-PROD-625 (design §3.2, §6.9): the static ownership badge (16 px icon + exact words, one phrase) and its explanation */
+.x-own { display: inline-flex; align-items: flex-start; gap: var(--x-space-1); max-width: 100%; min-width: 0; color: var(--x-muted); } /* moves to its own line first; wraps inside only when wider than the row (text scaling) */
+.x-own > span { min-width: 0; overflow-wrap: anywhere; }
+.x-own .x-icon { width: 16px; height: 16px; flex: none; }
+.x-own-controlled-here { color: var(--x-accent); }
+.x-own-about { min-height: 28px; font-size: var(--x-text-small); }
+.x-own-note { flex-basis: 100%; margin: 0; font-size: var(--x-text-small); color: var(--x-muted); }
+
+/* XAIBO-PROD-627 (design §6.7, §6.8): the open session's Resume / Fork / Open in VS Code with adjacent reasons, and the warning */
+.x-session-actions { display: contents; } /* flows in the header's chip row: no extra row unless the width runs out */
+.x-act { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px var(--x-space-1); max-width: 100%; }
+.x-act > .x-btn { min-height: 28px; font-size: var(--x-text-small); }
+.x-act-reason, .x-act-note { margin: 0; overflow-wrap: anywhere; }
+.x-act-note { flex-basis: 100%; }
+.x-act-note:empty { display: none; }
+.x-warn-actions { flex-wrap: wrap; align-items: flex-start; }

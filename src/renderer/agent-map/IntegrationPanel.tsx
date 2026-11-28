@@ -24,8 +24,10 @@ const REFUSED: Record<(typeof DETAIL_REFUSALS)[number], string> = {
 };
 const ACTION: Record<PanelAction, string> = { connect: 'Connect', disconnect: 'Disconnect', uninstall: 'Full Uninstall', cleanup: 'Clean up' };
 
-export function IntegrationPanel({ fetchDetail, fetchPage, write, signIn, grants, target, lastKnown, onBack, onProfile, onChanged }: {
-  fetchDetail: DetailFetch; fetchPage: PageFetch; write: WriteApi; signIn: SignInApi; grants: GrantApi; target: IntegrationKey; lastKnown: string | null; onBack: () => void; onProfile: (profileId: string | null) => void;
+export function IntegrationPanel({ fetchDetail, fetchPage, write, signIn, grants, target, lastKnown, onBack, onReturn, onProfile, onChanged }: {
+  fetchDetail: DetailFetch; fetchPage: PageFetch; write: WriteApi; signIn: SignInApi; grants: GrantApi; target: IntegrationKey; lastKnown: string | null; onBack: () => void;
+  /** XAIBO-PROD-610 (design §6.5.2): set only on a panel opened from the Dashboard. */
+  onReturn?: (() => void) | undefined; onProfile: (profileId: string | null) => void;
   /** An apply was sent: evidence elsewhere (the Agents list) may have changed. */
   onChanged: () => void;
 }) {
@@ -114,6 +116,7 @@ export function IntegrationPanel({ fetchDetail, fetchPage, write, signIn, grants
       <div className="x-pane-head">
         <h2 id="integration-heading" ref={heading} tabIndex={-1}>Integration: {visible(nameRef.current)}</h2>
         <button type="button" className="x-btn x-btn-quiet" onClick={onBack}><Icon id="back" />Back to map</button>
+        {onReturn ? <button type="button" className="x-btn x-btn-quiet" onClick={onReturn}>Return to Dashboard</button> : null}
       </div>
       <div className="x-map-detail-body">
         {profiles.length > 1 ? (

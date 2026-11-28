@@ -32,6 +32,12 @@ export interface SupervisorDeps<P> {
   onGrant?(g: Extract<ServiceEvent, { type: 'grant' }>): void;
   /** XAIBO-PROD-600 (P6-T12 slice 2): a validated reply to main's apply offer or confirm. */
   onApply?(a: Extract<ServiceEvent, { type: 'apply' }>): void;
+  /** XAIBO-PROD-623 (P7-T04): a validated reply to main's launchInfo. */
+  onLaunchInfo?(l: Extract<ServiceEvent, { type: 'launchInfo' }>): void;
+  /** XAIBO-PROD-626: a validated reply to main's resumeTarget. */
+  onResumeTarget?(r: Extract<ServiceEvent, { type: 'resumeTarget' }>): void;
+  /** G7-3: the service registered main's provisional row. */
+  onProvisionalAck?(a: Extract<ServiceEvent, { type: 'provisionalAck' }>): void;
 }
 
 export class Supervisor<P> {
@@ -41,6 +47,9 @@ export class Supervisor<P> {
     else if (m.type === 'metrics') this.#d.onMetrics?.(m);
     else if (m.type === 'grant') this.#d.onGrant?.(m); // review M5: explicit, never a notification
     else if (m.type === 'apply') this.#d.onApply?.(m);
+    else if (m.type === 'launchInfo') this.#d.onLaunchInfo?.(m);
+    else if (m.type === 'resumeTarget') this.#d.onResumeTarget?.(m);
+    else if (m.type === 'provisionalAck') this.#d.onProvisionalAck?.(m);
     else if (m.type === 'notify') this.#d.onNotify?.(m);
   });
   #child: Child<P> | null = null;

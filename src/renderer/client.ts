@@ -2,9 +2,9 @@
 // pushed deltas and agent status go to their handlers; every message is validated (src/shared/ipc.ts) and invalid ones
 // are counted; an invalid reply rejects its request, so the caller can recover. A service restart brings a new port
 // and a new client; replies owed on the old one never arrive.
-import { type CatalogImportResult, accept, IPC_VERSION, isObj, parsePortMessage } from '../shared/ipc.ts';
+import { type CatalogImportResult, type ProvisionalRow, accept, IPC_VERSION, isObj, parsePortMessage } from '../shared/ipc.ts';
 import type { SignInCommand } from './usage/sign-in-view.ts';
-import type { CleanupReply, ConnectReply, IntegrationDetailResult, IntegrationKey, IntegrationPageResult, PriceOp, RemovalReply, RetentionSetting, RevokeResult, RevokeTarget, SearchKey, SuppressedCursor } from '../shared/ipc.ts';
+import type { CleanupReply, ConnectReply, LockClearPreviewReply, IntegrationDetailResult, IntegrationKey, IntegrationPageResult, PriceOp, RemovalReply, RetentionSetting, RevokeResult, RevokeTarget, SearchKey, SuppressedCursor } from '../shared/ipc.ts';
 import type { AgentStatus, Banner, CostDetail, Cursor, FileItem, HistoryCursor, HistoryFilter, HistoryKey, HistoryRow, LedgerFilter, MapGroup, MapNode, MCursor, ModelMarker, Named, OverlayOp, OverlayResult, Page, PortMessage, PortRequest, SessionDetail, SessionRow, SubagentItem, TCursor, ToolItem, TranscriptAt, TranscriptItem, UsageRecord } from '../shared/ipc.ts';
 
 export interface LiveSet { rows: SessionRow[]; more: boolean }
@@ -16,6 +16,8 @@ export interface Pushes {
   resync?(): void;
   /** XAIBO-PROD-595: a catalog import's outcome (after the owner picked a file in main's dialog). */
   catalogImport?(result: CatalogImportResult): void;
+  /** XAIBO-PROD-622: the provisional launch rows; bound: rows evidence just replaced (once). */
+  provisional?(rows: ProvisionalRow[], bound: { key: string; session: number }[]): void;
 }
 
 /** P4-T02: main's window hide/show, forwarded by the preload as `{ xaiboVisible: boolean }`; anything else is null. */
@@ -41,6 +43,7 @@ export function createClient(port: PortLike, push: Pushes) {
     else if (m.type === 'coverage') push.coverage?.(m.banners);
     else if (m.type === 'resync') push.resync?.();
     else if (m.type === 'catalogImport') push.catalogImport?.(m.result);
+    else if (m.type === 'provisional') push.provisional?.(m.rows, m.bound);
     else push.agents(m.agents);
   });
   port.onmessage = (e) => {
@@ -172,6 +175,8 @@ export function createClient(port: PortLike, push: Pushes) {
     async removalApply(previewId: string): Promise<RemovalReply> { return (await ask({ type: 'removalApply', previewId }, 'removalApply')).result; },
     async cleanupPreview(profileId: string): Promise<CleanupReply> { return (await ask({ type: 'cleanupPreview', profileId }, 'cleanupPreview')).result; },
     async cleanupApply(previewId: string): Promise<CleanupReply> { return (await ask({ type: 'cleanupApply', previewId }, 'cleanupApply')).result; },
+    /** XAIBO-PROD-613: a preview of clearing the stale operation lock (applied only through main's confirmation). */
+    async lockClearPreview(): Promise<LockClearPreviewReply> { return (await ask({ type: 'lockClearPreview' }, 'lockClearPreview')).result; },
     /** XAIBO-PROD-585 (P6-T10a unit 4a): the sign-in read or one mutation, by profile id and loaded revision; the code is a result. */
     async signIn(profileId: string, command: SignInCommand) { const m = await ask({ type: 'signIn', profileId, ...command }, 'signIn'); return { code: m.code, view: m.view }; },
     /** XAIBO-PROD-581: the separate tee's previews (unit 6a). */
@@ -182,6 +187,8 @@ export function createClient(port: PortLike, push: Pushes) {
     async cost(session: number): Promise<CostDetail | null> { return (await ask({ type: 'cost', session }, 'cost')).cost; },
     /** P4-T02: live session deltas while the window is visible; paused while hidden (resync by cursor on show). */
     setLive(on: boolean): void { port.postMessage({ v: IPC_VERSION, type: 'live', on } satisfies PortRequest); },
+    /** XAIBO-PROD-624: Remove provisional row (the provisional push follows). */
+    removeProvisional(key: string): void { port.postMessage({ v: IPC_VERSION, type: 'removeProvisional', key } satisfies PortRequest); },
     get dropped() { return receive.dropped; },
     // XAIBO-PROD-434: a request still waiting on this port settles now (a restarted service answers on its new port);
     // left unsettled, the section that asked would stay loading and never refetch

@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { CONNECT_ROUTES, RECONCILE_STATES, type IntegrationDetail } from '../../../src/shared/ipc.ts';
-import { agentRow, allRows, entryText, notifyText, pollTest, restoreTarget, startTest, teeText, testable, testText, TEST_POLL_MS, TEST_TIMEOUT_MS, type ReceiptTest } from '../../../src/renderer/agent-map/integration-panel.ts';
+import { agentRow, allRows, entryText, focusInvoker, notifyText, pollTest, restoreTarget, startTest, teeText, testable, testText, TEST_POLL_MS, TEST_TIMEOUT_MS, type ReceiptTest } from '../../../src/renderer/agent-map/integration-panel.ts';
 import { INTEGRATION_PAGE_MAX, type IntegrationKey, type IntegrationPageResult } from '../../../src/shared/ipc.ts';
 import { formatTime } from '../../../src/renderer/model.ts';
 
@@ -89,4 +89,20 @@ test('agentRow: the agent\'s first listed row (its first profile, or its profile
   assert.deepEqual(agentRow([row('a', null), row('synthagent', E), row('synthagent', P)], 'synthagent'), { agent: 'synthagent', profileId: E });
   assert.deepEqual(agentRow([row('synthagent', null)], 'synthagent'), { agent: 'synthagent', profileId: null });
   assert.equal(agentRow([row('other', P)], 'synthagent'), null);
+});
+
+
+// Gate 6 D1-3 (XAIBO-PROD-610, design §6.5.2): Return to Dashboard focuses the button that opened the panel once the usage
+// blocks have drawn it (their data loads after the area switch), else the Usage and history heading after a bounded wait
+test('XAIBO-PROD-610: focusInvoker waits for the invoker, then falls back to the heading; never past its tries', async () => {
+  const focused: string[] = [];
+  const el = (name: string) => ({ focus: () => { focused.push(name); } });
+  let waits = 0, shown = 2;
+  const wait = async () => { waits++; };
+  assert.equal(await focusInvoker(() => (waits >= shown ? el('invoker') : null), () => el('heading'), wait, 5), 'invoker');
+  assert.deepEqual([focused, waits], [['invoker'], 2]);
+  focused.length = 0; waits = 0; shown = Infinity;
+  assert.equal(await focusInvoker(() => null, () => el('heading'), wait, 5), 'heading');
+  assert.deepEqual([focused, waits], [['heading'], 5]);
+  assert.equal(await focusInvoker(() => null, () => null, wait, 1), null, 'nothing to focus');
 });

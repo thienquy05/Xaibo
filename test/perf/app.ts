@@ -46,6 +46,7 @@ export async function launch(claudeDir: string, more: { codex?: string; agy?: st
   const env = {
     HOME: home, PATH: `${bin}:/usr/bin:/bin`, SHELL: shell, TMPDIR: path.join(root, 'tmp'), LANG: 'en_US.UTF-8',
     CLAUDE_CONFIG_DIR: claudeDir, CODEX_HOME: more.codex ?? path.join(home, '.codex'), GEMINI_CLI_HOME: home, XAIBO_DATA_DIR: dataDir,
+    XAIBO_E2E: '1', // XAIBO-PROD-611: the packaged build honours XAIBO_* variables only with this marker
     ...more.env,
   };
   const app = await _electron.launch({ executablePath: PACKAGED, args: [], env, timeout: 60_000 });
