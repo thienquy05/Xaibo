@@ -7,7 +7,7 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createConnect, type ConnectContext } from '../../../src/service/integrations/connect.ts';
@@ -298,11 +298,13 @@ test('busy keeps the preview: apply while another writer holds the lock, then ag
 test('a plugin Disconnect and a plugin Removal hold the lock as the external writer', async () => {
   const w = await world({ route: 'plugin' });
   const lockWriter = () => json(join(w.dataDir, 'integrations', 'operation.lock'))['writer'];
+  // CI (Linux runner): the slow CLI step starts later than on the dev Mac; wait for the lock instead of a fixed 100 ms
+  const held = async () => { for (let t = 0; t < 250 && !existsSync(join(w.dataDir, 'integrations', 'operation.lock')); t++) await new Promise((r) => setTimeout(r, 20)); };
   const pv = w.c.previewConnect(w.profiles.claude, { retention: false, tee: false });
   assert.equal((await w.c.applyConnect(pv.status === 'preview' ? pv.previewId : '')).status, 'applied');
   w.setMode('slow');
   const pending = w.c.disconnect(w.profiles.claude);
-  await new Promise((r) => setTimeout(r, 100));
+  await held();
   assert.equal(lockWriter(), 'external', 'Disconnect');
   await pending;
   w.setMode('');
@@ -312,7 +314,7 @@ test('a plugin Disconnect and a plugin Removal hold the lock as the external wri
   assert.equal(rp.status, 'preview', JSON.stringify(rp));
   w.setMode('slow');
   const removing = w.c.applyRemoval(rp.status === 'preview' ? rp.previewId : '', undefined, Object.values(w.profiles));
-  await new Promise((r) => setTimeout(r, 100));
+  await held();
   assert.equal(lockWriter(), 'external', 'Removal');
   await removing;
 });
@@ -651,9 +653,11 @@ test('lock-clear: a lock that changed, was replaced or came alive after the prev
   rmSync(lockAt(w));
   staleLock(w);
   p = w.c.previewLockClear();
-  const bytes = readFileSync(lockAt(w));
-  rmSync(lockAt(w));
-  writeFileSync(lockAt(w), bytes, { mode: 0o600 }); // the same bytes in a new file (a replacement)
+  const bytes = readFileSync(lockAt(w)), ino = statSync(lockAt(w)).ino;
+  // the same bytes in a new file (a replacement), made before the old one goes: Linux reuses a freed inode at once (CI)
+  writeFileSync(`${lockAt(w)}.new`, bytes, { mode: 0o600 });
+  renameSync(`${lockAt(w)}.new`, lockAt(w));
+  assert.notEqual(statSync(lockAt(w)).ino, ino, 'a new inode');
   assert.deepEqual(await clearIt(w, p.status === 'preview' ? p.previewId : ''), { status: 'done', reply: { status: 'refused', code: 'lock-changed' } }, 'another inode');
   assert.equal(existsSync(lockAt(w)), true);
   rmSync(lockAt(w));
