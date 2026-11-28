@@ -13,6 +13,7 @@
 // of a shell under an agent's name passes here; the grant's hash is what binds it.
 import { accessSync, constants, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { BASE_ENV, ENV_KEY, uuid } from '../../shared/ipc.ts';
 
 export interface LaunchCommand {
   agent: string;
@@ -32,10 +33,6 @@ export type Refusal = 'executable' | 'interpreter' | 'name' | 'cwd' | 'id' | 'pl
 /** argv: the resolved executable and its arguments (for a no-shell spawn); script: the .command text. */
 export type Built = { ok: true; argv: string[]; script: string } | { ok: false; reason: Refusal };
 
-/** XAIBO-PROD-615: what every launched agent gets; anything else only by a granted key name. */
-export const BASE_ENV = ['PATH', 'HOME', 'LANG', 'TERM', 'USER', 'SHELL', 'TMPDIR'] as const;
-export const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const UUID_AGENTS = new Set(['claude', 'codex', 'agy']);
 /** Shells, interpreters, package runners and command wrappers (deno and bun outright: neither is an agent CLI). */
 const INTERPRETER = /^(?:sh|bash|zsh|fish|dash|ksh|csh|tcsh|pwsh|env|node|nodejs|tsx|ts-node|python[\d.]*|ruby[\d.]*|irb|perl[\d.]*|php[\d.]*|lua[\d.]*|tclsh[\d.]*|expect|awk|gawk|swift|osascript|npx|npm|pnpm|pnpx|bun|bunx|yarn|uv|uvx|pipx|deno|nice|nohup|arch|time|timeout|xargs|caffeinate|script|sudo|doas|xcrun|sandbox-exec|open)$/i;
@@ -57,7 +54,7 @@ function resolved(p: string, dir: boolean): string | null {
 }
 
 function idOk(agent: string, id: string, declared: RegExp | undefined): boolean {
-  if (UUID_AGENTS.has(agent)) return UUID.test(id);
+  if (UUID_AGENTS.has(agent)) return uuid(id);
   if (!declared || id === '' || id.startsWith('-') || badText(id)) return false;
   return new RegExp(`^(?:${declared.source})$`, declared.flags.replace(/[gmy]/g, '')).test(id); // the whole id, never a part of it
 }

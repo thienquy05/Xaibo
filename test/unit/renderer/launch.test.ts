@@ -3,7 +3,7 @@
 // first, distinct); elapsed time for the Starting… row; refusal and failure texts.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { afterRefusal, cwdChoices, elapsed, envHint, FAILED_TEXT, launchApi, lastKnownLine, minutes, PENDING_OWNERSHIP, REFUSAL_TEXT } from '../../../src/renderer/workspace/launch.ts';
+import { cwdChoices, elapsed, envHint, FAILED_TEXT, launchApi, lastKnownLine, minutes, REFUSAL_TEXT } from '../../../src/renderer/workspace/launch.ts';
 import { LAUNCH_REFUSALS, type SessionRow } from '../../../src/shared/ipc.ts';
 
 const UUID = '00000000-0000-4000-8000-0000000e0001';
@@ -33,7 +33,6 @@ test('elapsed and texts', () => {
   assert.deepEqual([elapsed(0), elapsed(7_400), elapsed(65_000), elapsed(3_600_000 + 61_000), elapsed(-5)], ['0:00', '0:07', '1:05', '1:01:01', '0:00']);
   for (const c of LAUNCH_REFUSALS) assert.ok(REFUSAL_TEXT[c].length > 0, c);
   assert.deepEqual(Object.keys(FAILED_TEXT).sort(), ['open', 'write']);
-  assert.equal(PENDING_OWNERSHIP, 'Ownership unavailable — awaiting session evidence');
 });
 
 test('624 reviews: environment hint and coarse elapsed label for list rows', () => {
@@ -56,8 +55,3 @@ test('627: resume asks parse through the bridge; the warning names the last know
   assert.equal(lastKnownLine(null, null), 'Last known: no status evidence');
 });
 
-test('627 review: a resume main refuses as concurrent goes to the warning; other refusals are said', () => {
-  assert.equal(afterRefusal('concurrent'), 'warn');
-  assert.equal(afterRefusal('busy'), 'say');
-  assert.equal(afterRefusal('disabled'), 'say');
-});

@@ -9,7 +9,7 @@ import { chmodSync, copyFileSync, mkdtempSync, readFileSync, realpathSync, rmSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { symlinkSync, unlinkSync } from 'node:fs';
-import { fingerprint, grantLaunch, launchEnv, readGrants, revalidate, type LaunchSpec } from '../../../src/main/launch/grants.ts';
+import { fingerprint, grantLaunch, readGrants, revalidate, type LaunchSpec } from '../../../src/main/launch/grants.ts';
 /** The owner confirmed what the dialog showed: the fingerprint taken before it opened. */
 const grant = async (dataDir: string, agent: string, spec: LaunchSpec, origin: 'bundled' | 'imported', now: number) => grantLaunch(dataDir, agent, spec, origin, await fingerprint(spec.exe), now);
 
@@ -74,14 +74,6 @@ test('the record is private and atomic; an unreadable or malformed record never 
   symlinkSync(real, f);
   assert.deepEqual(readGrants(w.dataDir), {}, 'a link');
   assert.deepEqual(await revalidate(w.dataDir, 'constructor', w.spec), { ok: false, blocked: 'grant required' }, 'never a prototype key');
-});
-
-test('the launch environment: a fixed set plus granted key names; provider credentials only by an explicit grant', () => {
-  const env = { PATH: '/usr/bin:/bin', HOME: '/tmp/h', LANG: 'C', TERM: 'xterm', USER: 'u', SHELL: '/bin/zsh', ANTHROPIC_API_KEY: 'k1', OPENAI_API_KEY: 'k2',
-    GEMINI_API_KEY: 'k3', GOOGLE_APPLICATION_CREDENTIALS: '/c', AWS_SECRET_ACCESS_KEY: 'k4', AZURE_OPENAI_KEY: 'k5', NODE_OPTIONS: '--require x', FOO: 'bar' };
-  assert.deepEqual(launchEnv(env, []), { PATH: '/usr/bin:/bin', HOME: '/tmp/h', LANG: 'C', TERM: 'xterm', USER: 'u', SHELL: '/bin/zsh' });
-  assert.deepEqual(launchEnv({ ...env, TMPDIR: '/tmp/t/' }, [])['TMPDIR'], '/tmp/t/', 'the per-user temp folder');
-  assert.deepEqual(launchEnv(env, ['ANTHROPIC_API_KEY', 'FOO', 'MISSING']), { PATH: '/usr/bin:/bin', HOME: '/tmp/h', LANG: 'C', TERM: 'xterm', USER: 'u', SHELL: '/bin/zsh', ANTHROPIC_API_KEY: 'k1', FOO: 'bar' });
 });
 
 

@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import { ruleProblem, SOURCE_AGENT, type MethodRule } from '../usage/sign-in.ts';
+import { HEADLESS } from '../../shared/ipc.ts';
 
 export interface AgentEntry {
   id: string;
@@ -133,7 +134,7 @@ export function catalogIssues(value: unknown, bundled?: Catalog): CatalogIssue[]
     for (const k of ['launch', 'launchDisabled'] as const) if (a[k] !== undefined && bundled) add('unsafe-value', `${p}/${k}`);
     if (a.launch && a.launchDisabled !== undefined && !bundled) add('unsafe-value', `${p}/launchDisabled`);
     if (a.launch && !bundled) {
-      a.launch.args.forEach((t, j) => { if (/^(?:-p|--print|exec|--headless)$/.test(t)) add('unsafe-value', `${p}/launch/args/${j}`); });
+      a.launch.args.forEach((t, j) => { if (HEADLESS.test(t)) add('unsafe-value', `${p}/launch/args/${j}`); });
       if ((a.launch.preallocatedId === true) !== a.launch.args.includes('{id}')) add('unsafe-value', `${p}/launch/preallocatedId`);
     }
     if (!bundled) return;
@@ -150,7 +151,7 @@ export function catalogIssues(value: unknown, bundled?: Catalog): CatalogIssue[]
   c.sessionKinds.forEach((k, j) => {
     if (!k.fork) return;
     if (bundled) { add('unsafe-value', `/sessionKinds/${j}/fork`); return; }
-    k.fork.args.forEach((t, i) => { if (/^(?:-p|--print|exec|--headless)$/.test(t)) add('unsafe-value', `/sessionKinds/${j}/fork/args/${i}`); });
+    k.fork.args.forEach((t, i) => { if (HEADLESS.test(t)) add('unsafe-value', `/sessionKinds/${j}/fork/args/${i}`); });
     if (!k.fork.args.includes('{id}')) add('unsafe-value', `/sessionKinds/${j}/fork`);
   });
   return out;

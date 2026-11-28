@@ -5,7 +5,7 @@
 // handoff only for Claude with a verified vscode compatibility row for the detected release (P6-T08 data; S7), else why not.
 // Liveness: busy/waiting with connected health is live, ended is not, anything else (silence included) is uncertain (EC-20).
 // Pure: the service passes the stored session, its status and the detected version.
-import type { LiveTemplate, ResumeTarget } from '../../shared/ipc.ts';
+import { HEADLESS, uuid, type LiveTemplate, type ResumeTarget } from '../../shared/ipc.ts';
 import type { Catalog } from '../catalog/validate.ts';
 import { sessionKind } from '../resume.ts';
 import { resumeLiveness } from '../status/resume-liveness.ts';
@@ -16,8 +16,6 @@ export interface StoredForResume {
   /** G7-1 (OQ-P7-3): a Xaibo resume of this session is still starting (its provisional row has not bound, failed or been removed). */
   pending?: boolean;
 }
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const HEADLESS = /^(?:-p|--print|exec|--headless)$/;
 const whole = (args: readonly string[]) => args.every((t) => t === '{id}' || !t.includes('{'));
 const off = (disabled: string): LiveTemplate => ({ disabled });
 
@@ -25,7 +23,7 @@ export function resumeTarget(catalog: Catalog, s: StoredForResume, version: stri
   const kind = sessionKind(catalog.sessionKinds, s);
   let resume: LiveTemplate, fork: LiveTemplate;
   if (!s.nativeAvailable) resume = fork = off('Native session deleted; resume unavailable');
-  else if (!UUID.test(s.nativeSessionId)) resume = fork = off('Session id is not a UUID; resume disabled');
+  else if (!uuid(s.nativeSessionId)) resume = fork = off('Session id is not a lowercase UUID; resume disabled'); // as the launch layer accepts
   else {
     resume = s.pending ? off('A resume from Xaibo is still starting; wait for it or remove its Starting… row')
       : !kind ? off('Entry point not verified; resume disabled')

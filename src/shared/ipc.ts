@@ -71,7 +71,7 @@ function parseLaunchAgent(x: unknown): LaunchAgentInfo | null {
     ? { args: [...(l.args as string[])], preallocatedId: l.preallocatedId }
     : isObj(l) && exactKeys(l, ['disabled']) && text(l.disabled, 256) && l.disabled !== '' ? { disabled: l.disabled } : null;
   const profiles = Array.isArray(x.profiles) && x.profiles.length <= 64 ? x.profiles.map((p) => (isObj(p) && exactKeys(p, ['id', 'label', 'default', 'envKey']) && text(p.id, 64) && p.id !== '' && text(p.label, 4096) && typeof p.default === 'boolean'
-    && (p.envKey === null || (typeof p.envKey === 'string' && /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(p.envKey))) ? { id: p.id, label: p.label, default: p.default, envKey: p.envKey as string | null } : null)) : null;
+    && (p.envKey === null || (typeof p.envKey === 'string' && ENV_KEY.test(p.envKey))) ? { id: p.id, label: p.label, default: p.default, envKey: p.envKey as string | null } : null)) : null;
   const exeOk = x.executable === null || (text(x.executable, 4096) && x.executable.startsWith('/') && !x.executable.includes('\0'));
   return text(x.agent, 32) && AGENT_ID.test(x.agent) && text(x.name, 128) && (x.version === null || text(x.version, 64)) && exeOk && strs(x.names, 8, 128) && launch && profiles && profiles.every((p) => p !== null)
     ? { agent: x.agent, name: x.name, version: x.version as string | null, executable: x.executable as string | null, names: [...x.names], launch, profiles: profiles as LaunchAgentInfo['profiles'] } : null;
@@ -82,12 +82,17 @@ export interface ProvisionalRow {
   key: string; agent: string; profileId: string; cwd: string; nativeId: string | null; startedAt: number;
   state: 'starting' | 'failed'; reason: string | null;
 }
-const KEY_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** XAIBO-PROD-615: what every launched agent gets; anything else only by a granted key name (main builds the script, the
+ *  renderer shows the line). */
+export const BASE_ENV = ['PATH', 'HOME', 'LANG', 'TERM', 'USER', 'SHELL', 'TMPDIR'] as const;
+export const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+/** FR-20: never a headless launch, resume or fork (catalog validation, the resume target and main refuse these tokens). */
+export const HEADLESS = /^(?:-p|--print|exec|--headless)$/;
 const PROVISIONAL_MAX = 32;
 function parseProvisionalRow(x: unknown): ProvisionalRow | null {
   if (!isObj(x) || !exactKeys(x, ['key', 'agent', 'profileId', 'cwd', 'nativeId', 'startedAt', 'state', 'reason'])) return null;
-  const ok = typeof x.key === 'string' && KEY_UUID.test(x.key) && text(x.agent, 32) && AGENT_ID.test(x.agent) && text(x.profileId, 64) && x.profileId !== ''
-    && text(x.cwd, 4096) && x.cwd.startsWith('/') && !x.cwd.includes('\0') && (x.nativeId === null || (typeof x.nativeId === 'string' && KEY_UUID.test(x.nativeId))) // 622 review: a pre-allocated id is a UUID
+  const ok = uuid(x.key) && text(x.agent, 32) && AGENT_ID.test(x.agent) && text(x.profileId, 64) && x.profileId !== ''
+    && text(x.cwd, 4096) && x.cwd.startsWith('/') && !x.cwd.includes('\0') && (x.nativeId === null || (uuid(x.nativeId))) // 622 review: a pre-allocated id is a UUID
     && Number.isFinite(x.startedAt) && (x.startedAt as number) > 0 && (x.state === 'starting' || x.state === 'failed') && (x.reason === null || (text(x.reason, 64) && x.reason !== ''));
   return ok ? { key: x.key as string, agent: x.agent as string, profileId: x.profileId as string, cwd: x.cwd as string, nativeId: x.nativeId as string | null,
     startedAt: x.startedAt as number, state: x.state as ProvisionalRow['state'], reason: x.reason as string | null } : null;
@@ -147,7 +152,7 @@ export function parseLaunchAsk(x: unknown): LaunchAsk | null {
   if (x.op === 'options') return exactKeys(x, ['op']) ? { op: 'options' } : null;
   if (x.op === 'preview') return exactKeys(x, ['op', 'agent', 'profileId', 'cwd']) && text(x.agent, 32) && AGENT_ID.test(x.agent) && text(x.profileId, 64) && x.profileId !== '' && absPath(x.cwd)
     ? { op: 'preview', agent: x.agent, profileId: x.profileId, cwd: x.cwd } : null;
-  if (x.op === 'launch') return exactKeys(x, ['op', 'previewId']) && typeof x.previewId === 'string' && KEY_UUID.test(x.previewId) ? { op: 'launch', previewId: x.previewId } : null;
+  if (x.op === 'launch') return exactKeys(x, ['op', 'previewId']) && uuid(x.previewId) ? { op: 'launch', previewId: x.previewId } : null;
   const session = count(x.session) && (x.session as number) > 0 ? x.session as number : null;
   if (x.op === 'resumeOptions' || x.op === 'vscode') return exactKeys(x, ['op', 'session']) && session !== null ? { op: x.op, session } : null;
   if (x.op === 'resumePreview') return exactKeys(x, ['op', 'session', 'mode', 'confirmed']) && session !== null && (x.mode === 'resume' || x.mode === 'fork') && typeof x.confirmed === 'boolean'
@@ -157,16 +162,16 @@ export function parseLaunchAsk(x: unknown): LaunchAsk | null {
 const launchRefusal = (x: Msg): { status: 'refused'; code: LaunchRefusal } | null => (exactKeys(x, ['status', 'code']) && oneOf(LAUNCH_REFUSALS, x.code) ? { status: 'refused', code: x.code } : null);
 export function parseLaunchReply(x: unknown): LaunchReply | null {
   if (!isObj(x)) return null;
-  if (x.status === 'started') return exactKeys(x, ['status', 'key']) && typeof x.key === 'string' && KEY_UUID.test(x.key) ? { status: 'started', key: x.key } : null;
-  if (x.status === 'failed') return exactKeys(x, ['status', 'key', 'reason']) && typeof x.key === 'string' && KEY_UUID.test(x.key) && (x.reason === 'write' || x.reason === 'open') ? { status: 'failed', key: x.key, reason: x.reason } : null;
+  if (x.status === 'started') return exactKeys(x, ['status', 'key']) && uuid(x.key) ? { status: 'started', key: x.key } : null;
+  if (x.status === 'failed') return exactKeys(x, ['status', 'key', 'reason']) && uuid(x.key) && (x.reason === 'write' || x.reason === 'open') ? { status: 'failed', key: x.key, reason: x.reason } : null;
   if (x.status === 'cancelled') return exactKeys(x, ['status']) ? { status: 'cancelled' } : null;
   return x.status === 'refused' ? launchRefusal(x) : null;
 }
 export function parseLaunchPreviewReply(x: unknown): LaunchPreviewReply | null {
   if (!isObj(x)) return null;
   if (x.status === 'refused') return launchRefusal(x);
-  return x.status === 'ok' && exactKeys(x, ['status', 'previewId', 'command', 'cwd', 'env']) && typeof x.previewId === 'string' && KEY_UUID.test(x.previewId) && text(x.command, 64 * 1024)
-    && absPath(x.cwd) && Array.isArray(x.env) && x.env.length <= 64 && x.env.every((k) => typeof k === 'string' && /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(k))
+  return x.status === 'ok' && exactKeys(x, ['status', 'previewId', 'command', 'cwd', 'env']) && uuid(x.previewId) && text(x.command, 64 * 1024)
+    && absPath(x.cwd) && Array.isArray(x.env) && x.env.length <= 64 && x.env.every((k) => typeof k === 'string' && ENV_KEY.test(k))
     ? { status: 'ok', previewId: x.previewId, command: x.command, cwd: x.cwd, env: [...(x.env as string[])] } : null;
 }
 export function parseLaunchOptionsReply(x: unknown): LaunchOptionsReply | null {
@@ -226,7 +231,7 @@ export function parseServiceCommand(x: unknown): ServiceCommand | null {
   if (m.type === 'launchInfo') return exactKeys(m, ['v', 'type', 'id']) && count(m.id) ? { v: 1, type: 'launchInfo', id: m.id } : null;
   if (m.type === 'resumeTarget') return exactKeys(m, ['v', 'type', 'id', 'session']) && count(m.id) && count(m.session) && (m.session as number) > 0 ? { v: 1, type: 'resumeTarget', id: m.id, session: m.session as number } : null;
   if (m.type === 'provisional') { const row = parseProvisionalRow(m.row); return exactKeys(m, ['v', 'type', 'row']) && row ? { v: 1, type: 'provisional', row } : null; }
-  if (m.type === 'removeProvisional') return exactKeys(m, ['v', 'type', 'key']) && typeof m.key === 'string' && KEY_UUID.test(m.key) ? { v: 1, type: 'removeProvisional', key: m.key } : null;
+  if (m.type === 'removeProvisional') return exactKeys(m, ['v', 'type', 'key']) && uuid(m.key) ? { v: 1, type: 'removeProvisional', key: m.key } : null;
   if (m.type === 'importCatalog') return text(m.path, 4096) && m.path.startsWith('/') && !m.path.includes('\0') ? { v: 1, type: 'importCatalog', path: m.path } : null;
   if (m.type !== 'setPath' || !text(m.agent) || !AGENT_ID.test(m.agent)) return null;
   if (!text(m.path, 4096) || !m.path.startsWith('/') || m.path.includes('\0')) return null;
@@ -247,7 +252,7 @@ export function parseServiceEvent(x: unknown): ServiceEvent | null {
     const result = parseApplyResult(m.result);
     return exactKeys(m, ['v', 'type', 'id', 'result']) && count(m.id) && result ? { v: 1, type: 'apply', id: m.id, result } : null;
   }
-  if (m?.type === 'provisionalAck') return exactKeys(m, ['v', 'type', 'key']) && typeof m.key === 'string' && KEY_UUID.test(m.key) ? { v: 1, type: 'provisionalAck', key: m.key } : null;
+  if (m?.type === 'provisionalAck') return exactKeys(m, ['v', 'type', 'key']) && uuid(m.key) ? { v: 1, type: 'provisionalAck', key: m.key } : null;
   if (m?.type === 'resumeTarget') {
     const target = m.target === null ? null : parseResumeTarget(m.target);
     return exactKeys(m, ['v', 'type', 'id', 'target']) && count(m.id) && (m.target === null || target) ? { v: 1, type: 'resumeTarget', id: m.id, target } : null;
@@ -1188,7 +1193,7 @@ export function parsePortRequest(x: unknown): PortRequest | null {
   }
   if (m?.type === 'clearUsage') return count(m.id) ? { v: 1, type: 'clearUsage', id: m.id } : null;
   if (m?.type === 'agentRescan') return exactKeys(m, ['v', 'type', 'id']) && count(m.id) ? { v: 1, type: 'agentRescan', id: m.id } : null;
-  if (m?.type === 'removeProvisional') return exactKeys(m, ['v', 'type', 'key']) && typeof m.key === 'string' && KEY_UUID.test(m.key) ? { v: 1, type: 'removeProvisional', key: m.key } : null;
+  if (m?.type === 'removeProvisional') return exactKeys(m, ['v', 'type', 'key']) && uuid(m.key) ? { v: 1, type: 'removeProvisional', key: m.key } : null;
   if (m?.type === 'grantRevoke') {
     const target = parseRevokeTarget(m.target);
     return exactKeys(m, ['v', 'type', 'id', 'agent', 'target']) && count(m.id) && refId(m.agent) && target ? { v: 1, type: 'grantRevoke', id: m.id, agent: m.agent, target } : null;
@@ -1416,7 +1421,7 @@ export function parsePortMessage(x: unknown): PortMessage | null {
   }
   if (m.type === 'provisional') {
     const rows = Array.isArray(m.rows) && m.rows.length <= PROVISIONAL_MAX ? m.rows.map(parseProvisionalRow) : null;
-    const bound = Array.isArray(m.bound) && m.bound.length <= PROVISIONAL_MAX ? m.bound.map((b) => (isObj(b) && exactKeys(b, ['key', 'session']) && typeof b.key === 'string' && KEY_UUID.test(b.key) && count(b.session) && (b.session as number) > 0 ? { key: b.key, session: b.session as number } : null)) : null;
+    const bound = Array.isArray(m.bound) && m.bound.length <= PROVISIONAL_MAX ? m.bound.map((b) => (isObj(b) && exactKeys(b, ['key', 'session']) && uuid(b.key) && count(b.session) && (b.session as number) > 0 ? { key: b.key, session: b.session as number } : null)) : null;
     return exactKeys(m, ['v', 'type', 'rows', 'bound']) && rows && rows.every((r) => r !== null) && bound && bound.every((b) => b !== null)
       ? { v: 1, type: 'provisional', rows: rows as ProvisionalRow[], bound: bound as { key: string; session: number }[] } : null;
   }

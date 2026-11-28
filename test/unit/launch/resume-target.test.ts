@@ -23,7 +23,8 @@ test('Claude cli: resume and fork templates, VS Code unverified with its reason,
   assert.deepEqual(t({ entrypoint: 'sdk-cli' }).resume, { disabled: 'Print mode (-p) needs a prompt; not offered as an interactive resume' });
   assert.deepEqual(t({ entrypoint: 'claude-desktop' }).resume, { disabled: 'Desktop resume not verified; view-only (S7)' });
   assert.deepEqual([t({ nativeAvailable: false }).resume, t({ nativeAvailable: false }).fork], [{ disabled: 'Native session deleted; resume unavailable' }, { disabled: 'Native session deleted; resume unavailable' }]);
-  assert.deepEqual(t({ nativeSessionId: 'not-a-uuid' }).resume, { disabled: 'Session id is not a UUID; resume disabled' });
+  assert.deepEqual(t({ nativeSessionId: 'not-a-uuid' }).resume, { disabled: 'Session id is not a lowercase UUID; resume disabled' });
+  assert.deepEqual(t({ nativeSessionId: ID.toUpperCase() }).resume, { disabled: 'Session id is not a lowercase UUID; resume disabled' }, 'gate nit: lowercase only, as the launch layer');
   assert.deepEqual([t({ pending: true }).resume, t({ pending: true }).fork], [{ disabled: 'A resume from Xaibo is still starting; wait for it or remove its Starting… row' },
     { args: ['--resume', '{id}', '--fork-session'] }], 'G7-1 (OQ-P7-3): a pending Xaibo resume locks the session; a fork stays available');
   assert.deepEqual([t({ live: { lifecycle: 'idle', health: 'connected' } }).liveness, t({ live: { lifecycle: 'ended', health: 'connected' } }).liveness, t({ live: null }).liveness], ['uncertain', 'not-live', 'uncertain']);

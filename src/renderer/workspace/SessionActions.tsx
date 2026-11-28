@@ -7,7 +7,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ResumeOptionsReply, SessionRow } from '../../shared/ipc.ts';
 import { visible } from '../text.ts';
-import { afterRefusal, CANCELLED_TEXT, FAILED_TEXT, lastKnownLine, REFUSAL_TEXT, type LaunchApi } from './launch.ts';
+import { CANCELLED_TEXT, FAILED_TEXT, lastKnownLine, REFUSAL_TEXT, type LaunchApi } from './launch.ts';
 
 export type Options = Extract<ResumeOptionsReply, { status: 'ok' }>;
 /** The Details drawer's line: each action, available or why not; Transcript only when neither Resume nor Fork is offered (FR-13). */
@@ -44,7 +44,7 @@ export function SessionActions({ row, api, onStarted, onOptions }: { row: Sessio
     setBusy(false);
     if (r.status === 'started') { setNote(''); return; }
     if (r.status === 'failed') { setNote(FAILED_TEXT[r.reason]); return; }
-    if (r.status === 'refused' && mode === 'resume' && afterRefusal(r.code) === 'warn') { setNote(''); setWarn(true); return; }
+    if (r.status === 'refused' && mode === 'resume' && r.code === 'concurrent') { setNote(''); setWarn(true); return; }
     setNote(r.status === 'cancelled' ? CANCELLED_TEXT : REFUSAL_TEXT[r.code]);
   };
   const resume = () => { if (!opts || opts.resume !== null || busy) return; if (opts.liveness === 'not-live') void go('resume', false); else setWarn(true); };
