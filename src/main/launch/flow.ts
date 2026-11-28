@@ -11,14 +11,16 @@
 // A resume re-reads its target before execution and again after a grant dialog: a pending Xaibo resume of the session (G7-1, the
 // service reports it disabled) or a liveness change that needs the unconfirmed concurrency warning (G7-2) refuses. One launch at a time. No Electron import (index.ts wires it).
 import { realpathSync } from 'node:fs';
-import { SANDBOX, q } from '../grants.ts';
+import { isDeepStrictEqual } from 'node:util';
+import { SANDBOX, q, type GrantDialog } from '../grants.ts';
+import { BASE_ENV, HEADLESS } from '../../shared/ipc.ts';
 import type { LaunchAgentInfo, LaunchOptionsReply, LaunchPreviewReply, LaunchReply, ProvisionalRow, ResumeOptionsReply, ResumeTarget, VsCodeReply } from '../../shared/ipc.ts';
-import { BASE_ENV, buildCommand, quote } from './command.ts';
+import { buildCommand, quote } from './command.ts';
 import { fingerprint, grantLaunch, revalidate, type Check, type Field, type Fingerprint } from './grants.ts';
 import { launchInTerminal, type Spawner } from './terminal.ts';
-import { allowedExternal, openInVsCode } from './vscode.ts';
+import { openInVsCode } from './vscode.ts';
 
-export interface LaunchDialog { type: 'warning'; title: string; message: string; detail: string; buttons: [string, string]; defaultId: 0; cancelId: 0; noLink: true }
+export type LaunchDialog = GrantDialog;
 export interface LaunchFlowDeps {
   dataDir: string;
   /** The service's launch info; null when it did not answer. */
@@ -41,8 +43,8 @@ export interface LaunchFlowDeps {
   openExternal(url: string): Promise<void>;
 }
 
-export const NOT_DETECTED = 'Not detected';
-export const PROFILE_UNSUPPORTED = 'Launch from this profile is not supported yet';
+const NOT_DETECTED = 'Not detected';
+const PROFILE_UNSUPPORTED = 'Launch from this profile is not supported yet';
 // XAIBO-PROD-624: a profile chosen by a login environment variable launches with that one name passed through (its value is
 // read in Terminal, from the same login environment Xaibo detected it in); a manually added profile cannot launch yet.
 // 624 security review: only a known profile-directory variable, never one a compromised service names (NODE_OPTIONS, DYLD_*…)
@@ -55,7 +57,6 @@ const CLICK_MS = 750;
 // compromised renderer can neither flood Terminal nor reopen the grant sheet at once. ponytail: per-launch confirmation stays the
 // in-app dialog (design §6.7); a native one per launch is recorded as a residual (D-P7-08).
 const GAP_MS = 2_000, COOLDOWN_MS = 5_000;
-const HEADLESS = /^(?:-p|--print|exec|--headless)$/;
 const WORSE = { 'not-live': 0, uncertain: 1, live: 2 } as const; // G7-2, review M2: a warning confirmed at one liveness covers no worse one
 const CHANGED: Record<Field, string> = { exe: 'the executable path', 'exe-hash': "the executable's contents", entry: 'its interpreter', template: 'the argument template', env: 'the environment keys' };
 
@@ -90,7 +91,6 @@ interface Preview {
 }
 const sameAgent = (a: LaunchAgentInfo | undefined, p: Pick<Preview, 'exe' | 'names' | 'profileId' | 'envKeys'>) => !!a && a.executable === p.exe && a.names.join('\0') === p.names.join('\0')
   && a.profiles.some((x) => x.id === p.profileId && launchable(x) && (x.envKey === null ? [] : [x.envKey]).join('\0') === p.envKeys.join('\0'));
-const sameArgs = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((t, i) => t === b[i]);
 
 export function launchFlow(d: LaunchFlowDeps) {
   const previews = new Map<string, Preview>();
@@ -143,7 +143,7 @@ export function launchFlow(d: LaunchFlowDeps) {
       try { cwd = realpathSync.native(ask.cwd); } catch { return refused('cwd'); }
       const names = [...a.names], profileId = ask.profileId;
       return hold({ agent: a.agent, profileId, cwd, nativeId, exe, args, names, envKeys, grantKey: a.agent, rowNativeId: nativeId ?? null, safe: async () => null,
-        recheck: async () => { const x = (await d.info())?.find((y) => y.agent === a.agent); return x && 'args' in x.launch && sameArgs(x.launch.args, args) && sameAgent(x, { exe, names, profileId, envKeys }) ? x : null; } }, b.argv);
+        recheck: async () => { const x = (await d.info())?.find((y) => y.agent === a.agent); return x && 'args' in x.launch && isDeepStrictEqual(x.launch.args, args) && sameAgent(x, { exe, names, profileId, envKeys }) ? x : null; } }, b.argv);
     },
     /** XAIBO-PROD-626 (P7-T05, P7-T09): what one stored session offers; each null is available, a string says why not. */
     async resumeOptions(session: number): Promise<ResumeOptionsReply> {
@@ -185,7 +185,7 @@ export function launchFlow(d: LaunchFlowDeps) {
           const [t2, i2] = await Promise.all([d.target(session), d.info()]);
           if (mode === 'resume' && t2 && WORSE[t2.liveness] > WORSE[warnedAt]) return 'concurrent'; // G7-2: the warning is needed (again) now
           const x = i2?.find((y) => y.agent === a.agent), tpl2 = t2?.[mode];
-          return x && t2 && tpl2 && 'args' in tpl2 && sameArgs(tpl2.args, args) && t2.nativeId === nativeId && sameAgent(x, { exe, names, profileId, envKeys }) ? x : null;
+          return x && t2 && tpl2 && 'args' in tpl2 && isDeepStrictEqual(tpl2.args, args) && t2.nativeId === nativeId && sameAgent(x, { exe, names, profileId, envKeys }) ? x : null;
         } }, b.argv);
     },
     /** Open in VS Code (FR-22, SEC1): only for a session whose handoff is verified, only the allowlisted URL. */
@@ -194,7 +194,7 @@ export function launchFlow(d: LaunchFlowDeps) {
       const t = await d.target(session);
       if (!t) return refused('unavailable');
       if (t.vscode !== null) return refused('disabled');
-      const r = await openInVsCode(t.nativeId, async (url) => { if (!allowedExternal(url)) throw new Error('not allowed'); await d.openExternal(url); });
+      const r = await openInVsCode(t.nativeId, d.openExternal); // openInVsCode opens only the SEC1-allowlisted URL
       if (r === 'opened') lastVsCode = d.mono();
       return r === 'opened' ? { status: 'opened' } : r === 'failed' ? { status: 'failed' } : refused('id');
     },

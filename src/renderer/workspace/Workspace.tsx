@@ -121,17 +121,17 @@ export function Workspace({ list, changes, browse, agents, live, lastKnown, api,
     setSupp(null); setOpened(null); setBinding(boundSeen.current.get(d.key) ?? null); setProv(d.key);
   };
   useEffect(() => {
-    for (const b of bound?.items ?? []) { boundSeen.current.set(b.key, b.session); if (b.key === prov) setBinding(b.session); }
+    for (const b of bound?.items ?? []) { boundSeen.current.set(b.key, b.session); if (b.key === prov && !request) setBinding(b.session); } // never over a request
     while (boundSeen.current.size > 32) boundSeen.current.delete(boundSeen.current.keys().next().value!);
   }, [bound?.n]);
   useEffect(() => { // the bound session's row arrives with its delta: open it in place of the provisional detail
-    if (binding === null) return; // the row may already be gone from the list (it bound): navigation clears binding instead (Gate 7 c4)
+    if (binding === null || request) return; // a request being opened wins (Gate 7 minor); the row may already be gone from the list (it bound): navigation clears binding instead (Gate 7 c4)
     const r = list.rows.find((x) => x.id === binding) ?? live.rows.find((x) => x.id === binding);
     if (!r) return;
     const here = document.activeElement === document.body || !!document.querySelector('.x-provisional-pane')?.contains(document.activeElement);
     setBinding(null); setProv(null); setOpened(r);
     if (here) requestAnimationFrame(() => document.getElementById('open-session-title')?.focus()); // never steals focus from elsewhere
-  }, [binding, list.rows, live.rows]);
+  }, [binding, list.rows, live.rows, request]);
   useEffect(() => { // removed elsewhere (another window): the detail closes
     if (prov && !provRow && binding === null && provSeen.current === prov) { setProv(null); setShowList(true); }
   }, [prov, provRow, binding]);

@@ -4,12 +4,11 @@
 // session, including one Xaibo launched in an external terminal, is "Observed externally".
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ABOUT_OWNERSHIP, canControl, ownership, OWNERSHIP_TEXT } from '../../../src/service/status/ownership.ts';
+import { ABOUT_OWNERSHIP, ownership, OWNERSHIP_TEXT } from '../../../src/service/status/ownership.ts';
 
 test('never controlled from launch origin, stale or unknown authority; only live, fresh control held here', () => {
   assert.equal(ownership({}), 'observed-externally');
-  assert.equal(ownership({ launchOrigin: 'xaibo-terminal' }), 'observed-externally', 'a launch from Xaibo into Terminal');
-  assert.equal(ownership({ launchOrigin: 'xaibo-terminal', control: { holder: 'this-xaibo', live: true, fresh: false } }), 'observed-externally', 'stale authority');
+  assert.equal(ownership({ control: { holder: 'this-xaibo', live: true, fresh: false } }), 'observed-externally', 'stale authority');
   assert.equal(ownership({ control: { holder: 'this-xaibo', live: false, fresh: true } }), 'observed-externally', 'the holder is gone');
   assert.equal(ownership({ control: { holder: 'other', live: true, fresh: true } }), 'observed-externally');
   assert.equal(ownership({ control: { holder: 'this-xaibo', live: true, fresh: true } }), 'controlled-here');
@@ -17,7 +16,6 @@ test('never controlled from launch origin, stale or unknown authority; only live
   assert.equal(ownership({ control: { holder: 'this-xaibo', live: true, fresh: true }, detached: { authoritative: true } }), 'detached', 'review LOW: contradictory evidence fails closed');
   assert.equal(ownership({ detached: { authoritative: true } }), 'detached');
   assert.equal(ownership({ provisional: true, control: { holder: 'this-xaibo', live: true, fresh: true } }), 'unavailable', 'not yet a session');
-  assert.deepEqual((['observed-externally', 'controlled-here', 'detached', 'unavailable'] as const).filter(canControl), ['controlled-here']);
 });
 
 test('badge and explanation texts follow the design', () => {

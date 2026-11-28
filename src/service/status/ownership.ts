@@ -12,8 +12,6 @@ export interface OwnershipEvidence {
   control?: { holder: 'this-xaibo' | 'other'; live: boolean; fresh: boolean } | null;
   /** Authoritative evidence that a session Xaibo controlled was detached (v1-A). */
   detached?: { authoritative: boolean } | null;
-  /** Where the session started: recorded for display, never a source of control (FR-23). */
-  launchOrigin?: 'xaibo-terminal' | 'external' | 'unknown';
 }
 
 export function ownership(e: OwnershipEvidence): Ownership {
@@ -21,8 +19,6 @@ export function ownership(e: OwnershipEvidence): Ownership {
   if (e.detached?.authoritative) return 'detached'; // contradicting a control claim: fail closed (618 review LOW)
   return e.control?.holder === 'this-xaibo' && e.control.live && e.control.fresh ? 'controlled-here' : 'observed-externally';
 }
-/** Unknown or stale authority disables control, never observation. */
-export const canControl = (o: Ownership) => o === 'controlled-here';
 
 export const OWNERSHIP_TEXT: Record<Ownership, string> = {
   'observed-externally': 'Observed externally', 'controlled-here': 'Controlled here', detached: 'Ownership: Detached',

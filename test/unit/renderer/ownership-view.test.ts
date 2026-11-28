@@ -3,14 +3,15 @@
 // launch row is Ownership unavailable until evidence binds it.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { OWNERSHIP_ICON, ownershipOf, ownershipLabel, spokenPrefix } from '../../../src/renderer/status/ownership-view.ts';
+import { OWNERSHIP_ICON, ownershipOf, spokenPrefix } from '../../../src/renderer/status/ownership-view.ts';
+import { OWNERSHIP_TEXT } from '../../../src/service/status/ownership.ts';
 import { ICON_IDS } from '../../../src/renderer/status/icons.ts';
 import type { SessionRow } from '../../../src/shared/ipc.ts';
 
 test('ownership view: icons from the design set, exact words, sessions observed externally', () => {
   assert.deepEqual(OWNERSHIP_ICON, { 'observed-externally': 'external', 'controlled-here': 'control', detached: 'unlink', unavailable: 'unknown' });
   for (const id of Object.values(OWNERSHIP_ICON)) assert.ok(ICON_IDS.includes(id), id);
-  assert.deepEqual([ownershipLabel('observed-externally'), ownershipLabel('controlled-here'), ownershipLabel('detached'), ownershipLabel('unavailable')],
+  assert.deepEqual([OWNERSHIP_TEXT['observed-externally'], OWNERSHIP_TEXT['controlled-here'], OWNERSHIP_TEXT.detached, OWNERSHIP_TEXT.unavailable],
     ['Observed externally', 'Controlled here', 'Ownership: Detached', 'Ownership unavailable — awaiting session evidence']);
   const row = { id: 1, agent: 'claude', live: { lifecycle: 'idle', confidence: 'confirmed', health: 'detached' } } as unknown as SessionRow;
   assert.equal(ownershipOf(row), 'observed-externally', 'health Detached never becomes ownership');

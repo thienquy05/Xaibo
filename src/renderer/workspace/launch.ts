@@ -2,8 +2,7 @@
 // every command (P7-T02/T03); the renderer only asks (options, preview, launch) through the preload bridge and shows main's
 // parsed replies: anything unparsed or a missing bridge is "unavailable". The cwd defaults only from folders sessions were
 // evidenced in (never guessed from a title or content) and stays editable.
-import { OWNERSHIP_TEXT } from '../../service/status/ownership.ts';
-import { parseLaunchOptionsReply, parseLaunchPreviewReply, parseLaunchReply, parseResumeOptionsReply, parseVsCodeReply, type LaunchOptionsReply, type LaunchPreviewReply, type LaunchRefusal, type LaunchReply, type LiveStatus,
+import { BASE_ENV, parseLaunchOptionsReply, parseLaunchPreviewReply, parseLaunchReply, parseResumeOptionsReply, parseVsCodeReply, type LaunchOptionsReply, type LaunchPreviewReply, type LaunchRefusal, type LaunchReply, type LiveStatus,
   type ResumeOptionsReply, type SessionRow, type VsCodeReply } from '../../shared/ipc.ts';
 
 export interface LaunchApi {
@@ -50,10 +49,8 @@ export const REFUSAL_TEXT: Record<LaunchRefusal, string> = {
   concurrent: 'This session may still be running elsewhere. Confirm the concurrency warning first.',
 };
 export const FAILED_TEXT = { write: 'Xaibo could not write the launch script.', open: 'Terminal did not open the launch script.' } as const;
-export const PENDING_OWNERSHIP = OWNERSHIP_TEXT.unavailable;
 export const CANCELLED_TEXT = 'Launch grant not given. Nothing was started.';
 /** 627 review: main refused a resume as concurrent (the session became live since the options were read): show the warning. */
-export const afterRefusal = (code: LaunchRefusal): 'warn' | 'say' => (code === 'concurrent' ? 'warn' : 'say');
 
 const CHOICES_MAX = 12;
 const base = (p: string) => p.replace(/\/+$/, '').split('/').pop() || p;
@@ -66,10 +63,9 @@ export function cwdChoices(rows: readonly SessionRow[], agent: string | null): {
   return cwds.map((cwd, i) => ({ cwd, label: names.indexOf(names[i]!) !== names.lastIndexOf(names[i]!) ? `${names[i]} (${cwd})` : names[i]! }));
 }
 
-const BASE = ['PATH', 'HOME', 'LANG', 'TERM', 'USER', 'SHELL', 'TMPDIR'];
 /** The preview's environment line: the fixed set, plus a profile variable read in Terminal when one is passed through. */
 export function envHint(env: readonly string[]): string {
-  const extra = env.filter((k) => !BASE.includes(k));
+  const extra = env.filter((k) => !(BASE_ENV as readonly string[]).includes(k));
   return `Environment: ${env.join(', ')} (${extra.length ? `${extra.join(', ')} as set in Terminal's environment` : 'no granted keys'})`;
 }
 /** A coarse elapsed label for list rows (an accessible name that changes once a minute, not every second). */

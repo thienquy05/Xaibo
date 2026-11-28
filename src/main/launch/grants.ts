@@ -6,7 +6,7 @@
 // is "grant required"; any changed field is "renewal required" naming it; an unreadable or malformed record never grants.
 // grantLaunch() records a grant only after main's native confirmation shows the executable path and template (P7-T04 wires
 // the dialog: bundled catalog entries at first use, imported ones always explicitly; renewal shows what changed). The launched
-// environment is a fixed set plus the granted key names only (launchEnv), so provider credentials never pass without an
+// environment is a fixed set plus the granted key names only (the launch script, command.ts), so provider credentials never pass without an
 // explicit grant (Q20). Never a shell evaluation or a package install. Observe-only (the service) never reads this file.
 // Reviews (XAIBO-PROD-615): grantLaunch binds the fingerprint the dialog showed (taken before it opened; a swap while it was open
 // is refused); revalidate returns the bound realpath, which P7-T04 checks is the argv[0] it launches; the environment filter is
@@ -17,9 +17,8 @@ import { createHash } from 'node:crypto';
 import { closeSync, createReadStream, lstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { AGENT_ID } from '../../shared/ipc.ts';
+import { AGENT_ID, ENV_KEY } from '../../shared/ipc.ts';
 import { atomicWrite, privateDir } from '../../service/fs-private.ts';
-import { BASE_ENV, ENV_KEY } from './command.ts';
 
 export type Origin = 'bundled' | 'imported';
 export interface LaunchSpec { exe: string; template: readonly string[]; envKeys: readonly string[] }
@@ -136,10 +135,3 @@ export async function revalidate(dataDir: string, agent: string, spec: LaunchSpe
   return isDeepStrictEqual(fp.entry, g.entry) ? { ok: true, exeReal: g.exeReal } : renew('entry');
 }
 
-/** A direct (no-shell) spawn's environment: the fixed set plus the granted key names, values read now and never stored. The
- *  external-terminal launch applies the same filter inside its script (command.ts), since Terminal has its own environment. */
-export function launchEnv(env: NodeJS.ProcessEnv, envKeys: readonly string[]): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const k of [...BASE_ENV, ...envKeys]) { const v = env[k]; if (typeof v === 'string') out[k] = v; }
-  return out;
-}

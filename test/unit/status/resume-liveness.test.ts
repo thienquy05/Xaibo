@@ -4,7 +4,7 @@
 // still warns, because silence does not prove the session is safe to resume. A pid alone never ends a session.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resumeLiveness, warns } from '../../../src/service/status/resume-liveness.ts';
+import { resumeLiveness } from '../../../src/service/status/resume-liveness.ts';
 
 test('recent hook -> live; silence -> uncertain; known owner -> live; ended -> not live', () => {
   const c = (lifecycle: string, health = 'connected') => ({ lifecycle, health }) as never;
@@ -17,10 +17,5 @@ test('recent hook -> live; silence -> uncertain; known owner -> live; ended -> n
   assert.equal(resumeLiveness({ status: null }), 'uncertain', 'no evidence at all');
   assert.equal(resumeLiveness({ status: c('idle'), ownership: 'controlled-here' }), 'live', 'known owner');
   assert.equal(resumeLiveness({ status: c('ended') }), 'not-live');
-  assert.equal(resumeLiveness({ status: c('ended'), process: 'live' }), 'live', 'its process still runs');
-  assert.equal(resumeLiveness({ status: c('idle'), process: 'stale' }), 'uncertain', 'never ended from a pid alone');
-  assert.equal(resumeLiveness({ status: c('idle'), process: 'live' }), 'live');
-  assert.equal(resumeLiveness({ status: c('ended'), process: 'stale' }), 'not-live', 'a stale pid neither ends nor revives (619 review)');
   assert.equal(resumeLiveness({ status: c('ended'), ownership: 'controlled-here' }), 'live', 'live control held here outranks an ended lifecycle');
-  assert.deepEqual((['live', 'uncertain', 'not-live'] as const).map(warns), [true, true, false]);
 });

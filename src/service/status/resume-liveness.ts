@@ -9,9 +9,8 @@ import type { Ownership } from './ownership.ts';
 export type ResumeLiveness = 'live' | 'uncertain' | 'not-live';
 const ACTIVE = new Set<Lifecycle>(['busy', 'waiting-for-permission', 'needs-input']);
 
-export function resumeLiveness(e: { status: { lifecycle: Lifecycle; health: Health } | null; process?: 'live' | 'stale' | null; ownership?: Ownership }): ResumeLiveness {
-  if (e.ownership === 'controlled-here' || e.process === 'live') return 'live';
+export function resumeLiveness(e: { status: { lifecycle: Lifecycle; health: Health } | null; ownership?: Ownership }): ResumeLiveness {
+  if (e.ownership === 'controlled-here') return 'live';
   if (e.status && e.status.health === 'connected' && ACTIVE.has(e.status.lifecycle)) return 'live';
   return e.status?.lifecycle === 'ended' ? 'not-live' : 'uncertain';
 }
-export const warns = (l: ResumeLiveness) => l !== 'not-live';
