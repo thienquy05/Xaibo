@@ -23,7 +23,7 @@ export function resumeTarget(catalog: Catalog, s: StoredForResume, version: stri
   const kind = sessionKind(catalog.sessionKinds, s);
   let resume: LiveTemplate, fork: LiveTemplate;
   if (!s.nativeAvailable) resume = fork = off('Native session deleted; resume unavailable');
-  else if (!uuid(s.nativeSessionId)) /* lowercase, as the launch layer */ resume = fork = off('Session id is not a UUID; resume disabled');
+  else if (!uuid(s.nativeSessionId)) resume = fork = off('Session id is not a lowercase UUID; resume disabled'); // as the launch layer accepts
   else {
     resume = s.pending ? off('A resume from Xaibo is still starting; wait for it or remove its Starting… row')
       : !kind ? off('Entry point not verified; resume disabled')
